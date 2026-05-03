@@ -1,0 +1,29 @@
+{
+  "name": "agent-swarm-cli",
+  "version": "0.1.0",
+  "description": "A local Agent Swarm Protocol CLI/TUI runtime.",
+  "type": "module",
+  "bin": {
+    "swarm": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "npm run build && node dist/index.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "smoke": "npm run build && node dist/smoke.js"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "openai": "^4.104.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^18.3.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
