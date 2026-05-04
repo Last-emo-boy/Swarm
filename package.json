@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "npm run build && node dist/index.js",
     "check": "tsc -p tsconfig.json --noEmit",
+    "evals": "npm run build && node dist/evals/local-evals.js",
     "smoke": "npm run build && node dist/smoke.js"
   },
   "dependencies": {

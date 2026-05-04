@@ -104,6 +104,43 @@ export class SwarmDatabase {
         summary TEXT,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS worker_states (
+        worker_id TEXT PRIMARY KEY,
+        parent_session_id TEXT NOT NULL,
+        worker_session_id TEXT,
+        agent_spec_id TEXT,
+        invocation_mode TEXT,
+        handoff_id TEXT,
+        capability TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        status TEXT NOT NULL,
+        file_scope_json TEXT NOT NULL,
+        tool_budget_json TEXT NOT NULL,
+        persona_snapshot_json TEXT,
+        task_packet_json TEXT,
+        output_contract_json TEXT,
+        spawn_reason TEXT,
+        requested_by TEXT,
+        last_result TEXT,
+        outcome_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS handoff_sessions (
+        handoff_id TEXT PRIMARY KEY,
+        worker_id TEXT NOT NULL,
+        parent_session_id TEXT NOT NULL,
+        source_agent TEXT NOT NULL,
+        target_agent_spec_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        task_packet_json TEXT NOT NULL,
+        result TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
     this.addColumnIfMissing("envelopes", "subtask_id", "TEXT");
     this.addColumnIfMissing("envelopes", "attempt", "INTEGER");
@@ -113,6 +150,14 @@ export class SwarmDatabase {
     this.addColumnIfMissing("envelopes", "idempotency_key", "TEXT");
     this.addColumnIfMissing("envelopes", "reply_to", "TEXT");
     this.addColumnIfMissing("envelopes", "correlation_id", "TEXT");
+    this.addColumnIfMissing("worker_states", "agent_spec_id", "TEXT");
+    this.addColumnIfMissing("worker_states", "invocation_mode", "TEXT");
+    this.addColumnIfMissing("worker_states", "handoff_id", "TEXT");
+    this.addColumnIfMissing("worker_states", "persona_snapshot_json", "TEXT");
+    this.addColumnIfMissing("worker_states", "task_packet_json", "TEXT");
+    this.addColumnIfMissing("worker_states", "output_contract_json", "TEXT");
+    this.addColumnIfMissing("worker_states", "spawn_reason", "TEXT");
+    this.addColumnIfMissing("worker_states", "requested_by", "TEXT");
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {

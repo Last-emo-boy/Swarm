@@ -7,6 +7,8 @@ import { OpenAIProvider } from "../providers/openai-provider.js";
 import type { SwarmSettings } from "../config/settings.js";
 import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
+import { WorkerStateStore } from "../storage/worker-state-store.js";
+import type { AgentInvocationRequest } from "./agent-specs.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -63,6 +65,12 @@ type CodingLoopOptions = {
   maxToolCalls?: number;
   emitFinal?: boolean;
   emitProgress?: boolean;
+  workerId?: string;
+  workerStore?: WorkerStateStore;
+  invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
+  agentInstructions?: string;
+  allowedTools?: string[];
+  writePolicy?: "read_only" | "scoped_write" | "workspace_write";
 };
 
 const MAX_LOOP_TURNS = 12;
@@ -155,6 +163,17 @@ export class CodingAgentLoop {
     }
 
     for (let turn = 1; turn <= maxTurns; turn += 1) {
+      if (this.isStopRequested()) {
+        lastResult = {
+          status: "failed",
+          summary: "Worker stopped by main Swarm",
+          message: "Worker stopped before completion.",
+          tool_calls: [],
+          files_touched: [],
+          next_actions: []
+        };
+        break;
+      }
       this.currentPhase = `turn_${turn}:thinking`;
       const turnTaskId = `${role === "worker" ? sessionId : "coding"}_turn_${turn}`;
       this.options.events.emitEvent({
@@ -168,7 +187,10 @@ export class CodingAgentLoop {
         model: this.options.provider.workerModel,
         system: codingLoopSystemPrompt({
           role,
-          delegateAvailable: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0
+          delegateAvailable: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0,
+          agentInstructions: this.options.agentInstructions,
+          allowedTools: this.options.allowedTools,
+          writePolicy: this.options.writePolicy
         }),
         user: JSON.stringify(
           {
@@ -213,6 +235,17 @@ export class CodingAgentLoop {
         if (toolCallCount >= maxToolCalls) {
           break;
         }
+        if (this.isStopRequested()) {
+          lastResult = {
+            status: "failed",
+            summary: "Worker stopped by main Swarm",
+            message: "Worker stopped before starting the next tool batch.",
+            tool_calls: [],
+            files_touched: [...changedFiles],
+            next_actions: []
+          };
+          break;
+        }
         if (this.interruptRequested) {
           this.interruptRequested = false;
           break;
@@ -230,6 +263,17 @@ export class CodingAgentLoop {
         } else {
           for (const call of batch.calls) {
             if (toolCallCount >= maxToolCalls) {
+              break;
+            }
+            if (this.isStopRequested()) {
+              lastResult = {
+                status: "failed",
+                summary: "Worker stopped by main Swarm",
+                message: "Worker stopped before starting the next tool.",
+                tool_calls: [],
+                files_touched: [...changedFiles],
+                next_actions: []
+              };
               break;
             }
             const item = await this.executeToolCall(call, sessionId);
@@ -268,6 +312,13 @@ export class CodingAgentLoop {
     }
     this.currentPhase = "idle";
     return { session_id: sessionId, content, outcome };
+  }
+
+  private isStopRequested(): boolean {
+    if (!this.options.workerId || !this.options.workerStore) {
+      return false;
+    }
+    return this.options.workerStore.get(this.options.workerId)?.status === "stopped";
   }
 
   private async decideControl(message: LiveUserMessage): Promise<ControlDecision> {
@@ -312,6 +363,9 @@ export class CodingAgentLoop {
     const id = call.id ?? `tool_${randomUUID()}`;
     try {
       const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
+      if (this.options.allowedTools && !this.options.allowedTools.includes(action.type)) {
+        throw new Error(`Tool action is not allowed for this agent persona: ${action.type}`);
+      }
       if (toolRequiresApproval(action, this.options.settings)) {
         if (!this.options.approvalHandler) {
           throw new Error(`Tool action requires approval but no approval handler is available: ${action.type}`);
@@ -389,7 +443,26 @@ export class CodingAgentLoop {
   }
 
   private async delegateWorker(action: AgentDelegateAction, sessionId: string, parentTaskId: string): Promise<ToolResult> {
+    if (this.options.invokeAgent) {
+      return this.options.invokeAgent({
+        parent_session_id: sessionId,
+        requested_by: this.options.workerId ?? "main_swarm",
+        capability: action.capability,
+        task: action.task,
+        context: action.context,
+        spawn_reason: `agent.delegate from ${parentTaskId}`
+      });
+    }
+
     const workerId = `worker_${randomUUID()}`;
+    const toolBudget = { max_turns: 6, max_tool_calls: 20 };
+    const workerRecord = this.options.workerStore?.create({
+      worker_id: workerId,
+      parent_session_id: sessionId,
+      capability: action.capability,
+      objective: action.task,
+      tool_budget: toolBudget
+    });
     this.options.events.emitEvent({
       type: "controller",
       id: workerId,
@@ -397,6 +470,9 @@ export class CodingAgentLoop {
       reason: action.capability,
       instruction: action.task
     });
+    if (workerRecord) {
+      this.options.events.emitEvent({ type: "worker", worker: workerRecord, status: workerRecord.status, message: action.task });
+    }
     const worker = new CodingAgentLoop({
       workspace: this.options.workspace,
       settings: this.options.settings,
@@ -405,44 +481,78 @@ export class CodingAgentLoop {
       approvalHandler: this.options.approvalHandler,
       role: "worker",
       parentSessionId: sessionId,
+      workerId,
+      workerStore: this.options.workerStore,
       delegateDepth: Math.max(0, (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) - 1),
-      maxTurns: 6,
-      maxToolCalls: 20,
+      maxTurns: toolBudget.max_turns,
+      maxToolCalls: toolBudget.max_tool_calls,
       emitFinal: false,
       emitProgress: false
     });
-    const result = await worker.run([
-      `Delegated capability: ${action.capability}`,
-      `Delegated task: ${action.task}`,
-      action.context ? `Context:\n${action.context}` : undefined,
-      "Return internal findings for the main Swarm to synthesize. Do not address the user directly."
-    ].filter(Boolean).join("\n\n"));
-    const content = result.content;
-    this.options.events.emitEvent({
-      type: "controller",
-      id: workerId,
-      action: "worker_notification",
-      reason: `Worker ${workerId} completed`,
-      instruction: content
-    });
-    return {
-      action: "agent.delegate",
-      status: "success",
-      summary: `Worker ${workerId} completed: ${firstLine(content)}`,
-      content,
-      data: {
+    try {
+      const result = await worker.run([
+        `Delegated capability: ${action.capability}`,
+        `Delegated task: ${action.task}`,
+        action.context ? `Context:\n${action.context}` : undefined,
+        "Return internal findings for the main Swarm to synthesize. Do not address the user directly."
+      ].filter(Boolean).join("\n\n"));
+      const stopped = this.options.workerStore?.get(workerId)?.status === "stopped";
+      const status = stopped ? "stopped" : "completed";
+      const content = result.content;
+      const finalRecord = this.options.workerStore?.setResult({
         worker_id: workerId,
+        status,
         worker_session_id: result.session_id,
-        capability: action.capability,
-        task: action.task,
+        last_result: content,
         outcome: result.outcome
+      });
+      if (finalRecord) {
+        this.options.events.emitEvent({ type: "worker", worker: finalRecord, status: finalRecord.status, message: firstLine(content) });
       }
-    };
+      this.options.events.emitEvent({
+        type: "controller",
+        id: workerId,
+        action: "worker_notification",
+        reason: `Worker ${workerId} ${status}`,
+        instruction: content
+      });
+      return {
+        action: "agent.delegate",
+        status: status === "completed" ? "success" : "partial",
+        summary: `Worker ${workerId} ${status}: ${firstLine(content)}`,
+        content,
+        data: {
+          worker_id: workerId,
+          worker_session_id: result.session_id,
+          capability: action.capability,
+          task: action.task,
+          outcome: result.outcome,
+          worker_status: status
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedRecord = this.options.workerStore?.setResult({
+        worker_id: workerId,
+        status: "failed",
+        last_result: message
+      });
+      if (failedRecord) {
+        this.options.events.emitEvent({ type: "worker", worker: failedRecord, status: failedRecord.status, message });
+      }
+      throw error;
+    }
   }
 }
 
-function codingLoopSystemPrompt(input: { role: "main" | "worker"; delegateAvailable: boolean }): string {
-  const tools = [
+function codingLoopSystemPrompt(input: {
+  role: "main" | "worker";
+  delegateAvailable: boolean;
+  agentInstructions?: string;
+  allowedTools?: string[];
+  writePolicy?: "read_only" | "scoped_write" | "workspace_write";
+}): string {
+  const defaultTools = [
     "file.read",
     "file.list",
     "file.glob",
@@ -458,7 +568,8 @@ function codingLoopSystemPrompt(input: { role: "main" | "worker"; delegateAvaila
     "git.log",
     "todo.write",
     input.delegateAvailable ? "agent.delegate" : undefined
-  ].filter(Boolean).join(", ");
+  ].filter(Boolean) as string[];
+  const tools = input.allowedTools?.length ? input.allowedTools.join(", ") : defaultTools.join(", ");
   return [
     input.role === "worker"
       ? "You are a Swarm worker agent running inside the main Swarm controller."
@@ -471,6 +582,8 @@ function codingLoopSystemPrompt(input: { role: "main" | "worker"; delegateAvaila
     "status must be continue, completed, or failed.",
     "Use tool_calls when you need to act. Use [] when done.",
     `Allowed tools: ${tools}.`,
+    input.writePolicy ? `Write policy: ${input.writePolicy}. Never use tools outside this policy.` : undefined,
+    input.agentInstructions,
     "Read existing files before editing them. For edits, read the full file first.",
     "Prefer file.edit for existing files and file.write for new files. Do not write final reports unless requested.",
     "For tool_calls, each item is {id, action, inputs, reason}.",
@@ -482,7 +595,7 @@ function codingLoopSystemPrompt(input: { role: "main" | "worker"; delegateAvaila
       ? "Live user messages are part of the main Swarm conversation, not side-channel chat."
       : "Live user messages are controller context; do not treat them as direct worker chat.",
     "Always obey the newest live user messages and control_decisions. If they redirect the task, stop pursuing the old target after the current safe boundary."
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 }
 
 async function parseCodingLoopModelResultWithRepair(

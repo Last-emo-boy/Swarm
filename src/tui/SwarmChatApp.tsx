@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import {
@@ -24,6 +26,9 @@ import type { ToolApprovalRequest } from "../tools/types.js";
 import type { PermissionMode } from "../config/settings.js";
 import { readTaskOutput } from "../storage/task-output-store.js";
 import type { GeneratedPlan, SwarmPolicy, SwarmSession } from "../protocol/types.js";
+import type { WorkerRecord } from "../storage/worker-state-store.js";
+import type { HandoffSessionRecord } from "../storage/handoff-store.js";
+import { runLocalEvals } from "../evals/local-evals.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -107,6 +112,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [taskTotal, setTaskTotal] = useState(0);
   const [taskCompleted, setTaskCompleted] = useState(0);
   const [toolResults, setToolResults] = useState<ToolResultState[]>([]);
+  const [workers, setWorkers] = useState<Map<string, WorkerRecord>>(new Map());
+  const [handoffs, setHandoffs] = useState<Map<string, HandoffSessionRecord>>(new Map());
   const [runMode, setRunMode] = useState<RunMode>("auto");
 
   const height = stdout.rows || 32;
@@ -168,6 +175,27 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setTaskCompleted(0);
         setTaskStates(new Map());
         setToolResults([]);
+      }
+      if (event.type === "worker") {
+        setWorkers((prev) => {
+          const next = new Map(prev);
+          next.set(event.worker.worker_id, event.worker);
+          return next;
+        });
+      }
+      if (event.type === "agent_run_started" || event.type === "agent_run_completed") {
+        setWorkers((prev) => {
+          const next = new Map(prev);
+          next.set(event.worker.worker_id, event.worker);
+          return next;
+        });
+      }
+      if (event.type === "handoff_started" || event.type === "handoff_returned" || event.type === "handoff_taken_back") {
+        setHandoffs((prev) => {
+          const next = new Map(prev);
+          next.set(event.handoff.handoff_id, event.handoff);
+          return next;
+        });
       }
     });
     return () => {
@@ -503,6 +531,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         "/tasks",
         "/tasks <session_id>",
         "/output <task_id>",
+        "/agents",
+        "/agent <agent_spec_id>",
+        "/workers",
+        "/worker <worker_id>",
+        "/stop-worker <worker_id>",
+        "/continue-agent <worker_id> <message>",
+        "/handoffs",
+        "/handoff <handoff_id>",
+        "/takeback <handoff_id>",
+        "/why",
+        "/self-review",
+        "/evals",
+        "/prd",
         "/status",
         "/interrupt <message>",
         "/onboard"
@@ -592,6 +633,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setTaskTotal(0);
         setTaskCompleted(0);
         setToolResults([]);
+        setWorkers(new Map());
+        setHandoffs(new Map());
         if (runtime) {
           runtime.dispose();
           setRuntime(createRuntime());
@@ -689,12 +732,145 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       };
     }
 
+    if (command === "agents") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const specs = runtime.listAgentSpecs();
+      const detail = specs.map((spec) => [
+        `${spec.id} [${spec.role}/${spec.write_policy}]`,
+        spec.description,
+        `when: ${spec.when_to_use}`,
+        `tools: ${spec.tools.join(", ")}`
+      ].join("\n")).join("\n\n");
+      return { brief: `${specs.length} agent specs. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "agent") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const agentId = args[0];
+      if (!agentId) throw new Error("Usage: /agent <agent_spec_id>");
+      const detail = runtime.renderAgentSpec(agentId);
+      if (!detail) throw new Error(`Unknown agent spec: ${agentId}`);
+      return { brief: `Agent spec ${agentId}. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "workers") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const rows = runtime.workerStateStore.listRecent(30);
+      const detail = rows.length
+        ? rows.map(formatWorker).join("\n\n")
+        : "No persisted workers yet.";
+      return { brief: `${rows.length} workers. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "worker") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const workerId = args[0];
+      if (!workerId) throw new Error("Usage: /worker <worker_id>");
+      const worker = runtime.workerStateStore.get(workerId);
+      if (!worker) throw new Error(`Unknown worker: ${workerId}`);
+      return { brief: `${worker.worker_id}: ${worker.status}. Ctrl+O for details.`, detail: formatWorker(worker) };
+    }
+
+    if (command === "stop-worker") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const workerId = args[0];
+      if (!workerId) throw new Error("Usage: /stop-worker <worker_id>");
+      runtime.stopWorker(workerId);
+      return { brief: `Stop requested for ${workerId}.` };
+    }
+
+    if (command === "continue-agent") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const workerId = args[0];
+      const message = args.slice(1).join(" ").trim();
+      if (!workerId || !message) throw new Error("Usage: /continue-agent <worker_id> <message>");
+      const result = await runtime.continueAgent(workerId, message);
+      return { brief: result.summary, detail: result.content ?? JSON.stringify(result.data, null, 2) };
+    }
+
+    if (command === "handoffs") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const rows = runtime.listHandoffs(30);
+      const detail = rows.length
+        ? rows.map(formatHandoff).join("\n\n")
+        : "No handoff sessions yet.";
+      return { brief: `${rows.length} handoffs. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "handoff") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const handoffId = args[0];
+      if (!handoffId) throw new Error("Usage: /handoff <handoff_id>");
+      const handoff = runtime.getHandoff(handoffId);
+      if (!handoff) throw new Error(`Unknown handoff: ${handoffId}`);
+      return { brief: `${handoff.handoff_id}: ${handoff.status}. Ctrl+O for details.`, detail: formatHandoff(handoff) };
+    }
+
+    if (command === "takeback") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const handoffId = args[0];
+      if (!handoffId) throw new Error("Usage: /takeback <handoff_id>");
+      const handoff = runtime.takeBackHandoff(handoffId);
+      return { brief: `Handoff ${handoff.handoff_id} is ${handoff.status}.` };
+    }
+
+    if (command === "why") {
+      const relevant = events.filter((event) =>
+        event.type === "control" ||
+        event.type === "controller" ||
+        event.type === "queue" ||
+        event.type === "agent_spawn_decision" ||
+        event.type === "agent_run_started" ||
+        event.type === "agent_run_completed" ||
+        event.type === "handoff_started" ||
+        event.type === "handoff_returned" ||
+        event.type === "handoff_taken_back"
+      ).slice(-20);
+      const detail = relevant.length ? relevant.map(formatEvent).join("\n") : "No recent control decisions.";
+      return { brief: `${relevant.length} recent control events. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "self-review") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const review = await runtime.selfReview();
+      const detail = [
+        review.summary,
+        "",
+        "Findings",
+        ...review.findings.map((item) => `- ${item}`),
+        "",
+        "Recommendations",
+        ...review.recommendations.map((item) => `- ${item}`)
+      ].join("\n");
+      return { brief: review.summary, detail };
+    }
+
+    if (command === "evals") {
+      const results = runLocalEvals();
+      if (runtime) {
+        for (const result of results) {
+          runtime.events.emitEvent({ type: "eval_result", ...result });
+        }
+      }
+      const failed = results.filter((result) => result.status === "fail");
+      const detail = results.map((result) => `${result.status === "pass" ? "OK" : "!!"} ${result.name}: ${result.message}`).join("\n");
+      return { brief: `${results.length - failed.length}/${results.length} evals passed. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "prd") {
+      const path = resolve(process.cwd(), "docs/PRD.md");
+      const detail = readFileSync(path, "utf8");
+      return { brief: "Swarm PRD loaded. Ctrl+O for details.", detail };
+    }
+
     if (command === "status") {
       const detail = [
         `busy=${busy}`,
         `mode=${runMode}`,
         `tasks=${taskCompleted}/${taskTotal}`,
         `tools=${toolResults.length}`,
+        `workers=${workers.size}`,
+        `handoffs=${handoffs.size}`,
         "",
         "Recent events:",
         ...events.slice(-20).map(formatEvent)
@@ -1100,6 +1276,41 @@ function currentModelBrief(settings: ReturnType<typeof loadSwarmSettings>): stri
   return `planner=${planner} worker=${worker} aggregator=${aggregator}`;
 }
 
+function formatWorker(worker: WorkerRecord): string {
+  return [
+    `${worker.worker_id} [${worker.status}]`,
+    worker.agent_spec_id ? `agent=${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}` : undefined,
+    worker.handoff_id ? `handoff=${worker.handoff_id}` : undefined,
+    `capability=${worker.capability}`,
+    `parent=${worker.parent_session_id}`,
+    worker.requested_by ? `requested_by=${worker.requested_by}` : undefined,
+    worker.worker_session_id ? `session=${worker.worker_session_id}` : undefined,
+    `budget=${worker.tool_budget.max_turns} turns/${worker.tool_budget.max_tool_calls} tools`,
+    worker.file_scope.length ? `scope=${worker.file_scope.join(", ")}` : undefined,
+    worker.spawn_reason ? `reason=${worker.spawn_reason}` : undefined,
+    `objective=${worker.objective}`,
+    worker.output_contract ? `output_contract=${worker.output_contract}` : undefined,
+    worker.last_result ? `last=${worker.last_result}` : undefined,
+    worker.outcome ? `changed=${worker.outcome.changed_files.length} checks=${worker.outcome.tests_run.length}` : undefined,
+    worker.task_packet ? `task_packet=${JSON.stringify(worker.task_packet, null, 2)}` : undefined,
+    `updated=${worker.updated_at}`
+  ].filter(Boolean).join("\n");
+}
+
+function formatHandoff(handoff: HandoffSessionRecord): string {
+  return [
+    `${handoff.handoff_id} [${handoff.status}]`,
+    `worker=${handoff.worker_id}`,
+    `parent=${handoff.parent_session_id}`,
+    `source=${handoff.source_agent}`,
+    `target=${handoff.target_agent_spec_id}`,
+    `reason=${handoff.reason}`,
+    handoff.result ? `result=${handoff.result}` : undefined,
+    `task_packet=${JSON.stringify(handoff.task_packet, null, 2)}`,
+    `updated=${handoff.updated_at}`
+  ].filter(Boolean).join("\n");
+}
+
 function parseLineRange(value: string | undefined): { startLine?: number; endLine?: number } {
   if (!value) {
     return {};
@@ -1189,6 +1400,26 @@ function formatEvent(event: RuntimeEvent): string {
       return `controller: ${event.action} - ${event.reason.slice(0, 60)}`;
     case "queue":
       return `queue: ${event.operation} ${event.priority ?? ""} size=${event.size}`;
+    case "worker":
+      return `worker: ${event.worker.worker_id} [${event.status}] ${event.message?.slice(0, 40) ?? ""}`;
+    case "agent_spawn_decision":
+      return `spawn: ${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} (${Math.round(event.decision.confidence * 100)}%)`;
+    case "agent_run_started":
+      return `agent-run: ${event.worker.worker_id} started ${event.worker.agent_spec_id ?? ""}`;
+    case "agent_run_completed":
+      return `agent-run: ${event.worker.worker_id} completed ${event.result.slice(0, 40)}`;
+    case "handoff_started":
+      return `handoff: ${event.handoff.handoff_id} started -> ${event.handoff.target_agent_spec_id}`;
+    case "handoff_message":
+      return `handoff: ${event.handoff_id} ${event.message.slice(0, 60)}`;
+    case "handoff_returned":
+      return `handoff: ${event.handoff.handoff_id} ${event.handoff.status}`;
+    case "handoff_taken_back":
+      return `handoff: ${event.handoff.handoff_id} taken back`;
+    case "self_review":
+      return `self-review: ${event.summary}`;
+    case "eval_result":
+      return `eval: ${event.status} ${event.name}`;
     case "plan":
       return `plan: ${event.session_id}`;
     case "final":
