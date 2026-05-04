@@ -1,4 +1,9 @@
 node_modules/
 dist/
+*.tsbuildinfo
 .swarm/
 npm-debug.log*
+.env
+.env.local
+.DS_Store
+Thumbs.db

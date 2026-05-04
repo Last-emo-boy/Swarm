@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import {
@@ -15,6 +16,19 @@ type WalkedFile = {
   display: string;
 };
 
+type ReadSnapshot = {
+  mtimeMs: number;
+  hash: string;
+  fullView: boolean;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  truncated: boolean;
+};
+
+const readSnapshots = new Map<string, ReadSnapshot>();
+const todoStates = new Map<string, Array<{ content: string; status: "pending" | "in_progress" | "completed" }>>();
+
 export function normalizeToolAction(inputs: Record<string, unknown>, capability?: string): ToolAction {
   const rawAction = String(inputs.action ?? capability ?? "").trim();
   const action = normalizeActionName(rawAction);
@@ -25,6 +39,8 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       paths: stringArrayInput(inputs.paths),
       startLine: numberInput(inputs.startLine ?? inputs.start_line ?? inputs.start),
       endLine: numberInput(inputs.endLine ?? inputs.end_line ?? inputs.end),
+      offset: numberInput(inputs.offset),
+      limit: numberInput(inputs.limit),
       maxBytes: numberInput(inputs.maxBytes ?? inputs.max_bytes)
     };
   }
@@ -70,6 +86,12 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       newText: optionalStringInput(inputs.newText ?? inputs.new_text ?? inputs.newString ?? inputs.new_string),
       line: numberInput(inputs.line ?? inputs.insertLine ?? inputs.insert_line),
       content: optionalStringInput(inputs.content ?? inputs.insertText ?? inputs.insert_text)
+    };
+  }
+  if (action === "todo.write") {
+    return {
+      type: "todo.write",
+      todos: todoListInput(inputs.todos)
     };
   }
   if (action === "shell.exec") {
@@ -125,10 +147,11 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
     };
   }
   if (action === "git.branch") {
+    const branchAction = String(inputs.operation ?? inputs.branchAction ?? inputs.branch_action ?? inputs.command ?? "list");
     return {
       type: "git.branch",
       cwd: optionalStringInput(inputs.cwd),
-      action: String(inputs.action ?? "list") === "create" ? "create" : String(inputs.action) === "switch" ? "switch" : "list",
+      action: branchAction === "create" ? "create" : branchAction === "switch" ? "switch" : "list",
       name: optionalStringInput(inputs.name)
     };
   }
@@ -186,16 +209,22 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
     }
     return editLocalFile(action, context);
   }
+  if (action.type === "todo.write") {
+    return writeTodos(action, context);
+  }
   if (action.type === "shell.exec") {
     return executeShell(action, context);
   }
-  if (!context.settings.tools.webSearch) {
-    throw new Error("Web search is disabled by ~/.swarm/settings.json");
-  }
   if (action.type === "web.search") {
+    if (!context.settings.tools.webSearch) {
+      throw new Error("Web search is disabled by ~/.swarm/settings.json");
+    }
     return webSearch(action.query);
   }
   if (action.type === "web.fetch") {
+    if (!context.settings.tools.webSearch) {
+      throw new Error("Web fetch is disabled by ~/.swarm/settings.json");
+    }
     return webFetch(action);
   }
   if (action.type === "code.test") {
@@ -235,6 +264,9 @@ export function renderToolResultDetail(result: ToolResult): string {
   if (result.content) {
     return result.content;
   }
+  if (result.outputRef) {
+    return `Full output: ${result.outputRef}`;
+  }
   return JSON.stringify(result.data ?? result.metadata ?? {}, null, 2);
 }
 
@@ -258,8 +290,10 @@ async function readLocalFile(action: Extract<ToolAction, { type: "file.read" }>,
         } catch (error) {
           return {
             action: action.type,
+            status: "failed",
             summary: `failed to read ${path}: ${error instanceof Error ? error.message : String(error)}`,
             content: "",
+            errors: [error instanceof Error ? error.message : String(error)],
             metadata: {
               path,
               error: error instanceof Error ? error.message : String(error)
@@ -271,6 +305,7 @@ async function readLocalFile(action: Extract<ToolAction, { type: "file.read" }>,
     const failures = results.filter((result) => result.metadata?.error).length;
     return {
       action: action.type,
+      status: failures === results.length ? "failed" : failures > 0 ? "partial" : "success",
       summary: `read ${results.length - failures}/${results.length} files${failures ? `, ${failures} failed` : ""}`,
       content: results
         .map((result) =>
@@ -279,7 +314,10 @@ async function readLocalFile(action: Extract<ToolAction, { type: "file.read" }>,
             : `--- ${String(result.metadata?.path ?? "file")} ---\n${result.content ?? ""}`
         )
         .join("\n\n"),
-      data: results.map((result) => result.metadata)
+      data: results.map((result) => result.metadata),
+      errors: results
+        .map((result) => result.metadata?.error)
+        .filter((error): error is string => typeof error === "string")
     };
   }
   return readSingleLocalFile({ ...action, path: paths[0], paths: undefined }, context);
@@ -290,20 +328,47 @@ async function readSingleLocalFile(
   context: LocalToolContext
 ): Promise<ToolResult> {
   const resolved = resolveReadablePath(action.path, context);
-  const raw = await readFile(resolved, "utf8");
+  const rawBuffer = await readFile(resolved);
+  if (rawBuffer.includes(0)) {
+    const path = displayPath(resolved, context.workspace);
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `refusing to return binary file content from ${path}`,
+      errors: ["binary file content is not supported by file.read"],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: false,
+      data: { path, bytes: rawBuffer.length, binary: true }
+    };
+  }
+  const raw = rawBuffer.toString("utf8");
+  const info = await stat(resolved);
   const lines = raw.split(/\r?\n/);
   const totalLines = lines.length;
-  const startLine = Math.max(1, action.startLine ?? 1);
-  const requestedEnd = action.endLine === -1 || action.endLine === undefined ? totalLines : action.endLine;
+  const startLine = Math.max(1, action.startLine ?? action.offset ?? 1);
+  const requestedEnd = action.limit !== undefined
+    ? startLine + Math.max(1, action.limit) - 1
+    : action.endLine === -1 || action.endLine === undefined
+      ? totalLines
+      : action.endLine;
   const endLine = Math.max(startLine - 1, Math.min(totalLines, requestedEnd));
   const selected = lines.slice(startLine - 1, endLine).join("\n");
   const maxBytes = Math.max(1, action.maxBytes ?? 200_000);
   const buffer = Buffer.from(selected, "utf8");
   const truncated = buffer.length > maxBytes;
   const content = truncated ? buffer.subarray(0, maxBytes).toString("utf8") : selected;
+  rememberReadSnapshot(resolved, raw, info.mtimeMs, context, {
+    fullView: startLine === 1 && endLine === totalLines && !truncated,
+    startLine,
+    endLine,
+    totalLines,
+    truncated
+  });
   const path = displayPath(resolved, context.workspace);
   return {
     action: action.type,
+    status: "success",
     summary: `read ${startLine}-${endLine} / ${totalLines} lines from ${path}${truncated ? " (truncated)" : ""}`,
     content,
     metadata: {
@@ -325,6 +390,7 @@ async function listLocalFiles(action: Extract<ToolAction, { type: "file.list" }>
   });
   return {
     action: action.type,
+    status: "success",
     summary: `listed ${files.length} files under ${displayPath(root, context.workspace)}`,
     data: files.map((file) => file.display)
   };
@@ -340,6 +406,7 @@ async function globLocalFiles(action: Extract<ToolAction, { type: "file.glob" }>
   });
   return {
     action: action.type,
+    status: "success",
     summary: `matched ${files.length} files for ${action.pattern}`,
     data: files.map((file) => file.display)
   };
@@ -350,6 +417,40 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
     throw new Error("file.grep requires pattern");
   }
   const root = resolveReadablePath(action.root || ".", context);
+  const rootInfo = await stat(root).catch((error: unknown) => error as Error);
+  if (rootInfo instanceof Error) {
+    const errorCode = classifyFsError(rootInfo);
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `grep root not found: ${displayPath(root, context.workspace)}`,
+      errors: [rootInfo.message],
+      errorCode,
+      retryable: false,
+      recoverable: errorCode === "FS_NOT_FOUND",
+      data: {
+        root: displayPath(root, context.workspace),
+        requestedRoot: action.root || ".",
+        pattern: action.pattern
+      }
+    };
+  }
+  if (!rootInfo.isDirectory() && !rootInfo.isFile()) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `grep root is not a file or directory: ${displayPath(root, context.workspace)}`,
+      errors: [`not a file or directory: ${displayPath(root, context.workspace)}`],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: false,
+      data: {
+        root: displayPath(root, context.workspace),
+        requestedRoot: action.root || ".",
+        pattern: action.pattern
+      }
+    };
+  }
   const regex = compileSearchRegex(action.pattern);
   const maxMatches = Math.max(1, action.maxMatches ?? 100);
   const contextLines = Math.max(0, action.contextLines ?? 0);
@@ -387,8 +488,13 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
   }
   return {
     action: action.type,
+    status: "success",
     summary: `found ${matches.length} matches for ${action.pattern}`,
-    data: matches
+    data: matches,
+    metadata: {
+      root: displayPath(root, context.workspace),
+      requestedRoot: action.root || "."
+    }
   };
 }
 
@@ -409,6 +515,7 @@ async function statLocalPath(action: Extract<ToolAction, { type: "file.stat" }>,
   };
   return {
     action: action.type,
+    status: "success",
     summary: `${data.path}: ${data.type}, ${data.bytes} bytes${lineCount ? `, ${lineCount} lines` : ""}`,
     data
   };
@@ -416,19 +523,31 @@ async function statLocalPath(action: Extract<ToolAction, { type: "file.stat" }>,
 
 async function writeLocalFile(action: Extract<ToolAction, { type: "file.write" }>, context: LocalToolContext): Promise<ToolResult> {
   const resolved = resolveWritablePath(action.path, context);
+  const existed = await stat(resolved).then((info) => info.isFile()).catch(() => false);
+  await assertWritePrecondition(resolved, context);
+  const original = existed ? await readFile(resolved, "utf8") : "";
   await mkdir(dirname(resolved), { recursive: true });
   await writeFile(resolved, action.content, "utf8");
+  const info = await stat(resolved);
+  rememberReadSnapshot(resolved, action.content, info.mtimeMs, context);
   const bytes = Buffer.byteLength(action.content, "utf8");
   const path = displayPath(resolved, context.workspace);
   return {
     action: action.type,
-    summary: `wrote ${bytes} bytes to ${path}`,
-    data: { path, bytes }
+    status: "success",
+    summary: `${existed ? "updated" : "created"} ${bytes} bytes at ${path}`,
+    data: {
+      path,
+      bytes,
+      operation: existed ? "update" : "create",
+      diff: createSimpleDiff(path, original, action.content)
+    }
   };
 }
 
 async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>, context: LocalToolContext): Promise<ToolResult> {
   const resolved = resolveWritablePath(action.path, context);
+  await assertWritePrecondition(resolved, context);
   const original = await readFile(resolved, "utf8");
   let next: string;
   if (action.operation === "insert") {
@@ -455,16 +574,137 @@ async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>,
     next = original.replace(action.oldText, action.newText ?? "");
   }
   await writeFile(resolved, next, "utf8");
+  const info = await stat(resolved);
+  rememberReadSnapshot(resolved, next, info.mtimeMs, context);
   const path = displayPath(resolved, context.workspace);
   return {
     action: action.type,
+    status: "success",
     summary: `edited ${path}`,
     data: {
       path,
+      operation: "edit",
       beforeBytes: Buffer.byteLength(original, "utf8"),
-      afterBytes: Buffer.byteLength(next, "utf8")
+      afterBytes: Buffer.byteLength(next, "utf8"),
+      diff: createSimpleDiff(path, original, next)
     }
   };
+}
+
+async function assertWritePrecondition(path: string, context: LocalToolContext): Promise<void> {
+  const currentInfo = await stat(path).catch(() => undefined);
+  if (!currentInfo?.isFile()) {
+    return;
+  }
+
+  const snapshot = readSnapshots.get(snapshotKey(path, context));
+  if (!snapshot) {
+    throw new Error(
+      `Refusing to modify existing file before reading it in this session: ${displayPath(path, context.workspace)}`
+    );
+  }
+  if (!snapshot.fullView) {
+    throw new Error(
+      `Refusing to modify ${displayPath(path, context.workspace)} after only reading lines ${snapshot.startLine}-${snapshot.endLine}/${snapshot.totalLines}${snapshot.truncated ? " with truncation" : ""}. Read the full file first.`
+    );
+  }
+
+  const current = await readFile(path, "utf8");
+  const currentHash = hashText(current);
+  if (currentInfo.mtimeMs !== snapshot.mtimeMs || currentHash !== snapshot.hash) {
+    throw new Error(
+      `Refusing to modify ${displayPath(path, context.workspace)} because it changed after the last read. Read it again first.`
+    );
+  }
+}
+
+function rememberReadSnapshot(
+  path: string,
+  content: string,
+  mtimeMs: number,
+  context: LocalToolContext,
+  view: Pick<ReadSnapshot, "fullView" | "startLine" | "endLine" | "totalLines" | "truncated"> = {
+    fullView: true,
+    startLine: 1,
+    endLine: content.split(/\r?\n/).length,
+    totalLines: content.split(/\r?\n/).length,
+    truncated: false
+  }
+): void {
+  readSnapshots.set(snapshotKey(path, context), { mtimeMs, hash: hashText(content), ...view });
+}
+
+async function writeTodos(action: Extract<ToolAction, { type: "todo.write" }>, context: LocalToolContext): Promise<ToolResult> {
+  const inProgress = action.todos.filter((todo) => todo.status === "in_progress");
+  if (inProgress.length > 1) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: "todo.write allows at most one in_progress item",
+      errors: ["at most one todo may be in_progress"],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      data: { todos: action.todos }
+    };
+  }
+
+  const key = [context.sessionId ?? "session", context.taskId ?? "task"].join(":");
+  const previous = todoStates.get(key) ?? [];
+  todoStates.set(key, action.todos);
+  const pending = action.todos.filter((todo) => todo.status === "pending").length;
+  const completed = action.todos.filter((todo) => todo.status === "completed").length;
+  const verificationNudge = completed >= 3 && !action.todos.some((todo) => /test|verify|check|验证|测试/i.test(todo.content));
+  return {
+    action: action.type,
+    status: "success",
+    summary: `updated todo list: ${completed} completed, ${inProgress.length} in progress, ${pending} pending`,
+    data: {
+      previous,
+      todos: action.todos,
+      counts: { completed, inProgress: inProgress.length, pending },
+      verificationNudge
+    },
+    content: action.todos.map((todo) => `- [${todo.status === "completed" ? "x" : " "}] ${todo.status}: ${todo.content}`).join("\n")
+  };
+}
+
+function hashText(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function createSimpleDiff(path: string, before: string, after: string): string {
+  if (before === after) {
+    return "";
+  }
+  const beforeLines = before.split(/\r?\n/);
+  const afterLines = after.split(/\r?\n/);
+  const maxChangedLines = 160;
+  const lines = [`--- ${path}`, `+++ ${path}`];
+  const max = Math.max(beforeLines.length, afterLines.length);
+  let emitted = 0;
+  for (let index = 0; index < max; index += 1) {
+    if (beforeLines[index] === afterLines[index]) {
+      continue;
+    }
+    if (emitted >= maxChangedLines) {
+      lines.push(`... diff truncated after ${maxChangedLines} changed lines`);
+      break;
+    }
+    if (beforeLines[index] !== undefined) {
+      lines.push(`-${beforeLines[index]}`);
+      emitted += 1;
+    }
+    if (afterLines[index] !== undefined) {
+      lines.push(`+${afterLines[index]}`);
+      emitted += 1;
+    }
+  }
+  return lines.join("\n");
+}
+
+function snapshotKey(path: string, context: LocalToolContext): string {
+  return `${context.sessionId ?? "global"}:${resolve(path)}`;
 }
 
 async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>, context: LocalToolContext): Promise<ToolResult> {
@@ -480,6 +720,7 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     const content = [`$ ${action.command}`, `ERROR: ${result.error}`].join("\n");
     return {
       action: action.type,
+      status: "failed",
       summary: `command failed: ${result.error}`,
       content,
       metadata: {
@@ -495,6 +736,7 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     .trim();
   return {
     action: action.type,
+    status: result.exitCode === 0 && !result.timedOut ? "success" : "failed",
     summary: `command exited ${result.exitCode ?? result.signal ?? "unknown"}${result.timedOut ? " after timeout" : ""}`,
     content,
     metadata: {
@@ -509,7 +751,7 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
 
 async function webSearch(query: string): Promise<ToolResult> {
   if (!query.trim()) {
-    return { action: "web.search", summary: "web search returned 0 results", data: { query, results: [] } };
+    return { action: "web.search", status: "success", summary: "web search returned 0 results", data: { query, results: [] } };
   }
   const url = new URL("https://api.duckduckgo.com/");
   url.searchParams.set("q", query);
@@ -531,6 +773,7 @@ async function webSearch(query: string): Promise<ToolResult> {
     .map((item) => ({ title: item.Text, url: item.FirstURL }));
   return {
     action: "web.search",
+    status: "success",
     summary: `web search returned ${related.length + (json.AbstractText ? 1 : 0)} results`,
     data: {
       query,
@@ -560,7 +803,9 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
     const isTimeout = error instanceof Error && error.name === "AbortError";
     return {
       action: "web.fetch",
+      status: "failed",
       summary: `web.fetch failed: ${isTimeout ? "timeout" : reason}`,
+      errors: [reason],
       metadata: {
         url: action.url,
         error: reason,
@@ -577,6 +822,7 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
   if (!isText) {
     return {
       action: "web.fetch",
+      status: response.ok ? "success" : "failed",
       summary: `fetched ${action.url} — ${response.status} ${contentType} (${response.headers.get("content-length") ?? "?"} bytes, non-text, body not returned)`,
       data: {
         url: action.url,
@@ -593,6 +839,7 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
 
   return {
     action: "web.fetch",
+    status: response.ok ? "success" : "failed",
     summary: `fetched ${action.url} — ${response.status} ${contentType}, ${buffer.length} bytes${truncated ? " (truncated)" : ""}`,
     content,
     data: {
@@ -617,8 +864,10 @@ async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }
   if (result.error) {
     return {
       action: "code.test",
+      status: "failed",
       summary: `test command failed: ${result.error}`,
       content: `$ ${action.command}\nERROR: ${result.error}`,
+      errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
@@ -626,6 +875,7 @@ async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }
   const passed = result.exitCode === 0;
   return {
     action: "code.test",
+    status: passed && !result.timedOut ? "success" : "failed",
     summary: passed ? "tests passed" : `tests failed (exit ${result.exitCode})`,
     content: [`$ ${action.command}`, result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n").trim(),
     data: {
@@ -639,7 +889,7 @@ async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }
 }
 
 async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }>, context: LocalToolContext): Promise<ToolResult> {
-  const root = resolveReadablePath(action.root ?? ".", context);
+  const root = resolveShellCwd(action.root ?? ".", context);
 
   const statResult = await stat(root).catch(() => null);
   if (!statResult?.isDirectory()) {
@@ -667,6 +917,7 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
   if (commands.length === 0) {
     return {
       action: "code.lint",
+      status: "success",
       summary: "no recognized linter configuration found",
       data: { cwd: displayPath(root, context.workspace) }
     };
@@ -677,6 +928,7 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
     const shellResult = await runShellCommand(cmd, { cwd: root, timeoutMs: 120_000, maxOutputBytes: 300_000 });
     results.push({
       action: "code.lint",
+      status: shellResult.exitCode === 0 && !shellResult.timedOut && !shellResult.error ? "success" : "failed",
       summary: `lint command exited ${shellResult.exitCode}`,
       content: [`$ ${cmd}`, shellResult.stdout].filter(Boolean).join("\n").trim(),
       data: {
@@ -690,6 +942,7 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
 
   return {
     action: "code.lint",
+    status: results.some((result) => result.status === "failed") ? "failed" : "success",
     summary: `ran ${results.length} linter(s)`,
     content: results.map((r) => r.content).filter(Boolean).join("\n\n"),
     data: results.map((r) => r.data)
@@ -703,8 +956,10 @@ async function executeGitStatus(action: Extract<ToolAction, { type: "git.status"
   if (result.error) {
     return {
       action: "git.status",
+      status: "failed",
       summary: `git status failed: ${result.error}`,
       content: `$ git status --porcelain --branch\nERROR: ${result.error}`,
+      errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
@@ -716,6 +971,7 @@ async function executeGitStatus(action: Extract<ToolAction, { type: "git.status"
 
   return {
     action: "git.status",
+    status: result.exitCode === 0 ? "success" : "failed",
     summary: `git status: ${branchLine ?? "unknown branch"}, ${staged} staged, ${unstaged} unstaged`,
     content: result.stdout,
     data: {
@@ -737,14 +993,17 @@ async function executeGitDiff(action: Extract<ToolAction, { type: "git.diff" }>,
   if (result.error) {
     return {
       action: "git.diff",
+      status: "failed",
       summary: `git diff failed: ${result.error}`,
       content: `$ ${cmd}\nERROR: ${result.error}`,
+      errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
 
   return {
     action: "git.diff",
+    status: result.exitCode === 0 ? "success" : "failed",
     summary: `git ${action.staged ? "diff --staged" : "diff"}: ${result.stdout.length} bytes`,
     content: result.stdout || "(no changes)",
     data: {
@@ -765,8 +1024,10 @@ async function executeGitLog(action: Extract<ToolAction, { type: "git.log" }>, c
   if (result.error) {
     return {
       action: "git.log",
+      status: "failed",
       summary: `git log failed: ${result.error}`,
       content: `$ ${cmd}\nERROR: ${result.error}`,
+      errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
@@ -774,6 +1035,7 @@ async function executeGitLog(action: Extract<ToolAction, { type: "git.log" }>, c
   const commits = result.stdout.split(/\r?\n/).filter(Boolean);
   return {
     action: "git.log",
+    status: result.exitCode === 0 ? "success" : "failed",
     summary: `git log: ${commits.length} commits`,
     content: result.stdout || "(no commits)",
     data: {
@@ -792,8 +1054,10 @@ async function executeGitBranch(action: Extract<ToolAction, { type: "git.branch"
 
   const cmdError = (cmd: string, error: string): ToolResult => ({
     action: "git.branch",
+    status: "failed",
     summary: `git branch failed: ${error}`,
     content: `$ ${cmd}\nERROR: ${error}`,
+    errors: [error],
     metadata: { cwd: displayPath(cwd, context.workspace), error }
   });
 
@@ -804,6 +1068,7 @@ async function executeGitBranch(action: Extract<ToolAction, { type: "git.branch"
     const branches = result.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     return {
       action: "git.branch",
+      status: result.exitCode === 0 ? "success" : "failed",
       summary: `git branch: ${branches.length} branches`,
       content: result.stdout,
       data: {
@@ -819,6 +1084,7 @@ async function executeGitBranch(action: Extract<ToolAction, { type: "git.branch"
     if (result.error) return cmdError(cmd, result.error);
     return {
       action: "git.branch",
+      status: result.exitCode === 0 ? "success" : "failed",
       summary: `created branch "${action.name}"`,
       content: result.stdout,
       data: { cwd: displayPath(cwd, context.workspace), created: action.name }
@@ -831,6 +1097,7 @@ async function executeGitBranch(action: Extract<ToolAction, { type: "git.branch"
     if (result.error) return cmdError(cmd, result.error);
     return {
       action: "git.branch",
+      status: result.exitCode === 0 ? "success" : "failed",
       summary: `switched to branch "${action.name}"`,
       content: result.stdout,
       data: { cwd: displayPath(cwd, context.workspace), switchedTo: action.name }
@@ -851,14 +1118,17 @@ async function executePackageInstall(action: Extract<ToolAction, { type: "packag
   if (result.error) {
     return {
       action: "package.install",
+      status: "failed",
       summary: `install failed: ${result.error}`,
       content: `$ ${action.command}\nERROR: ${result.error}`,
+      errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
 
   return {
     action: "package.install",
+    status: result.exitCode === 0 && !result.timedOut ? "success" : "failed",
     summary: result.exitCode === 0 ? "install succeeded" : `install failed (exit ${result.exitCode})`,
     content: [`$ ${action.command}`, result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n").trim(),
     data: {
@@ -886,8 +1156,10 @@ async function executeSolidityCompile(action: Extract<ToolAction, { type: "solid
   if (result.error) {
     return {
       action: "solidity.compile",
+      status: "failed",
       summary: `compilation failed: ${result.error}`,
       content: `$ ${cmd}\nERROR: ${result.error}`,
+      errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), framework: action.framework ?? "hardhat", error: result.error }
     };
   }
@@ -895,6 +1167,7 @@ async function executeSolidityCompile(action: Extract<ToolAction, { type: "solid
   const hasErrors = result.stderr.toLowerCase().includes("error") || result.stdout.toLowerCase().includes("error ");
   return {
     action: "solidity.compile",
+    status: !hasErrors && result.exitCode === 0 && !result.timedOut ? "success" : "failed",
     summary: hasErrors ? "compilation produced errors" : result.exitCode === 0 ? "compilation succeeded" : `compilation finished (exit ${result.exitCode})`,
     content: [`$ ${cmd}`, result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n").trim(),
     data: {
@@ -1008,6 +1281,14 @@ async function collectFiles(
   return files;
 }
 
+function classifyFsError(error: NodeJS.ErrnoException | Error): string {
+  const code = "code" in error ? error.code : undefined;
+  if (code === "ENOENT") return "FS_NOT_FOUND";
+  if (code === "EACCES" || code === "EPERM") return "PERMISSION_DENIED";
+  if (code === "ENOTDIR") return "INVALID_INPUT";
+  return code ? `FS_${code}` : "TOOL_FAILED";
+}
+
 function isPathDenied(path: string, context: LocalToolContext): boolean {
   try {
     assertReadableByDenyRules(path, context);
@@ -1050,6 +1331,9 @@ function normalizeActionName(action: string): ToolAction["type"] {
   }
   if (["edit_file", "tool.file.edit", "file.edit"].includes(action)) {
     return "file.edit";
+  }
+  if (["todo", "todo_write", "todo.write", "tool.todo.write"].includes(action)) {
+    return "todo.write";
   }
   if (["bash", "shell", "tool.shell.exec", "shell.exec"].includes(action)) {
     return "shell.exec";
@@ -1106,6 +1390,24 @@ function stringArrayInput(value: unknown): string[] | undefined {
     return undefined;
   }
   return value.map((item) => String(item)).filter((item) => item.trim());
+}
+
+function todoListInput(value: unknown): Array<{ content: string; status: "pending" | "in_progress" | "completed" }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      const record: Record<string, unknown> = item && typeof item === "object" ? item as Record<string, unknown> : { content: item };
+      const rawStatus = String(record.status ?? "pending");
+      const status: "pending" | "in_progress" | "completed" =
+        rawStatus === "completed" || rawStatus === "in_progress" ? rawStatus : "pending";
+      return {
+        content: String(record.content ?? record.task ?? record.text ?? "").trim(),
+        status
+      };
+    })
+    .filter((todo) => todo.content);
 }
 
 function numberInput(value: unknown): number | undefined {

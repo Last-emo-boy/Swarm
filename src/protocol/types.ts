@@ -10,9 +10,12 @@ export type SwarmMessageType =
   | "swarm.init"
   | "swarm.join"
   | "swarm.leave"
+  | "swarm.heartbeat"
   | "swarm.shutdown"
   | "agent.register"
   | "agent.update_status"
+  | "agent.capability_query"
+  | "agent.capability_response"
   | "task.create"
   | "task.assign"
   | "task.accept"
@@ -28,6 +31,8 @@ export type SwarmMessageType =
   | "blackboard.write"
   | "blackboard.read"
   | "blackboard.update"
+  | "blackboard.lock"
+  | "blackboard.unlock"
   | "review.request"
   | "review.result"
   | "consensus.request"
@@ -45,6 +50,7 @@ export type SwarmEnvelope<T = unknown> = {
   session_id: string;
   task_id?: string;
   subtask_id?: string;
+  attempt?: number;
   from: AgentAddress;
   to: AgentAddress | AgentAddress[];
   type: SwarmMessageType;
@@ -179,6 +185,22 @@ export type SwarmTask = {
   acceptance_criteria?: string[];
 };
 
+export type TaskStateSnapshot = {
+  session_id: string;
+  swarm_id: string;
+  task_id: string;
+  parent_task_id?: string;
+  subtask_id?: string;
+  title: string;
+  status: SwarmTask["status"];
+  attempt: number;
+  required_capabilities: string[];
+  dependencies: string[];
+  assigned_to?: AgentAddress;
+  last_error?: string;
+  updated_at: string;
+};
+
 export type BlackboardEntry = {
   entry_id: string;
   swarm_id: string;
@@ -202,6 +224,7 @@ export type ReviewResult = {
   score: number;
   issues?: {
     severity: "low" | "medium" | "high";
+    task_id?: string;
     message: string;
     evidence?: string;
     suggested_fix?: string;
@@ -235,6 +258,7 @@ export type SwarmError = {
 export type GeneratedPlan = {
   objective: string;
   summary: string;
+  intent?: "inspect_only" | "modify_workspace" | "create_project" | "report_only";
   tasks: SwarmTask[];
   final_artifact?: {
     path: string;
@@ -246,6 +270,13 @@ export type AgentResultPayload = {
   status: "completed" | "failed";
   summary: string;
   content?: string;
+  outputRef?: string;
+  toolStatus?: "success" | "partial" | "failed";
+  errors?: string[];
+  errorCode?: string;
+  retryable?: boolean;
+  recoverable?: boolean;
+  recoverySuggestion?: "retry_same_agent" | "retry_different_agent" | "decompose_again" | "ask_human" | "abort_swarm";
   data?: unknown;
   artifacts?: {
     path: string;

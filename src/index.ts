@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 process.removeAllListeners("warning");
-const [, , command, ...args] = process.argv;
+const [, , rawCommand, ...rawArgs] = process.argv;
+let command: string | undefined = rawCommand;
+let args = rawArgs;
+
+// If a flag was passed where a command is expected, treat it as an arg
+const KNOWN_FLAGS = new Set(["--debug", "--verbose", "-v", "--debug-trace"]);
+if (command && KNOWN_FLAGS.has(command)) {
+  args = [command, ...args];
+  command = undefined;
+}
 
 // Parse --debug / --verbose early so env is set before any imports
 if (args.includes("--debug") || args.includes("--verbose") || args.includes("-v")) {
@@ -120,7 +129,7 @@ if (!command) {
         model: options.model,
         apiKey: options["api-key"],
         protocol: isClaudeCompatible ? "anthropic-messages" : "openai-chat-completions",
-        auth: isClaudeCompatible ? "bearer" : options["api-key"] ? "bearer" : "none",
+        auth: isClaudeCompatible ? "x-api-key" : options["api-key"] ? "bearer" : "none",
         apiKeyRequired: isClaudeCompatible ? true : undefined
       });
       console.log(`Added custom ${isClaudeCompatible ? "Claude-compatible" : "OpenAI-compatible"} provider: ${id}`);
@@ -247,12 +256,14 @@ Commands:
   models     Show or update selected models
 
 Debug:
-  --debug, --verbose, -v    Write verbose JSON-line logs to ~/.swarm/logs/
+  --debug, --verbose, -v    Write one JSONL log per chat session to ~/.swarm/logs/
   --debug-trace             Same but with trace-level detail (envelope payloads, etc.)
+                            Logs roll to .part-N when a file exceeds 1MB
 
 Environment:
   SWARM_HOME             Override the user-level ~/.swarm directory
   SWARM_DEBUG=1          Equivalent to --debug
+  SWARM_DEBUG_SESSION_ID Override the debug log session filename stem
   OPENAI_API_KEY          Environment key source if no plaintext key is configured
   SWARM_MODEL             Override the configured planner model
   SWARM_WORKER_MODEL      Override the configured worker model

@@ -157,7 +157,18 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
     permissions: {
       defaultMode: "ask",
       allow: ["Read(**)", "LS(**)", "Grep(**)", "Glob(**)", "Stat(**)", "WebSearch(*)"],
-      ask: ["Write(**)", "Edit(**)", "Bash(*)"],
+      ask: [
+        "Write(**)",
+        "Edit(**)",
+        "Bash(*)",
+        "WebFetch(*)",
+        "CodeTest(*)",
+        "CodeLint(*)",
+        "GitBranch(*)",
+        "PackageInstall(*)",
+        "SolidityCompile(*)",
+        "Delegate(*)"
+      ],
       deny: [
         "Read(.env)",
         "Read(.env.*)",
@@ -338,7 +349,7 @@ export function addCustomProvider(input: {
     modelListURL: input.modelListURL?.trim() || deriveModelListURL(protocol, baseURL),
     apiKeyEnv: `${providerId.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`,
     apiKeyRequired: input.apiKeyRequired ?? Boolean(input.apiKey?.trim()),
-    auth: input.auth ?? (input.apiKey?.trim() ? "bearer" : "none"),
+    auth: input.auth ?? (protocol === "anthropic-messages" ? "x-api-key" : input.apiKey?.trim() ? "bearer" : "none"),
     custom: true,
     models: model ? { [model]: { name: model, default: true } } : {},
     discoveredModels: {}

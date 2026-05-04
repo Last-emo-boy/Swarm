@@ -35,14 +35,18 @@ export class AgentRegistry {
   }
 
   findByCapability(capability: string): RegisteredAgent | undefined {
+    return this.queryByCapability(capability)[0];
+  }
+
+  queryByCapability(capability: string): RegisteredAgent[] {
     const candidates = [...this.agents.values()].filter((agent) =>
-      agent.card.capabilities.includes(capability)
+      agent.card.capabilities.includes(capability) && agent.card.status !== "offline"
     );
     return candidates.sort(
       (a, b) =>
         a.card.load.running_tasks - b.card.load.running_tasks ||
         (b.card.reliability?.success_rate ?? 0) - (a.card.reliability?.success_rate ?? 0)
-    )[0];
+    );
   }
 
   findByRole(role: string): RegisteredAgent | undefined {

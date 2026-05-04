@@ -55,17 +55,25 @@ function plannerSystemPrompt(): string {
     "1. Output JSON only. The first non-whitespace character must be { and the last non-whitespace character must be }.",
     "2. Do not use Markdown fences, comments, prose, XML tags, YAML, TypeScript, or trailing commas.",
     "3. Use double-quoted JSON strings only.",
-    "4. Include 2 to 5 tasks. Do not include review or aggregation tasks; the runtime adds them.",
-    "5. Every task must include required_capabilities with exactly one primary capability from the allowed list.",
-    "6. Tool tasks must include inputs.action matching the capability.",
-    "7. For file.read, prefer a single inputs.path. If multiple small files must be read together, inputs.paths may be an array of paths.",
-    "8. Prefer discovery before reading: file.glob or file.grep first, then file.read with line ranges for targeted files.",
-    "9. Avoid shell-style brace expansion unless necessary; simple patterns such as **/*.ts or **/*.json are easier for tools.",
-    "10. Never plan direct reads of secrets or local credentials: .env, .env.*, secrets/**, config/credentials.json, or **/.swarm/config.json.",
-    "11. For code audit requests, include at least one source-code file.read task, not only manifests/config files.",
-    "12. For TypeScript/JavaScript CLI repositories, likely source files include src/index.ts, src/config/settings.ts, src/runtime/orchestrator.ts, src/agents/child-entry.ts, and src/tools/local-tools.ts. Missing files are acceptable; the tool will report them.",
-    "13. For code audit requests, plan to inspect manifests/configs, search risky patterns, read focused code regions, then synthesize findings.",
-    "14. Never write files or run shell commands for an audit unless the user explicitly requested code changes or command execution.",
+    "4. Include intent: inspect_only, modify_workspace, create_project, or report_only.",
+    "5. Include 2 to 5 tasks. Do not include review or aggregation tasks; the runtime adds them.",
+    "6. Every task must include required_capabilities with exactly one primary capability from the allowed list.",
+    "7. Tool tasks must include inputs.action matching the capability.",
+    "8. For file.read, prefer a single inputs.path. If multiple small files must be read together, inputs.paths may be an array of paths.",
+    "9. Prefer discovery before reading: file.glob or file.grep first, then file.read with line ranges for targeted files.",
+    "10. Do not assume a src directory exists. For audits and broad searches, use root=\".\" unless an earlier discovery task proves a narrower directory exists.",
+    "11. Avoid shell-style brace expansion unless necessary; simple patterns such as **/*.ts or **/*.json are easier for tools.",
+    "12. Never plan direct reads of secrets or local credentials: .env, .env.*, secrets/**, config/credentials.json, or **/.swarm/config.json.",
+    "13. For code audit requests, include at least one source-code file.read task, not only manifests/config files.",
+    "14. For TypeScript/JavaScript CLI repositories, likely source files include src/index.ts, src/config/settings.ts, src/runtime/orchestrator.ts, src/agents/child-entry.ts, and src/tools/local-tools.ts. Missing files are acceptable; the tool will report them.",
+    "15. For code audit requests, plan to inspect manifests/configs, search risky patterns, read focused code regions, then synthesize findings.",
+    "16. Never write files or run shell commands for an audit unless the user explicitly requested code changes or command execution.",
+    "17. Swarm is a coding CLI like Codex CLI or Claude Code: for build, fix, refactor, or create-project requests, the final product is real workspace file changes, not a report artifact.",
+    "18. For modification requests, include read/discovery tasks before edit/write tasks, then include a verification task such as code.test, code.lint, git.diff, or git.status.",
+    "19. Before editing an existing file, include a full file.read for that file. Line-range reads are fine for inspection, but edits require a full current view.",
+    "20. For multi-step implementation tasks, todo.write may be used to keep an explicit task checklist, but it is not a substitute for real file changes.",
+    "21. For from-scratch project creation, create normal project files in the workspace paths the user would expect; do not create the final project under .swarm.",
+    "22. Do not set final_artifact unless the user explicitly asks to save/export/write a report or output file. Never use .swarm/artifacts as the default final output path.",
     "",
     "Allowed capabilities and required input actions:",
     "- tool.file.list -> inputs.action=\"file.list\"",
@@ -75,8 +83,19 @@ function plannerSystemPrompt(): string {
     "- tool.file.stat -> inputs.action=\"file.stat\"",
     "- tool.file.write -> inputs.action=\"file.write\"",
     "- tool.file.edit -> inputs.action=\"file.edit\"",
+    "- todo.write -> inputs.action=\"todo.write\"",
     "- tool.shell.exec -> inputs.action=\"shell.exec\"",
     "- web.search -> inputs.action=\"web.search\"",
+    "- web.fetch -> inputs.action=\"web.fetch\"",
+    "- code.test -> inputs.action=\"code.test\"",
+    "- code.lint -> inputs.action=\"code.lint\"",
+    "- git.status -> inputs.action=\"git.status\"",
+    "- git.diff -> inputs.action=\"git.diff\"",
+    "- git.log -> inputs.action=\"git.log\"",
+    "- git.branch -> inputs.action=\"git.branch\" and optional inputs.operation=\"list\"|\"create\"|\"switch\"",
+    "- package.install -> inputs.action=\"package.install\"",
+    "- solidity.compile -> inputs.action=\"solidity.compile\"",
+    "- agent.delegate -> inputs.action=\"agent.delegate\"",
     "- analysis.synthesize",
     "- research.summarize",
     "- code.inspect",
@@ -86,7 +105,8 @@ function plannerSystemPrompt(): string {
     JSON.stringify(
       {
         objective: "Audit this codebase and report risks.",
-        summary: "Inspect the local project structure, search for risky patterns, read targeted files, and synthesize an audit report.",
+        intent: "inspect_only",
+        summary: "Inspect the local project structure, search for risky patterns, read targeted files, and synthesize a final response.",
         tasks: [
           {
             task_id: "task_discover_files",
@@ -99,7 +119,7 @@ function plannerSystemPrompt(): string {
             inputs: {
               action: "file.glob",
               root: ".",
-              pattern: "**/*.{ts,tsx,js,json,md}",
+              pattern: "**/*.{ts,tsx,js,jsx,json,md,py,yml,yaml,toml}",
               maxResults: 200
             },
             expected_output: { format: "json" }
@@ -131,7 +151,7 @@ function plannerSystemPrompt(): string {
             required_capabilities: ["tool.file.grep"],
             inputs: {
               action: "file.grep",
-              root: "src",
+              root: ".",
               pattern: "exec|spawn|writeFile|readFile|eval|JSON\\.parse|apiKey|password|token|permission",
               maxMatches: 120,
               contextLines: 1
@@ -153,7 +173,7 @@ function plannerSystemPrompt(): string {
             acceptance_criteria: ["Include severity", "Include file or line evidence when available", "Avoid unsupported claims"]
           }
         ],
-        final_artifact: { path: ".swarm/artifacts/audit.md", format: "markdown" }
+        final_artifact: undefined
       },
       null,
       2
@@ -176,8 +196,9 @@ function plannerOutputContract(): Record<string, unknown> {
     root: {
       objective: "string",
       summary: "string",
+      intent: "optional 'inspect_only' | 'modify_workspace' | 'create_project' | 'report_only'",
       tasks: "array of 2-5 SwarmTask objects",
-      final_artifact: "optional { path: string, format: 'markdown' | 'json' | 'text' }"
+      final_artifact: "optional only when the user explicitly asked to save/export/write an output file; { path: string, format: 'markdown' | 'json' | 'text' }"
     },
     task_required_fields: {
       task_id: "string",
@@ -191,7 +212,8 @@ function plannerOutputContract(): Record<string, unknown> {
       expected_output: "{ format: 'text' | 'json' | 'markdown' | 'artifact' | 'patch' }",
       dependencies: "optional string[]",
       acceptance_criteria: "optional string[]"
-    }
+    },
+    allowed_capabilities: [...ALLOWED_CAPABILITIES]
   };
 }
 
@@ -302,14 +324,19 @@ function normalizePlan(plan: GeneratedPlan, objective: string): GeneratedPlan {
     throw new Error("Planner returned a plan with no tasks.");
   }
 
-  return {
+  const normalized: GeneratedPlan = {
     objective: typeof plan.objective === "string" && plan.objective.trim() ? plan.objective : objective,
     summary: typeof plan.summary === "string" && plan.summary.trim() ? plan.summary : "Generated swarm plan.",
+    intent: normalizePlanIntent(plan.intent, objective),
     tasks: plan.tasks.map((task, index) => {
-      const requiredCapabilities =
+      const capability = normalizeCapability(
         Array.isArray(task.required_capabilities) && task.required_capabilities.length > 0
-          ? task.required_capabilities
-          : [inferCapability(task)];
+          ? String(task.required_capabilities[0])
+          : inferCapability(task),
+        task
+      );
+      const inputs = task.inputs && typeof task.inputs === "object" ? task.inputs : {};
+      const normalizedInputs = normalizeInputsForCapability(inputs, capability);
       return {
         task_id: task.task_id || `task_${index + 1}`,
         title: task.title || `Task ${index + 1}`,
@@ -317,16 +344,71 @@ function normalizePlan(plan: GeneratedPlan, objective: string): GeneratedPlan {
         objective: task.objective || objective,
         type: task.type || "analysis",
         status: "pending",
-        required_capabilities: requiredCapabilities,
-        inputs: task.inputs && typeof task.inputs === "object" ? task.inputs : {},
+        required_capabilities: [capability],
+        inputs: normalizedInputs,
         expected_output: task.expected_output ?? { format: "markdown" },
         dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
         constraints: Array.isArray(task.constraints) ? task.constraints : [],
         acceptance_criteria: Array.isArray(task.acceptance_criteria) ? task.acceptance_criteria : []
       };
-    }),
-    final_artifact: plan.final_artifact
+    })
   };
+  const finalArtifact = normalizeFinalArtifact(plan.final_artifact, objective);
+  if (finalArtifact) {
+    normalized.final_artifact = finalArtifact;
+  }
+  return normalized;
+}
+
+function normalizeFinalArtifact(
+  artifact: GeneratedPlan["final_artifact"] | undefined,
+  objective: string
+): GeneratedPlan["final_artifact"] | undefined {
+  if (!artifact?.path || !explicitOutputFileRequested(objective)) {
+    return undefined;
+  }
+  const path = artifact.path.replace(/\\/g, "/");
+  if (path.startsWith(".swarm/") || path.includes("/.swarm/")) {
+    return undefined;
+  }
+  return {
+    path: artifact.path,
+    format: artifact.format === "json" || artifact.format === "text" ? artifact.format : "markdown"
+  };
+}
+
+function normalizePlanIntent(value: unknown, objective: string): GeneratedPlan["intent"] {
+  if (value === "inspect_only" || value === "modify_workspace" || value === "create_project" || value === "report_only") {
+    return value;
+  }
+  const text = objective.toLowerCase();
+  if (["create", "scaffold", "new project", "from scratch", "从零", "新建项目", "创建项目"].some((keyword) => text.includes(keyword))) {
+    return "create_project";
+  }
+  if (["fix", "implement", "add", "change", "refactor", "update", "修改", "修复", "实现", "加入", "新增", "迭代"].some((keyword) => text.includes(keyword))) {
+    return "modify_workspace";
+  }
+  if (explicitOutputFileRequested(objective)) {
+    return "report_only";
+  }
+  return "inspect_only";
+}
+
+function explicitOutputFileRequested(objective: string): boolean {
+  const text = objective.toLowerCase();
+  return [
+    "save",
+    "export",
+    "write a report",
+    "write report",
+    "output file",
+    "生成报告",
+    "保存",
+    "导出",
+    "写入",
+    "输出到",
+    "保存到"
+  ].some((keyword) => text.includes(keyword));
 }
 
 function inferCapability(task: Partial<GeneratedPlan["tasks"][number]>): string {
@@ -358,10 +440,91 @@ function inferCapability(task: Partial<GeneratedPlan["tasks"][number]>): string 
   if (["web_search", "web.search"].includes(action)) {
     return "web.search";
   }
+  if (["web_fetch", "web.fetch", "fetch"].includes(action)) {
+    return "web.fetch";
+  }
+  if (["code_test", "code.test", "run_tests", "run.test", "test"].includes(action)) {
+    return "code.test";
+  }
+  if (["code_lint", "code.lint", "lint"].includes(action)) {
+    return "code.lint";
+  }
+  if (["git_status", "git.status"].includes(action)) {
+    return "git.status";
+  }
+  if (["git_diff", "git.diff"].includes(action)) {
+    return "git.diff";
+  }
+  if (["git_log", "git.log"].includes(action)) {
+    return "git.log";
+  }
+  if (["git_branch", "git.branch"].includes(action)) {
+    return "git.branch";
+  }
+  if (["package_install", "package.install", "install"].includes(action)) {
+    return "package.install";
+  }
+  if (["solidity_compile", "solidity.compile", "compile"].includes(action)) {
+    return "solidity.compile";
+  }
+  if (["agent_delegate", "agent.delegate", "delegate"].includes(action)) {
+    return "agent.delegate";
+  }
   if (task.type === "tool_call") {
     return "tool.file.read";
   }
   return "analysis.synthesize";
+}
+
+const TOOL_CAPABILITY_ACTIONS: Record<string, string> = {
+  "tool.file.list": "file.list",
+  "tool.file.read": "file.read",
+  "tool.file.glob": "file.glob",
+  "tool.file.grep": "file.grep",
+  "tool.file.stat": "file.stat",
+  "tool.file.write": "file.write",
+  "tool.file.edit": "file.edit",
+  "todo.write": "todo.write",
+  "tool.shell.exec": "shell.exec",
+  "web.search": "web.search",
+  "web.fetch": "web.fetch",
+  "code.test": "code.test",
+  "code.lint": "code.lint",
+  "git.status": "git.status",
+  "git.diff": "git.diff",
+  "git.log": "git.log",
+  "git.branch": "git.branch",
+  "package.install": "package.install",
+  "solidity.compile": "solidity.compile",
+  "agent.delegate": "agent.delegate"
+};
+
+const ALLOWED_CAPABILITIES = new Set([
+  ...Object.keys(TOOL_CAPABILITY_ACTIONS),
+  "analysis.synthesize",
+  "research.summarize",
+  "code.inspect",
+  "design.reason"
+]);
+
+function normalizeCapability(capability: string, task: Partial<GeneratedPlan["tasks"][number]>): string {
+  const trimmed = capability.trim();
+  if (ALLOWED_CAPABILITIES.has(trimmed)) {
+    return trimmed;
+  }
+  const inferred = inferCapability(task);
+  if (ALLOWED_CAPABILITIES.has(inferred)) {
+    return inferred;
+  }
+  return "analysis.synthesize";
+}
+
+function normalizeInputsForCapability(inputs: Record<string, unknown>, capability: string): Record<string, unknown> {
+  const action = TOOL_CAPABILITY_ACTIONS[capability];
+  if (!action) {
+    return inputs;
+  }
+  return { ...inputs, action };
 }
 
 function excerpt(text: string): string {

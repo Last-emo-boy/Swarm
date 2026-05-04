@@ -21,6 +21,11 @@ export class EnvelopeRouter extends EventEmitter {
   }
 
   async dispatch(envelope: SwarmEnvelope): Promise<void> {
+    if (envelope.type === "agent.capability_query") {
+      this.handleCapabilityQuery(envelope);
+      return;
+    }
+
     if (envelope.idempotency_key) {
       const existing = this.processedKeys.get(envelope.idempotency_key);
       if (existing) {
@@ -60,9 +65,13 @@ export class EnvelopeRouter extends EventEmitter {
       }, options.timeout_ms);
 
       const onIncoming = (incoming: SwarmEnvelope<T>) => {
+        const matchesCorrelation =
+          incoming.reply_to === envelope.id ||
+          incoming.correlation_id === envelope.id ||
+          (envelope.correlation_id !== undefined && incoming.correlation_id === envelope.correlation_id);
         const matchesTask = envelope.task_id
-          ? incoming.task_id === envelope.task_id
-          : incoming.correlation_id === envelope.id || incoming.reply_to === envelope.id;
+          ? incoming.task_id === envelope.task_id && matchesCorrelation
+          : matchesCorrelation;
         const matchesType = options.expect.includes(incoming.type);
         const addressedToRequester =
           incoming.to && !Array.isArray(incoming.to) && incoming.to.agent_id === envelope.from.agent_id;
@@ -121,5 +130,33 @@ export class EnvelopeRouter extends EventEmitter {
     }
 
     return targets;
+  }
+
+  private handleCapabilityQuery(envelope: SwarmEnvelope): void {
+    this.record(envelope);
+    const payload = envelope.payload as { capability?: string };
+    const targetCapability = !Array.isArray(envelope.to) ? envelope.to.capability : undefined;
+    const capability = payload.capability ?? targetCapability;
+    const candidates = capability ? this.registry.queryByCapability(capability).map((item) => item.card) : this.registry.list();
+    const response: SwarmEnvelope = {
+      ...envelope,
+      id: `env_capability_response_${Date.now()}`,
+      type: "agent.capability_response",
+      intent: "agent.capability_response",
+      from: { agent_id: "router", role: "router" },
+      to: envelope.from,
+      reply_to: envelope.id,
+      correlation_id: envelope.correlation_id ?? envelope.id,
+      trace: envelope.trace
+        ? {
+            trace_id: envelope.trace.trace_id,
+            span_id: `span_capability_response_${Date.now()}`,
+            parent_span_id: envelope.trace.span_id
+          }
+        : undefined,
+      payload: { capability, candidates },
+      created_at: new Date().toISOString()
+    };
+    this.receive(response);
   }
 }

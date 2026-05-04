@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import {
@@ -13,12 +14,16 @@ import {
 } from "../config/settings.js";
 import { refreshProviderModels } from "../providers/model-discovery.js";
 import { SwarmRuntime } from "../runtime/runtime.js";
+import { resetDebugLogger } from "../runtime/debug-logger.js";
 import type { RuntimeEvent } from "../runtime/events.js";
+import type { RunMode } from "../runtime/execution-router.js";
 import type { PlannedSession } from "../runtime/orchestrator.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import { createToolApprovalRequest, toolRequiresApproval } from "../tools/permissions.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
 import type { PermissionMode } from "../config/settings.js";
+import { readTaskOutput } from "../storage/task-output-store.js";
+import type { GeneratedPlan, SwarmPolicy, SwarmSession } from "../protocol/types.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -40,6 +45,24 @@ type Props = {
   forceOnboarding?: boolean;
 };
 
+type TaskState = {
+  title: string;
+  status: string;
+  attempt?: number;
+};
+
+type ToolResultState = {
+  task_id: string;
+  title: string;
+  action: string;
+  summary: string;
+  content?: string;
+  status?: "success" | "partial" | "failed";
+  outputRef?: string;
+  attempt?: number;
+  errorCode?: string;
+};
+
 const fieldOrder: OnboardField[] = ["provider", "apiKey", "planner", "worker", "aggregator"];
 const customFieldOrder: OnboardField[] = [
   "provider",
@@ -52,6 +75,11 @@ const customFieldOrder: OnboardField[] = [
   "aggregator"
 ];
 
+function createChatSessionId(): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `chat-${timestamp}-${randomUUID().slice(0, 8)}`;
+}
+
 export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -61,6 +89,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }, []);
   const needsOnboarding = forceOnboarding || !hasUsableModelConfiguration(settings);
   const approvalResolver = useRef<((approved: boolean) => void) | undefined>();
+  const chatSessionId = useRef(createChatSessionId());
   const [approval, setApproval] = useState<ToolApprovalRequest | undefined>();
   const [runtime, setRuntime] = useState<SwarmRuntime | undefined>(() => (needsOnboarding ? undefined : createRuntime()));
   const [input, setInput] = useState("");
@@ -74,6 +103,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [detailScroll, setDetailScroll] = useState(0);
   const [latestDetail, setLatestDetail] = useState("");
   const [onboard, setOnboard] = useState<OnboardState>(() => createOnboardState(needsOnboarding));
+  const [taskStates, setTaskStates] = useState<Map<string, TaskState>>(new Map());
+  const [taskTotal, setTaskTotal] = useState(0);
+  const [taskCompleted, setTaskCompleted] = useState(0);
+  const [toolResults, setToolResults] = useState<ToolResultState[]>([]);
+  const [runMode, setRunMode] = useState<RunMode>("auto");
 
   const height = stdout.rows || 32;
   const chatHeight = Math.max(10, height - 9);
@@ -85,6 +119,56 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
     const unsubscribe = runtime.events.onEvent((event) => {
       setEvents((previous) => [...previous.slice(-80), event]);
+
+      if (event.type === "task") {
+        setTaskStates((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(event.task_id);
+          next.set(event.task_id, { title: event.title, status: event.status, attempt: existing?.attempt });
+          return next;
+        });
+      }
+      if (event.type === "task_attempt") {
+        setTaskStates((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(event.task_id);
+          next.set(event.task_id, { title: event.title, status: event.status, attempt: event.attempt });
+          return next;
+        });
+      }
+      if (event.type === "progress") {
+        setTaskCompleted(event.completed);
+        setTaskTotal(event.total);
+      }
+      if (event.type === "tool_result") {
+        setToolResults((prev) => [
+          ...prev.slice(-20),
+          {
+            task_id: event.task_id,
+            title: event.title,
+            action: event.action,
+            summary: event.summary,
+            content: event.content,
+            status: event.status,
+            outputRef: event.outputRef,
+            attempt: event.attempt,
+            errorCode: event.errorCode
+          }
+        ]);
+        if (event.content) {
+          setLatestDetail(event.content);
+          setDetailScroll(0);
+        } else if (event.outputRef) {
+          setLatestDetail(`Full output: ${event.outputRef}`);
+          setDetailScroll(0);
+        }
+      }
+      if (event.type === "plan") {
+        setTaskTotal(event.plan.tasks.length);
+        setTaskCompleted(0);
+        setTaskStates(new Map());
+        setToolResults([]);
+      }
     });
     return () => {
       unsubscribe();
@@ -94,12 +178,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   useInput((character, key) => {
     if (key.ctrl && character === "c") {
+      if (busy && runtime) {
+        runtime.interrupt("User pressed Ctrl+C. Stop unstarted work and reassess the current objective before continuing.");
+        setMessages((previous) => [...previous, { role: "system", brief: "Interrupt requested. Swarm will reassess at the next safe boundary." }]);
+        return;
+      }
       exit();
       return;
     }
 
     if (key.ctrl && character === "o") {
       setDetailOpen((value) => !value);
+      return;
+    }
+
+    if (key.ctrl && character === "t") {
+      setLatestDetail(renderTaskDetail());
+      setDetailScroll(0);
+      setDetailOpen(true);
       return;
     }
 
@@ -118,11 +214,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return;
     }
 
-    if (busy) {
-      return;
-    }
-
-    if (pendingPlan) {
+    if (!busy && pendingPlan) {
       if (character.toLowerCase() === "y") {
         void executePendingPlan();
         return;
@@ -166,19 +258,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return;
     }
 
+    if (busy) {
+      setMessages((previous) => [...previous, { role: "user", brief: objective }]);
+      await runtime.sendUserMessage(objective).catch(pushError);
+      return;
+    }
+
     setBusy(true);
     setMessages((previous) => [...previous, { role: "user", brief: objective }]);
     try {
-      const planned = await runtime.createPlan(objective);
-      setPendingPlan(planned);
-      const detail = renderPlanSummary(planned);
-      setLatestDetail(detail);
+      const result = await runtime.run(objective, { mode: runMode });
+      setLatestDetail(result.content);
+      setDetailScroll(0);
       setMessages((previous) => [
         ...previous,
         {
           role: "assistant",
-          brief: `Plan ready: ${planned.plan.tasks.length} tasks. Press y to execute, n to cancel. Ctrl+O for details.`,
-          detail
+          brief: briefForOutput(result.content, result.outcome, result.artifact_path),
+          detail: result.content
         }
       ]);
     } catch (error) {
@@ -204,7 +301,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         ...previous,
         {
           role: "assistant",
-          brief: briefForOutput(result.content, result.artifact_path),
+          brief: briefForOutput(result.content, result.outcome, result.artifact_path),
           detail: result.content
         }
       ]);
@@ -212,6 +309,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       pushError(error);
     } finally {
       setBusy(false);
+      setTaskStates(new Map());
+      setTaskTotal(0);
+      setTaskCompleted(0);
+      setToolResults([]);
     }
   }
 
@@ -232,6 +333,29 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     } else if (key.pageDown) {
       setDetailScroll((value) => Math.min(Math.max(0, lines.length - detailHeight), value + detailHeight));
     }
+  }
+
+  function renderTaskDetail(): string {
+    const taskRows = [...taskStates.entries()].map(([id, state]) =>
+      `${statusIcon(state.status)} ${id}${state.attempt ? ` #${state.attempt}` : ""}: ${state.title || "(untitled)"} [${state.status}]`
+    );
+    const toolRows = toolResults.map((result) =>
+      [
+        `${result.task_id}${result.attempt ? ` #${result.attempt}` : ""}`,
+        `${result.action} [${result.status ?? "unknown"}${result.errorCode ? `/${result.errorCode}` : ""}]`,
+        result.summary,
+        result.outputRef ? `Full output: ${result.outputRef}` : undefined
+      ].filter(Boolean).join(" - ")
+    );
+    return [
+      `Tasks ${taskCompleted}/${taskTotal}`,
+      "",
+      taskRows.length ? taskRows.join("\n") : "No task state yet.",
+      "",
+      "Tool Results",
+      "",
+      toolRows.length ? toolRows.join("\n") : "No tool output yet."
+    ].join("\n");
   }
 
   function handleOnboardInput(
@@ -306,7 +430,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         model,
         apiKey: values.apiKey.trim(),
         protocol,
-        auth: protocol === "anthropic-messages" ? "bearer" : values.apiKey.trim() ? "bearer" : "none",
+        auth: protocol === "anthropic-messages" ? "x-api-key" : values.apiKey.trim() ? "bearer" : "none",
         apiKeyRequired: protocol === "anthropic-messages" ? true : undefined
       });
       const modelRef = `${id}/${model}`;
@@ -365,16 +489,25 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         "/models [provider]",
         "/refresh-models [provider]",
         "/permissions",
-        "/mode [ask|auto-edit|full-auto]",
+        "/permission-mode [ask|auto-edit|full-auto]",
+        "/mode [auto|fast|swarm|chat]",
         "/read <path> [start:end]",
         "/grep <pattern> [root]",
         "/glob <pattern> [root]",
         "/shell <command>",
         "/session",
+        "/session <session_id>",
         "/session new",
+        "/resume <session_id>",
+        "/trace <session_id>",
+        "/tasks",
+        "/tasks <session_id>",
+        "/output <task_id>",
+        "/status",
+        "/interrupt <message>",
         "/onboard"
       ].join("\n");
-      return { brief: "Slash commands: /provider /model /read /grep /glob /shell /permissions /mode", detail };
+      return { brief: "Slash commands: /provider /model /mode /read /grep /glob /shell /session /tasks /trace", detail };
     }
 
     if (command === "onboard") {
@@ -450,10 +583,38 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "session") {
       if (args[0] === "new") {
+        chatSessionId.current = createChatSessionId();
+        resetDebugLogger();
         setPendingPlan(undefined);
         setEvents([]);
         setLatestDetail("");
+        setTaskStates(new Map());
+        setTaskTotal(0);
+        setTaskCompleted(0);
+        setToolResults([]);
+        if (runtime) {
+          runtime.dispose();
+          setRuntime(createRuntime());
+        }
         return { brief: "Started a new chat state." };
+      }
+      if (args[0]) {
+        if (!runtime) throw new Error("Runtime is not ready.");
+        const row = runtime.sessionStore.get(args[0]);
+        if (!row) throw new Error(`Unknown session: ${args[0]}`);
+        const tasks = runtime.taskStateStore.list(row.session_id);
+        const trace = runtime.traceStore.list(row.session_id);
+        const detail = [
+          `${row.session_id} [${row.status}]`,
+          row.objective,
+          "",
+          `Tasks: ${tasks.length}`,
+          ...tasks.map((task) => `${task.task_id} [${task.status}] #${task.attempt} ${task.title}${task.last_error ? ` - ${task.last_error}` : ""}`),
+          "",
+          `Trace envelopes: ${trace.length}`,
+          ...trace.slice(-20).map((env) => `${env.created_at} ${env.type} ${env.task_id ?? ""} ${env.intent}`)
+        ].join("\n");
+        return { brief: `${row.session_id}: ${row.status}. Ctrl+O for details.`, detail };
       }
       const rows = runtime?.sessionStore.listRecent(10) ?? [];
       const detail = rows.length
@@ -462,23 +623,119 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return { brief: `${rows.length} recent sessions. Ctrl+O for details.`, detail };
     }
 
+    if (command === "resume") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const sessionId = args[0];
+      if (!sessionId) throw new Error("Usage: /resume <session_id>");
+      const row = runtime.sessionStore.get(sessionId);
+      if (!row?.plan_json) throw new Error(`Session has no stored plan: ${sessionId}`);
+      const session = sessionFromRow(row);
+      const plan = JSON.parse(row.plan_json) as GeneratedPlan;
+      setBusy(true);
+      setMessages((previous) => [...previous, { role: "system", brief: `Resuming ${sessionId}.` }]);
+      void runtime.execute({ session, plan }).then((result) => {
+        setLatestDetail(result.content);
+        setMessages((previous) => [...previous, { role: "assistant", brief: briefForOutput(result.content, result.outcome, result.artifact_path), detail: result.content }]);
+      }).catch((error: unknown) => {
+        pushError(error);
+      }).finally(() => setBusy(false));
+      return { brief: `Resume started for ${sessionId}.` };
+    }
+
+    if (command === "tasks") {
+      if (args[0] && runtime) {
+        const rows = runtime.taskStateStore.list(args[0]);
+        const detail = rows.length
+          ? rows.map((task) => `${task.task_id} [${task.status}] #${task.attempt} ${task.title}${task.last_error ? ` - ${task.last_error}` : ""}`).join("\n")
+          : "No persisted task state for this session.";
+        return { brief: `${rows.length} persisted task states. Ctrl+O for details.`, detail };
+      }
+      const rows = [...taskStates.entries()];
+      const detail = rows.length
+        ? rows.map(([id, state]) => `${id} [${state.status}${state.attempt ? ` attempt ${state.attempt}` : ""}] ${state.title}`).join("\n")
+        : "No active task state in this chat.";
+      return { brief: `${rows.length} task states. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "trace") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const sessionId = args[0];
+      if (!sessionId) throw new Error("Usage: /trace <session_id>");
+      const trace = runtime.traceStore.list(sessionId);
+      const detail = trace.length
+        ? trace.map((env) => `${env.created_at} ${env.type} ${env.from.agent_id ?? env.from.role ?? "?"} -> ${Array.isArray(env.to) ? env.to.length : env.to.agent_id ?? env.to.capability ?? env.to.role ?? "?"} ${env.task_id ?? ""} ${env.trace?.trace_id ?? ""}/${env.trace?.span_id ?? ""}`).join("\n")
+        : "No trace envelopes for this session.";
+      return { brief: `${trace.length} trace envelopes. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "output") {
+      const taskId = args[0];
+      if (!taskId) {
+        const detail = toolResults.length
+          ? toolResults
+              .map((result) => `${result.task_id}${result.attempt ? `#${result.attempt}` : ""} ${result.action} [${result.status ?? "unknown"}]: ${result.summary}${result.outputRef ? ` -> ${result.outputRef}` : ""}`)
+              .join("\n")
+          : "No tool outputs in this chat.";
+        return { brief: `${toolResults.length} tool outputs. Ctrl+O for details.`, detail };
+      }
+      const result = [...toolResults].reverse().find((item) => item.task_id === taskId);
+      if (!result) {
+        throw new Error(`No output found for task: ${taskId}`);
+      }
+      const detail = result.outputRef ? await readTaskOutput(result.outputRef) : result.content ?? result.summary;
+      return {
+        brief: `${result.action}: ${result.summary}. Ctrl+O for details.`,
+        detail
+      };
+    }
+
+    if (command === "status") {
+      const detail = [
+        `busy=${busy}`,
+        `mode=${runMode}`,
+        `tasks=${taskCompleted}/${taskTotal}`,
+        `tools=${toolResults.length}`,
+        "",
+        "Recent events:",
+        ...events.slice(-20).map(formatEvent)
+      ].join("\n");
+      return { brief: `Swarm status: ${busy ? "running" : "idle"}, mode=${runMode}. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "interrupt") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const message = args.join(" ").trim() || "User requested an interrupt. Reassess before continuing.";
+      runtime.interrupt(message);
+      return { brief: "Interrupt requested. Swarm will reassess at the next safe boundary." };
+    }
+
     if (command === "permissions") {
       const settings = loadSwarmSettings();
       const detail = JSON.stringify(settings.permissions, null, 2);
       return { brief: `Permission mode: ${settings.permissions.defaultMode}. Ctrl+O for details.`, detail };
     }
 
-    if (command === "mode") {
+    if (command === "permission-mode") {
       const mode = args[0];
       if (!mode) {
         const settings = loadSwarmSettings();
         return { brief: `Permission mode: ${settings.permissions.defaultMode}.` };
       }
       if (!isPermissionMode(mode)) {
-        throw new Error("Usage: /mode ask|auto-edit|full-auto");
+        throw new Error("Usage: /permission-mode ask|auto-edit|full-auto");
       }
       setPermissionMode(mode);
       return { brief: `Permission mode set to ${mode}.` };
+    }
+
+    if (command === "mode") {
+      const mode = args[0];
+      if (!mode) {
+        return { brief: `Execution mode: ${runMode}.` };
+      }
+      const normalized = normalizeRunMode(mode);
+      setRunMode(normalized);
+      return { brief: `Execution mode set to ${normalized}.` };
     }
 
     if (command === "read") {
@@ -555,7 +812,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function createRuntime(): SwarmRuntime {
-    return new SwarmRuntime({ approvalHandler: requestToolApproval });
+    return new SwarmRuntime({ approvalHandler: requestToolApproval, debugSessionId: chatSessionId.current });
   }
 
   function requestToolApproval(request: ToolApprovalRequest): Promise<boolean> {
@@ -600,19 +857,48 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         <Text color="cyan">Swarm</Text>
         <Text color="gray">
           {"  "}
-          {busy ? "running" : pendingPlan ? "awaiting approval" : "idle"}  Ctrl+O details
+          {busy
+            ? ` running [${taskCompleted}/${taskTotal}]`
+            : pendingPlan
+              ? " awaiting approval"
+              : " idle"}
+          {`  mode:${runMode}`}
+          {"  Ctrl+O details"}
+          {"  Ctrl+T tasks"}
         </Text>
       </Box>
 
       <Box flexDirection="row" marginTop={1} height={chatHeight}>
         <Box flexDirection="column" width="68%" paddingRight={1}>
           <Box borderStyle="round" flexDirection="column" paddingX={1} height={chatHeight}>
-            {messages.slice(-8).map((message, index) => (
-              <Box key={`${message.role}-${index}`} flexDirection="column" marginBottom={1}>
-                <Text color={roleColor(message.role)}>{message.role}</Text>
-                <Text wrap="truncate">{message.brief}</Text>
-              </Box>
-            ))}
+            {busy ? (
+              <>
+                <Text color="yellow" bold>Tasks</Text>
+                {[...taskStates.entries()].slice(-10).map(([id, state]) => (
+                  <Text key={id} wrap="truncate">{statusIcon(state.status)} {state.attempt ? `#${state.attempt} ` : ""}{state.title || id}</Text>
+                ))}
+                {taskStates.size === 0 && <Text color="gray">Waiting for tasks to start...</Text>}
+                {toolResults.length > 0 && (
+                  <>
+                    <Box marginTop={1}>
+                      <Text color="yellow" bold>Recent tool outputs</Text>
+                    </Box>
+                    {toolResults.slice(-5).map((tr, i) => (
+                      <Text key={`${tr.task_id}-${i}`} wrap="truncate" color="gray">
+                        [{tr.status ?? "unknown"}{tr.errorCode ? `/${tr.errorCode}` : ""}] {tr.summary}{tr.outputRef ? " (full output saved)" : ""}
+                      </Text>
+                    ))}
+                  </>
+                )}
+              </>
+            ) : (
+              messages.slice(-8).map((message, index) => (
+                <Box key={`${message.role}-${index}`} flexDirection="column" marginBottom={1}>
+                  <Text color={roleColor(message.role)}>{message.role}</Text>
+                  <Text wrap="truncate">{message.brief}</Text>
+                </Box>
+              ))
+            )}
           </Box>
         </Box>
 
@@ -769,11 +1055,42 @@ function renderPlanSummary(planned: PlannedSession): string {
   ].join("\n");
 }
 
-function briefForOutput(content: string, artifactPath?: string): string {
+function sessionFromRow(row: {
+  session_id: string;
+  swarm_id: string;
+  objective: string;
+  status: SwarmSession["status"];
+  policy_json: string;
+  participants_json: string;
+  created_at: string;
+  updated_at: string;
+}): SwarmSession {
+  return {
+    swarm_id: row.swarm_id,
+    session_id: row.session_id,
+    user_request_id: row.session_id,
+    objective: row.objective,
+    status: row.status,
+    coordinator: { agent_id: "orchestrator", role: "coordinator" },
+    participants: JSON.parse(row.participants_json),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    policy: JSON.parse(row.policy_json) as SwarmPolicy
+  };
+}
+
+function briefForOutput(
+  content: string,
+  outcome?: { changed_files: string[]; tests_run: string[]; intermediate_artifacts: string[] },
+  artifactPath?: string
+): string {
   const lines = content.split(/\r?\n/);
   const first = lines.find((line) => line.trim())?.replace(/^#+\s*/, "").trim() ?? "Swarm output";
   const bytes = Buffer.byteLength(content, "utf8");
-  return `${first} ... ${lines.length} lines, ${bytes} bytes. Artifact: ${artifactPath ?? "not written"}. Ctrl+O for details.`;
+  const changed = outcome?.changed_files.length ?? 0;
+  const tests = outcome?.tests_run.length ?? 0;
+  const artifact = artifactPath ? ` Artifact: ${artifactPath}.` : "";
+  return `${first} ... ${lines.length} lines, ${bytes} bytes. Changed files: ${changed}. Checks: ${tests}.${artifact} Ctrl+O for details.`;
 }
 
 function currentModelBrief(settings: ReturnType<typeof loadSwarmSettings>): string {
@@ -798,6 +1115,22 @@ function parseLineRange(value: string | undefined): { startLine?: number; endLin
 
 function isPermissionMode(value: string): value is PermissionMode {
   return value === "ask" || value === "auto-edit" || value === "full-auto";
+}
+
+function normalizeRunMode(value: string): RunMode {
+  if (value === "auto") {
+    return "auto";
+  }
+  if (value === "fast" || value === "coding" || value === "coding_loop") {
+    return "coding_loop";
+  }
+  if (value === "swarm" || value === "full" || value === "full_swarm") {
+    return "full_swarm";
+  }
+  if (value === "chat") {
+    return "chat";
+  }
+  throw new Error("Usage: /mode auto|fast|swarm|chat");
 }
 
 function roleColor(role: ChatMessage["role"]): "cyan" | "green" | "gray" {
@@ -831,26 +1164,49 @@ function maskField(field: OnboardField, value: string): string {
 }
 
 function formatEvent(event: RuntimeEvent): string {
-  if (event.type === "envelope") {
-    return `${event.envelope.type} ${event.envelope.task_id ?? ""}`.trim();
+  switch (event.type) {
+    case "task":
+      return `${statusIcon(event.status)} ${event.status}: ${event.title || event.task_id}`;
+    case "task_attempt":
+      return `${statusIcon(event.status)} attempt ${event.attempt}: ${event.title || event.task_id}`;
+    case "tool_result":
+      return `  tool: ${event.action} [${event.status ?? "unknown"}] - ${event.summary.slice(0, 60)}`;
+    case "progress":
+      return `progress: ${event.completed}/${event.total}`;
+    case "envelope":
+      return `${event.envelope.type} ${event.envelope.task_id ?? ""}`.trim();
+    case "blackboard":
+      return `bb: ${event.entry.key}`;
+    case "agent":
+      return `agent: ${event.card.agent_id} [${event.card.status}]`;
+    case "approval":
+      return `approval: ${event.status} ${event.request.action}`;
+    case "live_message":
+      return `live: ${event.status} ${event.content.slice(0, 60)}`;
+    case "control":
+      return `control: ${event.action} - ${event.reason.slice(0, 60)}`;
+    case "controller":
+      return `controller: ${event.action} - ${event.reason.slice(0, 60)}`;
+    case "queue":
+      return `queue: ${event.operation} ${event.priority ?? ""} size=${event.size}`;
+    case "plan":
+      return `plan: ${event.session_id}`;
+    case "final":
+      return `final: ${event.outcome?.changed_files.length ?? 0} changed`;
+    case "log":
+      return `${event.level}: ${event.message}`;
+    case "error":
+      return `ERROR: ${event.message}`;
   }
-  if (event.type === "task") {
-    return `${event.status}: ${event.task_id}`;
+}
+
+function statusIcon(status: string): string {
+  switch (status) {
+    case "assigned": return "->";
+    case "running": return "..";
+    case "started": return "..";
+    case "completed": return "OK";
+    case "failed": return "!!";
+    default: return "-";
   }
-  if (event.type === "blackboard") {
-    return `bb: ${event.entry.key}`;
-  }
-  if (event.type === "agent") {
-    return `agent: ${event.card.agent_id} ${event.card.status}`;
-  }
-  if (event.type === "approval") {
-    return `approval: ${event.status} ${event.request.action}`;
-  }
-  if (event.type === "plan") {
-    return `plan: ${event.session_id}`;
-  }
-  if (event.type === "final") {
-    return `final: ${event.session_id}`;
-  }
-  return event.message;
 }

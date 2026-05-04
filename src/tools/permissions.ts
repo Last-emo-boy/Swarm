@@ -45,10 +45,19 @@ export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings
   }
 
   const mode = normalizePermissionMode(settings.permissions.defaultMode);
-  if (action.type === "shell.exec") {
+  if (isShellLikeAction(action) || action.type === "package.install" || action.type === "solidity.compile") {
     return mode !== "full-auto";
   }
   if (action.type === "file.write" || action.type === "file.edit") {
+    return mode === "ask";
+  }
+  if (action.type === "agent.delegate") {
+    return mode !== "full-auto";
+  }
+  if (action.type === "git.branch" && action.action !== "list") {
+    return mode !== "full-auto";
+  }
+  if (action.type === "web.fetch") {
     return mode === "ask";
   }
   return false;
@@ -56,21 +65,23 @@ export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings
 
 export function createToolApprovalRequest(action: ToolAction): ToolApprovalRequest {
   const id = `approval_${randomUUID()}`;
-  if (action.type === "shell.exec") {
+  const risk = riskForAction(action);
+  if (action.type === "shell.exec" || action.type === "code.test") {
+    const command = action.command;
     return {
       id,
       action: action.type,
-      risk: "shell",
-      summary: `Run shell command: ${action.command}`,
-      detail: [`Command: ${action.command}`, `CWD: ${action.cwd || "."}`, `Timeout: ${action.timeoutMs ?? 120000} ms`].join("\n")
+      risk,
+      summary: `Run ${action.type === "code.test" ? "test" : "shell"} command: ${command}`,
+      detail: [`Command: ${command}`, `CWD: ${action.cwd || "."}`, `Timeout: ${action.timeoutMs ?? 120000} ms`].join("\n")
     };
   }
 
   return {
     id,
     action: action.type,
-    risk: "write",
-    summary: `${action.type === "file.edit" ? "Edit" : "Write"} file: ${"path" in action ? action.path : ""}`,
+    risk,
+    summary: approvalSummary(action),
     detail: renderActionDetail(action)
   };
 }
@@ -137,12 +148,31 @@ function normalizePermissionMode(mode: SwarmSettings["permissions"]["defaultMode
 
 function matchesPermissionRules(action: ToolAction, rules: string[]): boolean {
   const permissionName = permissionNameForAction(action);
-  return rules.some((rule) => rule === `${permissionName}(*)` || rule === `${permissionName}(**)`);
+  const content = permissionRuleContentForAction(action);
+  return rules.some((rule) => {
+    const parsed = parsePermissionRule(rule);
+    if (!parsed || parsed.name !== permissionName) {
+      return false;
+    }
+    if (!parsed.content || parsed.content === "*" || parsed.content === "**") {
+      return true;
+    }
+    if (!content) {
+      return false;
+    }
+    return wildcardMatch(content, parsed.content);
+  });
 }
 
 function permissionNameForAction(action: ToolAction): string {
   if (action.type === "shell.exec") {
     return "Bash";
+  }
+  if (action.type === "code.test") {
+    return "CodeTest";
+  }
+  if (action.type === "code.lint") {
+    return "CodeLint";
   }
   if (action.type === "file.write") {
     return "Write";
@@ -152,6 +182,9 @@ function permissionNameForAction(action: ToolAction): string {
   }
   if (action.type === "web.search") {
     return "WebSearch";
+  }
+  if (action.type === "web.fetch") {
+    return "WebFetch";
   }
   if (action.type === "file.list") {
     return "LS";
@@ -165,6 +198,27 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "file.stat") {
     return "Stat";
   }
+  if (action.type === "git.status") {
+    return "GitStatus";
+  }
+  if (action.type === "git.diff") {
+    return "GitDiff";
+  }
+  if (action.type === "git.log") {
+    return "GitLog";
+  }
+  if (action.type === "git.branch") {
+    return "GitBranch";
+  }
+  if (action.type === "package.install") {
+    return "PackageInstall";
+  }
+  if (action.type === "solidity.compile") {
+    return "SolidityCompile";
+  }
+  if (action.type === "agent.delegate") {
+    return "Delegate";
+  }
   return "Read";
 }
 
@@ -176,6 +230,103 @@ function renderActionDetail(action: ToolAction): string {
     return [`Path: ${action.path}`, `Operation: ${action.operation}`].join("\n");
   }
   return JSON.stringify(action, null, 2);
+}
+
+function approvalSummary(action: ToolAction): string {
+  if (action.type === "file.write") {
+    return `Write file: ${action.path}`;
+  }
+  if (action.type === "file.edit") {
+    return `Edit file: ${action.path}`;
+  }
+  if (action.type === "web.fetch") {
+    return `Fetch URL: ${action.url}`;
+  }
+  if (action.type === "web.search") {
+    return `Search web: ${action.query}`;
+  }
+  if (action.type === "code.lint") {
+    return `Run linter in ${action.root ?? "."}`;
+  }
+  if (action.type === "git.branch") {
+    return `Git branch ${action.action ?? "list"}${action.name ? `: ${action.name}` : ""}`;
+  }
+  if (action.type === "package.install") {
+    return `Install packages: ${action.command}`;
+  }
+  if (action.type === "solidity.compile") {
+    return `Compile Solidity project with ${action.framework ?? "hardhat"}`;
+  }
+  if (action.type === "agent.delegate") {
+    return `Delegate task to ${action.capability}: ${action.task}`;
+  }
+  return `${action.type}: ${permissionRuleContentForAction(action) ?? ""}`.trim();
+}
+
+function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
+  if (action.type === "web.search" || action.type === "web.fetch") {
+    return "web";
+  }
+  if (action.type === "package.install") {
+    return "install";
+  }
+  if (action.type === "agent.delegate") {
+    return "delegate";
+  }
+  if (isShellLikeAction(action) || action.type === "solidity.compile" || action.type === "git.branch") {
+    return "shell";
+  }
+  return "write";
+}
+
+function isShellLikeAction(action: ToolAction): boolean {
+  return action.type === "shell.exec" || action.type === "code.test" || action.type === "code.lint";
+}
+
+function permissionRuleContentForAction(action: ToolAction): string | undefined {
+  if ("path" in action && typeof action.path === "string") {
+    return action.path;
+  }
+  if ("root" in action && typeof action.root === "string") {
+    return action.root;
+  }
+  if ("command" in action && typeof action.command === "string") {
+    return action.command;
+  }
+  if (action.type === "web.search") {
+    return action.query;
+  }
+  if (action.type === "web.fetch") {
+    return action.url;
+  }
+  if (action.type === "git.branch") {
+    return [action.action ?? "list", action.name].filter(Boolean).join(" ");
+  }
+  if (action.type === "solidity.compile") {
+    return action.framework ?? "hardhat";
+  }
+  if (action.type === "agent.delegate") {
+    return action.capability;
+  }
+  return undefined;
+}
+
+function parsePermissionRule(rule: string): { name: string; content?: string } | undefined {
+  const match = rule.match(/^([A-Za-z][A-Za-z0-9_-]*)(?:\((.*)\))?$/);
+  if (!match) {
+    return undefined;
+  }
+  return { name: match[1], content: match[2] };
+}
+
+function wildcardMatch(value: string, pattern: string): boolean {
+  if (pattern.endsWith(":*")) {
+    return value.startsWith(pattern.slice(0, -1));
+  }
+  if (pattern.endsWith("*")) {
+    return value.startsWith(pattern.slice(0, -1));
+  }
+  return value === pattern;
 }
 
 function matchesReadDenyRule(rule: string, candidates: string[]): boolean {

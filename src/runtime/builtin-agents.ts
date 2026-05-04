@@ -40,6 +40,7 @@ export const builtinAgents: AgentCard[] = [
       "tool.file.stat",
       "tool.file.write",
       "tool.file.edit",
+      "todo.write",
       "tool.shell.exec",
       "web.search",
       "web.fetch",

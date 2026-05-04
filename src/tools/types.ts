@@ -6,6 +6,8 @@ export type FileReadAction = {
   paths?: string[];
   startLine?: number;
   endLine?: number;
+  offset?: number;
+  limit?: number;
   maxBytes?: number;
 };
 
@@ -52,6 +54,14 @@ export type FileEditAction = {
   newText?: string;
   line?: number;
   content?: string;
+};
+
+export type TodoWriteAction = {
+  type: "todo.write";
+  todos: Array<{
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+  }>;
 };
 
 export type ShellExecAction = {
@@ -139,6 +149,7 @@ export type ToolAction =
   | FileStatAction
   | FileWriteAction
   | FileEditAction
+  | TodoWriteAction
   | ShellExecAction
   | WebSearchAction
   | WebFetchAction
@@ -155,13 +166,22 @@ export type ToolAction =
 export type LocalToolContext = {
   workspace: string;
   settings: SwarmSettings;
+  sessionId?: string;
+  taskId?: string;
+  attempt?: number;
   delegate?: (action: AgentDelegateAction) => Promise<ToolResult>;
 };
 
 export type ToolResult = {
   action: ToolAction["type"];
+  status?: "success" | "partial" | "failed";
   summary: string;
   content?: string;
+  outputRef?: string;
+  errors?: string[];
+  errorCode?: string;
+  retryable?: boolean;
+  recoverable?: boolean;
   data?: unknown;
   metadata?: Record<string, unknown>;
 };

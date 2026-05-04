@@ -57,6 +57,64 @@ export class BlackboardStore {
     return entry;
   }
 
+  update(input: {
+    session_id: string;
+    entry_id?: string;
+    key?: string;
+    expected_version?: number;
+    value: unknown;
+    tags?: string[];
+  }): BlackboardEntry {
+    const existing = input.entry_id
+      ? this.getByEntryId(input.session_id, input.entry_id)
+      : input.key
+        ? this.getLatestByKey(input.session_id, input.key)
+        : undefined;
+    if (!existing) {
+      throw new Error("Blackboard update target not found.");
+    }
+    if (input.expected_version !== undefined && input.expected_version !== existing.version) {
+      throw new Error(`Blackboard version conflict for ${existing.key}: expected ${input.expected_version}, found ${existing.version}`);
+    }
+    const next: BlackboardEntry = {
+      ...existing,
+      value: input.value,
+      version: existing.version + 1,
+      tags: input.tags ?? existing.tags,
+      updated_at: new Date().toISOString()
+    };
+    this.database.db
+      .prepare(
+        `UPDATE blackboard_entries
+         SET value_json = ?, version = ?, tags_json = ?, updated_at = ?
+         WHERE entry_id = ?`
+      )
+      .run(JSON.stringify(next.value), next.version, JSON.stringify(next.tags ?? []), next.updated_at ?? null, next.entry_id);
+    return next;
+  }
+
+  lock(input: { session_id: string; key: string; holder: AgentAddress; ttl_ms?: number }): void {
+    const now = new Date();
+    const expires = input.ttl_ms ? new Date(now.getTime() + input.ttl_ms).toISOString() : null;
+    const existing = this.database.db
+      .prepare("SELECT key, expires_at FROM blackboard_locks WHERE session_id = ? AND key = ?")
+      .get(input.session_id, input.key) as { key: string; expires_at?: string | null } | undefined;
+    if (existing?.expires_at && new Date(existing.expires_at).getTime() < now.getTime()) {
+      this.unlock({ session_id: input.session_id, key: input.key });
+    } else if (existing) {
+      throw new Error(`Blackboard key is locked: ${input.key}`);
+    }
+    this.database.db
+      .prepare("INSERT INTO blackboard_locks (key, session_id, holder_json, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run(input.key, input.session_id, JSON.stringify(input.holder), now.toISOString(), expires);
+  }
+
+  unlock(input: { session_id: string; key: string }): void {
+    this.database.db
+      .prepare("DELETE FROM blackboard_locks WHERE session_id = ? AND key = ?")
+      .run(input.session_id, input.key);
+  }
+
   list(sessionId: string): BlackboardEntry[] {
     const rows = this.database.db
       .prepare("SELECT * FROM blackboard_entries WHERE session_id = ? ORDER BY created_at ASC")
@@ -100,5 +158,23 @@ export class BlackboardStore {
 
     const allEntries = this.list(sessionId);
     return allEntries.filter((entry) => entry.task_id && taskIds.includes(entry.task_id));
+  }
+
+  query(sessionId: string, input: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string }): BlackboardEntry[] {
+    return this.list(sessionId).filter((entry) => {
+      if (input.type && entry.type !== input.type) return false;
+      if (input.taskId && entry.task_id !== input.taskId) return false;
+      if (input.keyPrefix && !entry.key.startsWith(input.keyPrefix)) return false;
+      if (input.tag && !(entry.tags ?? []).includes(input.tag)) return false;
+      return true;
+    });
+  }
+
+  private getByEntryId(sessionId: string, entryId: string): BlackboardEntry | undefined {
+    return this.list(sessionId).find((entry) => entry.entry_id === entryId);
+  }
+
+  private getLatestByKey(sessionId: string, key: string): BlackboardEntry | undefined {
+    return [...this.list(sessionId)].reverse().find((entry) => entry.key === key);
   }
 }

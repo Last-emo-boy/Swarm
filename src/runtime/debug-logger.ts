@@ -1,16 +1,22 @@
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 
 export type DebugLogLevel = "trace" | "debug" | "info" | "warn" | "error";
 
 type LogEntry = {
   ts: string;
   pid: number;
+  session_id: string;
   level: DebugLogLevel;
   section: string;
   message: string;
   data?: unknown;
   elapsedMs?: number;
+};
+
+type DebugLoggerOptions = {
+  sessionId?: string;
+  maxBytes?: number;
 };
 
 const LEVEL_RANK: Record<DebugLogLevel, number> = {
@@ -22,18 +28,24 @@ const LEVEL_RANK: Record<DebugLogLevel, number> = {
 };
 
 export class DebugLogger {
-  private readonly path: string;
+  private path: string;
   private readonly minLevel: DebugLogLevel;
   private readonly pid: number;
+  private readonly logDir: string;
+  private readonly sessionId: string;
+  private readonly maxBytes: number;
   private readonly startTimes = new Map<string, number>();
+  private part = 1;
 
-  constructor(logDir: string, minLevel: DebugLogLevel = "debug") {
+  constructor(logDir: string, minLevel: DebugLogLevel = "debug", options: DebugLoggerOptions = {}) {
     this.minLevel = minLevel;
     this.pid = process.pid;
+    this.logDir = logDir;
+    this.sessionId = sanitizeSessionId(options.sessionId || process.env.SWARM_DEBUG_SESSION_ID || defaultSessionId());
+    this.maxBytes = options.maxBytes ?? 1_048_576;
     mkdirSync(logDir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    this.path = resolve(logDir, `debug-${this.pid}-${ts}.log`);
-    this.log("debug", "debug-logger", `Logger started. pid=${this.pid} level=${minLevel} path=${this.path}`);
+    this.path = this.resolvePath();
+    this.log("debug", "debug-logger", `Logger started. pid=${this.pid} session=${this.sessionId} level=${minLevel} path=${this.path}`);
   }
 
   get logPath(): string {
@@ -48,6 +60,7 @@ export class DebugLogger {
     const entry: LogEntry = {
       ts: new Date().toISOString(),
       pid: this.pid,
+      session_id: this.sessionId,
       level,
       section,
       message
@@ -56,10 +69,28 @@ export class DebugLogger {
     if (elapsedMs !== undefined) entry.elapsedMs = elapsedMs;
 
     try {
-      appendFileSync(this.path, `${JSON.stringify(entry)}\n`, "utf8");
+      const line = `${JSON.stringify(entry)}\n`;
+      this.rotateIfNeeded(Buffer.byteLength(line, "utf8"));
+      appendFileSync(this.path, line, "utf8");
     } catch {
       // silently ignore write failures
     }
+  }
+
+  private rotateIfNeeded(nextBytes: number): void {
+    while (true) {
+      const currentBytes = existsSync(this.path) ? statSync(this.path).size : 0;
+      if (currentBytes === 0 || currentBytes + nextBytes <= this.maxBytes) {
+        return;
+      }
+      this.part += 1;
+      this.path = this.resolvePath();
+    }
+  }
+
+  private resolvePath(): string {
+    const suffix = this.part === 1 ? "" : `.part-${this.part}`;
+    return resolve(this.logDir, `${this.sessionId}${suffix}.log`);
   }
 
   trace(section: string, message: string, data?: unknown): void {
@@ -103,11 +134,26 @@ export class DebugLogger {
 let instance: DebugLogger | null = null;
 
 /** Get or initialize the process-scoped debug logger. Safe to call multiple times. */
-export function getDebugLogger(logDir?: string): DebugLogger | null {
+export function getDebugLogger(logDir?: string, options: DebugLoggerOptions = {}): DebugLogger | null {
   if (instance) return instance;
   const enabled = process.env.SWARM_DEBUG === "1" || process.env.SWARM_DEBUG === "true" || process.env.SWARM_DEBUG === "verbose";
   if (!enabled || !logDir) return null;
-  const level = (process.env.SWARM_DEBUG_LEVEL as DebugLogLevel) ?? "debug";
-  instance = new DebugLogger(logDir, level);
+  const rawLevel = process.env.SWARM_DEBUG_LEVEL;
+  const level: DebugLogLevel = rawLevel === "trace" ? "trace" : rawLevel === "info" ? "info" : rawLevel === "warn" ? "warn" : rawLevel === "error" ? "error" : "debug";
+  instance = new DebugLogger(logDir, level, options);
   return instance;
+}
+
+export function resetDebugLogger(): void {
+  instance = null;
+}
+
+function defaultSessionId(): string {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  return `session-${ts}`;
+}
+
+function sanitizeSessionId(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || defaultSessionId();
 }
