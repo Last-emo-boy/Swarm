@@ -5,6 +5,74 @@ export type AgentAddress = {
 };
 
 export type AgentStatus = "idle" | "busy" | "offline" | "degraded";
+export type RiskClass = "r0" | "r1" | "r2" | "r3" | "r4";
+export type ApprovalMode = "read-only" | "on-request" | "on-failure" | "auto" | "yolo";
+
+export type WorkItem = {
+  source: "user" | "gateway" | "symphony" | "self" | "worker" | string;
+  source_id?: string;
+  /**
+   * Deprecated compatibility field for older persisted sessions.
+   * New local Work Kernel code should write and read source_id instead.
+   */
+  external_id?: string;
+  human_id?: string;
+  title: string;
+  description?: string;
+  labels: string[];
+  priority?: number | null;
+  state?: string;
+  url?: string;
+  metadata: Record<string, unknown>;
+};
+
+export type WorkspaceLease = {
+  lease_id: string;
+  session_id: string;
+  workspace_root: string;
+  workspace_path: string;
+  scope: string[];
+  write_boundary: "workspace" | "read_only" | "custom";
+  created_at: string;
+  metadata: Record<string, unknown>;
+};
+
+export type RunAttemptKind =
+  | "coding_turn"
+  | "tool_call"
+  | "worker_run"
+  | "swarm_task"
+  | "review"
+  | "verification"
+  | "chat_response";
+
+export type RunAttemptStatus = "started" | "completed" | "failed" | "cancelled" | "stopped";
+
+export type RunAttempt = {
+  attempt_id: string;
+  session_id: string;
+  task_id?: string;
+  runner_id?: string;
+  kind: RunAttemptKind;
+  status: RunAttemptStatus;
+  attempt: number;
+  title?: string;
+  terminal_reason?: string;
+  started_at: string;
+  ended_at?: string;
+  last_event_at: string;
+  workspace_path?: string;
+  error_code?: string;
+  recovery_suggestion?: string;
+  metadata: Record<string, unknown>;
+};
+
+export type WorkSessionOutcome = {
+  changed_files: string[];
+  intermediate_artifacts: string[];
+  tests_run: string[];
+  final_summary: string;
+};
 
 export type SwarmMessageType =
   | "swarm.init"
@@ -110,6 +178,8 @@ export type ConsensusMode =
 export type SwarmPolicy = {
   max_agents: number;
   max_parallel_tasks: number;
+  max_depth?: number;
+  max_concurrency?: number;
   timeout_ms: number;
   retry: {
     max_attempts: number;
@@ -117,6 +187,10 @@ export type SwarmPolicy = {
   };
   require_review: boolean;
   consensus: ConsensusMode;
+  approval_mode?: ApprovalMode;
+  network_access?: "deny" | "allowlist" | "allow";
+  allow_domains?: string[];
+  human_approval_for?: string[];
   safety: {
     require_human_approval_for: string[];
     forbidden_capabilities: string[];
@@ -131,6 +205,9 @@ export type SwarmPolicy = {
     max_tokens?: number;
     max_cost?: number;
     max_tool_calls?: number;
+    max_wall_time_ms?: number;
+    max_agents?: number;
+    max_depth?: number;
   };
 };
 
@@ -138,6 +215,9 @@ export type SwarmSession = {
   swarm_id: string;
   session_id: string;
   user_request_id: string;
+  source?: WorkItem;
+  parent_session_id?: string;
+  workspace_lease_id?: string;
   objective: string;
   status:
     | "created"
@@ -180,6 +260,7 @@ export type SwarmTask = {
   };
   dependencies?: string[];
   assigned_to?: AgentAddress;
+  risk_class?: RiskClass;
   deadline_at?: string;
   constraints?: string[];
   acceptance_criteria?: string[];
@@ -283,4 +364,32 @@ export type AgentResultPayload = {
     type: string;
     summary?: string;
   }[];
+};
+
+export type WorkSnapshot = {
+  session: {
+    session_id: string;
+    swarm_id: string;
+    objective: string;
+    status: SwarmSession["status"];
+    source?: WorkItem;
+    parent_session_id?: string;
+    workspace_lease_id?: string;
+    created_at: string;
+    updated_at: string;
+  };
+  workspace?: WorkspaceLease;
+  attempts: RunAttempt[];
+  workers: unknown[];
+  graph: {
+    tasks: TaskStateSnapshot[];
+    edges: unknown[];
+  };
+  blackboard_counts: Record<string, number>;
+  changed_files: string[];
+  checks: string[];
+  review?: ReviewResult;
+  verification?: unknown;
+  usage_summary: Record<string, number>;
+  final_outcome?: WorkSessionOutcome;
 };

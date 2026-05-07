@@ -26,12 +26,46 @@ export class SwarmDatabase {
         swarm_id TEXT NOT NULL,
         objective TEXT NOT NULL,
         status TEXT NOT NULL,
+        source_json TEXT,
+        parent_session_id TEXT,
+        workspace_lease_id TEXT,
         policy_json TEXT NOT NULL,
         participants_json TEXT NOT NULL,
         plan_json TEXT,
         final_output TEXT,
+        final_outcome_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workspace_leases (
+        lease_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        workspace_path TEXT NOT NULL,
+        scope_json TEXT NOT NULL,
+        write_boundary TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS run_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        task_id TEXT,
+        runner_id TEXT,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        title TEXT,
+        terminal_reason TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        last_event_at TEXT NOT NULL,
+        workspace_path TEXT,
+        error_code TEXT,
+        recovery_suggestion TEXT,
+        metadata_json TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS envelopes (
@@ -96,6 +130,57 @@ export class SwarmDatabase {
         PRIMARY KEY (session_id, task_id)
       );
 
+      CREATE TABLE IF NOT EXISTS task_graph_edges (
+        session_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        depends_on_task_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, task_id, depends_on_task_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS approvals (
+        approval_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        task_id TEXT,
+        action TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        risk TEXT NOT NULL,
+        risk_class TEXT NOT NULL,
+        target TEXT NOT NULL,
+        status TEXT NOT NULL,
+        challenge_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        audit_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        task_id TEXT,
+        trace_id TEXT,
+        actor_type TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        resource_json TEXT NOT NULL,
+        risk_class TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        reason TEXT,
+        checksum TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_events (
+        event_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        task_id TEXT,
+        kind TEXT NOT NULL,
+        amount REAL NOT NULL,
+        unit TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS artifacts (
         artifact_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -122,6 +207,10 @@ export class SwarmDatabase {
         output_contract_json TEXT,
         spawn_reason TEXT,
         requested_by TEXT,
+        blocked_reason TEXT,
+        last_review_json TEXT,
+        last_verification_json TEXT,
+        change_refs_json TEXT,
         last_result TEXT,
         outcome_json TEXT,
         created_at TEXT NOT NULL,
@@ -150,6 +239,10 @@ export class SwarmDatabase {
     this.addColumnIfMissing("envelopes", "idempotency_key", "TEXT");
     this.addColumnIfMissing("envelopes", "reply_to", "TEXT");
     this.addColumnIfMissing("envelopes", "correlation_id", "TEXT");
+    this.addColumnIfMissing("sessions", "source_json", "TEXT");
+    this.addColumnIfMissing("sessions", "parent_session_id", "TEXT");
+    this.addColumnIfMissing("sessions", "workspace_lease_id", "TEXT");
+    this.addColumnIfMissing("sessions", "final_outcome_json", "TEXT");
     this.addColumnIfMissing("worker_states", "agent_spec_id", "TEXT");
     this.addColumnIfMissing("worker_states", "invocation_mode", "TEXT");
     this.addColumnIfMissing("worker_states", "handoff_id", "TEXT");
@@ -158,6 +251,10 @@ export class SwarmDatabase {
     this.addColumnIfMissing("worker_states", "output_contract_json", "TEXT");
     this.addColumnIfMissing("worker_states", "spawn_reason", "TEXT");
     this.addColumnIfMissing("worker_states", "requested_by", "TEXT");
+    this.addColumnIfMissing("worker_states", "blocked_reason", "TEXT");
+    this.addColumnIfMissing("worker_states", "last_review_json", "TEXT");
+    this.addColumnIfMissing("worker_states", "last_verification_json", "TEXT");
+    this.addColumnIfMissing("worker_states", "change_refs_json", "TEXT");
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {

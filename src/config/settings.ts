@@ -43,7 +43,7 @@ export type SwarmSettings = {
   };
 };
 
-export type PermissionMode = "ask" | "auto-edit" | "full-auto";
+export type PermissionMode = "ask" | "auto-edit" | "full-auto" | "yolo";
 
 export type ProviderProtocol =
   | "openai-responses"
@@ -588,8 +588,9 @@ function readJsonIfExists(path: string): unknown {
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  renameSync(`${path}.tmp`, path);
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  renameSync(tempPath, path);
 }
 
 function deepMerge(...values: unknown[]): unknown {
@@ -645,10 +646,13 @@ function normalizeSwarmSettings(settings: SwarmSettings): SwarmSettings {
 }
 
 function normalizePermissions(permissions: SwarmSettings["permissions"]): SwarmSettings["permissions"] {
+  const envMode = process.env.SWARM_PERMISSION_MODE;
   const defaultMode =
-    permissions.defaultMode === "full-auto" || permissions.defaultMode === "auto"
+    envMode === "yolo" || permissions.defaultMode === "yolo"
+      ? "yolo"
+      : envMode === "full-auto" || permissions.defaultMode === "full-auto" || permissions.defaultMode === "auto"
       ? "full-auto"
-      : permissions.defaultMode === "auto-edit"
+      : envMode === "auto-edit" || permissions.defaultMode === "auto-edit"
         ? "auto-edit"
         : "ask";
   return {

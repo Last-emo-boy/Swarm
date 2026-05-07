@@ -5,7 +5,7 @@ import { createEnvelope } from "../protocol/envelope.js";
 import { OpenAIProvider } from "../providers/openai-provider.js";
 import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
-import type { AgentDelegateAction, ToolAction, ToolResult } from "../tools/types.js";
+import type { AgentDelegateAction, ToolAction, ToolResult, WebSearchAction } from "../tools/types.js";
 import { getDebugLogger, type DebugLogger } from "../runtime/debug-logger.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 
@@ -209,6 +209,7 @@ async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelo
       sessionId: envelope.session_id,
       taskId: envelope.task_id,
       attempt: envelope.attempt,
+      serverWebSearch: (searchAction: WebSearchAction) => provider.webSearch(searchAction),
       delegate: (delegateAction: AgentDelegateAction) => delegateToAgent(delegateAction, envelope)
     };
     const result = await runLocalTool(action, toolContext);
@@ -339,6 +340,7 @@ async function handleToolTask(envelope: SwarmEnvelope): Promise<void> {
       sessionId: envelope.session_id,
       taskId: envelope.task_id,
       attempt: envelope.attempt,
+      serverWebSearch: (searchAction: WebSearchAction) => provider.webSearch(searchAction),
       delegate: (delegateAction: AgentDelegateAction) => delegateToAgent(delegateAction, envelope)
     };
     const stopTimer = debug?.time("tool", `${action.type} ${envelope.task_id ?? "?"}`);

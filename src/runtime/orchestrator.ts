@@ -27,6 +27,7 @@ export type ExecutionResult = {
   content: string;
   artifact_path?: string;
   outcome?: SessionOutcome;
+  status?: "completed" | "failed" | "stopped";
 };
 
 export type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<boolean>;
@@ -268,7 +269,7 @@ export class Orchestrator {
     const runAttempt = this.nextTaskAttempt(session, task);
     this.persistTaskState(session, task, "assigned", runAttempt);
     this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "assigned" });
-    await this.ensureToolApproval(task.inputs, capability);
+    await this.ensureToolApproval(task.inputs, capability, session, task.task_id);
 
     const context = task.dependencies?.length
       ? this.blackboard.listForTasks(session.session_id, task.dependencies)
@@ -295,7 +296,7 @@ export class Orchestrator {
       }
     });
     this.persistTaskState(session, task, "running", runAttempt);
-    this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "started" });
+    this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "started" });
 
     // Listen for task.accept / task.start to emit running status
     let runningEmitted = false;
@@ -335,13 +336,14 @@ export class Orchestrator {
         created_by: response.from,
         tags: [task.type, capability, `attempt:${runAttempt}`]
       });
-      this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "completed" });
+      this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "completed" });
       this.persistTaskState(session, task, "completed", runAttempt);
       this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "completed" });
       this.events.emitEvent({ type: "blackboard", entry });
       if (task.type === "tool_call") {
         this.events.emitEvent({
           type: "tool_result",
+          session_id: session.session_id,
           task_id: task.task_id,
           title: task.title,
           action: String(task.inputs?.action ?? capability),
@@ -362,6 +364,7 @@ export class Orchestrator {
       const payload = response.payload as AgentResultPayload;
       this.events.emitEvent({
         type: "tool_result",
+        session_id: session.session_id,
         task_id: task.task_id,
         title: task.title,
         action: String(task.inputs?.action ?? capability),
@@ -387,7 +390,7 @@ export class Orchestrator {
     const recovery = errorPayload.recovery_suggestion ?? (response.type === "error" ? "retry_same_agent" : undefined);
 
     if (recovery === "retry_same_agent" && errorPayload.retryable !== false && attempt < session.policy.retry.max_attempts) {
-      this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
+      this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
       this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
       this.events.emitEvent({ type: "log", level: "warn", message: `Retrying task ${task.task_id} (attempt ${attempt + 1})` });
       return this.runTask(session, task, attempt + 1);
@@ -396,7 +399,7 @@ export class Orchestrator {
     if (recovery === "retry_different_agent") {
       const alternates = task.required_capabilities.filter((c) => c !== capability);
       if (alternates.length > 0 && attempt < session.policy.retry.max_attempts) {
-        this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
+        this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
         this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
         this.events.emitEvent({ type: "log", level: "warn", message: `Retrying task ${task.task_id} with alternate capability ${alternates[0]}` });
         task.required_capabilities = [alternates[0], ...alternates.slice(1)];
@@ -405,7 +408,7 @@ export class Orchestrator {
     }
 
     if (recovery === "ask_human") {
-      this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
+      this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
       this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
       this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed" });
       this.taskCompleted += 1;
@@ -415,7 +418,7 @@ export class Orchestrator {
     }
 
     if (recovery === "abort_swarm") {
-      this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
+      this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
       this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
       this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed" });
       this.taskCompleted += 1;
@@ -424,7 +427,7 @@ export class Orchestrator {
       throw new Error(`Swarm aborted by agent recovery suggestion: ${errorPayload.message ?? task.task_id}`);
     }
 
-    this.events.emitEvent({ type: "task_attempt", task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
+    this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
     this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
     this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed" });
     this.taskCompleted += 1;
@@ -591,7 +594,9 @@ export class Orchestrator {
         path: artifactPath,
         content
       },
-      "tool.file.write"
+      "tool.file.write",
+      session,
+      "task_write_final_artifact"
     );
 
     const envelope = createEnvelope({
@@ -657,7 +662,7 @@ export class Orchestrator {
     };
   }
 
-  private async ensureToolApproval(inputs: Record<string, unknown>, capability: string): Promise<void> {
+  private async ensureToolApproval(inputs: Record<string, unknown>, capability: string, session?: SwarmSession, taskId?: string): Promise<void> {
     const action = this.tryNormalizeToolAction(inputs, capability);
     if (!action) {
       return;
@@ -669,8 +674,11 @@ export class Orchestrator {
     }
 
     const request = createToolApprovalRequest(action);
+    request.session_id = session?.session_id;
+    request.task_id = taskId;
     if (action.type === "file.write" || action.type === "file.edit") {
       request.detail = [request.detail, await renderWritePreflight(action, this.workspace)].filter(Boolean).join("\n\n");
+      request.summary_diff = request.detail;
     }
     this.events.emitEvent({ type: "approval", request, status: "pending" });
     if (!this.approvalHandler) {
@@ -707,10 +715,20 @@ function createSession(objective: string, settings: SwarmSettings): SwarmSession
   const sessionId = `sess_${randomUUID()}`;
   const swarmId = `swarm_${randomUUID()}`;
   const timestamp = nowIso();
+  const source = {
+    source: "user",
+    human_id: sessionId,
+    title: objective.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 160) ?? "Swarm objective",
+    description: objective,
+    labels: ["interactive", "full_swarm"],
+    state: "active",
+    metadata: { mode: "full_swarm" }
+  };
   return {
     swarm_id: swarmId,
     session_id: sessionId,
     user_request_id: `user_req_${randomUUID()}`,
+    source,
     objective,
     status: "created",
     coordinator: { agent_id: "orchestrator", role: "coordinator" },
@@ -725,12 +743,22 @@ function defaultPolicy(settings: SwarmSettings): SwarmPolicy {
   return {
     max_agents: settings.runtime.maxAgents,
     max_parallel_tasks: settings.runtime.maxParallelTasks,
+    max_depth: 2,
+    max_concurrency: settings.runtime.maxParallelTasks,
     timeout_ms: Number(process.env.SWARM_TASK_TIMEOUT_MS ?? settings.runtime.taskTimeoutMs),
     retry: { max_attempts: 1, backoff_ms: 1000 },
     require_review: true,
     consensus: "reviewer_approval",
+    approval_mode: settings.permissions.defaultMode === "yolo"
+      ? "yolo"
+      : settings.permissions.defaultMode === "full-auto" || settings.permissions.defaultMode === "auto"
+        ? "auto"
+        : "on-request",
+    network_access: settings.tools.webSearch ? "allow" : "deny",
+    allow_domains: [],
+    human_approval_for: settings.permissions.ask,
     safety: {
-      require_human_approval_for: [],
+      require_human_approval_for: settings.permissions.ask,
       forbidden_capabilities: ["credential.exfiltrate"],
       sandbox_required: false
     },
@@ -740,7 +768,8 @@ function defaultPolicy(settings: SwarmSettings): SwarmPolicy {
       retention: "session"
     },
     budget: {
-      max_tool_calls: 50
+      max_tool_calls: 50,
+      max_agents: settings.runtime.maxAgents
     }
   };
 }

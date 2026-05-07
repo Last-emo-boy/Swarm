@@ -40,7 +40,10 @@ export class SwarmController {
       action: `run_${route.mode}`,
       reason: route.reason,
       confidence: route.confidence,
-      instruction: objective
+      instruction: objective,
+      details: {
+        route
+      }
     });
     return this.handlers.executeRoute(objective, route);
   }

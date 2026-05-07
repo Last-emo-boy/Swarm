@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import { createToolApprovalRequest, toolRequiresApproval } from "../tools/permissions.js";
-import type { AgentDelegateAction, LocalToolContext, ToolAction, ToolApprovalRequest, ToolResult } from "../tools/types.js";
+import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { OpenAIProvider } from "../providers/openai-provider.js";
 import type { SwarmSettings } from "../config/settings.js";
 import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
 import { WorkerStateStore } from "../storage/worker-state-store.js";
-import type { AgentInvocationRequest } from "./agent-specs.js";
+import { listAgentSpecs, type AgentInvocationRequest } from "./agent-specs.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -36,6 +36,7 @@ type CodingLoopToolResult = {
   data?: unknown;
   errors?: string[];
   errorCode?: string;
+  recoverySuggestion?: string;
 };
 
 type LiveUserMessage = {
@@ -63,6 +64,7 @@ type CodingLoopOptions = {
   delegateDepth?: number;
   maxTurns?: number;
   maxToolCalls?: number;
+  sessionId?: string;
   emitFinal?: boolean;
   emitProgress?: boolean;
   workerId?: string;
@@ -71,6 +73,9 @@ type CodingLoopOptions = {
   agentInstructions?: string;
   allowedTools?: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
+  onWorkspaceChange?: (change: WorkspaceChangeMetadata) => void;
+  onFileLock?: (event: FileLockEvent) => void;
+  onSessionStart?: (sessionId: string, objective: string) => void;
 };
 
 const MAX_LOOP_TURNS = 12;
@@ -78,6 +83,25 @@ const MAX_TOOL_CALLS = 50;
 const MAX_DELEGATE_DEPTH = 1;
 const LONG_OUTPUT_THRESHOLD_BYTES = 32_000;
 const LONG_OUTPUT_PREVIEW_BYTES = 18_000;
+const ACTIVITY_PREVIEW_LENGTH = 80;
+const DEFAULT_TOOL_NAMES = [
+  "file.read",
+  "file.list",
+  "file.glob",
+  "file.grep",
+  "file.stat",
+  "file.write",
+  "file.edit",
+  "shell.exec",
+  "code.test",
+  "code.lint",
+  "git.status",
+  "git.diff",
+  "git.log",
+  "web.search",
+  "web.fetch",
+  "todo.write"
+] as const;
 
 export class CodingAgentLoop {
   private readonly liveMessages: LiveUserMessage[] = [];
@@ -87,6 +111,8 @@ export class CodingAgentLoop {
   private currentPhase = "idle";
   private lastResultSummary = "";
   private interruptRequested = false;
+  private stopRequested = false;
+  private stopReason = "";
 
   constructor(private readonly options: CodingLoopOptions) {}
 
@@ -137,12 +163,23 @@ export class CodingAgentLoop {
     this.options.events.emitEvent({ type: "control", ...decision });
   }
 
+  requestStop(reason: string): void {
+    this.stopRequested = true;
+    this.stopReason = reason;
+    this.requestInterrupt(reason);
+  }
+
+  isSession(sessionId: string): boolean {
+    return this.sessionId === sessionId || this.options.sessionId === sessionId;
+  }
+
   async run(objective: string): Promise<ExecutionResult> {
     const role = this.options.role ?? "main";
     const maxTurns = this.options.maxTurns ?? MAX_LOOP_TURNS;
     const maxToolCalls = this.options.maxToolCalls ?? MAX_TOOL_CALLS;
-    const sessionId = role === "worker" ? `worker_loop_${randomUUID()}` : `loop_${randomUUID()}`;
+    const sessionId = this.options.sessionId ?? (role === "worker" ? `worker_loop_${randomUUID()}` : `loop_${randomUUID()}`);
     this.sessionId = sessionId;
+    this.options.onSessionStart?.(sessionId, objective);
     const toolResults: CodingLoopToolResult[] = [];
     const changedFiles = new Set<string>();
     const testsRun = new Set<string>();
@@ -166,8 +203,8 @@ export class CodingAgentLoop {
       if (this.isStopRequested()) {
         lastResult = {
           status: "failed",
-          summary: "Worker stopped by main Swarm",
-          message: "Worker stopped before completion.",
+          summary: this.stopReason || "Worker stopped by main Swarm",
+          message: this.stopReason || "Worker stopped before completion.",
           tool_calls: [],
           files_touched: [],
           next_actions: []
@@ -176,49 +213,74 @@ export class CodingAgentLoop {
       }
       this.currentPhase = `turn_${turn}:thinking`;
       const turnTaskId = `${role === "worker" ? sessionId : "coding"}_turn_${turn}`;
+      this.emitActivity(sessionId, "thinking", `${role === "worker" ? "Worker" : "Swarm"} thinking turn ${turn}/${maxTurns}`, { turn, taskId: turnTaskId });
       this.options.events.emitEvent({
         type: "task_attempt",
+        session_id: sessionId,
         task_id: turnTaskId,
         title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
         attempt: turn,
         status: "started"
       });
-      const modelText = await this.options.provider.generateText({
-        model: this.options.provider.workerModel,
-        system: codingLoopSystemPrompt({
-          role,
-          delegateAvailable: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0,
-          agentInstructions: this.options.agentInstructions,
-          allowedTools: this.options.allowedTools,
-          writePolicy: this.options.writePolicy
-        }),
-        user: JSON.stringify(
-          {
-            objective,
+      try {
+        const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
+        const availableTools = allowedToolNames(this.options.allowedTools, delegateAvailable);
+        const modelText = await this.options.provider.generateText({
+          model: this.options.provider.workerModel,
+          system: codingLoopSystemPrompt({
             role,
-            parent_session_id: this.options.parentSessionId,
-            live_user_messages: this.liveMessages,
-            control_decisions: this.controlDecisions,
-            tool_results: toolResults,
-            loop: {
-              turn,
-              remaining_turns: maxTurns - turn,
-              remaining_tool_calls: maxToolCalls - toolCallCount
-            }
-          },
-          null,
-          2
-        )
-      });
-      lastResult = await parseCodingLoopModelResultWithRepair(modelText, objective, this.options.provider);
+            delegateAvailable,
+            agentInstructions: this.options.agentInstructions,
+            allowedTools: availableTools,
+            writePolicy: this.options.writePolicy
+          }),
+          user: JSON.stringify(
+            {
+              objective,
+              role,
+              parent_session_id: this.options.parentSessionId,
+              tool_schemas: renderToolSchemas(availableTools),
+              available_agent_specs: role === "main" && delegateAvailable
+                ? renderAvailableAgentSpecs()
+                : undefined,
+              delegation_policy: role === "main" && delegateAvailable
+                ? codingLoopDelegationPolicy()
+                : undefined,
+              live_user_messages: this.liveMessages,
+              control_decisions: this.controlDecisions,
+              tool_results: toolResults,
+              loop: {
+                turn,
+                remaining_turns: maxTurns - turn,
+                remaining_tool_calls: maxToolCalls - toolCallCount
+              }
+            },
+            null,
+            2
+          )
+        });
+        lastResult = await parseCodingLoopModelResultWithRepair(modelText, objective, this.options.provider);
+      } catch (error) {
+        this.options.events.emitEvent({
+          type: "task_attempt",
+          session_id: sessionId,
+          task_id: turnTaskId,
+          title: error instanceof Error ? error.message : String(error),
+          attempt: turn,
+          status: "failed"
+        });
+        throw error;
+      }
       this.lastResultSummary = lastResult.summary;
       for (const file of lastResult.files_touched) {
         changedFiles.add(file);
       }
 
       if (lastResult.status !== "continue" || lastResult.tool_calls.length === 0 || toolCallCount >= maxToolCalls) {
+        this.emitActivity(sessionId, "turn_complete", `Turn ${turn}/${maxTurns} complete: ${firstLine(lastResult.summary) || "no tools requested"}`, { turn, taskId: turnTaskId });
         this.options.events.emitEvent({
           type: "task_attempt",
+          session_id: sessionId,
           task_id: turnTaskId,
           title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
           attempt: turn,
@@ -238,8 +300,8 @@ export class CodingAgentLoop {
         if (this.isStopRequested()) {
           lastResult = {
             status: "failed",
-            summary: "Worker stopped by main Swarm",
-            message: "Worker stopped before starting the next tool batch.",
+            summary: this.stopReason || "Worker stopped by main Swarm",
+            message: this.stopReason || "Worker stopped before starting the next tool batch.",
             tool_calls: [],
             files_touched: [...changedFiles],
             next_actions: []
@@ -252,8 +314,10 @@ export class CodingAgentLoop {
         }
         this.currentPhase = batch.concurrent ? "running read-only tool batch" : "running tool";
         if (batch.concurrent) {
+          const calls = batch.calls.slice(0, maxToolCalls - toolCallCount);
+          this.emitActivity(sessionId, "running_tools", `Running ${calls.length} read-only tools: ${summarizeToolBatch(calls)}`, { turn, taskId: turnTaskId });
           const executed = await Promise.all(
-            batch.calls.slice(0, maxToolCalls - toolCallCount).map((call) => this.executeToolCall(call, sessionId))
+            calls.map((call) => this.executeToolCall(call, sessionId, turn))
           );
           toolCallCount += executed.length;
           for (const item of executed) {
@@ -268,15 +332,15 @@ export class CodingAgentLoop {
             if (this.isStopRequested()) {
               lastResult = {
                 status: "failed",
-                summary: "Worker stopped by main Swarm",
-                message: "Worker stopped before starting the next tool.",
+                summary: this.stopReason || "Worker stopped by main Swarm",
+                message: this.stopReason || "Worker stopped before starting the next tool.",
                 tool_calls: [],
                 files_touched: [...changedFiles],
                 next_actions: []
               };
               break;
             }
-            const item = await this.executeToolCall(call, sessionId);
+            const item = await this.executeToolCall(call, sessionId, turn);
             toolCallCount += 1;
             toolResults.push(item.result);
             collectOutcome(item.result, changedFiles, testsRun, intermediateArtifacts);
@@ -290,11 +354,13 @@ export class CodingAgentLoop {
 
       this.options.events.emitEvent({
         type: "task_attempt",
+        session_id: sessionId,
         task_id: turnTaskId,
         title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
         attempt: turn,
         status: "completed"
       });
+      this.emitActivity(sessionId, "turn_complete", `Turn ${turn}/${maxTurns} complete: ${firstLine(lastResult.summary) || "tools finished"}`, { turn, taskId: turnTaskId });
       if (this.options.emitProgress !== false) {
         this.options.events.emitEvent({ type: "progress", completed: turn, total: maxTurns });
       }
@@ -310,11 +376,20 @@ export class CodingAgentLoop {
     if (this.options.emitFinal !== false) {
       this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome });
     }
+    this.emitActivity(
+      sessionId,
+      this.stopRequested ? "stopped" : "completed",
+      this.stopRequested ? `Stopped: ${this.stopReason || firstLine(content)}` : `Completed: ${firstLine(content)}`,
+      { taskId: "final" }
+    );
     this.currentPhase = "idle";
-    return { session_id: sessionId, content, outcome };
+    return { session_id: sessionId, content, outcome, status: this.stopRequested ? "stopped" : lastResult.status === "failed" ? "failed" : "completed" };
   }
 
   private isStopRequested(): boolean {
+    if (this.stopRequested) {
+      return true;
+    }
     if (!this.options.workerId || !this.options.workerStore) {
       return false;
     }
@@ -359,18 +434,22 @@ export class CodingAgentLoop {
     };
   }
 
-  private async executeToolCall(call: CodingLoopToolCall, sessionId: string): Promise<{ result: CodingLoopToolResult }> {
+  private async executeToolCall(call: CodingLoopToolCall, sessionId: string, turn?: number): Promise<{ result: CodingLoopToolResult }> {
     const id = call.id ?? `tool_${randomUUID()}`;
     try {
       const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
       if (this.options.allowedTools && !this.options.allowedTools.includes(action.type)) {
         throw new Error(`Tool action is not allowed for this agent persona: ${action.type}`);
       }
+      this.emitActivity(sessionId, "running_tool", `Running ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
       if (toolRequiresApproval(action, this.options.settings)) {
         if (!this.options.approvalHandler) {
           throw new Error(`Tool action requires approval but no approval handler is available: ${action.type}`);
         }
         const request = createToolApprovalRequest(action);
+        request.session_id = sessionId;
+        request.task_id = id;
+        this.emitActivity(sessionId, "waiting_approval", `Waiting for approval: ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
         this.options.events.emitEvent({ type: "approval", request, status: "pending" });
         const approved = await this.options.approvalHandler(request);
         this.options.events.emitEvent({ type: "approval", request, status: approved ? "approved" : "denied" });
@@ -385,6 +464,9 @@ export class CodingAgentLoop {
         sessionId,
         taskId: id,
         attempt: 0,
+        serverWebSearch: (searchAction) => this.options.provider.webSearch(searchAction),
+        onWorkspaceChange: this.options.onWorkspaceChange,
+        onFileLock: this.options.onFileLock,
         delegate: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0
           ? (action) => this.delegateWorker(action, sessionId, id)
           : undefined
@@ -400,10 +482,12 @@ export class CodingAgentLoop {
         outputRef: prepared.outputRef,
         data: prepared.data,
         errors: rawResult.errors,
-        errorCode: rawResult.errorCode
+        errorCode: rawResult.errorCode,
+        recoverySuggestion: rawResult.recoverySuggestion
       };
       this.options.events.emitEvent({
         type: "tool_result",
+        session_id: sessionId,
         task_id: id,
         title: call.reason ?? action.type,
         action: action.type,
@@ -411,7 +495,8 @@ export class CodingAgentLoop {
         content: prepared.content,
         status: result.status,
         outputRef: prepared.outputRef,
-        errorCode: rawResult.errorCode
+        errorCode: rawResult.errorCode,
+        recoverySuggestion: rawResult.recoverySuggestion
       });
       return { result };
     } catch (error) {
@@ -427,19 +512,39 @@ export class CodingAgentLoop {
         status: "failed",
         summary: reason,
         errors: [reason],
-        errorCode: classifyToolError(error)
+        errorCode: classifyToolError(error),
+        recoverySuggestion: recoverySuggestionForToolError(classifyToolError(error), reason)
       };
       this.options.events.emitEvent({
         type: "tool_result",
+        session_id: sessionId,
         task_id: id,
         title: call.reason ?? String(result.action),
         action: String(result.action),
         summary: reason,
         status: "failed",
-        errorCode: result.errorCode
+        errorCode: result.errorCode,
+        recoverySuggestion: result.recoverySuggestion
       });
       return { result };
     }
+  }
+
+  private emitActivity(
+    sessionId: string,
+    phase: Extract<Parameters<RuntimeEvents["emitEvent"]>[0], { type: "loop_activity" }>["phase"],
+    message: string,
+    options: { turn?: number; tool?: string; taskId?: string } = {}
+  ): void {
+    this.options.events.emitEvent({
+      type: "loop_activity",
+      session_id: sessionId,
+      phase,
+      message,
+      turn: options.turn,
+      tool: options.tool,
+      task_id: options.taskId
+    });
   }
 
   private async delegateWorker(action: AgentDelegateAction, sessionId: string, parentTaskId: string): Promise<ToolResult> {
@@ -450,6 +555,9 @@ export class CodingAgentLoop {
         capability: action.capability,
         task: action.task,
         context: action.context,
+        preferred_agent_spec_id: action.preferred_agent_spec_id,
+        preferred_mode: action.preferred_mode,
+        file_scope: action.file_scope,
         spawn_reason: `agent.delegate from ${parentTaskId}`
       });
     }
@@ -545,6 +653,64 @@ export class CodingAgentLoop {
   }
 }
 
+function summarizeToolBatch(calls: CodingLoopToolCall[]): string {
+  const names = calls.map((call) => String(call.action ?? call.inputs?.action ?? "unknown"));
+  const unique = [...new Set(names)].slice(0, 4);
+  return unique.join(", ") + (names.length > unique.length ? `, +${names.length - unique.length}` : "");
+}
+
+function describeToolAction(action: ToolAction): string {
+  switch (action.type) {
+    case "file.read":
+      return `file.read ${previewActivityValue(action.path ?? action.paths?.join(", ") ?? ".")}`;
+    case "file.list":
+      return `file.list ${previewActivityValue(action.root)}`;
+    case "file.glob":
+      return `file.glob ${previewActivityValue(action.pattern)} in ${previewActivityValue(action.root)}`;
+    case "file.grep":
+      return `file.grep ${previewActivityValue(action.pattern)} in ${previewActivityValue(action.root)}`;
+    case "file.stat":
+      return `file.stat ${previewActivityValue(action.path)}`;
+    case "file.write":
+      return `file.write ${previewActivityValue(action.path)}`;
+    case "file.edit":
+      return `file.edit ${previewActivityValue(action.path)}`;
+    case "todo.write":
+      return `todo.write ${action.todos.length} item(s)`;
+    case "shell.exec":
+      return `shell.exec ${previewActivityValue(action.command)}`;
+    case "web.search":
+      return `web.search ${previewActivityValue(action.query)}`;
+    case "web.fetch":
+      return `web.fetch ${previewActivityValue(action.url)}`;
+    case "code.test":
+      return `code.test ${previewActivityValue(action.command)}`;
+    case "code.lint":
+      return `code.lint ${previewActivityValue(action.root ?? action.include ?? ".")}`;
+    case "git.status":
+      return `git.status ${previewActivityValue(action.cwd ?? ".")}`;
+    case "git.diff":
+      return `git.diff ${previewActivityValue(action.cwd ?? ".")}${action.staged ? " --staged" : ""}`;
+    case "git.log":
+      return `git.log ${previewActivityValue(action.cwd ?? ".")}`;
+    case "git.branch":
+      return `git.branch ${action.action ?? "list"}${action.name ? ` ${previewActivityValue(action.name)}` : ""}`;
+    case "package.install":
+      return `package.install ${previewActivityValue(action.command)}`;
+    case "solidity.compile":
+      return `solidity.compile ${previewActivityValue(action.cwd ?? ".")}`;
+    case "agent.delegate":
+      return `agent.delegate ${previewActivityValue(action.capability)}: ${previewActivityValue(action.task)}`;
+  }
+}
+
+function previewActivityValue(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > ACTIVITY_PREVIEW_LENGTH
+    ? `${normalized.slice(0, ACTIVITY_PREVIEW_LENGTH - 1)}…`
+    : normalized;
+}
+
 function codingLoopSystemPrompt(input: {
   role: "main" | "worker";
   delegateAvailable: boolean;
@@ -552,24 +718,7 @@ function codingLoopSystemPrompt(input: {
   allowedTools?: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
 }): string {
-  const defaultTools = [
-    "file.read",
-    "file.list",
-    "file.glob",
-    "file.grep",
-    "file.stat",
-    "file.write",
-    "file.edit",
-    "shell.exec",
-    "code.test",
-    "code.lint",
-    "git.status",
-    "git.diff",
-    "git.log",
-    "todo.write",
-    input.delegateAvailable ? "agent.delegate" : undefined
-  ].filter(Boolean) as string[];
-  const tools = input.allowedTools?.length ? input.allowedTools.join(", ") : defaultTools.join(", ");
+  const tools = allowedToolNames(input.allowedTools, input.delegateAvailable).join(", ");
   return [
     input.role === "worker"
       ? "You are a Swarm worker agent running inside the main Swarm controller."
@@ -586,10 +735,13 @@ function codingLoopSystemPrompt(input: {
     input.agentInstructions,
     "Read existing files before editing them. For edits, read the full file first.",
     "Prefer file.edit for existing files and file.write for new files. Do not write final reports unless requested.",
-    "For tool_calls, each item is {id, action, inputs, reason}.",
+    "For tool_calls, each item is {id, action, inputs, reason}. The action must match an allowed tool, and inputs must match the tool_schemas in the user payload.",
     input.delegateAvailable
       ? "Use agent.delegate only for bounded research, critique, or planning help; the main Swarm remains responsible for user-facing synthesis and real workspace edits."
       : "Do not use agent.delegate in this loop.",
+    input.delegateAvailable && input.role === "main"
+      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, and file_scope when known. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns."
+      : undefined,
     "Keep message grounded in actual tool results. Mention verification commands that were run."
     , input.role === "main"
       ? "Live user messages are part of the main Swarm conversation, not side-channel chat."
@@ -597,6 +749,156 @@ function codingLoopSystemPrompt(input: {
     "Always obey the newest live user messages and control_decisions. If they redirect the task, stop pursuing the old target after the current safe boundary."
   ].filter(Boolean).join(" ");
 }
+
+function renderAvailableAgentSpecs(): Array<Record<string, unknown>> {
+  return listAgentSpecs().map((spec) => ({
+    id: spec.id,
+    role: spec.role,
+    description: spec.description,
+    when_to_use: spec.when_to_use,
+    capabilities: spec.capabilities,
+    write_policy: spec.write_policy,
+    budget: spec.default_budget,
+    output_contract: spec.output_contract
+  }));
+}
+
+function codingLoopDelegationPolicy(): Record<string, unknown> {
+  return {
+    main_swarm_owns_user_facing_answer: true,
+    delegate_when: [
+      "A bounded read-only exploration can run independently.",
+      "A fresh reviewer, critic, or verifier can catch defects after edits or before risky changes.",
+      "A focused specialist can own a clearly scoped implementation or deep-work segment."
+    ],
+    avoid_delegate_when: [
+      "The next step is on the critical path and delegation would only add latency.",
+      "The task is small enough for the main coding loop.",
+      "The subagent would need broad unsupervised write access without a clear file scope."
+    ],
+    preferred_patterns: [
+      "researcher/call_subagent for parallel repo exploration and evidence gathering.",
+      "reviewer or critic/call_subagent for independent checks.",
+      "verifier/call_subagent after workspace changes.",
+      "coder/scoped_write only with file_scope.",
+      "handoff only when a focused specialist should preserve context across several turns."
+    ]
+  };
+}
+
+function allowedToolNames(allowedTools: string[] | undefined, delegateAvailable: boolean): string[] {
+  const tools = allowedTools?.length ? allowedTools : [...DEFAULT_TOOL_NAMES];
+  return delegateAvailable && !tools.includes("agent.delegate")
+    ? [...tools, "agent.delegate"]
+    : tools.filter((tool) => delegateAvailable || tool !== "agent.delegate");
+}
+
+function renderToolSchemas(allowedTools: string[]): Array<Record<string, unknown>> {
+  return allowedTools.map((tool) => TOOL_SCHEMAS[tool] ?? {
+    action: tool,
+    inputs: { action: tool },
+    notes: "No detailed schema is registered for this tool."
+  });
+}
+
+const TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
+  "file.read": {
+    action: "file.read",
+    inputs: {
+      action: "file.read",
+      path: "string path, or use paths",
+      paths: "optional string[] for multiple small files",
+      startLine: "optional 1-based line number",
+      endLine: "optional 1-based line number; -1 means EOF",
+      maxBytes: "optional byte budget"
+    },
+    notes: "Use a full file.read before editing an existing file."
+  },
+  "file.list": {
+    action: "file.list",
+    inputs: { action: "file.list", root: "directory path", maxFiles: "optional number", maxDepth: "optional number" }
+  },
+  "file.glob": {
+    action: "file.glob",
+    inputs: { action: "file.glob", root: "directory path", pattern: "glob pattern", maxResults: "optional number", maxDepth: "optional number" }
+  },
+  "file.grep": {
+    action: "file.grep",
+    inputs: { action: "file.grep", root: "file or directory path", pattern: "regex pattern", include: "optional glob", maxMatches: "optional number", contextLines: "optional number" }
+  },
+  "file.stat": {
+    action: "file.stat",
+    inputs: { action: "file.stat", path: "path" }
+  },
+  "file.write": {
+    action: "file.write",
+    inputs: { action: "file.write", path: "workspace path", content: "complete file content" },
+    notes: "Use for new files or complete replacement. Prefer file.edit for existing files after a full read."
+  },
+  "file.edit": {
+    action: "file.edit",
+    inputs: {
+      action: "file.edit",
+      path: "workspace path",
+      operation: "str_replace | insert",
+      oldText: "required for str_replace; must match exactly once",
+      newText: "replacement text for str_replace",
+      line: "1-based insertion line for insert",
+      content: "inserted text for insert"
+    }
+  },
+  "shell.exec": {
+    action: "shell.exec",
+    inputs: { action: "shell.exec", command: "command string", cwd: "optional workspace-relative cwd", timeoutMs: "optional ms", maxOutputBytes: "optional bytes" }
+  },
+  "code.test": {
+    action: "code.test",
+    inputs: { action: "code.test", command: "test/check command string", cwd: "optional cwd", timeoutMs: "optional ms" }
+  },
+  "code.lint": {
+    action: "code.lint",
+    inputs: { action: "code.lint", root: "optional root", include: "optional glob" }
+  },
+  "git.status": {
+    action: "git.status",
+    inputs: { action: "git.status", cwd: "optional cwd" }
+  },
+  "git.diff": {
+    action: "git.diff",
+    inputs: { action: "git.diff", cwd: "optional cwd", staged: "optional boolean" }
+  },
+  "git.log": {
+    action: "git.log",
+    inputs: { action: "git.log", cwd: "optional cwd", maxCommits: "optional number" }
+  },
+  "web.search": {
+    action: "web.search",
+    inputs: { action: "web.search", query: "search query", allowed_domains: "optional string[]", blocked_domains: "optional string[]", maxUses: "optional number" }
+  },
+  "web.fetch": {
+    action: "web.fetch",
+    inputs: { action: "web.fetch", url: "http(s) URL", timeoutMs: "optional ms", maxBytes: "optional bytes" }
+  },
+  "todo.write": {
+    action: "todo.write",
+    inputs: {
+      action: "todo.write",
+      todos: "array of {content:string,status:'pending'|'in_progress'|'completed'}"
+    }
+  },
+  "agent.delegate": {
+    action: "agent.delegate",
+    inputs: {
+      action: "agent.delegate",
+      capability: "requested capability such as code.research, code.review, verify, architecture.design, bug.fix",
+      task: "bounded internal task for the specialist",
+      context: "optional concise context and evidence",
+      preferred_agent_spec_id: "optional agent spec id from available_agent_specs",
+      preferred_mode: "optional call_subagent | handoff | parallel",
+      file_scope: "optional string[]; required for scoped_write implementation delegation"
+    }
+  }
+};
 
 async function parseCodingLoopModelResultWithRepair(
   text: string,
@@ -689,7 +991,9 @@ function isReadOnlyToolAction(action: ToolAction): boolean {
     "file.stat",
     "git.status",
     "git.diff",
-    "git.log"
+    "git.log",
+    "web.search",
+    "web.fetch"
   ].includes(action.type);
 }
 
@@ -790,6 +1094,22 @@ function classifyToolError(error: unknown): string {
   if (/permission|denied/i.test(message)) return "PERMISSION_DENIED";
   if (/requires|invalid|unsupported/i.test(message)) return "INVALID_INPUT";
   return "TOOL_FAILED";
+}
+
+function recoverySuggestionForToolError(errorCode: string | undefined, message: string): string {
+  if (errorCode === "PERMISSION_DENIED") {
+    return "Inspect the approval or permission rule, then retry with a narrower command or explicitly allow the action.";
+  }
+  if (errorCode === "FS_NOT_FOUND") {
+    return "Run file.list, file.glob, or git.status to confirm the path, then retry with the resolved workspace-relative path.";
+  }
+  if (errorCode === "INVALID_INPUT") {
+    return "Correct the tool arguments and retry; use file.read or tool context to build a more precise request.";
+  }
+  if (/timeout|timed out/i.test(message)) {
+    return "Retry with a longer timeout or a narrower command that produces less output.";
+  }
+  return "Inspect the tool output, adjust the command or inputs, and retry from the current workspace state.";
 }
 
 function firstLine(text: string): string {

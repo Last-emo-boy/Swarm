@@ -9,7 +9,7 @@ import {
   resolveShellCwd,
   resolveWritablePath
 } from "./permissions.js";
-import type { LocalToolContext, ToolAction, ToolResult } from "./types.js";
+import type { LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
 
 type WalkedFile = {
   path: string;
@@ -26,8 +26,19 @@ type ReadSnapshot = {
   truncated: boolean;
 };
 
+type ShellCommandResult = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  truncated: boolean;
+  error?: string;
+};
+
 const readSnapshots = new Map<string, ReadSnapshot>();
 const todoStates = new Map<string, Array<{ content: string; status: "pending" | "in_progress" | "completed" }>>();
+const writeLocks = new Map<string, { holder: string; acquiredAt: string }>();
 
 export function normalizeToolAction(inputs: Record<string, unknown>, capability?: string): ToolAction {
   const rawAction = String(inputs.action ?? capability ?? "").trim();
@@ -104,7 +115,13 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
     };
   }
   if (action === "web.search") {
-    return { type: "web.search", query: stringInput(inputs.query) };
+    return {
+      type: "web.search",
+      query: stringInput(inputs.query),
+      allowed_domains: stringListInput(inputs.allowed_domains ?? inputs.allowedDomains ?? inputs.allowDomains),
+      blocked_domains: stringListInput(inputs.blocked_domains ?? inputs.blockedDomains ?? inputs.blockDomains),
+      maxUses: numberInput(inputs.maxUses ?? inputs.max_uses)
+    };
   }
   if (action === "web.fetch") {
     return {
@@ -175,7 +192,10 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       type: "agent.delegate",
       capability: stringInput(inputs.capability),
       task: stringInput(inputs.task ?? inputs.description ?? inputs.objective),
-      context: optionalStringInput(inputs.context)
+      context: optionalStringInput(inputs.context),
+      preferred_agent_spec_id: optionalStringInput(inputs.preferred_agent_spec_id ?? inputs.agent_spec_id ?? inputs.agent),
+      preferred_mode: agentInvocationModeInput(inputs.preferred_mode ?? inputs.invocation_mode ?? inputs.mode),
+      file_scope: stringArrayInput(inputs.file_scope ?? inputs.fileScope ?? inputs.paths)
     };
   }
   throw new Error(`Unsupported tool action: ${rawAction || "(empty)"}`);
@@ -219,7 +239,7 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
     if (!context.settings.tools.webSearch) {
       throw new Error("Web search is disabled by ~/.swarm/settings.json");
     }
-    return webSearch(action.query);
+    return webSearch(action, context);
   }
   if (action.type === "web.fetch") {
     if (!context.settings.tools.webSearch) {
@@ -261,13 +281,13 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
 }
 
 export function renderToolResultDetail(result: ToolResult): string {
-  if (result.content) {
-    return result.content;
-  }
-  if (result.outputRef) {
-    return `Full output: ${result.outputRef}`;
-  }
-  return JSON.stringify(result.data ?? result.metadata ?? {}, null, 2);
+  const recovery = result.recoverySuggestion ? `Recovery: ${result.recoverySuggestion}` : undefined;
+  const body = result.content
+    ? result.content
+    : result.outputRef
+      ? `Full output: ${result.outputRef}`
+      : JSON.stringify(result.data ?? result.metadata ?? {}, null, 2);
+  return [body, recovery].filter(Boolean).join("\n\n");
 }
 
 async function readLocalFile(action: Extract<ToolAction, { type: "file.read" }>, context: LocalToolContext): Promise<ToolResult> {
@@ -428,6 +448,7 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
       errorCode,
       retryable: false,
       recoverable: errorCode === "FS_NOT_FOUND",
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, errorCode, rootInfo.message),
       data: {
         root: displayPath(root, context.workspace),
         requestedRoot: action.root || ".",
@@ -444,6 +465,7 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
       errorCode: "INVALID_INPUT",
       retryable: false,
       recoverable: false,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, "INVALID_INPUT", `not a file or directory: ${displayPath(root, context.workspace)}`),
       data: {
         root: displayPath(root, context.workspace),
         requestedRoot: action.root || ".",
@@ -523,72 +545,102 @@ async function statLocalPath(action: Extract<ToolAction, { type: "file.stat" }>,
 
 async function writeLocalFile(action: Extract<ToolAction, { type: "file.write" }>, context: LocalToolContext): Promise<ToolResult> {
   const resolved = resolveWritablePath(action.path, context);
-  const existed = await stat(resolved).then((info) => info.isFile()).catch(() => false);
-  await assertWritePrecondition(resolved, context);
-  const original = existed ? await readFile(resolved, "utf8") : "";
-  await mkdir(dirname(resolved), { recursive: true });
-  await writeFile(resolved, action.content, "utf8");
-  const info = await stat(resolved);
-  rememberReadSnapshot(resolved, action.content, info.mtimeMs, context);
-  const bytes = Buffer.byteLength(action.content, "utf8");
-  const path = displayPath(resolved, context.workspace);
-  return {
-    action: action.type,
-    status: "success",
-    summary: `${existed ? "updated" : "created"} ${bytes} bytes at ${path}`,
-    data: {
+  const release = acquireWriteLock(resolved, context);
+  try {
+    const existed = await stat(resolved).then((info) => info.isFile()).catch(() => false);
+    await assertWritePrecondition(resolved, context);
+    const original = existed ? await readFile(resolved, "utf8") : "";
+    await mkdir(dirname(resolved), { recursive: true });
+    await writeFile(resolved, action.content, "utf8");
+    const info = await stat(resolved);
+    rememberReadSnapshot(resolved, action.content, info.mtimeMs, context);
+    const bytes = Buffer.byteLength(action.content, "utf8");
+    const path = displayPath(resolved, context.workspace);
+    const change = createWorkspaceChange({
       path,
-      bytes,
       operation: existed ? "update" : "create",
-      diff: createSimpleDiff(path, original, action.content)
-    }
-  };
+      before: original,
+      after: action.content,
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `${existed ? "updated" : "created"} ${bytes} bytes at ${path}`,
+      data: {
+        path,
+        bytes,
+        operation: existed ? "update" : "create",
+        change,
+        diff: createSimpleDiff(path, original, action.content)
+      }
+    };
+  } finally {
+    release();
+  }
 }
 
 async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>, context: LocalToolContext): Promise<ToolResult> {
   const resolved = resolveWritablePath(action.path, context);
-  await assertWritePrecondition(resolved, context);
-  const original = await readFile(resolved, "utf8");
-  let next: string;
-  if (action.operation === "insert") {
-    const insert = action.content ?? action.newText ?? "";
-    if (!insert) {
-      throw new Error("file.edit insert requires content");
-    }
-    const lines = original.split(/\r?\n/);
-    if (action.line === undefined || action.line === -1) {
-      next = `${original}${original.endsWith("\n") ? "" : "\n"}${insert}`;
+  const release = acquireWriteLock(resolved, context);
+  try {
+    await assertWritePrecondition(resolved, context);
+    const original = await readFile(resolved, "utf8");
+    let next: string;
+    if (action.operation === "insert") {
+      const insert = action.content ?? action.newText ?? "";
+      if (!insert) {
+        throw new Error("file.edit insert requires content");
+      }
+      const lines = original.split(/\r?\n/);
+      if (action.line === undefined || action.line === -1) {
+        next = `${original}${original.endsWith("\n") ? "" : "\n"}${insert}`;
+      } else {
+        const index = Math.max(0, Math.min(lines.length, action.line - 1));
+        lines.splice(index, 0, insert);
+        next = lines.join("\n");
+      }
     } else {
-      const index = Math.max(0, Math.min(lines.length, action.line - 1));
-      lines.splice(index, 0, insert);
-      next = lines.join("\n");
+      if (!action.oldText) {
+        throw new Error("file.edit str_replace requires oldText");
+      }
+      const matches = original.split(action.oldText).length - 1;
+      if (matches !== 1) {
+        throw new Error(`file.edit str_replace requires exactly one match; found ${matches}. Use file.grep or file.read to narrow the replacement target, then retry with a unique oldText.`);
+      }
+      next = original.replace(action.oldText, action.newText ?? "");
     }
-  } else {
-    if (!action.oldText) {
-      throw new Error("file.edit str_replace requires oldText");
-    }
-    const matches = original.split(action.oldText).length - 1;
-    if (matches !== 1) {
-      throw new Error(`file.edit str_replace requires exactly one match; found ${matches}`);
-    }
-    next = original.replace(action.oldText, action.newText ?? "");
-  }
-  await writeFile(resolved, next, "utf8");
-  const info = await stat(resolved);
-  rememberReadSnapshot(resolved, next, info.mtimeMs, context);
-  const path = displayPath(resolved, context.workspace);
-  return {
-    action: action.type,
-    status: "success",
-    summary: `edited ${path}`,
-    data: {
+    await writeFile(resolved, next, "utf8");
+    const info = await stat(resolved);
+    rememberReadSnapshot(resolved, next, info.mtimeMs, context);
+    const path = displayPath(resolved, context.workspace);
+    const change = createWorkspaceChange({
       path,
       operation: "edit",
-      beforeBytes: Buffer.byteLength(original, "utf8"),
-      afterBytes: Buffer.byteLength(next, "utf8"),
-      diff: createSimpleDiff(path, original, next)
-    }
-  };
+      before: original,
+      after: next,
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `edited ${path}`,
+      data: {
+        path,
+        operation: "edit",
+        beforeBytes: Buffer.byteLength(original, "utf8"),
+        afterBytes: Buffer.byteLength(next, "utf8"),
+        change,
+        diff: createSimpleDiff(path, original, next)
+      }
+    };
+  } finally {
+    release();
+  }
 }
 
 async function assertWritePrecondition(path: string, context: LocalToolContext): Promise<void> {
@@ -632,6 +684,50 @@ function rememberReadSnapshot(
   }
 ): void {
   readSnapshots.set(snapshotKey(path, context), { mtimeMs, hash: hashText(content), ...view });
+}
+
+function acquireWriteLock(path: string, context: LocalToolContext): (() => void) & { key: string } {
+  const key = `file.write:${resolve(path).toLowerCase()}`;
+  const holder = `${context.sessionId ?? "session"}:${context.taskId ?? "task"}`;
+  const existing = writeLocks.get(key);
+  const display = displayPath(path, context.workspace);
+  if (existing && existing.holder !== holder) {
+    const reason = `Write lock for ${display} is held by ${existing.holder}`;
+    context.onFileLock?.({ key, path: display, status: "blocked", holder: existing.holder, sessionId: context.sessionId, taskId: context.taskId, reason });
+    throw new Error(reason);
+  }
+  writeLocks.set(key, { holder, acquiredAt: new Date().toISOString() });
+  context.onFileLock?.({ key, path: display, status: "acquired", holder, sessionId: context.sessionId, taskId: context.taskId });
+  const release = (() => {
+    const current = writeLocks.get(key);
+    if (current?.holder === holder) {
+      writeLocks.delete(key);
+      context.onFileLock?.({ key, path: display, status: "released", holder, sessionId: context.sessionId, taskId: context.taskId });
+    }
+  }) as (() => void) & { key: string };
+  release.key = key;
+  return release;
+}
+
+function createWorkspaceChange(input: {
+  path: string;
+  operation: WorkspaceChangeMetadata["operation"];
+  before: string;
+  after: string;
+  context: LocalToolContext;
+  lockKey?: string;
+}): WorkspaceChangeMetadata {
+  return {
+    path: input.path,
+    operation: input.operation,
+    beforeHash: input.before ? hashText(input.before) : undefined,
+    afterHash: hashText(input.after),
+    beforeBytes: Buffer.byteLength(input.before, "utf8"),
+    afterBytes: Buffer.byteLength(input.after, "utf8"),
+    sessionId: input.context.sessionId,
+    taskId: input.context.taskId,
+    lockKey: input.lockKey
+  };
 }
 
 async function writeTodos(action: Extract<ToolAction, { type: "todo.write" }>, context: LocalToolContext): Promise<ToolResult> {
@@ -726,7 +822,11 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
       metadata: {
         cwd: displayPath(cwd, context.workspace),
         error: result.error
-      }
+      },
+      errorCode: classifyProcessError(result),
+      retryable: isRetryableProcessError(result),
+      recoverable: true,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, classifyProcessError(result), result.error, result)
     };
   }
 
@@ -739,6 +839,10 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     status: result.exitCode === 0 && !result.timedOut ? "success" : "failed",
     summary: `command exited ${result.exitCode ?? result.signal ?? "unknown"}${result.timedOut ? " after timeout" : ""}`,
     content,
+    errorCode: result.exitCode === 0 && !result.timedOut ? undefined : classifyProcessError(result),
+    retryable: result.exitCode === 0 && !result.timedOut ? undefined : isRetryableProcessError(result),
+    recoverable: result.exitCode === 0 && !result.timedOut ? undefined : true,
+    recoverySuggestion: result.exitCode === 0 && !result.timedOut ? undefined : recoverySuggestionForToolFailure(action.type, classifyProcessError(result), content, result),
     metadata: {
       cwd: displayPath(cwd, context.workspace),
       exitCode: result.exitCode,
@@ -749,10 +853,104 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
   };
 }
 
-async function webSearch(query: string): Promise<ToolResult> {
-  if (!query.trim()) {
+type WebSearchHit = {
+  title: string;
+  url: string;
+  snippet?: string;
+};
+
+async function webSearch(action: Extract<ToolAction, { type: "web.search" }>, context: LocalToolContext): Promise<ToolResult> {
+  const query = action.query.trim();
+  const allowedDomains = normalizeDomains(action.allowed_domains);
+  const blockedDomains = normalizeDomains(action.blocked_domains);
+  if (!query) {
     return { action: "web.search", status: "success", summary: "web search returned 0 results", data: { query, results: [] } };
   }
+  if (allowedDomains.length && blockedDomains.length) {
+    return {
+      action: "web.search",
+      status: "failed",
+      summary: "web search cannot use allowed_domains and blocked_domains together",
+      errors: ["Specify allowed_domains or blocked_domains, not both."],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, "INVALID_INPUT", "allowed_domains and blocked_domains were both set"),
+      data: { query, allowed_domains: allowedDomains, blocked_domains: blockedDomains }
+    };
+  }
+
+  const startedAt = Date.now();
+  let fallbackReason: string | undefined;
+  if (context.serverWebSearch) {
+    try {
+      return await context.serverWebSearch({ ...action, query, allowed_domains: allowedDomains, blocked_domains: blockedDomains });
+    } catch (error) {
+      fallbackReason = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  const fallbackErrors: string[] = [];
+  const instant = await searchDuckDuckGoInstant(query).catch((error: unknown) => {
+    fallbackErrors.push(error instanceof Error ? error.message : String(error));
+    return { abstract: "", abstractUrl: "", hits: [] };
+  });
+  const htmlHits = instant.hits.length >= 5
+    ? []
+    : await searchDuckDuckGoHtml(query).catch((error: unknown) => {
+        fallbackErrors.push(error instanceof Error ? error.message : String(error));
+        return [];
+      });
+  const hits = filterSearchHits(dedupeSearchHits([...instant.hits, ...htmlHits]), allowedDomains, blockedDomains).slice(0, 10);
+  const durationSeconds = (Date.now() - startedAt) / 1000;
+  if (!instant.abstract && hits.length === 0 && fallbackErrors.length) {
+    return {
+      action: "web.search",
+      status: "failed",
+      summary: "web search failed before returning results",
+      errors: fallbackReason ? [fallbackReason, ...fallbackErrors] : fallbackErrors,
+      errorCode: "NETWORK_ERROR",
+      retryable: true,
+      recoverable: true,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, "NETWORK_ERROR", fallbackErrors.join("\n")),
+      data: {
+        query,
+        provider: "duckduckgo-fallback",
+        durationSeconds,
+        fallbackReason,
+        allowed_domains: allowedDomains,
+        blocked_domains: blockedDomains
+      }
+    };
+  }
+  const content = formatWebSearchContent({
+    query,
+    abstract: instant.abstract,
+    abstractUrl: instant.abstractUrl,
+    hits,
+    fallbackReason
+  });
+
+  return {
+    action: "web.search",
+    status: "success",
+    summary: `web search returned ${hits.length + (instant.abstract ? 1 : 0)} result(s)${fallbackReason ? " using fallback" : ""}`,
+    content,
+    data: {
+      query,
+      provider: "duckduckgo-fallback",
+      durationSeconds,
+      fallbackReason,
+      allowed_domains: allowedDomains,
+      blocked_domains: blockedDomains,
+      abstract: instant.abstract,
+      abstract_url: instant.abstractUrl,
+      results: hits
+    }
+  };
+}
+
+async function searchDuckDuckGoInstant(query: string): Promise<{ abstract: string; abstractUrl: string; hits: WebSearchHit[] }> {
   const url = new URL("https://api.duckduckgo.com/");
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
@@ -765,23 +963,238 @@ async function webSearch(query: string): Promise<ToolResult> {
   const json = (await response.json()) as {
     AbstractText?: string;
     AbstractURL?: string;
-    RelatedTopics?: { Text?: string; FirstURL?: string }[];
+    RelatedTopics?: Array<{ Text?: string; FirstURL?: string; Topics?: { Text?: string; FirstURL?: string }[] }>;
   };
-  const related = (json.RelatedTopics ?? [])
+  const related = flattenDuckDuckGoRelated(json.RelatedTopics ?? [])
     .filter((item) => item.Text || item.FirstURL)
-    .slice(0, 5)
-    .map((item) => ({ title: item.Text, url: item.FirstURL }));
+    .map((item) => ({
+      title: cleanHtml(item.Text ?? item.FirstURL ?? "Untitled"),
+      url: item.FirstURL ?? "",
+      snippet: item.Text ? cleanHtml(item.Text) : undefined
+    }))
+    .filter((item) => isHttpUrl(item.url));
   return {
-    action: "web.search",
-    status: "success",
-    summary: `web search returned ${related.length + (json.AbstractText ? 1 : 0)} results`,
-    data: {
-      query,
-      abstract: json.AbstractText ?? "",
-      abstract_url: json.AbstractURL ?? "",
-      related
-    }
+    abstract: json.AbstractText ?? "",
+    abstractUrl: json.AbstractURL ?? "",
+    hits: related
   };
+}
+
+async function searchDuckDuckGoHtml(query: string): Promise<WebSearchHit[]> {
+  const url = new URL("https://duckduckgo.com/html/");
+  url.searchParams.set("q", query);
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": "SwarmCLI/0.1 web.search"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`DuckDuckGo HTML search failed with HTTP ${response.status}`);
+  }
+  const html = await response.text();
+  const hits: WebSearchHit[] = [];
+  const anchorPattern = /<a\b[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(anchorPattern)) {
+    const url = decodeDuckDuckGoUrl(decodeHtmlEntity(match[1] ?? ""));
+    if (!isHttpUrl(url)) {
+      continue;
+    }
+    hits.push({
+      title: cleanHtml(match[2] ?? url),
+      url
+    });
+  }
+  return hits;
+}
+
+function flattenDuckDuckGoRelated(
+  topics: Array<{ Text?: string; FirstURL?: string; Topics?: { Text?: string; FirstURL?: string }[] }>
+): { Text?: string; FirstURL?: string }[] {
+  return topics.flatMap((topic) => topic.Topics?.length ? flattenDuckDuckGoRelated(topic.Topics) : [topic]);
+}
+
+function filterSearchHits(hits: WebSearchHit[], allowedDomains: string[], blockedDomains: string[]): WebSearchHit[] {
+  return hits.filter((hit) => {
+    const host = urlHost(hit.url);
+    if (!host) {
+      return false;
+    }
+    if (allowedDomains.length && !allowedDomains.some((domain) => domainMatches(host, domain))) {
+      return false;
+    }
+    return !blockedDomains.some((domain) => domainMatches(host, domain));
+  });
+}
+
+function dedupeSearchHits(hits: WebSearchHit[]): WebSearchHit[] {
+  const seen = new Set<string>();
+  const result: WebSearchHit[] = [];
+  for (const hit of hits) {
+    const key = hit.url.replace(/#.*$/, "");
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(hit);
+  }
+  return result;
+}
+
+function formatWebSearchContent(input: {
+  query: string;
+  abstract: string;
+  abstractUrl: string;
+  hits: WebSearchHit[];
+  fallbackReason?: string;
+}): string {
+  const lines = [`Web search results for "${input.query}"`];
+  if (input.fallbackReason) {
+    lines.push("", `Provider-native web search was unavailable; used local fallback. Reason: ${input.fallbackReason}`);
+  }
+  if (input.abstract) {
+    lines.push("", input.abstract);
+    if (input.abstractUrl) {
+      lines.push(`Source: ${input.abstractUrl}`);
+    }
+  }
+  if (input.hits.length) {
+    lines.push("", "Results:");
+    for (const hit of input.hits) {
+      lines.push(`- ${hit.title}: ${hit.url}${hit.snippet ? `\n  ${hit.snippet}` : ""}`);
+    }
+  }
+  lines.push("", "Sources:");
+  if (input.abstractUrl) {
+    lines.push(`- [Abstract](${input.abstractUrl})`);
+  }
+  for (const hit of input.hits) {
+    lines.push(`- [${escapeMarkdownLinkText(hit.title)}](${hit.url})`);
+  }
+  lines.push("", "REMINDER: Include relevant sources above in the final user response using markdown hyperlinks.");
+  return lines.join("\n").trim();
+}
+
+function normalizeDomains(value: string[] | undefined): string[] {
+  if (!value?.length) {
+    return [];
+  }
+  return [...new Set(value.map(normalizeDomain).filter(Boolean))];
+}
+
+function normalizeDomain(value: string): string {
+  const trimmed = value.trim().replace(/^domain:/i, "");
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    return new URL(withProtocol).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return trimmed.split("/")[0].toLowerCase().replace(/^www\./, "");
+  }
+}
+
+function domainMatches(host: string, domain: string): boolean {
+  const normalizedHost = host.toLowerCase().replace(/^www\./, "");
+  return normalizedHost === domain || normalizedHost.endsWith(`.${domain}`);
+}
+
+function urlHost(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeDuckDuckGoUrl(value: string): string {
+  try {
+    const url = new URL(value, "https://duckduckgo.com");
+    const uddg = url.searchParams.get("uddg");
+    return uddg ? decodeURIComponent(uddg) : url.href;
+  } catch {
+    return value;
+  }
+}
+
+function cleanHtml(value: string): string {
+  return decodeHtmlEntity(value.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+function decodeHtmlEntity(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+function escapeMarkdownLinkText(value: string): string {
+  return value.replace(/[[\]]/g, "\\$&");
+}
+
+function classifyProcessError(result: Pick<ShellCommandResult, "exitCode" | "signal" | "timedOut" | "error">): string {
+  if (result.timedOut) {
+    return "TIMEOUT";
+  }
+  if (result.error) {
+    return /enoent/i.test(result.error) ? "FS_NOT_FOUND" : "PROCESS_ERROR";
+  }
+  if (result.signal) {
+    return `SIGNAL_${result.signal}`;
+  }
+  if (typeof result.exitCode === "number" && result.exitCode !== 0) {
+    return `EXIT_${result.exitCode}`;
+  }
+  return "TOOL_FAILED";
+}
+
+function isRetryableProcessError(result: Pick<ShellCommandResult, "exitCode" | "timedOut" | "error">): boolean {
+  if (result.timedOut) {
+    return true;
+  }
+  if (result.error) {
+    return !/enoent|not recognized|not found/i.test(result.error);
+  }
+  return false;
+}
+
+function recoverySuggestionForToolFailure(
+  action: ToolAction["type"],
+  errorCode: string | undefined,
+  detail: string,
+  process?: Pick<ShellCommandResult, "exitCode" | "timedOut" | "truncated">
+): string {
+  if (errorCode === "FS_NOT_FOUND") {
+    return "Confirm the path or command exists with file.list, file.glob, git.status, or a shell which/where command, then retry with the resolved path.";
+  }
+  if (errorCode === "INVALID_INPUT") {
+    return "Fix the tool arguments and retry; inspect the target with file.read, file.grep, or the relevant status command first.";
+  }
+  if (errorCode === "NETWORK_ERROR") {
+    return "Retry once, then narrow the URL/domain/query or use a provider-native web search/fetch path if available.";
+  }
+  if (errorCode === "TIMEOUT" || process?.timedOut) {
+    return "Retry with a longer timeout or a narrower command that emits less output.";
+  }
+  if (process?.truncated) {
+    return "Use the saved full output or rerun with a narrower command before deciding the fix.";
+  }
+  if (action === "code.test") {
+    return "Read the failing test output, edit the smallest relevant code path, then rerun the same test command.";
+  }
+  if (action === "shell.exec" && /npm|pnpm|yarn|node|python|pytest|cargo|go test/i.test(detail)) {
+    return "Treat this as a verification failure: inspect stderr/stdout, patch the relevant code or dependency issue, then rerun the same command.";
+  }
+  if (action === "file.edit") {
+    return "Re-read the target region and retry with a unique oldText or a precise insert line.";
+  }
+  return "Inspect the output, adjust the command or inputs, and retry from the current workspace state.";
 }
 
 async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Promise<ToolResult> {
@@ -806,6 +1219,10 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
       status: "failed",
       summary: `web.fetch failed: ${isTimeout ? "timeout" : reason}`,
       errors: [reason],
+      errorCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
+      retryable: true,
+      recoverable: true,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, isTimeout ? "TIMEOUT" : "NETWORK_ERROR", reason),
       metadata: {
         url: action.url,
         error: reason,
@@ -868,6 +1285,10 @@ async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }
       summary: `test command failed: ${result.error}`,
       content: `$ ${action.command}\nERROR: ${result.error}`,
       errors: [result.error],
+      errorCode: classifyProcessError(result),
+      retryable: isRetryableProcessError(result),
+      recoverable: true,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, classifyProcessError(result), result.error, result),
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
@@ -878,6 +1299,10 @@ async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }
     status: passed && !result.timedOut ? "success" : "failed",
     summary: passed ? "tests passed" : `tests failed (exit ${result.exitCode})`,
     content: [`$ ${action.command}`, result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n").trim(),
+    errorCode: passed && !result.timedOut ? undefined : classifyProcessError(result),
+    retryable: passed && !result.timedOut ? undefined : isRetryableProcessError(result),
+    recoverable: passed && !result.timedOut ? undefined : true,
+    recoverySuggestion: passed && !result.timedOut ? undefined : recoverySuggestionForToolFailure(action.type, classifyProcessError(result), `${result.stdout}\n${result.stderr}`, result),
     data: {
       cwd: displayPath(cwd, context.workspace),
       passed,
@@ -1185,7 +1610,7 @@ async function executeSolidityCompile(action: Extract<ToolAction, { type: "solid
 async function runShellCommand(
   command: string,
   options: { cwd: string; timeoutMs: number; maxOutputBytes: number }
-): Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean; truncated: boolean; error?: string }> {
+): Promise<ShellCommandResult> {
   const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh";
   const args = process.platform === "win32" ? ["-NoProfile", "-Command", command] : ["-lc", command];
 
@@ -1385,11 +1810,28 @@ function optionalStringInput(value: unknown): string | undefined {
   return String(value);
 }
 
+function stringListInput(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return undefined;
+}
+
 function stringArrayInput(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
   return value.map((item) => String(item)).filter((item) => item.trim());
+}
+
+function agentInvocationModeInput(value: unknown): "call_subagent" | "handoff" | "parallel" | undefined {
+  if (value === "call_subagent" || value === "handoff" || value === "parallel") {
+    return value;
+  }
+  return undefined;
 }
 
 function todoListInput(value: unknown): Array<{ content: string; status: "pending" | "in_progress" | "completed" }> {

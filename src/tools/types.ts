@@ -1,4 +1,5 @@
 import type { SwarmSettings } from "../config/settings.js";
+import type { RiskClass } from "../protocol/types.js";
 
 export type FileReadAction = {
   type: "file.read";
@@ -75,6 +76,9 @@ export type ShellExecAction = {
 export type WebSearchAction = {
   type: "web.search";
   query: string;
+  allowed_domains?: string[];
+  blocked_domains?: string[];
+  maxUses?: number;
 };
 
 export type WebFetchAction = {
@@ -139,6 +143,9 @@ export type AgentDelegateAction = {
   capability: string;
   task: string;
   context?: string;
+  preferred_agent_spec_id?: string;
+  preferred_mode?: "call_subagent" | "handoff" | "parallel";
+  file_scope?: string[];
 };
 
 export type ToolAction =
@@ -170,6 +177,31 @@ export type LocalToolContext = {
   taskId?: string;
   attempt?: number;
   delegate?: (action: AgentDelegateAction) => Promise<ToolResult>;
+  serverWebSearch?: (action: WebSearchAction) => Promise<ToolResult>;
+  onWorkspaceChange?: (change: WorkspaceChangeMetadata) => void;
+  onFileLock?: (event: FileLockEvent) => void;
+};
+
+export type WorkspaceChangeMetadata = {
+  path: string;
+  operation: "create" | "update" | "edit";
+  beforeHash?: string;
+  afterHash: string;
+  beforeBytes: number;
+  afterBytes: number;
+  sessionId?: string;
+  taskId?: string;
+  lockKey?: string;
+};
+
+export type FileLockEvent = {
+  key: string;
+  path: string;
+  status: "acquired" | "released" | "blocked";
+  holder?: string;
+  sessionId?: string;
+  taskId?: string;
+  reason?: string;
 };
 
 export type ToolResult = {
@@ -182,14 +214,23 @@ export type ToolResult = {
   errorCode?: string;
   retryable?: boolean;
   recoverable?: boolean;
+  recoverySuggestion?: string;
   data?: unknown;
   metadata?: Record<string, unknown>;
 };
 
 export type ToolApprovalRequest = {
   id: string;
+  session_id?: string;
+  task_id?: string;
   action: ToolAction["type"];
   summary: string;
   detail: string;
   risk: "write" | "shell" | "web" | "install" | "delegate";
+  risk_class: RiskClass;
+  target: string;
+  why_now: string;
+  predicted_impact: string;
+  rollback_plan: string;
+  summary_diff?: string;
 };

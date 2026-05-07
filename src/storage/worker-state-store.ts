@@ -24,6 +24,10 @@ export type WorkerRecord = {
   output_contract?: string;
   spawn_reason?: string;
   requested_by?: string;
+  blocked_reason?: string;
+  last_review?: unknown;
+  last_verification?: unknown;
+  change_refs?: string[];
   last_result?: string;
   outcome?: SessionOutcome;
   created_at: string;
@@ -47,6 +51,10 @@ type WorkerRow = {
   output_contract_json?: string | null;
   spawn_reason?: string | null;
   requested_by?: string | null;
+  blocked_reason?: string | null;
+  last_review_json?: string | null;
+  last_verification_json?: string | null;
+  change_refs_json?: string | null;
   last_result?: string | null;
   outcome_json?: string | null;
   created_at: string;
@@ -71,6 +79,10 @@ export class WorkerStateStore {
     output_contract?: string;
     spawn_reason?: string;
     requested_by?: string;
+    blocked_reason?: string;
+    last_review?: unknown;
+    last_verification?: unknown;
+    change_refs?: string[];
   }): WorkerRecord {
     const now = new Date().toISOString();
     const record: WorkerRecord = {
@@ -89,6 +101,10 @@ export class WorkerStateStore {
       output_contract: input.output_contract,
       spawn_reason: input.spawn_reason,
       requested_by: input.requested_by,
+      blocked_reason: input.blocked_reason,
+      last_review: input.last_review,
+      last_verification: input.last_verification,
+      change_refs: input.change_refs,
       created_at: now,
       updated_at: now
     };
@@ -97,9 +113,10 @@ export class WorkerStateStore {
         `INSERT INTO worker_states (
           worker_id, parent_session_id, worker_session_id, agent_spec_id, invocation_mode, handoff_id,
           capability, objective, status, file_scope_json, tool_budget_json, persona_snapshot_json,
-          task_packet_json, output_contract_json, spawn_reason, requested_by, last_result, outcome_json,
+          task_packet_json, output_contract_json, spawn_reason, requested_by, blocked_reason,
+          last_review_json, last_verification_json, change_refs_json, last_result, outcome_json,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         record.worker_id,
@@ -118,6 +135,10 @@ export class WorkerStateStore {
         record.output_contract ? JSON.stringify(record.output_contract) : null,
         record.spawn_reason ?? null,
         record.requested_by ?? null,
+        record.blocked_reason ?? null,
+        record.last_review ? JSON.stringify(record.last_review) : null,
+        record.last_verification ? JSON.stringify(record.last_verification) : null,
+        record.change_refs ? JSON.stringify(record.change_refs) : null,
         record.last_result ?? null,
         record.outcome ? JSON.stringify(record.outcome) : null,
         record.created_at,
@@ -132,6 +153,10 @@ export class WorkerStateStore {
     worker_session_id?: string;
     last_result?: string;
     outcome?: SessionOutcome;
+    blocked_reason?: string;
+    last_review?: unknown;
+    last_verification?: unknown;
+    change_refs?: string[];
   }): WorkerRecord {
     const existing = this.get(input.worker_id);
     if (!existing) {
@@ -143,12 +168,17 @@ export class WorkerStateStore {
       worker_session_id: input.worker_session_id ?? existing.worker_session_id,
       last_result: input.last_result ?? existing.last_result,
       outcome: input.outcome ?? existing.outcome,
+      blocked_reason: input.blocked_reason ?? existing.blocked_reason,
+      last_review: input.last_review ?? existing.last_review,
+      last_verification: input.last_verification ?? existing.last_verification,
+      change_refs: input.change_refs ?? existing.change_refs,
       updated_at: new Date().toISOString()
     };
     this.database.db
       .prepare(
         `UPDATE worker_states
          SET status = ?, worker_session_id = ?, last_result = ?, outcome_json = ?, updated_at = ?
+         , blocked_reason = ?, last_review_json = ?, last_verification_json = ?, change_refs_json = ?
          WHERE worker_id = ?`
       )
       .run(
@@ -157,6 +187,10 @@ export class WorkerStateStore {
         next.last_result ?? null,
         next.outcome ? JSON.stringify(next.outcome) : null,
         next.updated_at,
+        next.blocked_reason ?? null,
+        next.last_review ? JSON.stringify(next.last_review) : null,
+        next.last_verification ? JSON.stringify(next.last_verification) : null,
+        next.change_refs ? JSON.stringify(next.change_refs) : null,
         next.worker_id
       );
     return next;
@@ -206,6 +240,10 @@ function fromRow(row: WorkerRow): WorkerRecord {
       output_contract: row.output_contract_json ? JSON.parse(row.output_contract_json) as string : undefined,
       spawn_reason: row.spawn_reason ?? undefined,
       requested_by: row.requested_by ?? undefined,
+      blocked_reason: row.blocked_reason ?? undefined,
+      last_review: row.last_review_json ? JSON.parse(row.last_review_json) : undefined,
+      last_verification: row.last_verification_json ? JSON.parse(row.last_verification_json) : undefined,
+      change_refs: row.change_refs_json ? JSON.parse(row.change_refs_json) as string[] : undefined,
       last_result: row.last_result ?? undefined,
     outcome: row.outcome_json ? JSON.parse(row.outcome_json) as SessionOutcome : undefined,
     created_at: row.created_at,

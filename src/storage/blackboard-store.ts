@@ -151,6 +151,13 @@ export class BlackboardStore {
     }));
   }
 
+  listRecent(limit = 50): BlackboardEntry[] {
+    const rows = this.database.db
+      .prepare("SELECT * FROM blackboard_entries ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as BlackboardRow[];
+    return rows.map(fromRow);
+  }
+
   listForTasks(sessionId: string, taskIds: string[]): BlackboardEntry[] {
     if (taskIds.length === 0) {
       return [];
@@ -160,12 +167,13 @@ export class BlackboardStore {
     return allEntries.filter((entry) => entry.task_id && taskIds.includes(entry.task_id));
   }
 
-  query(sessionId: string, input: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string }): BlackboardEntry[] {
+  query(sessionId: string, input: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string; agentId?: string }): BlackboardEntry[] {
     return this.list(sessionId).filter((entry) => {
       if (input.type && entry.type !== input.type) return false;
       if (input.taskId && entry.task_id !== input.taskId) return false;
       if (input.keyPrefix && !entry.key.startsWith(input.keyPrefix)) return false;
       if (input.tag && !(entry.tags ?? []).includes(input.tag)) return false;
+      if (input.agentId && entry.created_by.agent_id !== input.agentId) return false;
       return true;
     });
   }
@@ -177,4 +185,38 @@ export class BlackboardStore {
   private getLatestByKey(sessionId: string, key: string): BlackboardEntry | undefined {
     return [...this.list(sessionId)].reverse().find((entry) => entry.key === key);
   }
+}
+
+type BlackboardRow = {
+  entry_id: string;
+  session_id: string;
+  swarm_id: string;
+  task_id?: string | null;
+  key: string;
+  type: BlackboardEntry["type"];
+  value_json: string;
+  created_by_json: string;
+  visibility: BlackboardEntry["visibility"];
+  version: number;
+  tags_json?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+function fromRow(row: BlackboardRow): BlackboardEntry {
+  return {
+    entry_id: row.entry_id,
+    session_id: row.session_id,
+    swarm_id: row.swarm_id,
+    task_id: row.task_id ?? undefined,
+    key: row.key,
+    type: row.type,
+    value: JSON.parse(row.value_json),
+    created_by: JSON.parse(row.created_by_json),
+    visibility: row.visibility,
+    version: row.version,
+    tags: row.tags_json ? JSON.parse(row.tags_json) : [],
+    created_at: row.created_at,
+    updated_at: row.updated_at ?? undefined
+  };
 }
