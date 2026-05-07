@@ -36,6 +36,7 @@ import {
   idlePaneSnapshotSignature,
   symphonyDaemonRecordsSignature
 } from "../tui/idle-pane-snapshot.js";
+import { approvalInputDecision } from "../tui/approval-input.js";
 import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/input-rendering.js";
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
@@ -139,11 +140,12 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkFile(root, "src/server/gateway.ts", "local Gateway server exists"),
     checkContains(root, "src/protocol/types.ts", "RiskClass", "risk class protocol type exists"),
     checkContains(root, "src/tools/types.ts", "predicted_impact", "approval challenge fields exist"),
+    checkFile(root, "src/tui/approval-input.ts", "TUI approval input helper is isolated"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "allow session", "TUI approval view supports session-scoped allow"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Why now", "TUI approval view surfaces why-now context"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "approvalSessionRuleKey", "TUI approval can remember same action and target for the session"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "if (approval)", "TUI key handling gives approval overlay priority"),
-    checkContains(root, "src/tui/SwarmChatApp.tsx", "key.escape || (key.ctrl && character === \"c\")", "TUI overlays handle Escape and Ctrl+C locally"),
+    checkContains(root, "src/tui/approval-input.ts", "key.escape || (key.ctrl && character === \"c\")", "TUI overlays handle Escape and Ctrl+C locally"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "{approval ? (", "TUI renders approvals inline with runtime context"),
     checkNotContains(root, "src/tui/SwarmChatApp.tsx", "return <ApprovalView request={approval} />", "TUI approvals do not replace the full application view"),
     checkContains(root, "src/runtime/runtime.ts", "recordRuntimeEvent", "runtime persists local core events"),
@@ -426,6 +428,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiInputRenderingBehavior(),
     checkTuiOnboardInputEditingBehavior(),
     checkTuiEventBufferBehavior(),
+    checkTuiApprovalInputBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
@@ -913,6 +916,36 @@ function checkTuiEventBufferBehavior(): EvalCaseResult {
         status: "fail",
         message: `first=${first.length} dedupedSame=${deduped === first} changed=${changed.length} timeline=${timelineFirst.length}/${timelineDeduped === timelineFirst}/${timelineChanged.length} same=${sameRuntimeEventDisplay(duplicateActivity, { ...duplicateActivity })} capped=${capped.length} last=${last?.type === "progress" ? last.completed : "-"}`
       };
+}
+
+function checkTuiApprovalInputBehavior(): EvalCaseResult {
+  const yes = approvalInputDecision("y", {});
+  const allowOnce = approvalInputDecision("a", {});
+  const allowSession = approvalInputDecision("s", {});
+  const no = approvalInputDecision("n", {});
+  const deny = approvalInputDecision("d", {});
+  const escape = approvalInputDecision("", { escape: true });
+  const ctrlC = approvalInputDecision("c", { ctrl: true });
+  const ignored = approvalInputDecision("x", {});
+  const ok = yes.handled && yes.approved && !yes.rememberForSession
+    && allowOnce.handled && allowOnce.approved && !allowOnce.rememberForSession
+    && allowSession.handled && allowSession.approved && allowSession.rememberForSession
+    && no.handled && !no.approved && !no.rememberForSession
+    && deny.handled && !deny.approved && !deny.rememberForSession
+    && escape.handled && !escape.approved
+    && ctrlC.handled && !ctrlC.approved
+    && !ignored.handled;
+  return ok
+    ? { name: "TUI approval input maps decisions deterministically", status: "pass", message: "approval keys approve, deny, remember session, cancel, and ignore unrelated input predictably" }
+    : {
+        name: "TUI approval input maps decisions deterministically",
+        status: "fail",
+        message: `yes=${fmtApprovalDecision(yes)} once=${fmtApprovalDecision(allowOnce)} session=${fmtApprovalDecision(allowSession)} no=${fmtApprovalDecision(no)} deny=${fmtApprovalDecision(deny)} escape=${fmtApprovalDecision(escape)} ctrlC=${fmtApprovalDecision(ctrlC)} ignored=${fmtApprovalDecision(ignored)}`
+      };
+}
+
+function fmtApprovalDecision(decision: ReturnType<typeof approvalInputDecision>): string {
+  return decision.handled ? `${decision.approved}/${decision.rememberForSession}` : "ignored";
 }
 
 function checkCodingLoopActivityFormattingBehavior(): EvalCaseResult {

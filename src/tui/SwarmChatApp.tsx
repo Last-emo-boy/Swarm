@@ -58,6 +58,7 @@ import {
   symphonyDaemonRecordsSignature,
   type IdlePaneSnapshot
 } from "./idle-pane-snapshot.js";
+import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
 
@@ -1498,21 +1499,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleApprovalInput(character: string, key: { ctrl?: boolean; escape?: boolean }): void {
-    if (key.escape || (key.ctrl && character === "c")) {
-      approvalResolver.current?.(false);
-      approvalResolver.current = undefined;
-      setApproval(undefined);
+    const decision = approvalInputDecision(character, key);
+    if (!decision.handled) {
       return;
     }
-    const value = character.toLowerCase();
-    if (value !== "y" && value !== "n" && value !== "a" && value !== "d" && value !== "s") {
-      return;
-    }
-    const approved = value === "y" || value === "a" || value === "s";
-    if (value === "s" && approval) {
+    if (decision.rememberForSession && approval) {
       sessionApprovalAllow.current.add(approvalSessionRuleKey(approval));
     }
-    approvalResolver.current?.(approved);
+    approvalResolver.current?.(decision.approved);
     approvalResolver.current = undefined;
     setApproval(undefined);
   }
