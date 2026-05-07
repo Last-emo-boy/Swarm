@@ -536,6 +536,49 @@ export function setPluginEnabled(pluginId: string, enabled: boolean): void {
   });
 }
 
+export function installPluginRoot(path: string): void {
+  const settings = loadSwarmSettings();
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new Error("Plugin root path is required.");
+  }
+  const root = resolve(trimmed);
+  const roots = new Set(settings.extensions.plugins.roots.map((item) => resolve(item)));
+  roots.add(root);
+  saveSwarmSettings({
+    ...settings,
+    extensions: {
+      ...settings.extensions,
+      plugins: {
+        ...settings.extensions.plugins,
+        roots: [...roots].sort()
+      }
+    }
+  });
+}
+
+export function removePluginRoot(path: string): void {
+  const settings = loadSwarmSettings();
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new Error("Plugin root path is required.");
+  }
+  const root = resolve(trimmed);
+  const roots = settings.extensions.plugins.roots
+    .map((item) => resolve(item))
+    .filter((item) => item !== root);
+  saveSwarmSettings({
+    ...settings,
+    extensions: {
+      ...settings.extensions,
+      plugins: {
+        ...settings.extensions.plugins,
+        roots
+      }
+    }
+  });
+}
+
 export function setCapabilityEnabled(capabilityId: string, enabled: boolean): void {
   updateCapabilityListSetting(capabilityId, "disabled", !enabled);
 }

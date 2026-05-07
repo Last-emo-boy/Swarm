@@ -10,8 +10,10 @@ import {
   getSelectedModelReadiness,
   getSwarmPaths,
   hasUsableModelConfiguration,
+  installPluginRoot,
   loadSwarmConfig,
   loadSwarmSettings,
+  removePluginRoot,
   setCapabilityEnabled,
   setCapabilityModelVisible,
   setModelSelection,
@@ -1192,6 +1194,37 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return {
         brief: `${selected.length} plugin${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`,
         detail: formatPlugins(selected)
+      };
+    }
+
+    if (command === "plugin-install" || command === "plugin-remove-root") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const root = args[0];
+      if (!root) {
+        throw new Error(`Usage: /${command} <root_path>`);
+      }
+      if (command === "plugin-install") {
+        installPluginRoot(root);
+      } else {
+        removePluginRoot(root);
+      }
+      runtime.reloadSettings();
+      await runtime.refreshCapabilities();
+      const plugins = runtime.listPlugins();
+      return {
+        brief: `Plugin root ${command === "plugin-install" ? "installed" : "removed"}. Ctrl+O for plugin list.`,
+        detail: formatPlugins(plugins)
+      };
+    }
+
+    if (command === "plugin-update") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      runtime.reloadSettings();
+      await runtime.refreshCapabilities();
+      const plugins = runtime.listPlugins();
+      return {
+        brief: `Plugin catalog refreshed: ${plugins.length} plugin${plugins.length === 1 ? "" : "s"}. Ctrl+O for details.`,
+        detail: formatPlugins(plugins)
       };
     }
 

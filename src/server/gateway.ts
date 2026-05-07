@@ -7,7 +7,7 @@ import type { RuntimeEvent } from "../runtime/events.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
-import { setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
+import { installPluginRoot, removePluginRoot, setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import type { CapabilityDescriptor, CapabilityFilter } from "../extensions/types.js";
@@ -589,6 +589,31 @@ export class SwarmGatewayServer {
   ): Promise<void> {
     if (request.method === "GET" && !pluginId) {
       sendJson(response, 200, { plugins: this.runtime.listPlugins() });
+      return;
+    }
+
+    if (request.method === "POST" && pluginId === "install") {
+      const body = await readJsonBody(request);
+      installPluginRoot(stringField(body, "path"));
+      this.runtime.reloadSettings();
+      const providers = await this.runtime.refreshCapabilities();
+      sendJson(response, 200, { plugins: this.runtime.listPlugins(), providers });
+      return;
+    }
+
+    if (request.method === "POST" && pluginId === "update") {
+      this.runtime.reloadSettings();
+      const providers = await this.runtime.refreshCapabilities();
+      sendJson(response, 200, { plugins: this.runtime.listPlugins(), providers });
+      return;
+    }
+
+    if (request.method === "POST" && pluginId === "remove-root") {
+      const body = await readJsonBody(request);
+      removePluginRoot(stringField(body, "path"));
+      this.runtime.reloadSettings();
+      const providers = await this.runtime.refreshCapabilities();
+      sendJson(response, 200, { plugins: this.runtime.listPlugins(), providers });
       return;
     }
 
