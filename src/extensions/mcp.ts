@@ -83,6 +83,13 @@ export class McpClientProvider implements CapabilityProvider {
 
     if (!this.input.settings.extensions.mcp.enabled || server.config.disabled) {
       server.status = "disabled";
+      if (server.config.trust === "project") {
+        server.diagnostics.push({
+          severity: "info",
+          code: "MCP_PROJECT_CONFIG_UNTRUSTED",
+          message: "Project MCP config is disabled until this workspace is trusted."
+        });
+      }
       return this.toRecord(server);
     }
     if (server.config.transport !== "stdio") {
@@ -465,13 +472,17 @@ function normalizeMcpToolResult(serverId: string, toolName: string, result: Awai
 }
 
 function loadMcpServerSettings(settings: SwarmSettings, workspace: string): Record<string, McpServerSettings> {
-  const projectConfig = readMcpJson(resolve(workspace, ".mcp.json"), "project");
+  const projectConfig = readMcpJson(resolve(workspace, ".mcp.json"), projectMcpTrust(workspace));
   const pluginConfig = loadPluginMcpServerSettings(settings, workspace);
   return {
     ...projectConfig,
     ...pluginConfig,
     ...settings.extensions.mcp.servers
   };
+}
+
+function projectMcpTrust(workspace: string): McpServerSettings["trust"] {
+  return isTrustedWorkspace(workspace) ? "workspace" : "project";
 }
 
 function readMcpJson(path: string, trust: McpServerSettings["trust"]): Record<string, McpServerSettings> {
@@ -487,7 +498,7 @@ function readMcpJson(path: string, trust: McpServerSettings["trust"]): Record<st
         .map(([id, value]) => [
           id,
           {
-            disabled: value.disabled === true,
+            disabled: value.disabled === true || trust === "project",
             transport: value.transport === "http" ? "http" : "stdio",
             command: typeof value.command === "string" ? value.command : undefined,
             args: Array.isArray(value.args) ? value.args.map(String) : [],
@@ -506,6 +517,15 @@ function readMcpJson(path: string, trust: McpServerSettings["trust"]): Record<st
   } catch {
     return {};
   }
+}
+
+function isTrustedWorkspace(workspace: string): boolean {
+  if (process.env.SWARM_TRUSTED_WORKSPACE_ROOT) {
+    const trustedRoot = resolve(process.env.SWARM_TRUSTED_WORKSPACE_ROOT);
+    const current = resolve(workspace);
+    return current === trustedRoot || current.startsWith(`${trustedRoot}\\`) || current.startsWith(`${trustedRoot}/`);
+  }
+  return process.env.SWARM_TRUST_PROJECT_MCP === "1";
 }
 
 function resolveMcpEnv(env: Record<string, string> | undefined): Record<string, string> | undefined {
