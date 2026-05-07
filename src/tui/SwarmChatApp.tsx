@@ -23,7 +23,7 @@ import { resetDebugLogger } from "../runtime/debug-logger.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 import { formatRuntimeEventBrief, formatWhyReport, formatWorkerBrief, formatWorkerDetail } from "../runtime/event-formatters.js";
 import type { RunMode } from "../runtime/execution-router.js";
-import type { PlannedSession } from "../runtime/orchestrator.js";
+import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import { createToolApprovalRequest, toolRequiresApproval } from "../tools/permissions.js";
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
@@ -431,7 +431,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         ...previous,
         {
           role: "assistant",
-          brief: briefForOutput(result.content, result.outcome, result.artifact_path),
+          brief: briefForExecutionResult(result),
           detail: result.content
         }
       ]);
@@ -460,7 +460,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         ...previous,
         {
           role: "assistant",
-          brief: briefForOutput(result.content, result.outcome, result.artifact_path),
+          brief: briefForExecutionResult(result),
           detail: result.content
         }
       ]);
@@ -903,7 +903,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       void runPromise.then((result) => {
         setLatestDetail(result.content);
         setLastSessionId(result.session_id);
-        setMessages((previous) => [...previous, { role: "assistant", brief: briefForOutput(result.content, result.outcome, result.artifact_path), detail: result.content }]);
+        setMessages((previous) => [...previous, { role: "assistant", brief: briefForExecutionResult(result), detail: result.content }]);
       }).catch((error: unknown) => {
         pushError(error);
       }).finally(() => setBusy(false));
@@ -1247,7 +1247,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const result = await runtime.improveSelf();
         setLatestDetail(result.content);
         setLastSessionId(result.session_id);
-        return { brief: briefForOutput(result.content, result.outcome, result.artifact_path), detail: result.content };
+        return { brief: briefForExecutionResult(result), detail: result.content };
       } finally {
         setBusy(false);
       }
@@ -2087,6 +2087,17 @@ function briefForOutput(
   const tests = outcome?.tests_run.length ?? 0;
   const artifact = artifactPath ? ` Artifact: ${artifactPath}.` : "";
   return `${first} ... ${lines.length} lines, ${bytes} bytes. Changed files: ${changed}. Checks: ${tests}.${artifact} Ctrl+O for details.`;
+}
+
+function briefForExecutionResult(result: Pick<ExecutionResult, "content" | "outcome" | "artifact_path" | "status">): string {
+  const brief = briefForOutput(result.content, result.outcome, result.artifact_path);
+  if (result.status === "failed") {
+    return `Failed: ${brief}`;
+  }
+  if (result.status === "stopped") {
+    return `Stopped: ${brief}`;
+  }
+  return brief;
 }
 
 function formatLoopActivityLine(activity: LoopActivityState): string {
