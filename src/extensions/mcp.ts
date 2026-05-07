@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerSettings, SwarmSettings } from "../config/settings.js";
 import type { ToolResult } from "../tools/types.js";
 import type { CapabilityDescriptor, CapabilityDiagnostic, CapabilityProvider, CapabilityTrust } from "./types.js";
@@ -24,6 +24,8 @@ export type McpServerRecord = {
   serverName?: string;
   serverVersion?: string;
   toolCount: number;
+  resourceCount: number;
+  promptCount: number;
   lastConnectedAt?: string;
   lastError?: string;
   diagnostics: CapabilityDiagnostic[];
@@ -37,6 +39,8 @@ type McpServerRuntime = {
   client?: Client;
   transport?: StdioClientTransport;
   tools: Tool[];
+  resources: Resource[];
+  prompts: Prompt[];
   lastConnectedAt?: string;
   lastError?: string;
   diagnostics: CapabilityDiagnostic[];
@@ -135,6 +139,14 @@ export class McpClientProvider implements CapabilityProvider {
         const result = await client.listTools(undefined, { timeout: server.config.timeoutMs ?? 30_000 });
         server.tools = result.tools;
       }
+      if (server.config.exposeResources === true) {
+        const result = await client.listResources(undefined, { timeout: server.config.timeoutMs ?? 30_000 });
+        server.resources = result.resources;
+      }
+      if (server.config.exposePrompts === true) {
+        const result = await client.listPrompts(undefined, { timeout: server.config.timeoutMs ?? 30_000 });
+        server.prompts = result.prompts;
+      }
     } catch (error) {
       server.status = "failed";
       server.lastError = error instanceof Error ? error.message : String(error);
@@ -150,8 +162,12 @@ export class McpClientProvider implements CapabilityProvider {
 
   listCapabilities(): CapabilityDescriptor[] {
     return [...this.servers.values()]
-      .filter((server) => server.status === "connected" && server.config.exposeTools !== false)
-      .flatMap((server) => server.tools.map((tool) => mcpToolDescriptor(server, tool)));
+      .filter((server) => server.status === "connected")
+      .flatMap((server) => [
+        ...(server.config.exposeTools !== false ? server.tools.map((tool) => mcpToolDescriptor(server, tool)) : []),
+        ...(server.config.exposeResources === true ? server.resources.map((resource) => mcpResourceDescriptor(server, resource)) : []),
+        ...(server.config.exposePrompts === true ? server.prompts.map((prompt) => mcpPromptDescriptor(server, prompt)) : [])
+      ]);
   }
 
   diagnostics(): CapabilityDiagnostic[] {
@@ -162,25 +178,40 @@ export class McpClientProvider implements CapabilityProvider {
     return [...this.servers.values()].map((server) => this.toRecord(server));
   }
 
+  listResources(serverId: string): Resource[] {
+    const server = this.requireServer(serverId);
+    return [...server.resources];
+  }
+
+  listPrompts(serverId: string): Prompt[] {
+    const server = this.requireServer(serverId);
+    return [...server.prompts];
+  }
+
+  async readResource(serverId: string, uri: string): Promise<Awaited<ReturnType<Client["readResource"]>>> {
+    const server = await this.ensureConnectedServer(serverId);
+    return server.client.readResource({ uri }, { timeout: server.config.timeoutMs ?? 30_000 });
+  }
+
+  async getPrompt(serverId: string, name: string, args?: Record<string, string>): Promise<Awaited<ReturnType<Client["getPrompt"]>>> {
+    const server = await this.ensureConnectedServer(serverId);
+    return server.client.getPrompt({ name, arguments: args }, { timeout: server.config.timeoutMs ?? 30_000 });
+  }
+
   async callTool(capabilityId: string, args: Record<string, unknown>): Promise<ToolResult> {
     const parsed = parseMcpToolCapabilityId(capabilityId);
     const server = this.servers.get(parsed.serverId);
     if (!server) {
       throw new Error(`Unknown MCP server: ${parsed.serverId}`);
     }
-    if (server.status !== "connected" || !server.client) {
-      await this.refreshServer(server.id);
-    }
-    if (server.status !== "connected" || !server.client) {
-      throw new Error(`MCP server is not connected: ${server.id}${server.lastError ? ` (${server.lastError})` : ""}`);
-    }
+    await this.ensureConnectedServer(server.id);
     try {
-      const result = await server.client.callTool(
+      const result = await server.client?.callTool(
         { name: parsed.toolName, arguments: args },
         undefined,
         { timeout: server.config.timeoutMs ?? 30_000 }
       );
-      return normalizeMcpToolResult(server.id, parsed.toolName, result);
+      return normalizeMcpToolResult(server.id, parsed.toolName, result as Awaited<ReturnType<Client["callTool"]>>);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -220,6 +251,8 @@ export class McpClientProvider implements CapabilityProvider {
           config,
           status: config.disabled ? "disabled" : "pending",
           tools: [],
+          resources: [],
+          prompts: [],
           diagnostics: []
         });
       }
@@ -261,10 +294,31 @@ export class McpClientProvider implements CapabilityProvider {
       serverName: version?.name,
       serverVersion: version?.version,
       toolCount: server.tools.length,
+      resourceCount: server.resources.length,
+      promptCount: server.prompts.length,
       lastConnectedAt: server.lastConnectedAt,
       lastError: server.lastError,
       diagnostics: server.diagnostics
     };
+  }
+
+  private requireServer(serverId: string): McpServerRuntime {
+    const server = this.servers.get(serverId);
+    if (!server) {
+      throw new Error(`Unknown MCP server: ${serverId}`);
+    }
+    return server;
+  }
+
+  private async ensureConnectedServer(serverId: string): Promise<McpServerRuntime & { client: Client }> {
+    const server = this.requireServer(serverId);
+    if (server.status !== "connected" || !server.client) {
+      await this.refreshServer(server.id);
+    }
+    if (server.status !== "connected" || !server.client) {
+      throw new Error(`MCP server is not connected: ${server.id}${server.lastError ? ` (${server.lastError})` : ""}`);
+    }
+    return server as McpServerRuntime & { client: Client };
   }
 }
 
@@ -310,6 +364,63 @@ function mcpToolDescriptor(server: McpServerRuntime, tool: Tool): CapabilityDesc
       annotations: tool.annotations,
       execution: tool.execution,
       server_capabilities: server.client?.getServerCapabilities()
+    }
+  };
+}
+
+function mcpResourceDescriptor(server: McpServerRuntime, resource: Resource): CapabilityDescriptor {
+  return {
+    id: `mcp_resource.${server.capabilityIdPart}.${encodeMcpIdPart(resource.uri)}`,
+    kind: "mcp_resource",
+    source: "mcp",
+    trust: mcpTrust(server.config),
+    providerId: `mcp:${server.id}`,
+    name: `mcp_resource__${modelToolNamePart(server.id)}__${modelToolNamePart(resource.name)}`,
+    title: resource.title ?? resource.name,
+    description: resource.description ?? `MCP resource ${resource.uri} from ${server.id}.`,
+    riskClass: "r0",
+    permissionName: `McpResource(${server.id}:${resource.uri})`,
+    modelVisible: false,
+    userVisible: true,
+    status: server.status === "connected" ? "available" : server.status,
+    diagnostics: server.diagnostics,
+    metadata: {
+      server_id: server.id,
+      uri: resource.uri,
+      mimeType: resource.mimeType,
+      size: resource.size,
+      annotations: resource.annotations
+    }
+  };
+}
+
+function mcpPromptDescriptor(server: McpServerRuntime, prompt: Prompt): CapabilityDescriptor {
+  return {
+    id: `mcp_prompt.${server.capabilityIdPart}.${encodeMcpIdPart(prompt.name)}`,
+    kind: "mcp_prompt",
+    source: "mcp",
+    trust: mcpTrust(server.config),
+    providerId: `mcp:${server.id}`,
+    name: `mcp_prompt__${modelToolNamePart(server.id)}__${modelToolNamePart(prompt.name)}`,
+    title: prompt.title ?? prompt.name,
+    description: prompt.description ?? `MCP prompt ${prompt.name} from ${server.id}.`,
+    inputSchema: {
+      type: "object",
+      properties: Object.fromEntries((prompt.arguments ?? []).map((argument) => [
+        argument.name,
+        { description: argument.description ?? "", required: argument.required === true }
+      ]))
+    },
+    riskClass: "r0",
+    permissionName: `McpPrompt(${server.id}:${prompt.name})`,
+    modelVisible: false,
+    userVisible: true,
+    status: server.status === "connected" ? "available" : server.status,
+    diagnostics: server.diagnostics,
+    metadata: {
+      server_id: server.id,
+      prompt_name: prompt.name,
+      arguments: prompt.arguments
     }
   };
 }

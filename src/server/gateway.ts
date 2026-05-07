@@ -66,6 +66,10 @@ const PUBLIC_API_SURFACE = [
   "/v1/skills/:name/activate",
   "/v1/mcp/servers",
   "/v1/mcp/servers/:id/refresh",
+  "/v1/mcp/servers/:id/resources",
+  "/v1/mcp/servers/:id/resources/read",
+  "/v1/mcp/servers/:id/prompts",
+  "/v1/mcp/servers/:id/prompts/get",
   "/v1/symphony/preview",
   "/v1/symphony/tick",
   "/v1/symphony/status",
@@ -235,7 +239,7 @@ export class SwarmGatewayServer {
     }
 
     if (resource === "mcp") {
-      await this.handleMcp(request, response, id, child, childId);
+      await this.handleMcp(request, response, id, child, childId, segments[4]);
       return;
     }
 
@@ -425,7 +429,8 @@ export class SwarmGatewayServer {
     response: ServerResponse,
     resource?: string,
     serverId?: string,
-    action?: string
+    action?: string,
+    subAction?: string
   ): Promise<void> {
     if (resource === "servers" && request.method === "GET" && !serverId) {
       sendJson(response, 200, { servers: this.runtime.listMcpServers() });
@@ -445,6 +450,33 @@ export class SwarmGatewayServer {
       const server = await this.runtime.refreshMcpServer(serverId);
       const capabilities = await this.runtime.listCapabilities({ providerId: `mcp:${serverId}`, includeDisabled: true });
       sendJson(response, 200, { server, capabilities });
+      return;
+    }
+
+    if (resource === "servers" && request.method === "GET" && serverId && action === "resources") {
+      sendJson(response, 200, { server_id: serverId, resources: this.runtime.listMcpResources(serverId) });
+      return;
+    }
+
+    if (resource === "servers" && request.method === "POST" && serverId && action === "resources" && (!subAction || subAction === "read")) {
+      const body = await readJsonBody(request);
+      const uri = stringField(body, "uri");
+      const result = await this.runtime.readMcpResource(serverId, uri);
+      sendJson(response, 200, { server_id: serverId, uri, result });
+      return;
+    }
+
+    if (resource === "servers" && request.method === "GET" && serverId && action === "prompts") {
+      sendJson(response, 200, { server_id: serverId, prompts: this.runtime.listMcpPrompts(serverId) });
+      return;
+    }
+
+    if (resource === "servers" && request.method === "POST" && serverId && action === "prompts" && (!subAction || subAction === "get")) {
+      const body = await readJsonBody(request);
+      const name = stringField(body, "name");
+      const args = isRecord(body.arguments) ? stringRecord(body.arguments) : undefined;
+      const result = await this.runtime.getMcpPrompt(serverId, name, args);
+      sendJson(response, 200, { server_id: serverId, name, result });
       return;
     }
 
@@ -973,6 +1005,14 @@ function stringField(body: Record<string, unknown>, key: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringRecord(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(Object.entries(value).map(([key, next]) => [key, String(next)]));
 }
 
 function optionalBoolean(value: unknown): boolean | undefined {

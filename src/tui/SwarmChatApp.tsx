@@ -1209,6 +1209,52 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       };
     }
 
+    if (command === "mcp-resources") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const serverId = args[0];
+      if (!serverId) throw new Error("Usage: /mcp-resources <server_id>");
+      const resources = runtime.listMcpResources(serverId);
+      return {
+        brief: `${resources.length} MCP resources from ${serverId}. Ctrl+O for details.`,
+        detail: resources.length ? resources.map(formatMcpResource).join("\n\n") : "No MCP resources exposed."
+      };
+    }
+
+    if (command === "mcp-read") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const serverId = args[0];
+      const uri = args[1];
+      if (!serverId || !uri) throw new Error("Usage: /mcp-read <server_id> <uri>");
+      const result = await runtime.readMcpResource(serverId, uri);
+      return {
+        brief: `MCP resource ${uri}. Ctrl+O for contents.`,
+        detail: formatMcpResourceReadResult(result)
+      };
+    }
+
+    if (command === "mcp-prompts") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const serverId = args[0];
+      if (!serverId) throw new Error("Usage: /mcp-prompts <server_id>");
+      const prompts = runtime.listMcpPrompts(serverId);
+      return {
+        brief: `${prompts.length} MCP prompts from ${serverId}. Ctrl+O for details.`,
+        detail: prompts.length ? prompts.map(formatMcpPrompt).join("\n\n") : "No MCP prompts exposed."
+      };
+    }
+
+    if (command === "mcp-prompt") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const serverId = args[0];
+      const name = args[1];
+      if (!serverId || !name) throw new Error("Usage: /mcp-prompt <server_id> <name> [key=value...]");
+      const result = await runtime.getMcpPrompt(serverId, name, parseKeyValueArgs(args.slice(2)));
+      return {
+        brief: `MCP prompt ${name}. Ctrl+O for rendered messages.`,
+        detail: formatMcpPromptResult(result)
+      };
+    }
+
     if (command === "agents") {
       if (!runtime) throw new Error("Runtime is not ready.");
       const specs = runtime.listAgentSpecs();
@@ -2804,6 +2850,59 @@ function formatMcpServers(servers: McpServerRecord[]): string {
   ].filter(Boolean).join("\n")).join("\n\n");
 }
 
+function formatMcpResource(resource: { uri: string; name: string; title?: string; description?: string; mimeType?: string; size?: number }): string {
+  return [
+    `${resource.name} ${resource.title ? `(${resource.title})` : ""}`,
+    `uri=${resource.uri}`,
+    resource.mimeType ? `mime=${resource.mimeType}` : undefined,
+    typeof resource.size === "number" ? `size=${resource.size}` : undefined,
+    resource.description
+  ].filter(Boolean).join("\n");
+}
+
+function formatMcpPrompt(prompt: { name: string; title?: string; description?: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }): string {
+  return [
+    `${prompt.name} ${prompt.title ? `(${prompt.title})` : ""}`,
+    prompt.description,
+    prompt.arguments?.length
+      ? `args=${prompt.arguments.map((arg) => `${arg.name}${arg.required ? "*" : ""}`).join(", ")}`
+      : "args=(none)"
+  ].filter(Boolean).join("\n");
+}
+
+function formatMcpResourceReadResult(result: { contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }> }): string {
+  return result.contents.map((item) => [
+    `--- ${item.uri}${item.mimeType ? ` (${item.mimeType})` : ""} ---`,
+    item.text ?? (item.blob ? `[blob base64 ${item.blob.length} chars]` : "")
+  ].join("\n")).join("\n\n");
+}
+
+function formatMcpPromptResult(result: { description?: string; messages: Array<{ role: string; content: unknown }> }): string {
+  return [
+    result.description,
+    ...result.messages.map((message, index) => [
+      `--- ${index + 1}. ${message.role} ---`,
+      formatMcpPromptContent(message.content)
+    ].join("\n"))
+  ].filter(Boolean).join("\n\n");
+}
+
+function formatMcpPromptContent(content: unknown): string {
+  if (typeof content === "object" && content !== null && "type" in content) {
+    const typed = content as { type?: unknown; text?: unknown; mimeType?: unknown; data?: unknown; resource?: unknown };
+    if (typed.type === "text" && typeof typed.text === "string") {
+      return typed.text;
+    }
+    if (typed.type === "image" || typed.type === "audio") {
+      return `[${String(typed.type)} ${String(typed.mimeType ?? "")} ${typeof typed.data === "string" ? `${typed.data.length} chars` : ""}]`;
+    }
+    if (typed.type === "resource") {
+      return JSON.stringify(typed.resource, null, 2);
+    }
+  }
+  return JSON.stringify(content, null, 2);
+}
+
 function formatApprovalRecord(approval: ReturnType<SwarmRuntime["approvalStore"]["list"]>[number]): string {
   return [
     `${approval.approval_id} [${approval.status}] ${approval.risk_class}/${approval.risk}`,
@@ -2920,6 +3019,15 @@ function parseCapabilityCommandFilter(tokens: string[]): { kind?: string; provid
     filter.query = query.join(" ");
   }
   return filter;
+}
+
+function parseKeyValueArgs(tokens: string[]): Record<string, string> {
+  return Object.fromEntries(tokens
+    .map((token) => {
+      const index = token.indexOf("=");
+      return index > 0 ? [token.slice(0, index), token.slice(index + 1)] as const : undefined;
+    })
+    .filter((entry): entry is readonly [string, string] => entry !== undefined));
 }
 
 function isBlackboardType(value: string): value is BlackboardEntry["type"] {

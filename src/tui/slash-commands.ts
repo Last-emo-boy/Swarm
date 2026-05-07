@@ -101,7 +101,11 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "skills", group: "Config", usage: "/skills", description: "List discovered agent skills and diagnostics." },
   { name: "skill", group: "Config", usage: "/skill <name>", description: "Activate one trusted skill for the current session." },
   { name: "mcp", group: "Config", usage: "/mcp [server_id]", description: "Inspect configured MCP server states." },
-  { name: "mcp-refresh", group: "Config", usage: "/mcp-refresh <server_id>", description: "Reconnect one configured MCP stdio server and refresh its tool catalog." }
+  { name: "mcp-refresh", group: "Config", usage: "/mcp-refresh <server_id>", description: "Reconnect one configured MCP stdio server and refresh its tool catalog." },
+  { name: "mcp-resources", group: "Config", usage: "/mcp-resources <server_id>", description: "List exposed MCP resources for one server." },
+  { name: "mcp-read", group: "Config", usage: "/mcp-read <server_id> <uri>", description: "Read one MCP resource." },
+  { name: "mcp-prompts", group: "Config", usage: "/mcp-prompts <server_id>", description: "List exposed MCP prompts for one server." },
+  { name: "mcp-prompt", group: "Config", usage: "/mcp-prompt <server_id> <name> [key=value...]", description: "Render one MCP prompt." }
 ];
 
 export function parseSlashCommandLine(commandLine: string): ParsedSlashCommand | undefined {

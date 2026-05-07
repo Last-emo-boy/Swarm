@@ -597,6 +597,22 @@ export class SwarmRuntime {
     throw new Error(`Capability invocation is not implemented for ${capabilityId}`);
   }
 
+  listMcpResources(serverId: string) {
+    return this.capabilityPlane.listMcpResources(serverId);
+  }
+
+  listMcpPrompts(serverId: string) {
+    return this.capabilityPlane.listMcpPrompts(serverId);
+  }
+
+  readMcpResource(serverId: string, uri: string) {
+    return this.capabilityPlane.readMcpResource(serverId, uri);
+  }
+
+  getMcpPrompt(serverId: string, name: string, args?: Record<string, string>) {
+    return this.capabilityPlane.getMcpPrompt(serverId, name, args);
+  }
+
   listHandoffs(limit = 20): HandoffSessionRecord[] {
     return this.handoffStore.listRecent(limit);
   }

@@ -64,6 +64,22 @@ export class CapabilityPlane {
     return this.mcp.callTool(capabilityId, args);
   }
 
+  listMcpResources(serverId: string) {
+    return this.mcp.listResources(serverId);
+  }
+
+  listMcpPrompts(serverId: string) {
+    return this.mcp.listPrompts(serverId);
+  }
+
+  readMcpResource(serverId: string, uri: string) {
+    return this.mcp.readResource(serverId, uri);
+  }
+
+  getMcpPrompt(serverId: string, name: string, args?: Record<string, string>) {
+    return this.mcp.getPrompt(serverId, name, args);
+  }
+
   dispose(): Promise<void> {
     return this.registry.dispose();
   }
