@@ -580,6 +580,8 @@ export class CodingAgentLoop {
       return { result };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      const errorCode = classifyToolError(error);
+      const recoverySuggestion = recoverySuggestionForToolError(errorCode, reason);
       const actionName = typeof call.action === "string"
         ? call.action
         : typeof call.inputs?.action === "string"
@@ -590,9 +592,10 @@ export class CodingAgentLoop {
         action: actionName,
         status: "failed",
         summary: reason,
+        content: formatToolFailureContent(actionName, reason, errorCode, recoverySuggestion),
         errors: [reason],
-        errorCode: classifyToolError(error),
-        recoverySuggestion: recoverySuggestionForToolError(classifyToolError(error), reason)
+        errorCode,
+        recoverySuggestion
       };
       this.options.events.emitEvent({
         type: "tool_result",
@@ -601,6 +604,7 @@ export class CodingAgentLoop {
         title: call.reason ?? String(result.action),
         action: String(result.action),
         summary: reason,
+        content: result.content,
         status: "failed",
         errorCode: result.errorCode,
         recoverySuggestion: result.recoverySuggestion
@@ -1151,6 +1155,20 @@ export function summarizeCodingLoopFinalStatus(input: CodingLoopFinalStatusInput
     };
   }
   return { status: "completed", summary };
+}
+
+export function formatToolFailureContent(
+  action: string,
+  reason: string,
+  errorCode?: string,
+  recoverySuggestion?: string
+): string {
+  return [
+    `ERROR: ${reason}`,
+    errorCode ? `Error code: ${errorCode}` : undefined,
+    recoverySuggestion ? `Recovery: ${recoverySuggestion}` : undefined,
+    `Action: ${action}`
+  ].filter(Boolean).join("\n");
 }
 
 function truncateMiddle(content: string, maxBytes: number, totalBytes: number, totalLines: number, path: string): string {

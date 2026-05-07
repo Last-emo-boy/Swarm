@@ -24,7 +24,7 @@ import {
   rawSlashArgsAfter
 } from "../tui/slash-commands.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
-import { finalActivityMessage, finalActivityPhase, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
+import { finalActivityMessage, finalActivityPhase, formatToolFailureContent, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "../runtime/execution-status.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
@@ -438,6 +438,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiApprovalInputBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
+    checkToolFailureContentBehavior(),
     checkWebFetchHttpFailureMetadataBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
     checkCodingLoopPersistenceStatusBehavior(),
@@ -1024,6 +1025,22 @@ function checkToolRecoveryFormattingBehavior(): EvalCaseResult {
   return ok
     ? { name: "tool recovery guidance formats for TUI and headless output", status: "pass", message: "tool_result recoverySuggestion is visible in compact and headless progress" }
     : { name: "tool recovery guidance formats for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"}` };
+}
+
+function checkToolFailureContentBehavior(): EvalCaseResult {
+  const content = formatToolFailureContent(
+    "file.edit",
+    "Refusing to modify src/index.ts before reading it in this session",
+    "PERMISSION_DENIED",
+    "Inspect the approval or permission rule, then retry with a narrower command."
+  );
+  const ok = content.includes("ERROR: Refusing to modify")
+    && content.includes("Error code: PERMISSION_DENIED")
+    && content.includes("Recovery: Inspect the approval")
+    && content.includes("Action: file.edit");
+  return ok
+    ? { name: "tool exception failures include expandable detail content", status: "pass", message: "coding-loop tool exceptions carry ERROR, error code, recovery, and action detail for TUI detail panes" }
+    : { name: "tool exception failures include expandable detail content", status: "fail", message: content };
 }
 
 function checkWebFetchHttpFailureMetadataBehavior(): EvalCaseResult {
