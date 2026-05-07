@@ -1590,7 +1590,44 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       });
     }
 
+    const pluginSlash = runtime ? findPluginSlashCommand(runtime.listPlugins(), command) : undefined;
+    if (pluginSlash) {
+      return runPluginSlashCommand(pluginSlash, parsed?.rawArgs ?? args.join(" "));
+    }
+
     throw new Error(`Unknown command: /${command}. Try /help.`);
+  }
+
+  async function runPluginSlashCommand(
+    command: {
+      plugin: PluginRecord;
+      contribution: PluginRecord["contributions"][number];
+    },
+    rawArgs: string
+  ): Promise<{ brief: string; detail?: string }> {
+    if (!runtime) throw new Error("Runtime is not ready.");
+    const prompt = typeof command.contribution.metadata.prompt === "string" && command.contribution.metadata.prompt.trim()
+      ? command.contribution.metadata.prompt.trim()
+      : command.contribution.description;
+    const objective = [
+      prompt,
+      "",
+      `Plugin slash command: /${command.contribution.id}`,
+      `Plugin: ${command.plugin.id}`,
+      rawArgs.trim() ? `Arguments: ${rawArgs.trim()}` : "Arguments: (none)"
+    ].join("\n");
+    setBusy(true);
+    setLoopActivity(undefined);
+    setLoopActivityTimeline([]);
+    try {
+      const result = await runtime.run(objective, { mode: runMode });
+      return {
+        brief: `${briefForExecutionResult(result)} via /${command.contribution.id}.`,
+        detail: result.content
+      };
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function executeSlashTool(inputs: Record<string, unknown>): Promise<{ brief: string; detail?: string }> {
@@ -2889,7 +2926,10 @@ function formatPlugins(plugins: PluginRecord[]): string {
     plugin.contributions.length
       ? [
         "contributions",
-        ...plugin.contributions.map((item) => `  ${item.kind}:${item.id} [${item.riskClass}] ${item.title}`)
+        ...plugin.contributions.map((item) => [
+          `  ${item.kind}:${item.id} [${item.riskClass}] ${item.title}`,
+          item.kind === "slash_command" ? `    usage=${String(item.metadata.usage ?? `/${item.id}`)}` : undefined
+        ].filter(Boolean).join("\n"))
       ].join("\n")
       : "contributions=(none)",
     ...(plugin.diagnostics ?? []).map((item) => `${item.severity}: ${item.code ?? "diagnostic"} ${item.message}`)
@@ -2906,6 +2946,20 @@ function formatActivatedSkill(skill: ActivatedSkill): string {
     "",
     skill.content
   ].filter(Boolean).join("\n");
+}
+
+function findPluginSlashCommand(plugins: PluginRecord[], command: string): { plugin: PluginRecord; contribution: PluginRecord["contributions"][number] } | undefined {
+  const normalized = command.trim().toLowerCase();
+  for (const plugin of plugins) {
+    if (plugin.trust !== "trusted") {
+      continue;
+    }
+    const contribution = plugin.contributions.find((item) => item.kind === "slash_command" && item.id === normalized);
+    if (contribution) {
+      return { plugin, contribution };
+    }
+  }
+  return undefined;
 }
 
 function formatMcpServers(servers: McpServerRecord[]): string {

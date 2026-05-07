@@ -52,6 +52,7 @@ type PluginSlashCommandManifest = {
   title?: string;
   usage?: string;
   description?: string;
+  prompt?: string;
 };
 
 type PluginSkillManifest = {
@@ -274,6 +275,7 @@ function slashContribution(item: PluginSlashCommandManifest): PluginContribution
     riskClass: "r1",
     metadata: {
       usage: stringValue(item.usage) || `/${name}`,
+      prompt: stringValue(item.prompt),
       manifest: item
     }
   };
