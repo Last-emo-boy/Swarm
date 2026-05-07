@@ -58,6 +58,7 @@ import {
   symphonyDaemonRecordsSignature,
   type IdlePaneSnapshot
 } from "./idle-pane-snapshot.js";
+import { editOnboardFieldInput } from "./onboard-input.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -519,27 +520,25 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   function handleOnboardInput(
     character: string,
-    key: { return?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean }
+    key: { return?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean }
   ): void {
     if (key.return || key.tab) {
       advanceOnboard();
       return;
     }
-    if (key.backspace || key.delete) {
-      setOnboard((state) => ({
+
+    setOnboard((state) => {
+      const edited = editOnboardFieldInput(state.values[state.field], character, key);
+      if (!edited.handled) {
+        return state;
+      }
+      return {
         ...state,
-        values: { ...state.values, [state.field]: state.values[state.field].slice(0, -1) }
-      }));
-      return;
-    }
-    if (character && !["\r", "\n"].includes(character)) {
-      setOnboard((state) => ({
-        ...state,
-        custom: state.field === "provider" && isCustomProviderInput(state.values.provider + character),
-        values: { ...state.values, [state.field]: state.values[state.field] + character },
+        custom: state.field === "provider" ? isCustomProviderInput(edited.value) : state.custom,
+        values: { ...state.values, [state.field]: edited.value },
         error: undefined
-      }));
-    }
+      };
+    });
   }
 
   function advanceOnboard(): void {

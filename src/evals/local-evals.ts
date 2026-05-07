@@ -37,6 +37,7 @@ import {
   symphonyDaemonRecordsSignature
 } from "../tui/idle-pane-snapshot.js";
 import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/input-rendering.js";
+import { editOnboardFieldInput } from "../tui/onboard-input.js";
 import { assertToolAllowedByPermissions, toolRequiresApproval } from "../tools/permissions.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
@@ -335,6 +336,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "README.md", "Large slash tool output is", "README documents persisted slash command output"),
     checkContains(root, "README.md", "Ctrl+N/Ctrl+P switches", "README documents TUI main pane switching"),
     checkContains(root, "README.md", "Backspace/Delete handling", "README documents robust input deletion"),
+    checkFile(root, "src/tui/onboard-input.ts", "TUI onboarding input helper is isolated"),
     checkContains(root, "src/tui/slash-commands.ts", "\"Core\"", "TUI help includes Core group"),
     checkContains(root, "src/tui/slash-commands.ts", "\"Kernel\"", "TUI help includes Kernel group"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "\"Symphony\"", "TUI help includes Symphony group"),
@@ -419,6 +421,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiDeleteBehavior(),
     checkTuiUnicodeInputEditingBehavior(),
     checkTuiInputRenderingBehavior(),
+    checkTuiOnboardInputEditingBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
@@ -832,6 +835,33 @@ function checkTuiInputRenderingBehavior(): EvalCaseResult {
         name: "TUI input rendering keeps cursor and viewport stable",
         status: "fail",
         message: `simple=${simple.before}/${simple.current}/${simple.after} end=${endCursor.before}/${endCursor.current}/${endCursor.after} backspace=${renderedAfterBackspace ? `${renderedAfterBackspace.before}/${renderedAfterBackspace.current}/${renderedAfterBackspace.after}` : "-"} emoji=${emoji.before}/${emoji.current}/${emoji.after} combining=${combining.before}/${combining.current}/${combining.after} viewport=${viewport.value}/${viewport.cursor}`
+      };
+}
+
+function checkTuiOnboardInputEditingBehavior(): EvalCaseResult {
+  const typed = editOnboardFieldInput("opena", "i", {});
+  const flaggedBackspace = editOnboardFieldInput("openai", undefined, { backspace: true });
+  const inkDeleteBackspace = editOnboardFieldInput("openai", "", { delete: true });
+  const rawDel = editOnboardFieldInput("openai", "\x7f", {});
+  const emoji = editOnboardFieldInput("key🙂", undefined, { backspace: true });
+  const ignoredReturn = editOnboardFieldInput("openai", "\r", { return: true });
+  const ok = typed.handled
+    && typed.value === "openai"
+    && flaggedBackspace.handled
+    && flaggedBackspace.value === "opena"
+    && inkDeleteBackspace.handled
+    && inkDeleteBackspace.value === "opena"
+    && rawDel.handled
+    && rawDel.value === "opena"
+    && emoji.handled
+    && emoji.value === "key"
+    && !ignoredReturn.handled;
+  return ok
+    ? { name: "TUI onboarding input shares robust deletion behavior", status: "pass", message: "onboarding fields handle printable input, raw DEL, delete-as-backspace, grapheme deletion, and leave Enter to form navigation" }
+    : {
+        name: "TUI onboarding input shares robust deletion behavior",
+        status: "fail",
+        message: `typed=${typed.handled ? typed.value : "-"} backspace=${flaggedBackspace.handled ? flaggedBackspace.value : "-"} ink=${inkDeleteBackspace.handled ? inkDeleteBackspace.value : "-"} raw=${rawDel.handled ? rawDel.value : "-"} emoji=${emoji.handled ? emoji.value : "-"} return=${ignoredReturn.handled}`
       };
 }
 
