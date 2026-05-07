@@ -12,11 +12,12 @@ export function resolveReadablePath(path: string, context: LocalToolContext): st
   return resolved;
 }
 
-export function resolveWritablePath(path: string, context: LocalToolContext): string {
+export function resolveWritablePath(path: string, context: LocalToolContext, permissionName: "Write" | "Edit" = "Write"): string {
   const resolved = resolveToolPath(path, context.workspace);
   if (!isInsidePath(resolved, context.workspace)) {
     throw new Error(`Write denied outside startup workspace: ${path}`);
   }
+  assertWritableByDenyRules(resolved, context, permissionName);
   return resolved;
 }
 
@@ -36,10 +37,14 @@ export function displayPath(path: string, workspace: string): string {
   return path;
 }
 
-export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings): boolean {
-  assertToolAllowedByPermissions(action, settings);
+export type PermissionMatchContext = {
+  workspace?: string;
+};
+
+export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): boolean {
+  assertToolAllowedByPermissions(action, settings, context);
   const mode = normalizePermissionMode(settings.permissions.defaultMode);
-  if (matchesPermissionRules(action, settings.permissions.allow)) {
+  if (matchesPermissionRules(action, settings.permissions.allow, context)) {
     return false;
   }
 
@@ -47,7 +52,7 @@ export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings
     return false;
   }
 
-  if (matchesPermissionRules(action, settings.permissions.ask)) {
+  if (matchesPermissionRules(action, settings.permissions.ask, context)) {
     return true;
   }
 
@@ -69,8 +74,8 @@ export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings
   return false;
 }
 
-export function assertToolAllowedByPermissions(action: ToolAction, settings: SwarmSettings): void {
-  if (matchesPermissionRules(action, settings.permissions.deny)) {
+export function assertToolAllowedByPermissions(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): void {
+  if (matchesPermissionRules(action, settings.permissions.deny, context)) {
     throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${approvalSummary(action)}`);
   }
 }
@@ -131,15 +136,26 @@ export function assertReadableByDenyRules(path: string, context: LocalToolContex
   }
 }
 
+export function assertWritableByDenyRules(path: string, context: LocalToolContext, permissionName: "Write" | "Edit"): void {
+  if (isDeniedPathByPermission(path, context, permissionName)) {
+    throw new Error(`${permissionName} denied by ~/.swarm/settings.json permissions: ${displayPath(path, context.workspace)}`);
+  }
+}
+
 export function isDeniedReadPath(path: string, context: LocalToolContext): boolean {
+  return isDeniedPathByPermission(path, context, "Read");
+}
+
+function isDeniedPathByPermission(path: string, context: LocalToolContext, permissionName: "Read" | "Write" | "Edit"): boolean {
   const normalized = path.replace(/\\/g, "/");
   const relativeToWorkspace = relative(context.workspace, path).replace(/\\/g, "/");
   const candidates = [normalized, relativeToWorkspace, basename(path)];
+  const prefix = `${permissionName}(`;
   for (const pattern of context.settings.permissions.deny) {
-    if (!pattern.startsWith("Read(") || !pattern.endsWith(")")) {
+    if (!pattern.startsWith(prefix) || !pattern.endsWith(")")) {
       continue;
     }
-    const rule = pattern.slice(5, -1).replace(/\\/g, "/");
+    const rule = pattern.slice(prefix.length, -1).replace(/\\/g, "/");
     if (matchesReadDenyRule(rule, candidates)) {
       return true;
     }
@@ -192,21 +208,22 @@ function skipsApproval(mode: PermissionMode): boolean {
   return mode === "full-auto" || mode === "yolo";
 }
 
-function matchesPermissionRules(action: ToolAction, rules: string[]): boolean {
+function matchesPermissionRules(action: ToolAction, rules: string[], context?: PermissionMatchContext): boolean {
   const permissionName = permissionNameForAction(action);
-  const content = permissionRuleContentForAction(action);
+  const contents = permissionRuleContentCandidatesForAction(action, context);
   return rules.some((rule) => {
     const parsed = parsePermissionRule(rule);
     if (!parsed || parsed.name !== permissionName) {
       return false;
     }
-    if (!parsed.content || parsed.content === "*" || parsed.content === "**") {
+    const ruleContent = parsed.content;
+    if (!ruleContent || ruleContent === "*" || ruleContent === "**") {
       return true;
     }
-    if (!content) {
+    if (contents.length === 0) {
       return false;
     }
-    return wildcardMatch(content, parsed.content);
+    return contents.some((content) => wildcardMatch(content, ruleContent));
   });
 }
 
@@ -400,31 +417,65 @@ function isDestructiveCommand(command: string): boolean {
 }
 
 function permissionRuleContentForAction(action: ToolAction): string | undefined {
+  return permissionRuleContentsForAction(action)[0]?.value;
+}
+
+function permissionRuleContentCandidatesForAction(action: ToolAction, context?: PermissionMatchContext): string[] {
+  const candidates = new Set<string>();
+  for (const content of permissionRuleContentsForAction(action)) {
+    candidates.add(content.value);
+    candidates.add(content.value.replace(/\\/g, "/"));
+    if (content.pathLike && context?.workspace) {
+      for (const pathCandidate of pathPermissionCandidates(content.value, context.workspace)) {
+        candidates.add(pathCandidate);
+      }
+    }
+  }
+  return [...candidates].filter(Boolean);
+}
+
+function permissionRuleContentsForAction(action: ToolAction): Array<{ value: string; pathLike: boolean }> {
+  if (action.type === "file.read") {
+    const paths = action.paths?.length ? action.paths : action.path ? [action.path] : [];
+    return paths.map((value) => ({ value, pathLike: true }));
+  }
   if ("path" in action && typeof action.path === "string") {
-    return action.path;
+    return [{ value: action.path, pathLike: true }];
   }
   if ("root" in action && typeof action.root === "string") {
-    return action.root;
+    return [{ value: action.root, pathLike: true }];
   }
   if ("command" in action && typeof action.command === "string") {
-    return action.command;
+    return [{ value: action.command, pathLike: false }];
   }
   if (action.type === "web.search") {
-    return action.query;
+    return [{ value: action.query, pathLike: false }];
   }
   if (action.type === "web.fetch") {
-    return action.url;
+    return [{ value: action.url, pathLike: false }];
   }
   if (action.type === "git.branch") {
-    return [action.action ?? "list", action.name].filter(Boolean).join(" ");
+    return [{ value: [action.action ?? "list", action.name].filter(Boolean).join(" "), pathLike: false }];
   }
   if (action.type === "solidity.compile") {
-    return action.framework ?? "hardhat";
+    return [{ value: action.framework ?? "hardhat", pathLike: false }];
   }
   if (action.type === "agent.delegate") {
-    return action.capability;
+    return [{ value: action.capability, pathLike: false }];
   }
-  return undefined;
+  return [];
+}
+
+function pathPermissionCandidates(path: string, workspace: string): string[] {
+  const resolved = resolveToolPath(path, workspace);
+  const normalizedResolved = resolved.replace(/\\/g, "/");
+  const relativeToWorkspace = relative(resolve(workspace), resolved).replace(/\\/g, "/");
+  return [
+    normalizedResolved,
+    relativeToWorkspace,
+    displayPath(resolved, workspace),
+    basename(resolved)
+  ];
 }
 
 function parsePermissionRule(rule: string): { name: string; content?: string } | undefined {

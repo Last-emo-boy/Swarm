@@ -521,7 +521,7 @@ export class CodingAgentLoop {
         throw new Error(`Tool action is not allowed for this agent persona: ${action.type}`);
       }
       this.emitActivity(sessionId, "running_tool", `Running ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
-      if (toolRequiresApproval(action, this.options.settings)) {
+      if (toolRequiresApproval(action, this.options.settings, { workspace: this.options.workspace })) {
         if (!this.options.approvalHandler) {
           throw new Error(`Tool action requires approval but no approval handler is available: ${action.type}`);
         }

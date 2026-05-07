@@ -203,7 +203,7 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
 }
 
 export async function runLocalTool(action: ToolAction, context: LocalToolContext): Promise<ToolResult> {
-  assertToolAllowedByPermissions(action, context.settings);
+  assertToolAllowedByPermissions(action, context.settings, { workspace: context.workspace });
 
   if (action.type === "file.read") {
     return readLocalFile(action, context);
@@ -586,7 +586,7 @@ async function writeLocalFile(action: Extract<ToolAction, { type: "file.write" }
 }
 
 async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>, context: LocalToolContext): Promise<ToolResult> {
-  const resolved = resolveWritablePath(action.path, context);
+  const resolved = resolveWritablePath(action.path, context, "Edit");
   const release = acquireWriteLock(resolved, context);
   try {
     await assertWritePrecondition(resolved, context);

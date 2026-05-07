@@ -1424,7 +1424,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     runtime?.ensureTuiChatSession(chatSessionId.current);
     const settings = loadSwarmSettings();
     const action = normalizeToolAction(inputs);
-    if (toolRequiresApproval(action, settings)) {
+    if (toolRequiresApproval(action, settings, { workspace: process.cwd() })) {
       const request = createToolApprovalRequest(action);
       request.session_id = chatSessionId.current;
       request.task_id = `slash.${action.type}`;

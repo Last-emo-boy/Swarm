@@ -669,7 +669,7 @@ export class Orchestrator {
     }
 
     const settings = loadSwarmSettings(this.workspace);
-    if (!toolRequiresApproval(action, settings)) {
+    if (!toolRequiresApproval(action, settings, { workspace: this.workspace })) {
       return;
     }
 
