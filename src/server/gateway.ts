@@ -67,6 +67,8 @@ const PUBLIC_API_SURFACE = [
   "/v1/capabilities/refresh",
   "/v1/skills",
   "/v1/skills/:name/activate",
+  "/v1/plugins",
+  "/v1/plugins/:id",
   "/v1/mcp/servers",
   "/v1/mcp/servers/:id/refresh",
   "/v1/mcp/servers/:id/resources",
@@ -260,6 +262,11 @@ export class SwarmGatewayServer {
 
     if (resource === "skills") {
       await this.handleSkills(request, response, id, child);
+      return;
+    }
+
+    if (resource === "plugins") {
+      await this.handlePlugins(request, response, id);
       return;
     }
 
@@ -547,6 +554,29 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown skills route.");
+  }
+
+  private async handlePlugins(
+    request: IncomingMessage,
+    response: ServerResponse,
+    pluginId?: string
+  ): Promise<void> {
+    if (request.method === "GET" && !pluginId) {
+      sendJson(response, 200, { plugins: this.runtime.listPlugins() });
+      return;
+    }
+
+    if (request.method === "GET" && pluginId) {
+      const plugin = this.runtime.listPlugins().find((item) => item.id === pluginId);
+      if (!plugin) {
+        throw new HttpError(404, `Unknown plugin: ${pluginId}`);
+      }
+      const capabilities = await this.runtime.listCapabilities({ providerId: `plugin:${pluginId}`, includeDisabled: true });
+      sendJson(response, 200, { plugin, capabilities });
+      return;
+    }
+
+    throw new HttpError(404, "Unknown plugins route.");
   }
 
   private async handleMcp(

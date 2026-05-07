@@ -63,6 +63,7 @@ import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
 import type { McpServerRecord } from "../extensions/mcp.js";
+import type { PluginRecord } from "../extensions/plugins.js";
 import type { SkillRecord, ActivatedSkill } from "../extensions/skills.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 
@@ -1154,6 +1155,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return {
         brief: `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`,
         detail
+      };
+    }
+
+    if (command === "plugins") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const pluginId = args[0];
+      const plugins = runtime.listPlugins();
+      const selected = pluginId ? plugins.filter((plugin) => plugin.id === pluginId) : plugins;
+      if (pluginId && selected.length === 0) {
+        throw new Error(`Unknown plugin: ${pluginId}`);
+      }
+      return {
+        brief: `${selected.length} plugin${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`,
+        detail: formatPlugins(selected)
       };
     }
 
@@ -2818,6 +2833,25 @@ function formatSkills(skills: SkillRecord[]): string {
     skill.resourcePaths.length ? `resources=${skill.resourcePaths.length}` : undefined,
     skill.shadowedBy ? `shadowed_by=${skill.shadowedBy}` : undefined,
     ...(skill.diagnostics ?? []).map((item) => `${item.severity}: ${item.code ?? "diagnostic"} ${item.message}`)
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function formatPlugins(plugins: PluginRecord[]): string {
+  if (plugins.length === 0) {
+    return "No plugins discovered.";
+  }
+  return plugins.map((plugin) => [
+    `${plugin.id} [${plugin.scope}/${plugin.trust}]${plugin.version ? ` v${plugin.version}` : ""}`,
+    plugin.description,
+    `path=${plugin.path}`,
+    `checksum=${plugin.checksum.slice(0, 16)}`,
+    plugin.contributions.length
+      ? [
+        "contributions",
+        ...plugin.contributions.map((item) => `  ${item.kind}:${item.id} [${item.riskClass}] ${item.title}`)
+      ].join("\n")
+      : "contributions=(none)",
+    ...(plugin.diagnostics ?? []).map((item) => `${item.severity}: ${item.code ?? "diagnostic"} ${item.message}`)
   ].filter(Boolean).join("\n")).join("\n\n");
 }
 

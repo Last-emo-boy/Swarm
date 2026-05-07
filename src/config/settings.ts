@@ -18,6 +18,13 @@ export type ExtensionSettings = {
     exposeGatewayServer: boolean;
     servers: Record<string, McpServerSettings>;
   };
+  plugins: {
+    enabled: boolean;
+    loadProjectPlugins: "never" | "trustedWorkspaces" | "always";
+    roots: string[];
+    disabled: string[];
+    maxPlugins: number;
+  };
 };
 
 export type McpServerSettings = {
@@ -236,6 +243,13 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
         enabled: false,
         exposeGatewayServer: false,
         servers: {}
+      },
+      plugins: {
+        enabled: true,
+        loadProjectPlugins: "trustedWorkspaces",
+        roots: [],
+        disabled: [],
+        maxPlugins: 100
       }
     }
   };
@@ -669,6 +683,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function expandSettings(settings: SwarmSettings): SwarmSettings {
   const extensionSettings = settings.extensions ?? defaultSwarmSettings().extensions;
   const skillRoots = Array.isArray(extensionSettings.skills?.roots) ? extensionSettings.skills.roots : [];
+  const pluginRoots = Array.isArray(extensionSettings.plugins?.roots) ? extensionSettings.plugins.roots : [];
   const mcpServers = isObject(extensionSettings.mcp?.servers) ? extensionSettings.mcp.servers : {};
   return {
     ...settings,
@@ -685,6 +700,10 @@ function expandSettings(settings: SwarmSettings): SwarmSettings {
       skills: {
         ...extensionSettings.skills,
         roots: skillRoots.map((root) => expandPath(String(root)))
+      },
+      plugins: {
+        ...extensionSettings.plugins,
+        roots: pluginRoots.map((root) => expandPath(String(root)))
       },
       mcp: {
         ...extensionSettings.mcp,
@@ -725,6 +744,7 @@ function normalizeSwarmSettings(settings: SwarmSettings): SwarmSettings {
 
 function normalizeExtensionSettings(extensions: SwarmSettings["extensions"]): SwarmSettings["extensions"] {
   const loadProjectSkills = extensions.skills?.loadProjectSkills;
+  const loadProjectPlugins = extensions.plugins?.loadProjectPlugins;
   return {
     capabilities: {
       disabled: Array.isArray(extensions.capabilities?.disabled) ? extensions.capabilities.disabled : [],
@@ -740,6 +760,13 @@ function normalizeExtensionSettings(extensions: SwarmSettings["extensions"]): Sw
       enabled: extensions.mcp?.enabled === true,
       exposeGatewayServer: extensions.mcp?.exposeGatewayServer === true,
       servers: normalizeMcpServers(extensions.mcp?.servers ?? {})
+    },
+    plugins: {
+      enabled: extensions.plugins?.enabled !== false,
+      loadProjectPlugins: loadProjectPlugins === "never" || loadProjectPlugins === "always" ? loadProjectPlugins : "trustedWorkspaces",
+      roots: Array.isArray(extensions.plugins?.roots) ? extensions.plugins.roots.filter((root): root is string => typeof root === "string" && root.trim().length > 0) : [],
+      disabled: Array.isArray(extensions.plugins?.disabled) ? extensions.plugins.disabled.map(String).filter(Boolean) : [],
+      maxPlugins: positiveInteger(extensions.plugins?.maxPlugins, 100)
     }
   };
 }

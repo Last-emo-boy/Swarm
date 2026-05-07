@@ -3,6 +3,7 @@ import { AgentSpecProvider } from "./agent-specs.js";
 import { BuiltinLocalToolProvider } from "./builtin-tools.js";
 import { CapabilityRegistry } from "./registry.js";
 import { McpClientProvider, type McpServerRecord } from "./mcp.js";
+import { PluginProvider, type PluginRecord } from "./plugins.js";
 import { SkillProvider, type ActivatedSkill, type SkillRecord } from "./skills.js";
 import { SlashCommandProvider } from "./slash-commands.js";
 import type {
@@ -15,15 +16,18 @@ export class CapabilityPlane {
   readonly registry = new CapabilityRegistry();
   readonly skills: SkillProvider;
   readonly mcp: McpClientProvider;
+  readonly plugins: PluginProvider;
 
   constructor(readonly settings: SwarmSettings, readonly workspace: string) {
     this.skills = new SkillProvider({ settings, workspace });
     this.mcp = new McpClientProvider({ settings, workspace });
+    this.plugins = new PluginProvider({ settings, workspace });
     this.registry.register(new BuiltinLocalToolProvider());
     this.registry.register(new SlashCommandProvider());
     this.registry.register(new AgentSpecProvider());
     this.registry.register(this.skills);
     this.registry.register(this.mcp);
+    this.registry.register(this.plugins);
   }
 
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityDescriptor[]> {
@@ -48,6 +52,10 @@ export class CapabilityPlane {
 
   activateSkill(name: string): ActivatedSkill {
     return this.skills.activateSkill(name);
+  }
+
+  listPlugins(): PluginRecord[] {
+    return this.plugins.listPlugins();
   }
 
   listMcpServers(): McpServerRecord[] {

@@ -49,6 +49,7 @@ import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
 import type { McpServerRecord } from "../extensions/mcp.js";
+import type { PluginRecord } from "../extensions/plugins.js";
 import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 
@@ -580,6 +581,10 @@ export class SwarmRuntime {
       });
     }
     return skill;
+  }
+
+  listPlugins(): PluginRecord[] {
+    return this.capabilityPlane.listPlugins();
   }
 
   listMcpServers(): McpServerRecord[] {
