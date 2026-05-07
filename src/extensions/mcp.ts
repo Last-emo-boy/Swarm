@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerSettings, SwarmSettings } from "../config/settings.js";
 import type { ToolResult } from "../tools/types.js";
+import { loadPluginMcpServerSettings } from "./plugins.js";
 import type { CapabilityDescriptor, CapabilityDiagnostic, CapabilityProvider, CapabilityTrust } from "./types.js";
 
 export type McpServerStatus = "disabled" | "pending" | "connected" | "failed";
@@ -465,8 +466,10 @@ function normalizeMcpToolResult(serverId: string, toolName: string, result: Awai
 
 function loadMcpServerSettings(settings: SwarmSettings, workspace: string): Record<string, McpServerSettings> {
   const projectConfig = readMcpJson(resolve(workspace, ".mcp.json"), "project");
+  const pluginConfig = loadPluginMcpServerSettings(settings, workspace);
   return {
     ...projectConfig,
+    ...pluginConfig,
     ...settings.extensions.mcp.servers
   };
 }

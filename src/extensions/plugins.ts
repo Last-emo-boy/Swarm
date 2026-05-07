@@ -15,6 +15,7 @@ export type PluginContributionRecord = {
   description: string;
   riskClass: CapabilityDescriptor["riskClass"];
   metadata: Record<string, unknown>;
+  mcpServer?: McpServerSettings;
 };
 
 export type PluginRecord = {
@@ -313,6 +314,14 @@ function mcpServerContribution(id: string, item: unknown): PluginContributionRec
   if (!normalizedId) {
     return undefined;
   }
+  const mcpServer = normalizePluginMcpServer(item);
+  const diagnostics = !mcpServer
+    ? [{
+        severity: "warn",
+        code: "PLUGIN_MCP_SERVER_INVALID",
+        message: `Plugin MCP server ${normalizedId} requires ${item.transport === "http" ? "url" : "command"}.`
+      } satisfies CapabilityDiagnostic]
+    : [];
   return {
     kind: "mcp_server",
     id: normalizedId,
@@ -326,8 +335,53 @@ function mcpServerContribution(id: string, item: unknown): PluginContributionRec
       exposeTools: item.exposeTools !== false,
       exposeResources: item.exposeResources === true,
       exposePrompts: item.exposePrompts === true,
+      diagnostics,
       manifest: item
-    }
+    },
+    mcpServer
+  };
+}
+
+export function loadPluginMcpServerSettings(settings: SwarmSettings, workspace: string): Record<string, McpServerSettings> {
+  const provider = new PluginProvider({ settings, workspace });
+  return Object.fromEntries(provider.listPlugins()
+    .filter((plugin) => plugin.trust === "trusted")
+    .flatMap((plugin) => plugin.contributions
+      .filter((contribution) => contribution.kind === "mcp_server" && contribution.mcpServer)
+      .map((contribution) => [
+        `${plugin.id}.${contribution.id}`,
+        {
+          ...contribution.mcpServer!,
+          trust: plugin.scope === "project" ? "project" : "user",
+          cwd: contribution.mcpServer!.cwd ? resolve(plugin.directory, contribution.mcpServer!.cwd) : plugin.directory
+        } satisfies McpServerSettings
+      ] as const)));
+}
+
+function normalizePluginMcpServer(item: Record<string, unknown>): McpServerSettings | undefined {
+  const transport = item.transport === "http" ? "http" : "stdio";
+  const command = typeof item.command === "string" && item.command.trim() ? item.command.trim() : undefined;
+  const url = typeof item.url === "string" && item.url.trim() ? item.url.trim() : undefined;
+  if (transport === "stdio" && !command) {
+    return undefined;
+  }
+  if (transport === "http" && !url) {
+    return undefined;
+  }
+  return {
+    disabled: item.disabled === true,
+    transport,
+    command,
+    args: Array.isArray(item.args) ? item.args.map(String) : [],
+    cwd: typeof item.cwd === "string" && item.cwd.trim() ? item.cwd : undefined,
+    env: isStringRecord(item.env),
+    url,
+    headers: isStringRecord(item.headers),
+    trust: "user",
+    exposeTools: item.exposeTools !== false,
+    exposeResources: item.exposeResources === true,
+    exposePrompts: item.exposePrompts === true,
+    timeoutMs: positiveInteger(item.timeoutMs, 30_000)
   };
 }
 
@@ -346,7 +400,10 @@ function pluginDescriptor(record: PluginRecord): CapabilityDescriptor {
     modelVisible: false,
     userVisible: true,
     status: record.trust === "disabled" || record.trust === "untrusted" ? "disabled" : "available",
-    diagnostics: record.diagnostics,
+    diagnostics: [
+      ...record.diagnostics,
+      ...(Array.isArray(contribution.metadata.diagnostics) ? contribution.metadata.diagnostics as CapabilityDiagnostic[] : [])
+    ],
     metadata: {
       version: record.version,
       scope: record.scope,
@@ -450,4 +507,16 @@ function safeIsDirectory(path: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, next]) => [key, String(next)]));
+}
+
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
