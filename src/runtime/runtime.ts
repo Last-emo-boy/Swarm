@@ -46,6 +46,7 @@ import { riskClassForAction } from "../tools/permissions.js";
 import { normalizeToolAction } from "../tools/local-tools.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
+import { finalAttemptStatus, sessionStatusFromExecutionStatus } from "./execution-status.js";
 
 export class SwarmRuntime {
   readonly events = new RuntimeEvents();
@@ -324,12 +325,14 @@ export class SwarmRuntime {
     try {
       const result = await loop.run(input.prompt);
       if (result.status === "stopped") {
+        this.sessionStore.setFinalOutput(input.session_id, result.content, "cancelled");
         this.sessionStore.setStatus(input.session_id, "cancelled");
         this.events.emitEvent({ type: "session", session_id: input.session_id, status: "cancelled", objective: row.objective });
         return result;
       }
-      this.sessionStore.setFinalOutput(input.session_id, result.content);
-      this.events.emitEvent({ type: "session", session_id: input.session_id, status: "completed", objective: row.objective });
+      const status = sessionStatusFromExecutionStatus(result.status);
+      this.sessionStore.setFinalOutput(input.session_id, result.content, status);
+      this.events.emitEvent({ type: "session", session_id: input.session_id, status, objective: row.objective });
       return result;
     } catch (error) {
       this.sessionStore.setStatus(input.session_id, "failed");
@@ -414,9 +417,9 @@ export class SwarmRuntime {
           final_summary: content.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) ?? "Completed"
         }
       } satisfies ExecutionResult;
-      this.sessionStore.setFinalOutput(sessionId, content);
+      this.sessionStore.setFinalOutput(sessionId, content, "completed");
       this.events.emitEvent({ type: "session", session_id: sessionId, status: "completed", objective });
-      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome: result.outcome });
+      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome: result.outcome, status: "completed" });
       return result;
     }
     const loop = new CodingAgentLoop({
@@ -435,7 +438,12 @@ export class SwarmRuntime {
     this.activeCodingLoopSessionId = undefined;
     try {
       const result = await loop.run(objective);
-      this.sessionStore.setFinalOutput(result.session_id, result.content);
+      const resultStatus = sessionStatusFromExecutionStatus(result.status);
+      this.sessionStore.setFinalOutput(result.session_id, result.content, resultStatus);
+      if (resultStatus !== "completed") {
+        this.events.emitEvent({ type: "session", session_id: result.session_id, status: resultStatus, objective });
+        return result;
+      }
       const postCheck = await this.runPostChangeChecks(result.session_id, objective, result.outcome);
       if (!postCheck) {
         this.events.emitEvent({ type: "session", session_id: result.session_id, status: "completed", objective });
@@ -455,8 +463,8 @@ export class SwarmRuntime {
         ...baseOutcome,
         tests_run: [...new Set([...baseOutcome.tests_run, postCheck.verification.summary])]
       };
-      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome });
-      this.sessionStore.setFinalOutput(result.session_id, content);
+      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome, status: "completed" });
+      this.sessionStore.setFinalOutput(result.session_id, content, "completed");
       this.events.emitEvent({ type: "session", session_id: result.session_id, status: "completed", objective });
       return { ...result, content, outcome };
     } finally {
@@ -982,7 +990,7 @@ export class SwarmRuntime {
           task_id: "final",
           runner_id: "main_swarm",
           kind: event.session_id.startsWith("chat_") ? "chat_response" : "coding_turn",
-          status: "completed",
+          status: finalAttemptStatus(event.status),
           attempt: 0,
           title: "Final response",
           terminal_reason: event.outcome?.final_summary ?? firstLine(event.content),

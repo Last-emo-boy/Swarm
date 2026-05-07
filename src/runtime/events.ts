@@ -38,7 +38,7 @@ export type RuntimeEvent =
   | { type: "live_message"; id: string; session_id?: string; content: string; status: "received" | "processing" | "applied" }
   | { type: "control"; message_id: string; action: "continue_current" | "inject_next_turn" | "interrupt_and_redirect" | "ask_clarification"; reason: string; instruction: string }
   | { type: "loop_activity"; session_id: string; phase: "thinking" | "running_tools" | "running_tool" | "waiting_approval" | "turn_complete" | "completed" | "failed" | "stopped"; message: string; turn?: number; tool?: string; task_id?: string }
-  | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome }
+  | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped" }
   | { type: "error"; message: string }
   | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string }
   | { type: "progress"; completed: number; total: number };

@@ -25,6 +25,7 @@ import {
 } from "../tui/slash-commands.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
 import { finalActivityMessage, finalActivityPhase, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
+import { finalAttemptStatus, sessionStatusFromExecutionStatus } from "../runtime/execution-status.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
   applyChatInputKey,
@@ -432,6 +433,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
+    checkCodingLoopPersistenceStatusBehavior(),
     checkTuiMainPaneCycleBehavior(),
     checkTuiIdleSnapshotSignatureBehavior(),
     checkPermissionDenyPrecedenceBehavior(),
@@ -1037,6 +1039,24 @@ function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
   return ok
     ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results and exhausted budgets prevent completed status from masking unfinished local execution" }
     : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status} exhausted=${exhausted.status}/${exhausted.summary}` };
+}
+
+function checkCodingLoopPersistenceStatusBehavior(): EvalCaseResult {
+  const ok = sessionStatusFromExecutionStatus("completed") === "completed"
+    && sessionStatusFromExecutionStatus("failed") === "failed"
+    && sessionStatusFromExecutionStatus("stopped") === "cancelled"
+    && sessionStatusFromExecutionStatus(undefined) === "completed"
+    && finalAttemptStatus("completed") === "completed"
+    && finalAttemptStatus("failed") === "failed"
+    && finalAttemptStatus("stopped") === "stopped"
+    && finalAttemptStatus(undefined) === "completed";
+  return ok
+    ? { name: "coding loop persistence statuses preserve failures", status: "pass", message: "final session and Work Kernel attempt statuses map failed and stopped results without coercing them to completed" }
+    : {
+        name: "coding loop persistence statuses preserve failures",
+        status: "fail",
+        message: `session=${sessionStatusFromExecutionStatus("completed")}/${sessionStatusFromExecutionStatus("failed")}/${sessionStatusFromExecutionStatus("stopped")} attempt=${finalAttemptStatus("completed")}/${finalAttemptStatus("failed")}/${finalAttemptStatus("stopped")}`
+      };
 }
 
 function checkTuiDeleteBehavior(): EvalCaseResult {

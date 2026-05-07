@@ -452,7 +452,7 @@ export class CodingAgentLoop {
       final_summary: finalStatus.summary
     };
     if (this.options.emitFinal !== false) {
-      this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome });
+      this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome, status: finalStatus.status });
     }
     this.emitActivity(
       sessionId,

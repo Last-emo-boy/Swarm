@@ -82,10 +82,10 @@ export class SessionStore {
       .run(JSON.stringify(plan), new Date().toISOString(), sessionId);
   }
 
-  setFinalOutput(sessionId: string, finalOutput: string): void {
+  setFinalOutput(sessionId: string, finalOutput: string, status: SwarmSession["status"] = "completed"): void {
     this.database.db
       .prepare("UPDATE sessions SET final_output = ?, status = ?, updated_at = ? WHERE session_id = ?")
-      .run(finalOutput, "completed", new Date().toISOString(), sessionId);
+      .run(finalOutput, status, new Date().toISOString(), sessionId);
   }
 
   setFinalOutcome(sessionId: string, outcome: WorkSessionOutcome): void {
