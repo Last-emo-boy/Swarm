@@ -62,6 +62,8 @@ const PUBLIC_API_SURFACE = [
   "/v1/capabilities",
   "/v1/capabilities/:id",
   "/v1/capabilities/refresh",
+  "/v1/skills",
+  "/v1/skills/:name/activate",
   "/v1/symphony/preview",
   "/v1/symphony/tick",
   "/v1/symphony/status",
@@ -225,6 +227,11 @@ export class SwarmGatewayServer {
       return;
     }
 
+    if (resource === "skills") {
+      await this.handleSkills(request, response, id, child);
+      return;
+    }
+
     if (resource === "symphony") {
       await this.handleSymphony(request, response, url, id, child);
       return;
@@ -370,6 +377,40 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown capabilities route.");
+  }
+
+  private async handleSkills(
+    request: IncomingMessage,
+    response: ServerResponse,
+    skillName?: string,
+    action?: string
+  ): Promise<void> {
+    if (request.method === "GET" && !skillName) {
+      sendJson(response, 200, { skills: this.runtime.listSkills() });
+      return;
+    }
+
+    if (request.method === "GET" && skillName) {
+      const skill = this.runtime.listSkills().find((item) => item.name === skillName && !item.shadowedBy);
+      if (!skill) {
+        throw new HttpError(404, `Unknown skill: ${skillName}`);
+      }
+      sendJson(response, 200, { skill });
+      return;
+    }
+
+    if (request.method === "POST" && skillName && action === "activate") {
+      const body = await readJsonBody(request);
+      const skill = this.runtime.activateSkill(
+        skillName,
+        optionalString(body.session_id ?? body.sessionId),
+        optionalString(body.reason)
+      );
+      sendJson(response, 200, { skill });
+      return;
+    }
+
+    throw new HttpError(404, "Unknown skills route.");
   }
 
   private async handleSymphonyDaemon(

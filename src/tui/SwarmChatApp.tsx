@@ -62,6 +62,7 @@ import {
 import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
+import type { SkillRecord, ActivatedSkill } from "../extensions/skills.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 
 type ChatMessage = {
@@ -1152,6 +1153,27 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return {
         brief: `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`,
         detail
+      };
+    }
+
+    if (command === "skills") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const skills = runtime.listSkills();
+      const active = skills.filter((skill) => !skill.shadowedBy).length;
+      return {
+        brief: `${active} active skills, ${skills.length - active} shadowed. Ctrl+O for details.`,
+        detail: formatSkills(skills)
+      };
+    }
+
+    if (command === "skill") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const name = args[0];
+      if (!name) throw new Error("Usage: /skill <name>");
+      const skill = runtime.activateSkill(name, lastSessionId, "tui slash command");
+      return {
+        brief: `Skill activated: ${skill.name}. Ctrl+O for instructions.`,
+        detail: formatActivatedSkill(skill)
       };
     }
 
@@ -2704,6 +2726,33 @@ function formatCapabilities(
     ...(providerLines.length ? providerLines : ["No providers registered."]),
     ...capabilityLines
   ].join("\n");
+}
+
+function formatSkills(skills: SkillRecord[]): string {
+  if (skills.length === 0) {
+    return "No skills discovered.";
+  }
+  return skills.map((skill) => [
+    `${skill.name} [${skill.scope}/${skill.trust}]${skill.shadowedBy ? " shadowed" : ""}`,
+    skill.description,
+    `path=${skill.path}`,
+    skill.allowedTools.length ? `allowed-tools=${skill.allowedTools.join(", ")}` : undefined,
+    skill.resourcePaths.length ? `resources=${skill.resourcePaths.length}` : undefined,
+    skill.shadowedBy ? `shadowed_by=${skill.shadowedBy}` : undefined,
+    ...(skill.diagnostics ?? []).map((item) => `${item.severity}: ${item.code ?? "diagnostic"} ${item.message}`)
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function formatActivatedSkill(skill: ActivatedSkill): string {
+  return [
+    `${skill.name} [${skill.scope}/${skill.trust}]`,
+    skill.description,
+    `path=${skill.path}`,
+    skill.allowedTools.length ? `allowed-tools=${skill.allowedTools.join(", ")}` : undefined,
+    skill.resourcePaths.length ? `resources=\n${skill.resourcePaths.map((path) => `  ${path}`).join("\n")}` : undefined,
+    "",
+    skill.content
+  ].filter(Boolean).join("\n");
 }
 
 function formatApprovalRecord(approval: ReturnType<SwarmRuntime["approvalStore"]["list"]>[number]): string {

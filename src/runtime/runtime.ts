@@ -48,6 +48,7 @@ import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
+import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 
 export class SwarmRuntime {
@@ -545,6 +546,35 @@ export class SwarmRuntime {
 
   listCapabilityProviders(): Promise<CapabilityProviderSnapshot[]> {
     return this.capabilityPlane.listProviders();
+  }
+
+  listSkills(): SkillRecord[] {
+    return this.capabilityPlane.listSkills();
+  }
+
+  activateSkill(name: string, sessionId?: string, reason?: string): ActivatedSkill {
+    const skill = this.capabilityPlane.activateSkill(name);
+    if (sessionId) {
+      this.writeBlackboardEvidence(sessionId, {
+        key: `skill.${skill.name}`,
+        type: "evidence",
+        value: {
+          name: skill.name,
+          title: skill.displayName,
+          description: skill.description,
+          path: skill.path,
+          directory: skill.directory,
+          allowed_tools: skill.allowedTools,
+          resource_paths: skill.resourcePaths,
+          content: skill.content,
+          activated_at: skill.activatedAt,
+          reason
+        },
+        tags: ["skill", "skill-activation", skill.name],
+        created_by: { agent_id: "main_swarm", role: "controller" }
+      });
+    }
+    return skill;
   }
 
   listHandoffs(limit = 20): HandoffSessionRecord[] {

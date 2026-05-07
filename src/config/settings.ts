@@ -2,6 +2,40 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+export type ExtensionSettings = {
+  capabilities: {
+    disabled: string[];
+    hiddenFromModel: string[];
+  };
+  skills: {
+    enabled: boolean;
+    loadProjectSkills: "never" | "trustedWorkspaces" | "always";
+    roots: string[];
+    maxSkills: number;
+  };
+  mcp: {
+    enabled: boolean;
+    exposeGatewayServer: boolean;
+    servers: Record<string, McpServerSettings>;
+  };
+};
+
+export type McpServerSettings = {
+  disabled?: boolean;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  trust: "user" | "project" | "workspace";
+  exposeTools?: boolean;
+  exposeResources?: boolean;
+  exposePrompts?: boolean;
+  timeoutMs?: number;
+};
+
 export type SwarmSettings = {
   version: 1;
   models: {
@@ -41,6 +75,7 @@ export type SwarmSettings = {
   telemetry: {
     enabled: boolean;
   };
+  extensions: ExtensionSettings;
 };
 
 export type PermissionMode = "ask" | "auto-edit" | "full-auto" | "yolo";
@@ -108,6 +143,7 @@ export type SwarmPaths = {
   cacheDir: string;
   agentsDir: string;
   commandsDir: string;
+  skillsDir: string;
   pluginsDir: string;
   projectsDir: string;
 };
@@ -125,6 +161,7 @@ export function getSwarmPaths(): SwarmPaths {
     cacheDir: join(home, "cache"),
     agentsDir: join(home, "agents"),
     commandsDir: join(home, "commands"),
+    skillsDir: join(home, "skills"),
     pluginsDir: join(home, "plugins"),
     projectsDir: join(home, "projects")
   };
@@ -183,6 +220,23 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
     },
     telemetry: {
       enabled: false
+    },
+    extensions: {
+      capabilities: {
+        disabled: [],
+        hiddenFromModel: []
+      },
+      skills: {
+        enabled: true,
+        loadProjectSkills: "trustedWorkspaces",
+        roots: [],
+        maxSkills: 100
+      },
+      mcp: {
+        enabled: false,
+        exposeGatewayServer: false,
+        servers: {}
+      }
     }
   };
 }
@@ -199,6 +253,7 @@ export function ensureSwarmHome(): { paths: SwarmPaths; settings: SwarmSettings;
     paths.cacheDir,
     paths.agentsDir,
     paths.commandsDir,
+    paths.skillsDir,
     paths.pluginsDir,
     paths.projectsDir
   ]) {
@@ -235,7 +290,7 @@ export function ensureSwarmHome(): { paths: SwarmPaths; settings: SwarmSettings;
         "- `config.json`: local metadata and plaintext API keys",
         "- `state/`: SQLite state databases",
         "- `sessions/`: future transcript/session files",
-        "- `agents/`, `commands/`, `plugins/`: future extension points",
+        "- `agents/`, `commands/`, `skills/`, `plugins/`: extension points",
         "",
         "Project-specific artifacts are written under the workspace `.swarm/` directory by default."
       ].join("\n"),
@@ -612,6 +667,9 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function expandSettings(settings: SwarmSettings): SwarmSettings {
+  const extensionSettings = settings.extensions ?? defaultSwarmSettings().extensions;
+  const skillRoots = Array.isArray(extensionSettings.skills?.roots) ? extensionSettings.skills.roots : [];
+  const mcpServers = isObject(extensionSettings.mcp?.servers) ? extensionSettings.mcp.servers : {};
   return {
     ...settings,
     runtime: {
@@ -621,6 +679,25 @@ function expandSettings(settings: SwarmSettings): SwarmSettings {
     models: {
       ...settings.models,
       openaiBaseUrl: settings.models.openaiBaseUrl ? expandEnv(settings.models.openaiBaseUrl) : undefined
+    },
+    extensions: {
+      ...extensionSettings,
+      skills: {
+        ...extensionSettings.skills,
+        roots: skillRoots.map((root) => expandPath(String(root)))
+      },
+      mcp: {
+        ...extensionSettings.mcp,
+        servers: Object.fromEntries(
+          Object.entries(mcpServers).filter(([, server]) => isObject(server)).map(([id, server]) => [
+            id,
+            {
+              ...server,
+              cwd: typeof server.cwd === "string" && server.cwd.trim() ? expandPath(server.cwd) : undefined
+            }
+          ])
+        )
+      }
     }
   };
 }
@@ -641,8 +718,58 @@ function normalizeSwarmSettings(settings: SwarmSettings): SwarmSettings {
     permissions,
     providers: normalizeProviderRegistry(settings.providers),
     enabledProviders: Array.isArray(settings.enabledProviders) ? settings.enabledProviders : [],
-    disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders : []
+    disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders : [],
+    extensions: normalizeExtensionSettings(settings.extensions)
   };
+}
+
+function normalizeExtensionSettings(extensions: SwarmSettings["extensions"]): SwarmSettings["extensions"] {
+  const loadProjectSkills = extensions.skills?.loadProjectSkills;
+  return {
+    capabilities: {
+      disabled: Array.isArray(extensions.capabilities?.disabled) ? extensions.capabilities.disabled : [],
+      hiddenFromModel: Array.isArray(extensions.capabilities?.hiddenFromModel) ? extensions.capabilities.hiddenFromModel : []
+    },
+    skills: {
+      enabled: extensions.skills?.enabled !== false,
+      loadProjectSkills: loadProjectSkills === "never" || loadProjectSkills === "always" ? loadProjectSkills : "trustedWorkspaces",
+      roots: Array.isArray(extensions.skills?.roots) ? extensions.skills.roots.filter((root): root is string => typeof root === "string" && root.trim().length > 0) : [],
+      maxSkills: positiveInteger(extensions.skills?.maxSkills, 100)
+    },
+    mcp: {
+      enabled: extensions.mcp?.enabled === true,
+      exposeGatewayServer: extensions.mcp?.exposeGatewayServer === true,
+      servers: normalizeMcpServers(extensions.mcp?.servers ?? {})
+    }
+  };
+}
+
+function normalizeMcpServers(servers: Record<string, McpServerSettings>): Record<string, McpServerSettings> {
+  return Object.fromEntries(
+    Object.entries(servers)
+      .filter(([id, server]) => id.trim() && isObject(server))
+      .map(([id, server]) => [
+        id,
+        {
+          ...server,
+          disabled: server.disabled === true,
+          transport: server.transport === "http" ? "http" : "stdio",
+          args: Array.isArray(server.args) ? server.args.map(String) : [],
+          env: isObject(server.env) ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, String(value)])) : undefined,
+          headers: isObject(server.headers) ? Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, String(value)])) : undefined,
+          trust: server.trust === "project" || server.trust === "workspace" ? server.trust : "user",
+          exposeTools: server.exposeTools !== false,
+          exposeResources: server.exposeResources === true,
+          exposePrompts: server.exposePrompts === true,
+          timeoutMs: positiveInteger(server.timeoutMs, 30_000)
+        }
+      ])
+  );
+}
+
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 function normalizePermissions(permissions: SwarmSettings["permissions"]): SwarmSettings["permissions"] {
