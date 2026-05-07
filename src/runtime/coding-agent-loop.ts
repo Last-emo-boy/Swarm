@@ -44,6 +44,7 @@ export type CodingLoopFinalStatusInput = {
   modelStatus: CodingLoopModelResult["status"];
   toolResults: Array<Pick<CodingLoopToolResult, "status" | "summary">>;
   content: string;
+  budgetExhausted?: boolean;
 };
 
 export type CodingLoopFinalStatus = {
@@ -299,6 +300,16 @@ export class CodingAgentLoop {
       }
 
       if (lastResult.status !== "continue" || lastResult.tool_calls.length === 0 || toolCallCount >= maxToolCalls) {
+        if (lastResult.status === "continue" && lastResult.tool_calls.length > 0 && toolCallCount >= maxToolCalls) {
+          lastResult = {
+            status: "failed",
+            summary: `Tool budget exhausted after ${toolCallCount}/${maxToolCalls} tool calls.`,
+            message: `Tool budget exhausted before Swarm could run the next requested tool. Last request: ${summarizeToolBatch(lastResult.tool_calls.slice(0, 3))}`,
+            tool_calls: [],
+            files_touched: [...changedFiles],
+            next_actions: ["Increase maxToolCalls or continue with a narrower objective."]
+          };
+        }
         this.emitActivity(sessionId, "turn_complete", `Turn ${turn}/${maxTurns} complete: ${firstLine(lastResult.summary) || "no tools requested"}`, { turn, taskId: turnTaskId });
         this.options.events.emitEvent({
           type: "task_attempt",
@@ -317,6 +328,14 @@ export class CodingAgentLoop {
       const batches = partitionToolCalls(lastResult.tool_calls);
       for (const batch of batches) {
         if (toolCallCount >= maxToolCalls) {
+          lastResult = {
+            status: "failed",
+            summary: `Tool budget exhausted after ${toolCallCount}/${maxToolCalls} tool calls.`,
+            message: "Tool budget exhausted before Swarm could finish the requested tool batch.",
+            tool_calls: [],
+            files_touched: [...changedFiles],
+            next_actions: ["Increase maxToolCalls or continue with a narrower objective."]
+          };
           break;
         }
         if (this.isStopRequested()) {
@@ -349,6 +368,14 @@ export class CodingAgentLoop {
         } else {
           for (const call of batch.calls) {
             if (toolCallCount >= maxToolCalls) {
+              lastResult = {
+                status: "failed",
+                summary: `Tool budget exhausted after ${toolCallCount}/${maxToolCalls} tool calls.`,
+                message: "Tool budget exhausted before Swarm could finish the requested tool batch.",
+                tool_calls: [],
+                files_touched: [...changedFiles],
+                next_actions: ["Increase maxToolCalls or continue with a narrower objective."]
+              };
               break;
             }
             if (this.isStopRequested()) {
@@ -374,13 +401,23 @@ export class CodingAgentLoop {
         }
       }
 
+      if (lastResult.status === "continue" && toolCallCount >= maxToolCalls) {
+        lastResult = {
+          status: "failed",
+          summary: `Tool budget exhausted after ${toolCallCount}/${maxToolCalls} tool calls.`,
+          message: "Tool budget exhausted before Swarm could complete another model turn.",
+          tool_calls: [],
+          files_touched: [...changedFiles],
+          next_actions: ["Increase maxToolCalls or continue with a narrower objective."]
+        };
+      }
       this.options.events.emitEvent({
         type: "task_attempt",
         session_id: sessionId,
         task_id: turnTaskId,
         title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
         attempt: turn,
-        status: "completed"
+        status: lastResult.status === "failed" ? "failed" : "completed"
       });
       this.emitActivity(sessionId, "turn_complete", `Turn ${turn}/${maxTurns} complete: ${firstLine(lastResult.summary) || "tools finished"}`, { turn, taskId: turnTaskId });
       if (this.options.emitProgress !== false) {
@@ -393,7 +430,8 @@ export class CodingAgentLoop {
       stopRequested: this.stopRequested,
       modelStatus: lastResult.status,
       toolResults,
-      content
+      content,
+      budgetExhausted: lastResult.status === "continue" && lastResult.tool_calls.length > 0
     });
     const outcome: SessionOutcome = {
       changed_files: [...changedFiles],
@@ -1086,6 +1124,12 @@ export function summarizeCodingLoopFinalStatus(input: CodingLoopFinalStatusInput
   }
   if (input.modelStatus === "failed") {
     return { status: "failed", summary };
+  }
+  if (input.budgetExhausted) {
+    return {
+      status: "failed",
+      summary: [summary, "Budget exhausted before completion."].filter(Boolean).join(" ")
+    };
   }
   if (firstFailure) {
     return {

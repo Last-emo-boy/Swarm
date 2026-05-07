@@ -1005,14 +1005,24 @@ function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
     content: "Interrupted by user.",
     toolResults: [{ status: "failed", summary: "shell command aborted" }]
   });
+  const exhausted = summarizeCodingLoopFinalStatus({
+    stopRequested: false,
+    modelStatus: "continue",
+    content: "Need one more tool.",
+    toolResults: [{ status: "success", summary: "read files" }],
+    budgetExhausted: true
+  });
   const ok = status.status === "failed"
     && status.summary.includes("Failed tool: npm test exited 1")
     && finalActivityMessage(status).startsWith("Failed:")
     && stopped.status === "stopped"
-    && finalActivityMessage(stopped, "user interrupt") === "Stopped: user interrupt";
+    && finalActivityMessage(stopped, "user interrupt") === "Stopped: user interrupt"
+    && exhausted.status === "failed"
+    && exhausted.summary.includes("Budget exhausted before completion")
+    && finalActivityMessage(exhausted).startsWith("Failed:");
   return ok
-    ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results prevent completed status from masking local execution failures" }
-    : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status}` };
+    ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results and exhausted budgets prevent completed status from masking unfinished local execution" }
+    : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status} exhausted=${exhausted.status}/${exhausted.summary}` };
 }
 
 function checkTuiDeleteBehavior(): EvalCaseResult {
