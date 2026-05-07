@@ -62,6 +62,7 @@ import {
 import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
+import type { CapabilityDescriptor } from "../extensions/types.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -1138,6 +1139,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         ? rows.map(formatBlackboardEntry).join("\n\n")
         : "No blackboard entries matched.";
       return { brief: `${rows.length} blackboard entries${sessionId ? ` for ${sessionId}` : ""}. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "capabilities") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const filter = parseCapabilityCommandFilter(args);
+      const [capabilities, providers] = await Promise.all([
+        runtime.listCapabilities(filter),
+        runtime.listCapabilityProviders()
+      ]);
+      const detail = formatCapabilities(capabilities, providers);
+      return {
+        brief: `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`,
+        detail
+      };
     }
 
     if (command === "agents") {
@@ -2658,6 +2673,39 @@ function formatHandoff(handoff: HandoffSessionRecord): string {
   ].filter(Boolean).join("\n");
 }
 
+function formatCapabilities(
+  capabilities: CapabilityDescriptor[],
+  providers: Array<{ providerId: string; title: string; capabilities: number; diagnostics: Array<{ severity: string; message: string; code?: string }> }>
+): string {
+  const providerLines = providers.map((provider) => {
+    const diagnostics = provider.diagnostics.length
+      ? ` diagnostics=${provider.diagnostics.map((item) => item.code ?? item.severity).join(",")}`
+      : "";
+    return `${provider.providerId}: ${provider.capabilities} capabilities${diagnostics}`;
+  });
+  const grouped = new Map<string, CapabilityDescriptor[]>();
+  for (const capability of capabilities) {
+    grouped.set(capability.kind, [...(grouped.get(capability.kind) ?? []), capability]);
+  }
+  const capabilityLines = [...grouped.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([kind, rows]) => [
+      "",
+      kind,
+      ...rows.map((capability) => [
+        `  ${capability.id} [${capability.providerId}/${capability.trust}/${capability.riskClass}]`,
+        `    ${capability.title ?? capability.name}`,
+        `    ${capability.description}`,
+        `    permission=${capability.permissionName} model=${capability.modelVisible ? "yes" : "no"} user=${capability.userVisible ? "yes" : "no"}`
+      ].join("\n"))
+    ]);
+  return [
+    "Providers",
+    ...(providerLines.length ? providerLines : ["No providers registered."]),
+    ...capabilityLines
+  ].join("\n");
+}
+
 function formatApprovalRecord(approval: ReturnType<SwarmRuntime["approvalStore"]["list"]>[number]): string {
   return [
     `${approval.approval_id} [${approval.status}] ${approval.risk_class}/${approval.risk}`,
@@ -2753,6 +2801,27 @@ function parseBlackboardQuery(tokens: string[]): { type?: BlackboardEntry["type"
     }
   }
   return query;
+}
+
+function parseCapabilityCommandFilter(tokens: string[]): { kind?: string; providerId?: string; query?: string } {
+  const filter: { kind?: string; providerId?: string; query?: string } = {};
+  const query: string[] = [];
+  const knownKinds = new Set(["local_tool", "mcp_tool", "mcp_resource", "mcp_prompt", "skill", "slash_command", "agent_spec", "plugin"]);
+  for (const token of tokens) {
+    if (token.startsWith("kind:")) {
+      filter.kind = token.slice("kind:".length);
+    } else if (token.startsWith("provider:")) {
+      filter.providerId = token.slice("provider:".length);
+    } else if (knownKinds.has(token)) {
+      filter.kind = token;
+    } else if (token.trim()) {
+      query.push(token);
+    }
+  }
+  if (query.length > 0) {
+    filter.query = query.join(" ");
+  }
+  return filter;
 }
 
 function isBlackboardType(value: string): value is BlackboardEntry["type"] {

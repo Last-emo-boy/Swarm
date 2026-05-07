@@ -9,6 +9,7 @@ import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
+import type { CapabilityFilter } from "../extensions/types.js";
 
 export type GatewayOptions = {
   host?: string;
@@ -58,6 +59,9 @@ const PUBLIC_API_SURFACE = [
   "/v1/approvals/:id/decision",
   "/v1/workers",
   "/v1/handoffs",
+  "/v1/capabilities",
+  "/v1/capabilities/:id",
+  "/v1/capabilities/refresh",
   "/v1/symphony/preview",
   "/v1/symphony/tick",
   "/v1/symphony/status",
@@ -216,6 +220,11 @@ export class SwarmGatewayServer {
       return;
     }
 
+    if (resource === "capabilities") {
+      await this.handleCapabilities(request, response, url, id);
+      return;
+    }
+
     if (resource === "symphony") {
       await this.handleSymphony(request, response, url, id, child);
       return;
@@ -324,6 +333,43 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown symphony route.");
+  }
+
+  private async handleCapabilities(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    capabilityId?: string
+  ): Promise<void> {
+    if (request.method === "GET" && !capabilityId) {
+      const filter = capabilityFilterFromUrl(url);
+      const [capabilities, providers] = await Promise.all([
+        this.runtime.listCapabilities(filter),
+        this.runtime.listCapabilityProviders()
+      ]);
+      sendJson(response, 200, { capabilities, providers });
+      return;
+    }
+
+    if (request.method === "GET" && capabilityId) {
+      const capability = await this.runtime.getCapability(capabilityId);
+      if (!capability) {
+        throw new HttpError(404, `Unknown capability: ${capabilityId}`);
+      }
+      sendJson(response, 200, { capability });
+      return;
+    }
+
+    if (request.method === "POST" && capabilityId === "refresh") {
+      const body = await readJsonBody(request);
+      const providerId = optionalString(body.provider_id ?? body.providerId ?? url.searchParams.get("provider_id") ?? url.searchParams.get("provider"));
+      const providers = await this.runtime.refreshCapabilities(providerId);
+      const capabilities = await this.runtime.listCapabilities(capabilityFilterFromUrl(url));
+      sendJson(response, 200, { providers, capabilities });
+      return;
+    }
+
+    throw new HttpError(404, "Unknown capabilities route.");
   }
 
   private async handleSymphonyDaemon(
@@ -848,6 +894,29 @@ function stringField(body: Record<string, unknown>, key: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (value === true || value === "true" || value === "1") {
+    return true;
+  }
+  if (value === false || value === "false" || value === "0") {
+    return false;
+  }
+  return undefined;
+}
+
+function capabilityFilterFromUrl(url: URL): CapabilityFilter {
+  return {
+    kind: optionalString(url.searchParams.get("kind")),
+    source: optionalString(url.searchParams.get("source")),
+    trust: optionalString(url.searchParams.get("trust")),
+    providerId: optionalString(url.searchParams.get("provider_id") ?? url.searchParams.get("provider")),
+    modelVisible: optionalBoolean(url.searchParams.get("model_visible") ?? url.searchParams.get("modelVisible")),
+    userVisible: optionalBoolean(url.searchParams.get("user_visible") ?? url.searchParams.get("userVisible")),
+    includeDisabled: optionalBoolean(url.searchParams.get("include_disabled") ?? url.searchParams.get("includeDisabled")),
+    query: optionalString(url.searchParams.get("q") ?? url.searchParams.get("query"))
+  };
 }
 
 function positiveBodyInteger(value: unknown): number | undefined {

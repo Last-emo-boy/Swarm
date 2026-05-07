@@ -47,6 +47,8 @@ import { normalizeToolAction } from "../tools/local-tools.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
+import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
+import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 
 export class SwarmRuntime {
   readonly events = new RuntimeEvents();
@@ -68,6 +70,7 @@ export class SwarmRuntime {
   readonly workspaceLeaseStore: WorkspaceLeaseStore;
   readonly artifactStore: ArtifactStore;
   readonly settings: SwarmSettings;
+  readonly capabilityPlane: CapabilityPlane;
   readonly debug: DebugLogger | null;
   readonly debugSessionId?: string;
   private readonly provider: OpenAIProvider;
@@ -88,6 +91,7 @@ export class SwarmRuntime {
     this.approvalHandler = options.approvalHandler;
     this.debugSessionId = options.debugSessionId ?? process.env.SWARM_DEBUG_SESSION_ID;
     this.settings = loadSwarmSettings(workspace);
+    this.capabilityPlane = createCapabilityPlane({ settings: this.settings, workspace });
     this.debug = getDebugLogger(getSwarmPaths().logsDir, { sessionId: this.debugSessionId });
     this.debug?.info("runtime", `SwarmRuntime init. workspace=${workspace} pid=${process.pid}`);
     this.database = new SwarmDatabase(options.databasePath ?? this.settings.runtime.databasePath);
@@ -525,6 +529,22 @@ export class SwarmRuntime {
   renderAgentSpec(id: string): string | undefined {
     const spec = getAgentSpec(id);
     return spec ? renderAgentSpec(spec) : undefined;
+  }
+
+  listCapabilities(filter?: CapabilityFilter): Promise<CapabilityDescriptor[]> {
+    return this.capabilityPlane.listCapabilities(filter);
+  }
+
+  getCapability(id: string): Promise<CapabilityDescriptor | undefined> {
+    return this.capabilityPlane.getCapability(id);
+  }
+
+  refreshCapabilities(providerId?: string): Promise<CapabilityProviderSnapshot[]> {
+    return this.capabilityPlane.refresh(providerId);
+  }
+
+  listCapabilityProviders(): Promise<CapabilityProviderSnapshot[]> {
+    return this.capabilityPlane.listProviders();
   }
 
   listHandoffs(limit = 20): HandoffSessionRecord[] {
@@ -1487,6 +1507,7 @@ export class SwarmRuntime {
       child.removeAllListeners("message");
       child.kill();
     }
+    void this.capabilityPlane.dispose();
     this.database.close();
   }
 

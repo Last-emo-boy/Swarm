@@ -96,7 +96,8 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "models", group: "Config", usage: "/models [provider]", description: "List configured models." },
   { name: "refresh-models", group: "Config", usage: "/refresh-models [provider]", description: "Refresh provider model discovery." },
   { name: "permissions", group: "Config", usage: "/permissions", description: "Inspect permission settings." },
-  { name: "permission-mode", group: "Config", usage: "/permission-mode [ask|auto-edit|full-auto|yolo]", description: "Show or change the permission mode." }
+  { name: "permission-mode", group: "Config", usage: "/permission-mode [ask|auto-edit|full-auto|yolo]", description: "Show or change the permission mode." },
+  { name: "capabilities", group: "Config", usage: "/capabilities [kind|provider|query]", description: "List registered local, slash, agent, skill, MCP, and plugin capabilities." }
 ];
 
 export function parseSlashCommandLine(commandLine: string): ParsedSlashCommand | undefined {
