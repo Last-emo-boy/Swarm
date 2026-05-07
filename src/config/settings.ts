@@ -536,6 +536,14 @@ export function setPluginEnabled(pluginId: string, enabled: boolean): void {
   });
 }
 
+export function setCapabilityEnabled(capabilityId: string, enabled: boolean): void {
+  updateCapabilityListSetting(capabilityId, "disabled", !enabled);
+}
+
+export function setCapabilityModelVisible(capabilityId: string, visible: boolean): void {
+  updateCapabilityListSetting(capabilityId, "hiddenFromModel", !visible);
+}
+
 export function saveSwarmSettings(settings: SwarmSettings): void {
   const paths = getSwarmPaths();
   writeJson(paths.settingsPath, normalizeSwarmSettings(expandSettings(settings)));
@@ -670,6 +678,34 @@ function loadUserSwarmSettings(paths: SwarmPaths): SwarmSettings {
   const defaults = defaultSwarmSettings(paths);
   const userSettings = readJsonIfExists(paths.settingsPath);
   return normalizeSwarmSettings(expandSettings(deepMerge(defaults, userSettings) as SwarmSettings));
+}
+
+function updateCapabilityListSetting(
+  capabilityId: string,
+  key: keyof SwarmSettings["extensions"]["capabilities"],
+  listed: boolean
+): void {
+  const settings = loadSwarmSettings();
+  const normalized = capabilityId.trim();
+  if (!normalized) {
+    throw new Error("Capability id is required.");
+  }
+  const values = new Set(settings.extensions.capabilities[key]);
+  if (listed) {
+    values.add(normalized);
+  } else {
+    values.delete(normalized);
+  }
+  saveSwarmSettings({
+    ...settings,
+    extensions: {
+      ...settings.extensions,
+      capabilities: {
+        ...settings.extensions.capabilities,
+        [key]: [...values].sort()
+      }
+    }
+  });
 }
 
 function readJsonIfExists(path: string): unknown {

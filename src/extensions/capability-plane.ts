@@ -30,12 +30,16 @@ export class CapabilityPlane {
     this.registry.register(this.plugins);
   }
 
-  listCapabilities(filter?: CapabilityFilter): Promise<CapabilityDescriptor[]> {
-    return this.registry.list(filter);
+  async listCapabilities(filter: CapabilityFilter = {}): Promise<CapabilityDescriptor[]> {
+    const capabilities = (await this.registry.list({ includeDisabled: true }))
+      .map((capability) => applyCapabilitySettings(capability, this.settings))
+      .filter((capability) => matchesCapabilityFilter(capability, filter));
+    return capabilities;
   }
 
-  getCapability(id: string): Promise<CapabilityDescriptor | undefined> {
-    return this.registry.get(id);
+  async getCapability(id: string): Promise<CapabilityDescriptor | undefined> {
+    const capability = await this.registry.get(id);
+    return capability ? applyCapabilitySettings(capability, this.settings) : undefined;
   }
 
   refresh(providerId?: string): Promise<CapabilityProviderSnapshot[]> {
@@ -91,6 +95,82 @@ export class CapabilityPlane {
   dispose(): Promise<void> {
     return this.registry.dispose();
   }
+}
+
+function applyCapabilitySettings(capability: CapabilityDescriptor, settings: SwarmSettings): CapabilityDescriptor {
+  const disabled = capabilityIdMatches(settings.extensions.capabilities.disabled, capability);
+  const hidden = capabilityIdMatches(settings.extensions.capabilities.hiddenFromModel, capability);
+  if (!disabled && !hidden) {
+    return capability;
+  }
+  return {
+    ...capability,
+    trust: disabled ? "disabled" : capability.trust,
+    status: disabled ? "disabled" : capability.status,
+    modelVisible: hidden ? false : capability.modelVisible,
+    diagnostics: [
+      ...(capability.diagnostics ?? []),
+      disabled
+        ? {
+            severity: "info",
+            code: "CAPABILITY_DISABLED_BY_SETTINGS",
+            message: `Capability ${capability.id} is disabled by settings.extensions.capabilities.disabled.`
+          }
+        : {
+            severity: "info",
+            code: "CAPABILITY_HIDDEN_FROM_MODEL",
+            message: `Capability ${capability.id} is hidden by settings.extensions.capabilities.hiddenFromModel.`
+          }
+    ]
+  };
+}
+
+function capabilityIdMatches(patterns: string[], capability: CapabilityDescriptor): boolean {
+  return patterns.some((pattern) =>
+    pattern === capability.id ||
+    pattern === capability.providerId ||
+    pattern === `${capability.providerId}:*` ||
+    pattern === `${capability.kind}:*` ||
+    (pattern.endsWith("*") && capability.id.startsWith(pattern.slice(0, -1)))
+  );
+}
+
+function matchesCapabilityFilter(capability: CapabilityDescriptor, filter: CapabilityFilter): boolean {
+  if (!filter.includeDisabled && (capability.trust === "disabled" || capability.status === "disabled")) {
+    return false;
+  }
+  if (filter.kind && capability.kind !== filter.kind) {
+    return false;
+  }
+  if (filter.source && capability.source !== filter.source) {
+    return false;
+  }
+  if (filter.trust && capability.trust !== filter.trust) {
+    return false;
+  }
+  const provider = filter.providerId ?? filter.provider;
+  if (provider && capability.providerId !== provider) {
+    return false;
+  }
+  if (typeof filter.modelVisible === "boolean" && capability.modelVisible !== filter.modelVisible) {
+    return false;
+  }
+  if (typeof filter.userVisible === "boolean" && capability.userVisible !== filter.userVisible) {
+    return false;
+  }
+  if (filter.query) {
+    const query = filter.query.toLowerCase();
+    const haystack = [
+      capability.id,
+      capability.name,
+      capability.title ?? "",
+      capability.description,
+      capability.providerId,
+      capability.permissionName
+    ].join("\n").toLowerCase();
+    return haystack.includes(query);
+  }
+  return true;
 }
 
 export function createCapabilityPlane(input: {

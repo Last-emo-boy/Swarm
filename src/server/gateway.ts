@@ -7,7 +7,7 @@ import type { RuntimeEvent } from "../runtime/events.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
-import { setPluginEnabled } from "../config/settings.js";
+import { setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import type { CapabilityDescriptor, CapabilityFilter } from "../extensions/types.js";
@@ -65,6 +65,10 @@ const PUBLIC_API_SURFACE = [
   "/v1/capabilities",
   "/v1/capabilities/:id",
   "/v1/capabilities/:id/invoke",
+  "/v1/capabilities/:id/enable",
+  "/v1/capabilities/:id/disable",
+  "/v1/capabilities/:id/show",
+  "/v1/capabilities/:id/hide",
   "/v1/capabilities/refresh",
   "/v1/skills",
   "/v1/skills/:name/activate",
@@ -416,6 +420,18 @@ export class SwarmGatewayServer {
 
     if (request.method === "POST" && capabilityId && capabilityId !== "refresh") {
       const body = await readJsonBody(request);
+      if (action === "enable" || action === "disable" || action === "show" || action === "hide") {
+        if (action === "enable" || action === "disable") {
+          setCapabilityEnabled(capabilityId, action === "enable");
+        } else {
+          setCapabilityModelVisible(capabilityId, action === "show");
+        }
+        this.runtime.reloadSettings();
+        const providers = await this.runtime.refreshCapabilities();
+        const capability = await this.runtime.getCapability(capabilityId);
+        sendJson(response, 200, { capability, providers });
+        return;
+      }
       if (action !== "invoke") {
         throw new HttpError(404, "Unknown capabilities route.");
       }

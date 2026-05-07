@@ -12,6 +12,8 @@ import {
   hasUsableModelConfiguration,
   loadSwarmConfig,
   loadSwarmSettings,
+  setCapabilityEnabled,
+  setCapabilityModelVisible,
   setModelSelection,
   setPermissionMode,
   setPluginEnabled,
@@ -1156,6 +1158,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return {
         brief: `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`,
         detail
+      };
+    }
+
+    if (command === "capability-enable" || command === "capability-disable" || command === "capability-show" || command === "capability-hide") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const capabilityId = args[0];
+      if (!capabilityId) {
+        throw new Error(`Usage: /${command} <capability_id>`);
+      }
+      if (command === "capability-enable" || command === "capability-disable") {
+        setCapabilityEnabled(capabilityId, command === "capability-enable");
+      } else {
+        setCapabilityModelVisible(capabilityId, command === "capability-show");
+      }
+      runtime.reloadSettings();
+      await runtime.refreshCapabilities();
+      const capability = await runtime.getCapability(capabilityId);
+      return {
+        brief: `Capability ${capabilityId} updated. Ctrl+O for details.`,
+        detail: capability ? formatCapabilities([capability], await runtime.listCapabilityProviders()) : `Capability setting saved for ${capabilityId}.`
       };
     }
 
