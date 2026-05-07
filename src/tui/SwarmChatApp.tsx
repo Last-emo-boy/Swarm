@@ -1517,10 +1517,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setApproval(undefined);
   }
 
-  if (approval) {
-    return <ApprovalView request={approval} />;
-  }
-
   if (detailOpen) {
     return <DetailView content={latestDetail || "No detail output yet."} scroll={detailScroll} height={detailHeight} />;
   }
@@ -1638,7 +1634,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         </Box>
       </Box>
 
-      {pendingPlan ? (
+      {approval ? (
+        <ApprovalView request={approval} />
+      ) : pendingPlan ? (
         <Box marginTop={1} borderStyle="single" paddingX={1}>
           <Text color="yellow">Approve plan with y, cancel with n</Text>
         </Box>
@@ -1990,47 +1988,28 @@ function IdleBlackboardPane({ blackboard, messages }: {
 }
 
 function ApprovalView({ request }: { request: ToolApprovalRequest }): React.ReactElement {
-  const detailLines = request.detail.split(/\r?\n/).filter((line) => line.trim()).slice(0, 12);
+  const detailLines = request.detail.split(/\r?\n/).filter((line) => line.trim()).slice(0, 5);
   return (
-    <Box flexDirection="column" paddingX={1}>
-      <Box borderStyle="single" paddingX={1}>
-        <Text color="yellow">Swarm Approval</Text>
-        <Text color="gray">  y/a allow once  s allow session  n/d deny</Text>
-      </Box>
-      <Box borderStyle="round" flexDirection="column" paddingX={1} marginTop={1}>
+    <Box flexDirection="column" borderStyle="single" paddingX={1} marginTop={1}>
+      <Text color="yellow">Approval required  y/a allow once  s allow session  n/d deny</Text>
+      <Box flexDirection="column">
         <Text color={request.risk === "shell" || request.risk_class === "r4" ? "red" : "yellow"}>
           {request.summary} [{request.risk_class}/{request.risk}]
         </Text>
-        <Text>ID: {request.id}</Text>
-        <Text>Action: {request.action}</Text>
-        <Text>Target: {request.target}</Text>
-        <Box marginTop={1}>
-          <Text color="yellow">Why now</Text>
-        </Box>
-        <Text>{request.why_now}</Text>
-        <Box marginTop={1}>
-          <Text color="yellow">Impact</Text>
-        </Box>
-        <Text>Impact: {request.predicted_impact}</Text>
-        <Box marginTop={1}>
-          <Text color="yellow">Rollback</Text>
-        </Box>
-        <Text>{request.rollback_plan}</Text>
-        <Box marginTop={1}>
-          <Text color="yellow">Details</Text>
-        </Box>
+        <Text wrap="truncate">Target: {request.target}</Text>
+        <Text wrap="truncate">Why now: {request.why_now}</Text>
+        <Text wrap="truncate">Impact: {request.predicted_impact}</Text>
+        <Text wrap="truncate">Rollback: {request.rollback_plan}</Text>
         {detailLines.map((line, index) => (
           <Text key={index} wrap="truncate">{line}</Text>
         ))}
         {request.summary_diff && (
-          <>
-            <Box marginTop={1}>
-              <Text color="yellow">Diff</Text>
-            </Box>
+          <Box flexDirection="column">
+            <Text color="yellow">Diff</Text>
             {request.summary_diff.split(/\r?\n/).slice(0, 8).map((line, index) => (
               <Text key={`diff-${index}`} wrap="truncate">{line}</Text>
             ))}
-          </>
+          </Box>
         )}
       </Box>
     </Box>

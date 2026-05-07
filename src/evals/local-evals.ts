@@ -140,6 +140,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/SwarmChatApp.tsx", "approvalSessionRuleKey", "TUI approval can remember same action and target for the session"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "if (approval)", "TUI key handling gives approval overlay priority"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "key.escape || (key.ctrl && character === \"c\")", "TUI overlays handle Escape and Ctrl+C locally"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "{approval ? (", "TUI renders approvals inline with runtime context"),
+    checkNotContains(root, "src/tui/SwarmChatApp.tsx", "return <ApprovalView request={approval} />", "TUI approvals do not replace the full application view"),
     checkContains(root, "src/runtime/runtime.ts", "recordRuntimeEvent", "runtime persists local core events"),
     checkContains(root, "src/runtime/events.ts", "type: \"session\"", "runtime emits session lifecycle events"),
     checkContains(root, "src/protocol/types.ts", "export type WorkItem", "Work Kernel WorkItem type exists"),
