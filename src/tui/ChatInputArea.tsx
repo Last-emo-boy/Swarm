@@ -9,6 +9,7 @@ import {
   type ChatInputControllerState
 } from "./chat-input-controller.js";
 import type { SlashCommandSpec } from "./slash-commands.js";
+import { clampCursor, nextGraphemeBoundary } from "./input-editing.js";
 
 const INPUT_RENDER_ROWS = 4;
 
@@ -58,11 +59,12 @@ export function ChatInputArea({
 }
 
 function InputLine({ value, cursor }: { value: string; cursor: number }): React.ReactElement {
-  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  const safeCursor = clampCursor(value, cursor);
   const viewport = inputViewport(value, safeCursor, INPUT_RENDER_ROWS);
   const before = viewport.value.slice(0, viewport.cursor);
-  const current = viewport.value[viewport.cursor] ?? " ";
-  const after = viewport.value.slice(viewport.cursor + (viewport.value[viewport.cursor] ? 1 : 0));
+  const currentEnd = nextGraphemeBoundary(viewport.value, viewport.cursor);
+  const current = viewport.value.slice(viewport.cursor, currentEnd) || " ";
+  const after = viewport.value.slice(currentEnd);
   return (
     <>
       <Text>{before}</Text>

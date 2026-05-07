@@ -415,6 +415,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiReadlineKillBehavior(),
     checkTuiBackspaceBehavior(),
     checkTuiDeleteBehavior(),
+    checkTuiUnicodeInputEditingBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
@@ -766,6 +767,33 @@ function checkTuiBackspaceBehavior(): EvalCaseResult {
   return ok
     ? { name: "TUI backspace behavior handles raw terminal bytes", status: "pass", message: "backspace works for Ink flags, DEL-as-delete, DEL, and BS bytes" }
     : { name: "TUI backspace behavior handles raw terminal bytes", status: "fail", message: "backspace did not remove the character before cursor consistently" };
+}
+
+function checkTuiUnicodeInputEditingBehavior(): EvalCaseResult {
+  const emojiBackspace = editInput("a🙂b", 3, undefined, { backspace: true });
+  const emojiDelete = editInput("a🙂b", 1, "[3~", {});
+  const combining = "e\u0301x";
+  const combiningBackspace = editInput(combining, 2, undefined, { backspace: true });
+  const movedLeft = inputReducer({ value: "a🙂b", cursor: 4 }, { type: "cursor", cursor: 3 });
+  const movedRight = inputReducer({ value: "a🙂b", cursor: 1 }, { type: "cursor", cursor: 2 });
+  const ok = emojiBackspace.handled
+    && emojiBackspace.state.value === "ab"
+    && emojiBackspace.state.cursor === 1
+    && emojiDelete.handled
+    && emojiDelete.state.value === "ab"
+    && emojiDelete.state.cursor === 1
+    && combiningBackspace.handled
+    && combiningBackspace.state.value === "x"
+    && combiningBackspace.state.cursor === 0
+    && movedLeft.cursor === 3
+    && movedRight.cursor === 3;
+  return ok
+    ? { name: "TUI unicode input editing keeps graphemes intact", status: "pass", message: "emoji and combining characters delete and move as whole prompt characters" }
+    : {
+        name: "TUI unicode input editing keeps graphemes intact",
+        status: "fail",
+        message: `emojiBackspace=${emojiBackspace.handled ? `${emojiBackspace.state.value}/${emojiBackspace.state.cursor}` : "-"} emojiDelete=${emojiDelete.handled ? `${emojiDelete.state.value}/${emojiDelete.state.cursor}` : "-"} combining=${combiningBackspace.handled ? `${combiningBackspace.state.value}/${combiningBackspace.state.cursor}` : "-"} move=${movedLeft.cursor}/${movedRight.cursor}`
+      };
 }
 
 function checkCodingLoopActivityFormattingBehavior(): EvalCaseResult {

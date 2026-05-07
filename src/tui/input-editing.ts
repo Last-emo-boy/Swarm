@@ -46,6 +46,10 @@ export type InputKillResult = {
   killed: string;
 };
 
+const graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : undefined;
+
 const KNOWN_ESCAPE_SEQUENCES: Array<{ sequence: string; decoded: DecodedInput }> = [
   { sequence: "\x1b\r", decoded: { kind: "newline" } },
   { sequence: "\x1b\n", decoded: { kind: "newline" } },
@@ -76,20 +80,22 @@ export function editInput(
   character: string | undefined,
   key: InputEditKey
 ): InputEditResult {
-  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  const safeCursor = clampCursor(value, cursor);
   if (isBackspaceInput(character, key)) {
     if (safeCursor <= 0) {
       return { handled: true, state: { value, cursor: safeCursor } };
     }
-    const next = value.slice(0, safeCursor - 1) + value.slice(safeCursor);
-    return { handled: true, state: { value: next, cursor: safeCursor - 1 } };
+    const previousCursor = previousGraphemeBoundary(value, safeCursor);
+    const next = value.slice(0, previousCursor) + value.slice(safeCursor);
+    return { handled: true, state: { value: next, cursor: previousCursor } };
   }
 
   if (isDeleteInput(character, key)) {
     if (safeCursor >= value.length) {
       return { handled: true, state: { value, cursor: safeCursor } };
     }
-    const next = value.slice(0, safeCursor) + value.slice(safeCursor + 1);
+    const nextCursor = nextGraphemeBoundary(value, safeCursor);
+    const next = value.slice(0, safeCursor) + value.slice(nextCursor);
     return { handled: true, state: { value: next, cursor: safeCursor } };
   }
 
@@ -110,14 +116,14 @@ export function flushInputStream(pending: string): InputStreamDecodeResult {
 }
 
 export function insertInputText(value: string, cursor: number, text: string): InputEditState {
-  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  const safeCursor = clampCursor(value, cursor);
   const normalized = normalizeInputText(text);
   const next = value.slice(0, safeCursor) + normalized + value.slice(safeCursor);
   return { value: next, cursor: safeCursor + normalized.length };
 }
 
 export function killInputBackward(value: string, cursor: number): InputKillResult {
-  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  const safeCursor = clampCursor(value, cursor);
   if (safeCursor <= 0) {
     return { state: { value, cursor: safeCursor }, killed: "" };
   }
@@ -128,7 +134,7 @@ export function killInputBackward(value: string, cursor: number): InputKillResul
 }
 
 export function killInputToLineEnd(value: string, cursor: number): InputKillResult {
-  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  const safeCursor = clampCursor(value, cursor);
   if (safeCursor >= value.length) {
     return { state: { value, cursor: safeCursor }, killed: "" };
   }
@@ -145,7 +151,7 @@ export function killInputToLineEnd(value: string, cursor: number): InputKillResu
 }
 
 export function killInputWordBackward(value: string, cursor: number): InputKillResult {
-  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  const safeCursor = clampCursor(value, cursor);
   if (safeCursor <= 0) {
     return { state: { value, cursor: safeCursor }, killed: "" };
   }
@@ -335,6 +341,33 @@ export function normalizeInputText(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+export function clampCursor(value: string, cursor: number): number {
+  const clamped = Math.max(0, Math.min(value.length, cursor));
+  return nearestGraphemeBoundary(value, clamped);
+}
+
+export function previousGraphemeBoundary(value: string, cursor: number): number {
+  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  let previous = 0;
+  for (const boundary of graphemeBoundaries(value)) {
+    if (boundary >= safeCursor) {
+      return previous;
+    }
+    previous = boundary;
+  }
+  return previous;
+}
+
+export function nextGraphemeBoundary(value: string, cursor: number): number {
+  const safeCursor = Math.max(0, Math.min(value.length, cursor));
+  for (const boundary of graphemeBoundaries(value)) {
+    if (boundary > safeCursor) {
+      return boundary;
+    }
+  }
+  return value.length;
+}
+
 function isPrintableInput(character: string | undefined, key: InputEditKey): character is string {
   if (!character || key.ctrl || key.meta) {
     return false;
@@ -423,4 +456,36 @@ function isPastedTextChunk(value: string): boolean {
     const code = character.codePointAt(0) ?? 0;
     return code >= 32 && code !== 127;
   });
+}
+
+function nearestGraphemeBoundary(value: string, cursor: number): number {
+  if (cursor <= 0 || cursor >= value.length) {
+    return Math.max(0, Math.min(value.length, cursor));
+  }
+  let previous = 0;
+  for (const boundary of graphemeBoundaries(value)) {
+    if (boundary === cursor) {
+      return cursor;
+    }
+    if (boundary > cursor) {
+      return previous;
+    }
+    previous = boundary;
+  }
+  return previous;
+}
+
+function graphemeBoundaries(value: string): number[] {
+  if (graphemeSegmenter) {
+    const boundaries = [0];
+    for (const segment of graphemeSegmenter.segment(value)) {
+      boundaries.push(segment.index + segment.segment.length);
+    }
+    return boundaries;
+  }
+  const boundaries = [0];
+  for (const character of value) {
+    boundaries.push((boundaries[boundaries.length - 1] ?? 0) + character.length);
+  }
+  return boundaries;
 }

@@ -1,3 +1,5 @@
+import { clampCursor, nextGraphemeBoundary, previousGraphemeBoundary } from "./input-editing.js";
+
 export type InputState = {
   value: string;
   cursor: number;
@@ -16,7 +18,7 @@ export type InputAction =
 export function inputReducer(state: InputState, action: InputAction): InputState {
   switch (action.type) {
     case "replace": {
-      const cursor = Math.max(0, Math.min(action.value.length, action.cursor ?? action.value.length));
+      const cursor = clampCursor(action.value, action.cursor ?? action.value.length);
       return {
         value: action.value,
         cursor,
@@ -28,13 +30,13 @@ export function inputReducer(state: InputState, action: InputAction): InputState
     case "cursor":
       return {
         ...state,
-        cursor: Math.max(0, Math.min(state.value.length, action.cursor)),
+        cursor: moveCursorToBoundary(state.value, state.cursor, action.cursor),
         dismissedCompletionKey: action.clearDismissed ? undefined : state.dismissedCompletionKey
       };
     case "history":
       return {
         value: action.value,
-        cursor: Math.max(0, Math.min(action.value.length, action.cursor ?? action.value.length)),
+        cursor: clampCursor(action.value, action.cursor ?? action.value.length),
         historyIndex: action.historyIndex,
         historyDraft: action.historyDraft,
         dismissedCompletionKey: action.clearDismissed ? undefined : state.dismissedCompletionKey
@@ -44,4 +46,14 @@ export function inputReducer(state: InputState, action: InputAction): InputState
     case "clearDismissed":
       return { ...state, dismissedCompletionKey: undefined };
   }
+}
+
+function moveCursorToBoundary(value: string, current: number, requested: number): number {
+  if (requested < current) {
+    return previousGraphemeBoundary(value, current);
+  }
+  if (requested > current) {
+    return nextGraphemeBoundary(value, current);
+  }
+  return clampCursor(value, requested);
 }
