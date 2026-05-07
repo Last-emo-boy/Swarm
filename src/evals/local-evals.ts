@@ -975,13 +975,29 @@ function checkCodingLoopActivityFormattingBehavior(): EvalCaseResult {
   const headless = formatHeadlessProgress(event);
   const failedBrief = formatRuntimeEventBrief(failed);
   const failedHeadless = formatHeadlessProgress(failed);
+  const finalFailed = {
+    type: "final" as const,
+    session_id: "loop_eval",
+    content: "Tool failed.",
+    status: "failed" as const,
+    outcome: {
+      changed_files: ["src/index.ts"],
+      intermediate_artifacts: [],
+      tests_run: [],
+      final_summary: "Failed tool: npm test exited 1"
+    }
+  };
+  const finalBrief = formatRuntimeEventBrief(finalFailed);
+  const finalHeadless = formatHeadlessProgress(finalFailed);
   const ok = brief === "activity: Running shell.exec npm test"
     && headless === "activity: Running shell.exec npm test"
     && failedBrief === "activity: Failed: Budget exhausted before completion."
-    && failedHeadless === "activity: Failed: Budget exhausted before completion.";
+    && failedHeadless === "activity: Failed: Budget exhausted before completion."
+    && finalBrief === "final: failed, 1 changed, 0 checks"
+    && finalHeadless === "final: failed, 1 changed, 0 checks";
   return ok
-    ? { name: "coding loop activity events format for TUI and headless output", status: "pass", message: "loop_activity produces stable current-action and failed-final lines" }
-    : { name: "coding loop activity events format for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"} failed=${failedBrief}/${failedHeadless ?? "-"}` };
+    ? { name: "coding loop activity events format for TUI and headless output", status: "pass", message: "loop_activity and final events produce stable current-action and failed-final lines" }
+    : { name: "coding loop activity events format for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"} failed=${failedBrief}/${failedHeadless ?? "-"} final=${finalBrief}/${finalHeadless ?? "-"}` };
 }
 
 function checkToolRecoveryFormattingBehavior(): EvalCaseResult {

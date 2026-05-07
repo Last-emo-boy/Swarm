@@ -79,7 +79,7 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
     case "plan":
       return `plan: ${event.session_id} tasks=${event.plan.tasks.length}`;
     case "final":
-      return `final: ${event.outcome?.changed_files.length ?? 0} changed, ${event.outcome?.tests_run.length ?? 0} checks`;
+      return `final: ${event.status ?? "completed"}, ${event.outcome?.changed_files.length ?? 0} changed, ${event.outcome?.tests_run.length ?? 0} checks`;
     case "log":
       return `${event.level}: ${event.message}`;
     case "error":
@@ -114,6 +114,9 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
   }
   if (event.type === "verification_completed") {
     return `verify: ${event.result.status} - ${event.result.summary}`;
+  }
+  if (event.type === "final") {
+    return `final: ${event.status ?? "completed"}, ${event.outcome?.changed_files.length ?? 0} changed, ${event.outcome?.tests_run.length ?? 0} checks`;
   }
   if (event.type === "approval") {
     return `approval: ${event.status} ${event.request.action} ${event.request.risk_class}/${event.request.risk} target=${event.request.target}`;
