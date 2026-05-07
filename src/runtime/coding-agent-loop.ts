@@ -9,6 +9,7 @@ import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
 import { WorkerStateStore } from "../storage/worker-state-store.js";
 import { listAgentSpecs, type AgentInvocationRequest } from "./agent-specs.js";
+import { delegatedToolStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -683,7 +684,7 @@ export class CodingAgentLoop {
         "Return internal findings for the main Swarm to synthesize. Do not address the user directly."
       ].filter(Boolean).join("\n\n"));
       const stopped = this.options.workerStore?.get(workerId)?.status === "stopped";
-      const status = stopped ? "stopped" : "completed";
+      const status = workerStatusFromExecutionStatus(result.status, stopped);
       const content = result.content;
       const finalRecord = this.options.workerStore?.setResult({
         worker_id: workerId,
@@ -704,7 +705,7 @@ export class CodingAgentLoop {
       });
       return {
         action: "agent.delegate",
-        status: status === "completed" ? "success" : "partial",
+        status: delegatedToolStatus(status),
         summary: `Worker ${workerId} ${status}: ${firstLine(content)}`,
         content,
         data: {

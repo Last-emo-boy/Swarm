@@ -46,7 +46,7 @@ import { riskClassForAction } from "../tools/permissions.js";
 import { normalizeToolAction } from "../tools/local-tools.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
-import { finalAttemptStatus, sessionStatusFromExecutionStatus } from "./execution-status.js";
+import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 
 export class SwarmRuntime {
   readonly events = new RuntimeEvents();
@@ -1086,7 +1086,7 @@ export class SwarmRuntime {
       const latestWorker = this.workerStateStore.get(workerId);
       const latestHandoff = handoff ? this.handoffStore.get(handoff.handoff_id) : undefined;
       const stopped = latestWorker?.status === "stopped" || latestHandoff?.status === "taken_back";
-      const status = stopped ? "stopped" : "completed";
+      const status = workerStatusFromExecutionStatus(result.status, stopped);
       const finalRecord = this.workerStateStore.setResult({
         worker_id: workerId,
         status,
@@ -1099,13 +1099,13 @@ export class SwarmRuntime {
 
       let finalHandoff = latestHandoff;
       if (handoff && latestHandoff?.status !== "taken_back") {
-        finalHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: "returned", result: result.content });
+        finalHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: status === "failed" ? "failed" : "returned", result: result.content });
         this.events.emitEvent({ type: "handoff_returned", handoff: finalHandoff, result: result.content });
       }
 
       return {
         action: "agent.delegate",
-        status: status === "completed" ? "success" : "partial",
+        status: delegatedToolStatus(status),
         summary: `${spec.name} ${status}: ${firstLine(result.content)}`,
         content: result.content,
         data: {

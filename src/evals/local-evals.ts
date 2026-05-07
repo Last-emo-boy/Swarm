@@ -25,7 +25,7 @@ import {
 } from "../tui/slash-commands.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
 import { finalActivityMessage, finalActivityPhase, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
-import { finalAttemptStatus, sessionStatusFromExecutionStatus } from "../runtime/execution-status.js";
+import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "../runtime/execution-status.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
   applyChatInputKey,
@@ -434,6 +434,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
     checkCodingLoopPersistenceStatusBehavior(),
+    checkDelegatedWorkerStatusBehavior(),
     checkTuiMainPaneCycleBehavior(),
     checkTuiIdleSnapshotSignatureBehavior(),
     checkPermissionDenyPrecedenceBehavior(),
@@ -1056,6 +1057,23 @@ function checkCodingLoopPersistenceStatusBehavior(): EvalCaseResult {
         name: "coding loop persistence statuses preserve failures",
         status: "fail",
         message: `session=${sessionStatusFromExecutionStatus("completed")}/${sessionStatusFromExecutionStatus("failed")}/${sessionStatusFromExecutionStatus("stopped")} attempt=${finalAttemptStatus("completed")}/${finalAttemptStatus("failed")}/${finalAttemptStatus("stopped")}`
+      };
+}
+
+function checkDelegatedWorkerStatusBehavior(): EvalCaseResult {
+  const ok = workerStatusFromExecutionStatus("completed", false) === "completed"
+    && workerStatusFromExecutionStatus("failed", false) === "failed"
+    && workerStatusFromExecutionStatus("completed", true) === "stopped"
+    && workerStatusFromExecutionStatus("stopped", false) === "stopped"
+    && delegatedToolStatus("completed") === "success"
+    && delegatedToolStatus("failed") === "failed"
+    && delegatedToolStatus("stopped") === "partial";
+  return ok
+    ? { name: "delegated worker failures propagate to tool results", status: "pass", message: "failed worker loops produce failed agent.delegate results while stopped workers stay partial" }
+    : {
+        name: "delegated worker failures propagate to tool results",
+        status: "fail",
+        message: `worker=${workerStatusFromExecutionStatus("completed", false)}/${workerStatusFromExecutionStatus("failed", false)}/${workerStatusFromExecutionStatus("completed", true)} tool=${delegatedToolStatus("completed")}/${delegatedToolStatus("failed")}/${delegatedToolStatus("stopped")}`
       };
 }
 
