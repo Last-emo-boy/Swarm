@@ -38,6 +38,7 @@ import {
 } from "../tui/idle-pane-snapshot.js";
 import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/input-rendering.js";
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
+import { appendTuiRuntimeEvent, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
 import { assertToolAllowedByPermissions, toolRequiresApproval } from "../tools/permissions.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
@@ -305,6 +306,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/chat-input-controller.ts", "applyChatInputKey", "TUI chat input behavior is centralized in a testable controller"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "loopActivityTimeline", "TUI running pane preserves a recent activity timeline"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "formatLoopActivityLine", "TUI running pane renders compact activity lines"),
+    checkFile(root, "src/tui/tui-event-buffer.ts", "TUI event buffer helper is isolated"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "appendTuiRuntimeEvent", "TUI event history avoids duplicate redraw events"),
     checkContains(root, "README.md", "When idle, the TUI main pane acts as the Kernel operator surface", "README documents idle TUI as the Kernel operator surface"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Recent Attempts", "TUI kernel status view surfaces Work Kernel attempts"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Symphony", "TUI kernel status view surfaces Symphony state"),
@@ -422,6 +425,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiUnicodeInputEditingBehavior(),
     checkTuiInputRenderingBehavior(),
     checkTuiOnboardInputEditingBehavior(),
+    checkTuiEventBufferBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
@@ -862,6 +866,44 @@ function checkTuiOnboardInputEditingBehavior(): EvalCaseResult {
         name: "TUI onboarding input shares robust deletion behavior",
         status: "fail",
         message: `typed=${typed.handled ? typed.value : "-"} backspace=${flaggedBackspace.handled ? flaggedBackspace.value : "-"} ink=${inkDeleteBackspace.handled ? inkDeleteBackspace.value : "-"} raw=${rawDel.handled ? rawDel.value : "-"} emoji=${emoji.handled ? emoji.value : "-"} return=${ignoredReturn.handled}`
+      };
+}
+
+function checkTuiEventBufferBehavior(): EvalCaseResult {
+  const duplicateActivity = {
+    type: "loop_activity" as const,
+    session_id: "session-1",
+    phase: "running_tool" as const,
+    message: "Running shell.exec npm test",
+    turn: 1,
+    tool: "shell.exec",
+    task_id: "task-1"
+  };
+  const changedActivity = { ...duplicateActivity, message: "Running shell.exec npm run check" };
+  const first = appendTuiRuntimeEvent([], duplicateActivity);
+  const deduped = appendTuiRuntimeEvent(first, { ...duplicateActivity });
+  const changed = appendTuiRuntimeEvent(deduped, changedActivity);
+  let capped = changed;
+  for (let index = 0; index < TUI_EVENT_BUFFER_LIMIT + 8; index += 1) {
+    capped = appendTuiRuntimeEvent(capped, {
+      type: "progress",
+      completed: index,
+      total: TUI_EVENT_BUFFER_LIMIT + 8
+    });
+  }
+  const last = capped[capped.length - 1];
+  const ok = first.length === 1
+    && deduped === first
+    && changed.length === 2
+    && capped.length === TUI_EVENT_BUFFER_LIMIT
+    && last?.type === "progress"
+    && last.completed === TUI_EVENT_BUFFER_LIMIT + 7;
+  return ok
+    ? { name: "TUI event buffer skips duplicate redraw events", status: "pass", message: "consecutive duplicate runtime events keep the same array while changed events append and the buffer remains capped" }
+    : {
+        name: "TUI event buffer skips duplicate redraw events",
+        status: "fail",
+        message: `first=${first.length} dedupedSame=${deduped === first} changed=${changed.length} capped=${capped.length} last=${last?.type === "progress" ? last.completed : "-"}`
       };
 }
 

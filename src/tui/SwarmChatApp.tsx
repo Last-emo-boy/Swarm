@@ -59,6 +59,7 @@ import {
   type IdlePaneSnapshot
 } from "./idle-pane-snapshot.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
+import { appendTuiRuntimeEvent } from "./tui-event-buffer.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -189,7 +190,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
     symphonyDaemonManager.current = new SymphonyDaemonManager(runtime);
     const unsubscribe = runtime.events.onEvent((event) => {
-      setEvents((previous) => [...previous.slice(-80), event]);
+      setEvents((previous) => appendTuiRuntimeEvent(previous, event));
 
       if (event.type === "task") {
         setTaskStates((prev) => {
