@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import {
+  assertToolAllowedByPermissions,
   assertReadableByDenyRules,
   displayPath,
   resolveReadablePath,
@@ -202,6 +203,8 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
 }
 
 export async function runLocalTool(action: ToolAction, context: LocalToolContext): Promise<ToolResult> {
+  assertToolAllowedByPermissions(action, context.settings);
+
   if (action.type === "file.read") {
     return readLocalFile(action, context);
   }

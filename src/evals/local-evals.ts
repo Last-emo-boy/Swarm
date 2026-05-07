@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { defaultSwarmSettings } from "../config/settings.js";
 import {
   decodeInputChunk,
   decodeInputStream,
@@ -34,6 +35,7 @@ import {
   idlePaneSnapshotSignature,
   symphonyDaemonRecordsSignature
 } from "../tui/idle-pane-snapshot.js";
+import { assertToolAllowedByPermissions, toolRequiresApproval } from "../tools/permissions.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
 export type EvalCaseResult = {
@@ -414,6 +416,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkToolRecoveryFormattingBehavior(),
     checkTuiMainPaneCycleBehavior(),
     checkTuiIdleSnapshotSignatureBehavior(),
+    checkPermissionDenyPrecedenceBehavior(),
     checkNoForbiddenProductName(root)
   ];
 }
@@ -883,6 +886,37 @@ function checkTuiIdleSnapshotSignatureBehavior(): EvalCaseResult {
   return ok
     ? { name: "TUI idle pane polling ignores unchanged snapshots", status: "pass", message: "stable signatures prevent no-op Kernel and Symphony poll updates" }
     : { name: "TUI idle pane polling ignores unchanged snapshots", status: "fail", message: `sameIdle=${sameIdle} changedIdle=${changedIdle} sameDaemons=${sameDaemons} changedDaemons=${changedDaemons}` };
+}
+
+function checkPermissionDenyPrecedenceBehavior(): EvalCaseResult {
+  const settings = defaultSwarmSettings();
+  settings.permissions.defaultMode = "yolo";
+  settings.permissions.allow = ["Bash(*)", "Write(**)", "WebFetch(*)"];
+  settings.permissions.ask = [];
+  settings.permissions.deny = ["Bash(npm publish*)", "Write(secrets/**)", "WebFetch(https://example.com/secrets*)"];
+
+  const deniedShell = { type: "shell.exec" as const, command: "npm publish --dry-run" };
+  const deniedWrite = { type: "file.write" as const, path: "secrets/token.txt", content: "secret" };
+  const deniedWeb = { type: "web.fetch" as const, url: "https://example.com/secrets?id=1" };
+  const allowedShell = { type: "shell.exec" as const, command: "npm test" };
+
+  const shellDenied = throws(() => toolRequiresApproval(deniedShell, settings));
+  const writeDenied = throws(() => assertToolAllowedByPermissions(deniedWrite, settings));
+  const webDenied = throws(() => toolRequiresApproval(deniedWeb, settings));
+  const allowed = !toolRequiresApproval(allowedShell, settings);
+  const ok = shellDenied && writeDenied && webDenied && allowed;
+  return ok
+    ? { name: "permission deny rules override allow and yolo modes", status: "pass", message: "deny rules are enforced before approval bypasses" }
+    : { name: "permission deny rules override allow and yolo modes", status: "fail", message: `shellDenied=${shellDenied} writeDenied=${writeDenied} webDenied=${webDenied} allowed=${allowed}` };
+}
+
+function throws(fn: () => unknown): boolean {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("/local-evals.js")) {

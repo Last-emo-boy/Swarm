@@ -37,6 +37,7 @@ export function displayPath(path: string, workspace: string): string {
 }
 
 export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings): boolean {
+  assertToolAllowedByPermissions(action, settings);
   const mode = normalizePermissionMode(settings.permissions.defaultMode);
   if (matchesPermissionRules(action, settings.permissions.allow)) {
     return false;
@@ -66,6 +67,12 @@ export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings
     return mode === "ask";
   }
   return false;
+}
+
+export function assertToolAllowedByPermissions(action: ToolAction, settings: SwarmSettings): void {
+  if (matchesPermissionRules(action, settings.permissions.deny)) {
+    throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${approvalSummary(action)}`);
+  }
 }
 
 export function createToolApprovalRequest(action: ToolAction): ToolApprovalRequest {
@@ -429,13 +436,35 @@ function parsePermissionRule(rule: string): { name: string; content?: string } |
 }
 
 function wildcardMatch(value: string, pattern: string): boolean {
-  if (pattern.endsWith(":*")) {
-    return value.startsWith(pattern.slice(0, -1));
+  const normalizedValue = value.replace(/\\/g, "/");
+  const normalizedPattern = pattern.replace(/\\/g, "/");
+  if (normalizedPattern === "*" || normalizedPattern === "**") {
+    return true;
   }
-  if (pattern.endsWith("*")) {
-    return value.startsWith(pattern.slice(0, -1));
+  const regex = new RegExp(`^${globToRegExpSource(normalizedPattern)}$`);
+  return regex.test(normalizedValue);
+}
+
+function globToRegExpSource(pattern: string): string {
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === "*") {
+      if (pattern[index + 1] === "*") {
+        source += ".*";
+        index += 1;
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+    source += escapeRegExp(character);
   }
-  return value === pattern;
+  return source;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 function matchesReadDenyRule(rule: string, candidates: string[]): boolean {
