@@ -51,6 +51,7 @@ import {
   renderSlashHelp
 } from "./slash-commands.js";
 import { ChatInputArea } from "./ChatInputArea.js";
+import { createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
 import {
   emptyIdlePaneSnapshot,
   idlePaneSnapshotSignature,
@@ -178,6 +179,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const idlePaneSnapshotSignatureRef = useRef(idlePaneSnapshotSignature(idlePaneSnapshot));
   const [completionRows, setCompletionRows] = useState(0);
   const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
+  const chatInputState = useRef<ChatInputControllerState>(createChatInputControllerState());
 
   const terminalRows = stdout.rows || 32;
   // Keep live output below the terminal height; Ink clears the terminal when outputHeight >= rows.
@@ -1635,7 +1637,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           <Text color="yellow">Approve plan with y, cancel with n</Text>
         </Box>
       ) : (
-        <ChatInputArea onSubmit={submitObjective} onCompletionRowsChange={setCompletionRows} />
+        <ChatInputArea
+          onSubmit={submitObjective}
+          onCompletionRowsChange={setCompletionRows}
+          controllerStateRef={chatInputState}
+        />
       )}
     </Box>
   );

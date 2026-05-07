@@ -13,12 +13,15 @@ import { renderInputLineParts } from "./input-rendering.js";
 
 export function ChatInputArea({
   onSubmit,
-  onCompletionRowsChange
+  onCompletionRowsChange,
+  controllerStateRef
 }: {
   onSubmit: (value: string) => void | Promise<void>;
   onCompletionRowsChange: (rows: number) => void;
+  controllerStateRef?: React.MutableRefObject<ChatInputControllerState>;
 }): React.ReactElement {
-  const controllerState = useRef<ChatInputControllerState>(createChatInputControllerState());
+  const internalControllerState = useRef<ChatInputControllerState>(createChatInputControllerState());
+  const controllerState = controllerStateRef ?? internalControllerState;
   const [, setRenderVersion] = useState(0);
   const completionRows = chatInputCompletionRows(controllerState.current);
   const commandCandidates = chatInputCompletionCandidates(controllerState.current);

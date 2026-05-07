@@ -303,6 +303,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Workspace Leases", "TUI idle pane surfaces workspace write boundaries"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "idlePaneSnapshot.approvals", "TUI idle pane surfaces pending approvals"),
     checkContains(root, "src/tui/ChatInputArea.tsx", "<InputLine value={controllerState.current.input.value}", "TUI chat input renders the current editable draft"),
+    checkContains(root, "src/tui/ChatInputArea.tsx", "controllerStateRef", "TUI chat input can use parent-owned controller state"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "controllerStateRef={chatInputState}", "TUI shell preserves chat input state across approval overlays"),
     checkNotContains(root, "src/tui/ChatInputArea.tsx", "useStdin", "TUI chat input avoids raw stdin double-consumption"),
     checkNotContains(root, "src/tui/ChatInputArea.tsx", "renderRawInputLine", "TUI chat input avoids manual ANSI line repaint"),
     checkNotContains(root, "src/tui/SwarmChatApp.tsx", "inputHistory", "TUI shell does not own per-keystroke input history state"),
