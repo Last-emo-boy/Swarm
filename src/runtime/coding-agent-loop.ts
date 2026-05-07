@@ -266,6 +266,7 @@ export class CodingAgentLoop {
         const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
         const modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
         const availableTools = allowedToolNames(this.options.allowedTools, delegateAvailable, modelCapabilities);
+        const dynamicToolSchemas = dynamicCapabilityToolSchemas(modelCapabilities);
         const modelText = await this.options.provider.generateText({
           model: this.options.provider.workerModel,
           system: codingLoopSystemPrompt({
@@ -280,7 +281,7 @@ export class CodingAgentLoop {
               objective,
               role,
               parent_session_id: this.options.parentSessionId,
-              tool_schemas: renderToolSchemas(availableTools),
+              tool_schemas: renderToolSchemas(availableTools, dynamicToolSchemas),
               available_agent_specs: role === "main" && delegateAvailable
                 ? renderAvailableAgentSpecs({ settings: this.options.settings, workspace: this.options.workspace })
                 : undefined,
@@ -964,8 +965,27 @@ function dynamicCapabilityMatchesAction(capability: CapabilityDescriptor, action
   return capability.id === SKILL_ACTIVATE_CAPABILITY_ID && capability.name === action;
 }
 
-function renderToolSchemas(allowedTools: string[]): Array<Record<string, unknown>> {
-  return allowedTools.map((tool) => TOOL_SCHEMAS[tool] ?? {
+function dynamicCapabilityToolSchemas(capabilities: CapabilityDescriptor[]): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(
+    capabilities
+      .filter((capability) => (capability.kind === "mcp_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) && capability.modelVisible && capability.status !== "disabled")
+      .map((capability) => [
+        capability.name,
+        {
+          action: capability.name,
+          description: capability.description,
+          inputs: capability.inputSchema ?? { type: "object" },
+          output: capability.outputSchema,
+          risk_class: capability.riskClass,
+          permission: capability.permissionName,
+          provider: capability.providerId
+        }
+      ])
+  );
+}
+
+function renderToolSchemas(allowedTools: string[], dynamicSchemas: Record<string, Record<string, unknown>> = {}): Array<Record<string, unknown>> {
+  return allowedTools.map((tool) => dynamicSchemas[tool] ?? TOOL_SCHEMAS[tool] ?? {
     action: tool,
     inputs: { action: tool },
     notes: "No detailed schema is registered for this tool."
