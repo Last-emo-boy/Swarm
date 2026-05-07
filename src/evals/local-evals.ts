@@ -36,6 +36,7 @@ import {
   idlePaneSnapshotSignature,
   symphonyDaemonRecordsSignature
 } from "../tui/idle-pane-snapshot.js";
+import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/input-rendering.js";
 import { assertToolAllowedByPermissions, toolRequiresApproval } from "../tools/permissions.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
@@ -98,13 +99,14 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/chat-input-controller.ts", "historyDraft", "TUI input preserves the in-progress draft while browsing history"),
     checkContains(root, "src/tui/chat-input-controller.ts", "input.cursor", "TUI input tracks cursor position"),
     checkContains(root, "src/tui/ChatInputArea.tsx", "InputLine", "TUI renders an editable input cursor"),
+    checkFile(root, "src/tui/input-rendering.ts", "TUI input rendering helpers are isolated"),
     checkContains(root, "src/tui/input-editing.ts", "isBackspaceInput", "TUI centralizes robust backspace handling"),
     checkContains(root, "src/tui/input-editing.ts", "isDeleteInput", "TUI centralizes robust delete handling"),
     checkContains(root, "src/tui/input-editing.ts", "decodeInputStream", "TUI input buffers split terminal escape sequences"),
     checkContains(root, "src/tui/input-editing.ts", "bracketedPasteContent", "TUI input decodes bracketed paste"),
     checkContains(root, "src/tui/input-editing.ts", "killInputWordBackward", "TUI input exposes readline-style kill operations"),
     checkFile(root, "src/tui/input-state.ts", "TUI input state reducer is isolated from the main app"),
-    checkContains(root, "src/tui/ChatInputArea.tsx", "INPUT_RENDER_ROWS", "TUI input renders a compact multi-line prompt viewport"),
+    checkContains(root, "src/tui/input-rendering.ts", "INPUT_RENDER_ROWS", "TUI input renders a compact multi-line prompt viewport"),
     checkContains(root, "src/tui/main-panes.ts", "mainPaneOrder", "TUI centralizes main pane order"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "mainPane", "TUI tracks the active main pane"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Ctrl+N/P panes", "TUI documents main pane switching in the header"),
@@ -416,6 +418,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiBackspaceBehavior(),
     checkTuiDeleteBehavior(),
     checkTuiUnicodeInputEditingBehavior(),
+    checkTuiInputRenderingBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
@@ -793,6 +796,42 @@ function checkTuiUnicodeInputEditingBehavior(): EvalCaseResult {
         name: "TUI unicode input editing keeps graphemes intact",
         status: "fail",
         message: `emojiBackspace=${emojiBackspace.handled ? `${emojiBackspace.state.value}/${emojiBackspace.state.cursor}` : "-"} emojiDelete=${emojiDelete.handled ? `${emojiDelete.state.value}/${emojiDelete.state.cursor}` : "-"} combining=${combiningBackspace.handled ? `${combiningBackspace.state.value}/${combiningBackspace.state.cursor}` : "-"} move=${movedLeft.cursor}/${movedRight.cursor}`
+      };
+}
+
+function checkTuiInputRenderingBehavior(): EvalCaseResult {
+  const simple = renderInputLineParts("abc", 1);
+  const endCursor = renderInputLineParts("abc", 3);
+  const afterBackspace = editInput("abc", 2, undefined, { backspace: true });
+  const renderedAfterBackspace = afterBackspace.handled
+    ? renderInputLineParts(afterBackspace.state.value, afterBackspace.state.cursor)
+    : undefined;
+  const emoji = renderInputLineParts("a🙂b", 1);
+  const combining = renderInputLineParts("e\u0301x", 0);
+  const viewport = inputViewport("one\ntwo\nthree\nfour\nfive", 19, INPUT_RENDER_ROWS);
+  const ok = simple.before === "a"
+    && simple.current === "b"
+    && simple.after === "c"
+    && endCursor.before === "abc"
+    && endCursor.current === " "
+    && endCursor.after === ""
+    && renderedAfterBackspace?.before === "a"
+    && renderedAfterBackspace.current === "c"
+    && renderedAfterBackspace.after === ""
+    && emoji.before === "a"
+    && emoji.current === "🙂"
+    && emoji.after === "b"
+    && combining.before === ""
+    && combining.current === "e\u0301"
+    && combining.after === "x"
+    && viewport.value === "... two / three / four / five"
+    && viewport.cursor === 25;
+  return ok
+    ? { name: "TUI input rendering keeps cursor and viewport stable", status: "pass", message: "rendered prompt fragments match edit state for deletion, unicode, end cursor, and multi-line viewport" }
+    : {
+        name: "TUI input rendering keeps cursor and viewport stable",
+        status: "fail",
+        message: `simple=${simple.before}/${simple.current}/${simple.after} end=${endCursor.before}/${endCursor.current}/${endCursor.after} backspace=${renderedAfterBackspace ? `${renderedAfterBackspace.before}/${renderedAfterBackspace.current}/${renderedAfterBackspace.after}` : "-"} emoji=${emoji.before}/${emoji.current}/${emoji.after} combining=${combining.before}/${combining.current}/${combining.after} viewport=${viewport.value}/${viewport.cursor}`
       };
 }
 

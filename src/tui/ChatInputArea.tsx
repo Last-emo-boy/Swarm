@@ -9,9 +9,7 @@ import {
   type ChatInputControllerState
 } from "./chat-input-controller.js";
 import type { SlashCommandSpec } from "./slash-commands.js";
-import { clampCursor, nextGraphemeBoundary } from "./input-editing.js";
-
-const INPUT_RENDER_ROWS = 4;
+import { renderInputLineParts } from "./input-rendering.js";
 
 export function ChatInputArea({
   onSubmit,
@@ -59,12 +57,7 @@ export function ChatInputArea({
 }
 
 function InputLine({ value, cursor }: { value: string; cursor: number }): React.ReactElement {
-  const safeCursor = clampCursor(value, cursor);
-  const viewport = inputViewport(value, safeCursor, INPUT_RENDER_ROWS);
-  const before = viewport.value.slice(0, viewport.cursor);
-  const currentEnd = nextGraphemeBoundary(viewport.value, viewport.cursor);
-  const current = viewport.value.slice(viewport.cursor, currentEnd) || " ";
-  const after = viewport.value.slice(currentEnd);
+  const { before, current, after } = renderInputLineParts(value, cursor);
   return (
     <>
       <Text>{before}</Text>
@@ -72,29 +65,6 @@ function InputLine({ value, cursor }: { value: string; cursor: number }): React.
       <Text>{after}</Text>
     </>
   );
-}
-
-function inputViewport(value: string, cursor: number, maxRows: number): { value: string; cursor: number } {
-  if (!value.includes("\n")) {
-    return { value, cursor };
-  }
-  const lineStarts = [0];
-  for (let index = 0; index < value.length; index += 1) {
-    if (value[index] === "\n") {
-      lineStarts.push(index + 1);
-    }
-  }
-  const cursorLine = Math.max(0, lineStarts.findIndex((start, index) => cursor >= start && (index === lineStarts.length - 1 || cursor < lineStarts[index + 1])));
-  const startLine = Math.max(0, cursorLine - maxRows + 1);
-  const start = lineStarts[startLine] ?? 0;
-  const nextLineStart = lineStarts[Math.min(lineStarts.length - 1, cursorLine + 1)];
-  const cursorLineEnd = nextLineStart === undefined ? value.length : Math.max(start, nextLineStart - 1);
-  const prefix = start > 0 ? "... " : "";
-  const visible = value.slice(start, cursorLineEnd).replace(/\n/g, " / ");
-  return {
-    value: `${prefix}${visible}`,
-    cursor: prefix.length + Math.max(0, Math.min(cursor - start, visible.length))
-  };
 }
 
 function CommandCandidates({ candidates, selectedIndex }: { candidates: SlashCommandSpec[]; selectedIndex: number }): React.ReactElement {
