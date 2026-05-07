@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AgentCard, BlackboardEntry, GeneratedPlan, ReviewResult, SwarmEnvelope, SwarmSession, WorkSessionOutcome } from "../protocol/types.js";
+import type { AgentCard, BlackboardEntry, GeneratedPlan, ReviewResult, RiskClass, SwarmEnvelope, SwarmSession, WorkSessionOutcome } from "../protocol/types.js";
 import type { FileLockEvent, ToolApprovalRequest, WorkspaceChangeMetadata } from "../tools/types.js";
 import type { WorkerRecord, WorkerStatus } from "../storage/worker-state-store.js";
 import type { AgentSpawnDecision, AgentTaskPacket } from "./agent-specs.js";
@@ -40,7 +40,7 @@ export type RuntimeEvent =
   | { type: "loop_activity"; session_id: string; phase: "thinking" | "running_tools" | "running_tool" | "waiting_approval" | "turn_complete" | "completed" | "failed" | "stopped"; message: string; turn?: number; tool?: string; task_id?: string }
   | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped" }
   | { type: "error"; message: string }
-  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string }
+  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass } }
   | { type: "progress"; completed: number; total: number };
 
 export type ToolResultSummary = {

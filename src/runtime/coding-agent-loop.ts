@@ -688,7 +688,13 @@ export class CodingAgentLoop {
       status: result.status,
       outputRef: prepared.outputRef,
       errorCode: rawResult.errorCode,
-      recoverySuggestion: rawResult.recoverySuggestion
+      recoverySuggestion: rawResult.recoverySuggestion,
+      capability: {
+        id: capability.id,
+        providerId: capability.providerId,
+        permissionName: capability.permissionName,
+        riskClass: capability.riskClass
+      }
     });
     return { result };
   }

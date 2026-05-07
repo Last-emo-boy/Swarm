@@ -926,7 +926,14 @@ export class SwarmRuntime {
             kind: "tool_call",
             amount: 1,
             unit: "count",
-            metadata: { action: event.action, status: event.status ?? "success", summary: event.summary }
+            metadata: {
+              action: event.action,
+              status: event.status ?? "success",
+              summary: event.summary,
+              capability_id: event.capability?.id,
+              provider_id: event.capability?.providerId,
+              permission: event.capability?.permissionName
+            }
           });
           this.auditStore.append({
             session_id: event.session_id,
@@ -935,8 +942,16 @@ export class SwarmRuntime {
             actor_type: "tool",
             actor_id: event.action,
             action: event.action,
-            resource: { summary: event.summary, outputRef: event.outputRef, errorCode: event.errorCode, recoverySuggestion: event.recoverySuggestion },
-            risk_class: riskClassForActionName(event.action),
+            resource: {
+              capability_id: event.capability?.id,
+              provider_id: event.capability?.providerId,
+              permission: event.capability?.permissionName,
+              summary: event.summary,
+              outputRef: event.outputRef,
+              errorCode: event.errorCode,
+              recoverySuggestion: event.recoverySuggestion
+            },
+            risk_class: event.capability?.riskClass ?? riskClassForActionName(event.action),
             decision: event.status === "failed" ? "failed" : "executed",
             reason: event.summary
           });
@@ -955,6 +970,9 @@ export class SwarmRuntime {
             metadata: {
               action: event.action,
               summary: event.summary,
+              capability_id: event.capability?.id,
+              provider_id: event.capability?.providerId,
+              permission: event.capability?.permissionName,
               outputRef: event.outputRef,
               recoverySuggestion: event.recoverySuggestion,
               status: event.status ?? "success"

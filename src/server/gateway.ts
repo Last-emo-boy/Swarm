@@ -504,7 +504,13 @@ export class SwarmGatewayServer {
         status: result.status ?? "success",
         outputRef: result.outputRef,
         errorCode: result.errorCode,
-        recoverySuggestion: result.recoverySuggestion
+        recoverySuggestion: result.recoverySuggestion,
+        capability: {
+          id: capability.id,
+          providerId: capability.providerId,
+          permissionName: capability.permissionName,
+          riskClass: capability.riskClass
+        }
       });
       return;
     }
