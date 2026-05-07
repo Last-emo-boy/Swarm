@@ -51,6 +51,16 @@ export type CodingLoopFinalStatus = {
   summary: string;
 };
 
+export function finalActivityMessage(finalStatus: CodingLoopFinalStatus, stopReason?: string): string {
+  if (finalStatus.status === "stopped") {
+    return `Stopped: ${stopReason || finalStatus.summary}`;
+  }
+  if (finalStatus.status === "failed") {
+    return `Failed: ${finalStatus.summary}`;
+  }
+  return `Completed: ${finalStatus.summary}`;
+}
+
 type LiveUserMessage = {
   id: string;
   seq: number;
@@ -396,8 +406,8 @@ export class CodingAgentLoop {
     }
     this.emitActivity(
       sessionId,
-      this.stopRequested ? "stopped" : "completed",
-      this.stopRequested ? `Stopped: ${this.stopReason || firstLine(content)}` : `Completed: ${firstLine(content)}`,
+      finalStatus.status === "stopped" ? "stopped" : "completed",
+      finalActivityMessage(finalStatus, this.stopReason),
       { taskId: "final" }
     );
     this.currentPhase = "idle";

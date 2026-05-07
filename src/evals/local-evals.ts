@@ -24,7 +24,7 @@ import {
   rawSlashArgsAfter
 } from "../tui/slash-commands.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
-import { summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
+import { finalActivityMessage, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
   applyChatInputKey,
@@ -825,7 +825,9 @@ function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
   });
   const ok = status.status === "failed"
     && status.summary.includes("Failed tool: npm test exited 1")
-    && stopped.status === "stopped";
+    && finalActivityMessage(status).startsWith("Failed:")
+    && stopped.status === "stopped"
+    && finalActivityMessage(stopped, "user interrupt") === "Stopped: user interrupt";
   return ok
     ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results prevent completed status from masking local execution failures" }
     : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status}` };
