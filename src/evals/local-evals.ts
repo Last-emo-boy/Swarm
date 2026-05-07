@@ -42,6 +42,7 @@ import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/i
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
 import { assertToolAllowedByPermissions, resolveReadablePath, resolveWritablePath, toolRequiresApproval } from "../tools/permissions.js";
+import { webFetchHttpFailureMetadata } from "../tools/local-tools.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
 export type EvalCaseResult = {
@@ -437,6 +438,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiApprovalInputBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
+    checkWebFetchHttpFailureMetadataBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
     checkCodingLoopPersistenceStatusBehavior(),
     checkDelegatedWorkerStatusBehavior(),
@@ -1022,6 +1024,28 @@ function checkToolRecoveryFormattingBehavior(): EvalCaseResult {
   return ok
     ? { name: "tool recovery guidance formats for TUI and headless output", status: "pass", message: "tool_result recoverySuggestion is visible in compact and headless progress" }
     : { name: "tool recovery guidance formats for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"}` };
+}
+
+function checkWebFetchHttpFailureMetadataBehavior(): EvalCaseResult {
+  const notFound = webFetchHttpFailureMetadata(404, "Not Found");
+  const rateLimited = webFetchHttpFailureMetadata(429, "Too Many Requests");
+  const serverError = webFetchHttpFailureMetadata(503, "Service Unavailable");
+  const ok = notFound.errorCode === "HTTP_404"
+    && notFound.errors?.[0] === "HTTP 404 Not Found"
+    && notFound.retryable === false
+    && notFound.recoverable === true
+    && Boolean(notFound.recoverySuggestion)
+    && rateLimited.errorCode === "HTTP_429"
+    && rateLimited.retryable === true
+    && serverError.errorCode === "HTTP_503"
+    && serverError.retryable === true;
+  return ok
+    ? { name: "web.fetch HTTP failures carry recovery metadata", status: "pass", message: "HTTP 4xx/429/5xx failures expose error codes, retryability, and recovery guidance without a network call" }
+    : {
+        name: "web.fetch HTTP failures carry recovery metadata",
+        status: "fail",
+        message: `404=${notFound.errorCode}/${notFound.retryable}/${notFound.recoverySuggestion ? "recovery" : "-"} 429=${rateLimited.errorCode}/${rateLimited.retryable} 503=${serverError.errorCode}/${serverError.retryable}`
+      };
 }
 
 function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {

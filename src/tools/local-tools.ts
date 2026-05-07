@@ -1200,6 +1200,17 @@ function recoverySuggestionForToolFailure(
   return "Inspect the output, adjust the command or inputs, and retry from the current workspace state.";
 }
 
+export function webFetchHttpFailureMetadata(status: number, statusText: string): Pick<ToolResult, "errors" | "errorCode" | "retryable" | "recoverable" | "recoverySuggestion"> {
+  const errorCode = `HTTP_${status}`;
+  return {
+    errors: [`HTTP ${status} ${statusText}`],
+    errorCode,
+    retryable: status >= 500 || status === 429,
+    recoverable: true,
+    recoverySuggestion: recoverySuggestionForToolFailure("web.fetch", errorCode, `${status} ${statusText}`)
+  };
+}
+
 async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Promise<ToolResult> {
   if (!action.url.trim()) {
     throw new Error("web.fetch requires url");
@@ -1240,10 +1251,13 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
   const isText = contentType.includes("text/") || contentType.includes("application/json") || contentType.includes("application/xml") || contentType.includes("application/javascript");
 
   if (!isText) {
+    const status = response.ok ? "success" : "failed";
+    const failure = response.ok ? undefined : webFetchHttpFailureMetadata(response.status, response.statusText);
     return {
       action: "web.fetch",
-      status: response.ok ? "success" : "failed",
+      status,
       summary: `fetched ${action.url} — ${response.status} ${contentType} (${response.headers.get("content-length") ?? "?"} bytes, non-text, body not returned)`,
+      ...failure,
       data: {
         url: action.url,
         status: response.status,
@@ -1262,6 +1276,7 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
     status: response.ok ? "success" : "failed",
     summary: `fetched ${action.url} — ${response.status} ${contentType}, ${buffer.length} bytes${truncated ? " (truncated)" : ""}`,
     content,
+    ...(response.ok ? undefined : webFetchHttpFailureMetadata(response.status, response.statusText)),
     data: {
       url: action.url,
       finalUrl: response.url !== action.url ? response.url : undefined,
