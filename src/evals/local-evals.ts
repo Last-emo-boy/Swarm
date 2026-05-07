@@ -24,6 +24,7 @@ import {
   rawSlashArgsAfter
 } from "../tui/slash-commands.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
+import { summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
   applyChatInputKey,
@@ -414,6 +415,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiDeleteBehavior(),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
+    checkCodingLoopFailedToolFinalStatusBehavior(),
     checkTuiMainPaneCycleBehavior(),
     checkTuiIdleSnapshotSignatureBehavior(),
     checkPermissionDenyPrecedenceBehavior(),
@@ -803,6 +805,30 @@ function checkToolRecoveryFormattingBehavior(): EvalCaseResult {
   return ok
     ? { name: "tool recovery guidance formats for TUI and headless output", status: "pass", message: "tool_result recoverySuggestion is visible in compact and headless progress" }
     : { name: "tool recovery guidance formats for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"}` };
+}
+
+function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
+  const status = summarizeCodingLoopFinalStatus({
+    stopRequested: false,
+    modelStatus: "completed",
+    content: "All done.",
+    toolResults: [
+      { status: "success", summary: "read files" },
+      { status: "failed", summary: "npm test exited 1" }
+    ]
+  });
+  const stopped = summarizeCodingLoopFinalStatus({
+    stopRequested: true,
+    modelStatus: "completed",
+    content: "Interrupted by user.",
+    toolResults: [{ status: "failed", summary: "shell command aborted" }]
+  });
+  const ok = status.status === "failed"
+    && status.summary.includes("Failed tool: npm test exited 1")
+    && stopped.status === "stopped";
+  return ok
+    ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results prevent completed status from masking local execution failures" }
+    : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status}` };
 }
 
 function checkTuiDeleteBehavior(): EvalCaseResult {

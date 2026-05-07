@@ -39,6 +39,18 @@ type CodingLoopToolResult = {
   recoverySuggestion?: string;
 };
 
+export type CodingLoopFinalStatusInput = {
+  stopRequested: boolean;
+  modelStatus: CodingLoopModelResult["status"];
+  toolResults: Array<Pick<CodingLoopToolResult, "status" | "summary">>;
+  content: string;
+};
+
+export type CodingLoopFinalStatus = {
+  status: ExecutionResult["status"];
+  summary: string;
+};
+
 type LiveUserMessage = {
   id: string;
   seq: number;
@@ -367,11 +379,17 @@ export class CodingAgentLoop {
     }
 
     const content = lastResult.message || lastResult.summary || "Coding loop completed.";
+    const finalStatus = summarizeCodingLoopFinalStatus({
+      stopRequested: this.stopRequested,
+      modelStatus: lastResult.status,
+      toolResults,
+      content
+    });
     const outcome: SessionOutcome = {
       changed_files: [...changedFiles],
       intermediate_artifacts: [...intermediateArtifacts],
       tests_run: [...testsRun],
-      final_summary: firstLine(content)
+      final_summary: finalStatus.summary
     };
     if (this.options.emitFinal !== false) {
       this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome });
@@ -383,7 +401,7 @@ export class CodingAgentLoop {
       { taskId: "final" }
     );
     this.currentPhase = "idle";
-    return { session_id: sessionId, content, outcome, status: this.stopRequested ? "stopped" : lastResult.status === "failed" ? "failed" : "completed" };
+    return { session_id: sessionId, content, outcome, status: finalStatus.status };
   }
 
   private isStopRequested(): boolean {
@@ -1048,6 +1066,24 @@ function collectPaths(value: unknown, changedFiles: Set<string>, intermediateArt
   if (isRecord(outputRef) && typeof outputRef.path === "string") {
     intermediateArtifacts.add(outputRef.path);
   }
+}
+
+export function summarizeCodingLoopFinalStatus(input: CodingLoopFinalStatusInput): CodingLoopFinalStatus {
+  const firstFailure = input.toolResults.find((result) => result.status === "failed");
+  const summary = firstLine(input.content);
+  if (input.stopRequested) {
+    return { status: "stopped", summary };
+  }
+  if (input.modelStatus === "failed") {
+    return { status: "failed", summary };
+  }
+  if (firstFailure) {
+    return {
+      status: "failed",
+      summary: [summary, `Failed tool: ${firstLine(firstFailure.summary)}`].filter(Boolean).join(" ")
+    };
+  }
+  return { status: "completed", summary };
 }
 
 function truncateMiddle(content: string, maxBytes: number, totalBytes: number, totalLines: number, path: string): string {
