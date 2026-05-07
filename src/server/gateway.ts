@@ -10,6 +10,7 @@ import type { ToolApprovalRequest } from "../tools/types.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import type { CapabilityFilter } from "../extensions/types.js";
+import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
 
 export type GatewayOptions = {
   host?: string;
@@ -51,6 +52,7 @@ const EVENT_BUFFER_LIMIT = 500;
 const PUBLIC_API_SURFACE = [
   "/",
   "/health",
+  "/mcp",
   "/v1/sessions",
   "/v1/runs",
   "/v1/events",
@@ -174,6 +176,28 @@ export class SwarmGatewayServer {
 
       if (request.method === "GET" && url.pathname === "/health") {
         sendJson(response, 200, { ok: true, service: "swarm-gateway", routes: PUBLIC_API_SURFACE });
+        return;
+      }
+
+      if (url.pathname === "/mcp") {
+        const body = request.method === "POST" ? await readJsonBody(request) : {};
+        await handleSwarmMcpEndpoint({
+          runtime: this.runtime,
+          request,
+          response,
+          body,
+          startRun: (objective, mode) => this.startRuntimeRun(objective, mode),
+          interrupt: (_sessionId, content) => this.runtime.interrupt(content),
+          approvalDecision: (approvalId, approved) => {
+            const pending = this.pendingApprovals.get(approvalId);
+            if (!pending) {
+              return false;
+            }
+            pending.resolve(approved);
+            this.pendingApprovals.delete(approvalId);
+            return true;
+          }
+        });
         return;
       }
 
