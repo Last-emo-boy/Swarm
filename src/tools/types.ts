@@ -223,7 +223,7 @@ export type ToolApprovalRequest = {
   id: string;
   session_id?: string;
   task_id?: string;
-  action: ToolAction["type"];
+  action: ToolAction["type"] | string;
   summary: string;
   detail: string;
   risk: "write" | "shell" | "web" | "install" | "delegate";

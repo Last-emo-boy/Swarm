@@ -6,10 +6,10 @@ import { SwarmRuntime } from "../runtime/runtime.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
-import type { ToolApprovalRequest } from "../tools/types.js";
+import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
-import type { CapabilityFilter } from "../extensions/types.js";
+import type { CapabilityDescriptor, CapabilityFilter } from "../extensions/types.js";
 import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
 
 export type GatewayOptions = {
@@ -63,6 +63,7 @@ const PUBLIC_API_SURFACE = [
   "/v1/handoffs",
   "/v1/capabilities",
   "/v1/capabilities/:id",
+  "/v1/capabilities/:id/invoke",
   "/v1/capabilities/refresh",
   "/v1/skills",
   "/v1/skills/:name/activate",
@@ -253,7 +254,7 @@ export class SwarmGatewayServer {
     }
 
     if (resource === "capabilities") {
-      await this.handleCapabilities(request, response, url, id);
+      await this.handleCapabilities(request, response, url, id, child);
       return;
     }
 
@@ -381,7 +382,8 @@ export class SwarmGatewayServer {
     request: IncomingMessage,
     response: ServerResponse,
     url: URL,
-    capabilityId?: string
+    capabilityId?: string,
+    action?: string
   ): Promise<void> {
     if (request.method === "GET" && !capabilityId) {
       const filter = capabilityFilterFromUrl(url);
@@ -393,12 +395,56 @@ export class SwarmGatewayServer {
       return;
     }
 
-    if (request.method === "GET" && capabilityId) {
+    if (request.method === "GET" && capabilityId && !action) {
       const capability = await this.runtime.getCapability(capabilityId);
       if (!capability) {
         throw new HttpError(404, `Unknown capability: ${capabilityId}`);
       }
       sendJson(response, 200, { capability });
+      return;
+    }
+
+    if (request.method === "POST" && capabilityId && capabilityId !== "refresh") {
+      const body = await readJsonBody(request);
+      if (action !== "invoke") {
+        throw new HttpError(404, "Unknown capabilities route.");
+      }
+      const capability = await this.runtime.getCapability(capabilityId);
+      if (!capability) {
+        throw new HttpError(404, `Unknown capability: ${capabilityId}`);
+      }
+      if (capability.trust === "disabled" || capability.status === "disabled") {
+        throw new HttpError(409, `Capability is disabled: ${capabilityId}`);
+      }
+      const args = capabilityInvocationArguments(body);
+      const sessionId = optionalString(body.session_id ?? body.sessionId);
+      const taskId = optionalString(body.task_id ?? body.taskId) ?? `capability_${randomUUID()}`;
+      const approval = createGatewayCapabilityApprovalRequest(capability, args, sessionId, taskId);
+      if (gatewayCapabilityRequiresApproval(capability, this.runtime.settings)) {
+        this.runtime.events.emitEvent({ type: "approval", request: approval, status: "pending" });
+        const approved = await this.waitForApproval(approval);
+        this.runtime.events.emitEvent({ type: "approval", request: approval, status: approved ? "approved" : "denied" });
+        if (!approved) {
+          throw new HttpError(403, `Capability denied: ${capability.permissionName}`);
+        }
+      }
+      try {
+        const result = await this.runtime.invokeCapability(capability.id, args);
+        this.recordGatewayCapabilityInvocation(capability, result, sessionId, taskId);
+        sendJson(response, 200, { capability, result });
+      } catch (error) {
+        const result: ToolResult = {
+          action: capability.name,
+          status: "failed",
+          summary: error instanceof Error ? error.message : String(error),
+          errors: [error instanceof Error ? error.message : String(error)],
+          errorCode: "CAPABILITY_INVOKE_FAILED",
+          retryable: true,
+          recoverable: true
+        };
+        this.recordGatewayCapabilityInvocation(capability, result, sessionId, taskId);
+        throw error;
+      }
       return;
     }
 
@@ -412,6 +458,61 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown capabilities route.");
+  }
+
+  private recordGatewayCapabilityInvocation(
+    capability: CapabilityDescriptor,
+    result: ToolResult,
+    sessionId: string | undefined,
+    taskId: string
+  ): void {
+    if (sessionId) {
+      this.runtime.events.emitEvent({
+        type: "tool_result",
+        session_id: sessionId,
+        task_id: taskId,
+        title: `Invoke ${capability.title ?? capability.name}`,
+        action: capability.name,
+        summary: result.summary,
+        content: result.content,
+        status: result.status ?? "success",
+        outputRef: result.outputRef,
+        errorCode: result.errorCode,
+        recoverySuggestion: result.recoverySuggestion
+      });
+      return;
+    }
+
+    this.runtime.usageStore.append({
+      task_id: taskId,
+      kind: "tool_call",
+      amount: 1,
+      unit: "count",
+      metadata: {
+        action: capability.name,
+        capability_id: capability.id,
+        provider_id: capability.providerId,
+        status: result.status ?? "success",
+        summary: result.summary
+      }
+    });
+    this.runtime.auditStore.append({
+      task_id: taskId,
+      actor_type: "tool",
+      actor_id: capability.name,
+      action: capability.name,
+      resource: {
+        capability_id: capability.id,
+        provider_id: capability.providerId,
+        summary: result.summary,
+        outputRef: result.outputRef,
+        errorCode: result.errorCode,
+        recoverySuggestion: result.recoverySuggestion
+      },
+      risk_class: capability.riskClass,
+      decision: result.status === "failed" ? "failed" : "executed",
+      reason: result.summary
+    });
   }
 
   private async handleSkills(
@@ -1060,6 +1161,83 @@ function capabilityFilterFromUrl(url: URL): CapabilityFilter {
     includeDisabled: optionalBoolean(url.searchParams.get("include_disabled") ?? url.searchParams.get("includeDisabled")),
     query: optionalString(url.searchParams.get("q") ?? url.searchParams.get("query"))
   };
+}
+
+function capabilityInvocationArguments(body: Record<string, unknown>): Record<string, unknown> {
+  const value = body.arguments ?? body.args ?? {};
+  if (!isRecord(value)) {
+    throw new HttpError(400, "Capability invocation arguments must be an object.");
+  }
+  return value;
+}
+
+function gatewayCapabilityRequiresApproval(capability: CapabilityDescriptor, settings: SwarmRuntime["settings"]): boolean {
+  if (matchesCapabilityPermission(capability, settings.permissions.deny)) {
+    throw new HttpError(403, `Capability denied by settings: ${capability.permissionName}`);
+  }
+  if (matchesCapabilityPermission(capability, settings.permissions.allow)) {
+    return false;
+  }
+  if (settings.permissions.defaultMode === "yolo" || settings.permissions.defaultMode === "full-auto" || settings.permissions.defaultMode === "auto") {
+    return false;
+  }
+  return capability.trust === "untrusted" || capability.riskClass !== "r0" || matchesCapabilityPermission(capability, settings.permissions.ask);
+}
+
+function matchesCapabilityPermission(capability: CapabilityDescriptor, rules: string[]): boolean {
+  if (rules.includes(capability.permissionName)) {
+    return true;
+  }
+  const match = /^([A-Za-z][A-Za-z0-9_-]*)\((.*)\)$/.exec(capability.permissionName);
+  if (!match) {
+    return rules.includes(`${capability.permissionName}(*)`);
+  }
+  const [, name, target] = match;
+  return rules.includes(`${name}(*)`) || rules.includes(`${name}(${target.split(":")[0]}:*)`);
+}
+
+function createGatewayCapabilityApprovalRequest(
+  capability: CapabilityDescriptor,
+  args: Record<string, unknown>,
+  sessionId: string | undefined,
+  taskId: string
+): ToolApprovalRequest {
+  return {
+    id: `approval_${randomUUID()}`,
+    session_id: sessionId,
+    task_id: taskId,
+    action: capability.name,
+    summary: `Use capability: ${capability.title ?? capability.name}`,
+    detail: [
+      capability.description,
+      "",
+      `Capability: ${capability.id}`,
+      `Provider: ${capability.providerId}`,
+      `Permission: ${capability.permissionName}`,
+      `Arguments:\n${JSON.stringify(redactCapabilityArgs(args), null, 2)}`
+    ].join("\n"),
+    risk: capability.riskClass === "r0" ? "web" : capability.riskClass === "r1" ? "delegate" : "shell",
+    risk_class: capability.riskClass,
+    target: capability.providerId,
+    why_now: `Gateway requested ${capability.name}.`,
+    predicted_impact: capability.riskClass === "r0"
+      ? "Read-only external capability call."
+      : "External capability call may access local or remote server behavior depending on the provider.",
+    rollback_plan: "No automatic rollback is guaranteed for external capability calls; inspect output and follow up if the provider changed external state."
+  };
+}
+
+function redactCapabilityArgs(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactCapabilityArgs);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, next]) => [
+    key,
+    /token|secret|password|api[_-]?key|credential/i.test(key) ? "[redacted]" : redactCapabilityArgs(next)
+  ]));
 }
 
 function positiveBodyInteger(value: unknown): number | undefined {
