@@ -1,9 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { getSwarmPaths, type SwarmSettings } from "../config/settings.js";
+import { loadPluginSkillRoots } from "./plugins.js";
 import type { CapabilityDescriptor, CapabilityDiagnostic, CapabilityProvider, CapabilityTrust } from "./types.js";
 
-export type SkillScope = "project" | "user" | "explicit";
+export type SkillScope = "project" | "user" | "explicit" | "plugin";
 
 export type SkillRecord = {
   name: string;
@@ -30,6 +31,7 @@ type SkillRoot = {
   scope: SkillScope;
   trust: CapabilityTrust;
   enabled: boolean;
+  pluginId?: string;
 };
 
 export class SkillProvider implements CapabilityProvider {
@@ -180,6 +182,13 @@ function skillRoots(settings: SwarmSettings, workspace: string): SkillRoot[] {
       scope: "explicit" as const,
       trust: "trusted" as const,
       enabled: true
+    })),
+    ...loadPluginSkillRoots(settings, workspace).map((root) => ({
+      path: root.path,
+      scope: "plugin" as const,
+      trust: root.trust,
+      enabled: true,
+      pluginId: root.pluginId
     }))
   ];
 }
@@ -187,6 +196,12 @@ function skillRoots(settings: SwarmSettings, workspace: string): SkillRoot[] {
 function scanSkillRoot(root: SkillRoot): SkillRecord[] {
   if (!existsSync(root.path)) {
     return [];
+  }
+  if (!safeIsDirectory(root.path) && basename(root.path).toLowerCase() === "skill.md") {
+    return [readSkill(root.path, root)];
+  }
+  if (existsSync(join(root.path, "SKILL.md"))) {
+    return [readSkill(join(root.path, "SKILL.md"), root)];
   }
   const entries = safeReadDir(root.path);
   const records: SkillRecord[] = [];
@@ -223,7 +238,7 @@ function readSkill(path: string, root: SkillRoot): SkillRecord {
     directory: dirname(path),
     scope: root.scope,
     trust: root.trust,
-    frontmatter: parsed.frontmatter,
+    frontmatter: root.pluginId ? { ...parsed.frontmatter, plugin_id: root.pluginId } : parsed.frontmatter,
     allowedTools: listFrontmatter(parsed.frontmatter, "allowed-tools"),
     resourcePaths: listSkillResources(dirname(path)),
     diagnostics

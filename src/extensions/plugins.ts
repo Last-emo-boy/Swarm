@@ -358,6 +358,22 @@ export function loadPluginMcpServerSettings(settings: SwarmSettings, workspace: 
       ] as const)));
 }
 
+export function loadPluginSkillRoots(settings: SwarmSettings, workspace: string): Array<{
+  path: string;
+  trust: CapabilityTrust;
+  pluginId: string;
+}> {
+  const provider = new PluginProvider({ settings, workspace });
+  return provider.listPlugins()
+    .flatMap((plugin) => plugin.contributions
+      .filter((contribution) => contribution.kind === "skill" && typeof contribution.metadata.path === "string")
+      .map((contribution) => ({
+        path: String(contribution.metadata.path),
+        trust: plugin.trust,
+        pluginId: plugin.id
+      })));
+}
+
 function normalizePluginMcpServer(item: Record<string, unknown>): McpServerSettings | undefined {
   const transport = item.transport === "http" ? "http" : "stdio";
   const command = typeof item.command === "string" && item.command.trim() ? item.command.trim() : undefined;
@@ -400,10 +416,7 @@ function pluginDescriptor(record: PluginRecord): CapabilityDescriptor {
     modelVisible: false,
     userVisible: true,
     status: record.trust === "disabled" || record.trust === "untrusted" ? "disabled" : "available",
-    diagnostics: [
-      ...record.diagnostics,
-      ...(Array.isArray(contribution.metadata.diagnostics) ? contribution.metadata.diagnostics as CapabilityDiagnostic[] : [])
-    ],
+    diagnostics: record.diagnostics,
     metadata: {
       version: record.version,
       scope: record.scope,
@@ -435,7 +448,10 @@ function contributionDescriptor(record: PluginRecord, contribution: PluginContri
     modelVisible: false,
     userVisible: true,
     status: record.trust === "disabled" || record.trust === "untrusted" ? "disabled" : "available",
-    diagnostics: record.diagnostics,
+    diagnostics: [
+      ...record.diagnostics,
+      ...(Array.isArray(contribution.metadata.diagnostics) ? contribution.metadata.diagnostics as CapabilityDiagnostic[] : [])
+    ],
     metadata: {
       plugin_id: record.id,
       plugin_path: record.path,
