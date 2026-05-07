@@ -99,7 +99,9 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "permission-mode", group: "Config", usage: "/permission-mode [ask|auto-edit|full-auto|yolo]", description: "Show or change the permission mode." },
   { name: "capabilities", group: "Config", usage: "/capabilities [kind|provider|query]", description: "List registered local, slash, agent, skill, MCP, and plugin capabilities." },
   { name: "skills", group: "Config", usage: "/skills", description: "List discovered agent skills and diagnostics." },
-  { name: "skill", group: "Config", usage: "/skill <name>", description: "Activate one trusted skill for the current session." }
+  { name: "skill", group: "Config", usage: "/skill <name>", description: "Activate one trusted skill for the current session." },
+  { name: "mcp", group: "Config", usage: "/mcp [server_id]", description: "Inspect configured MCP server states." },
+  { name: "mcp-refresh", group: "Config", usage: "/mcp-refresh <server_id>", description: "Reconnect one configured MCP stdio server and refresh its tool catalog." }
 ];
 
 export function parseSlashCommandLine(commandLine: string): ParsedSlashCommand | undefined {

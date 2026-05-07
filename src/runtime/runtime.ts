@@ -48,6 +48,7 @@ import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
+import type { McpServerRecord } from "../extensions/mcp.js";
 import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 
@@ -308,6 +309,8 @@ export class SwarmRuntime {
       approvalHandler: this.approvalHandler,
       workerStore: this.workerStateStore,
       invokeAgent: (request) => this.invokeAgent(request),
+      listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
+      invokeCapability: (capabilityId, args) => this.invokeCapability(capabilityId, args),
       sessionId: input.session_id,
       maxTurns: input.maxTurns,
       maxToolCalls: input.maxToolCalls,
@@ -435,6 +438,8 @@ export class SwarmRuntime {
       approvalHandler: this.approvalHandler,
       workerStore: this.workerStateStore,
       invokeAgent: (request) => this.invokeAgent(request),
+      listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
+      invokeCapability: (capabilityId, args) => this.invokeCapability(capabilityId, args),
       onSessionStart: (sessionId, loopObjective) => this.ensureLoopSession(sessionId, loopObjective),
       onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event)
@@ -575,6 +580,21 @@ export class SwarmRuntime {
       });
     }
     return skill;
+  }
+
+  listMcpServers(): McpServerRecord[] {
+    return this.capabilityPlane.listMcpServers();
+  }
+
+  refreshMcpServer(serverId: string): Promise<McpServerRecord> {
+    return this.capabilityPlane.refreshMcpServer(serverId);
+  }
+
+  invokeCapability(capabilityId: string, args: Record<string, unknown>): Promise<ToolResult> {
+    if (capabilityId.startsWith("mcp_tool.")) {
+      return this.capabilityPlane.callMcpTool(capabilityId, args);
+    }
+    throw new Error(`Capability invocation is not implemented for ${capabilityId}`);
   }
 
   listHandoffs(limit = 20): HandoffSessionRecord[] {

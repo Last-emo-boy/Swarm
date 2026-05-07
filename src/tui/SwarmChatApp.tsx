@@ -62,6 +62,7 @@ import {
 import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
+import type { McpServerRecord } from "../extensions/mcp.js";
 import type { SkillRecord, ActivatedSkill } from "../extensions/skills.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 
@@ -1174,6 +1175,37 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return {
         brief: `Skill activated: ${skill.name}. Ctrl+O for instructions.`,
         detail: formatActivatedSkill(skill)
+      };
+    }
+
+    if (command === "mcp") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const serverId = args[0];
+      const servers = runtime.listMcpServers();
+      const selected = serverId ? servers.filter((server) => server.id === serverId) : servers;
+      if (serverId && selected.length === 0) {
+        throw new Error(`Unknown MCP server: ${serverId}`);
+      }
+      return {
+        brief: `${selected.length} MCP server${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`,
+        detail: formatMcpServers(selected)
+      };
+    }
+
+    if (command === "mcp-refresh") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const serverId = args[0];
+      if (!serverId) throw new Error("Usage: /mcp-refresh <server_id>");
+      const server = await runtime.refreshMcpServer(serverId);
+      const capabilities = await runtime.listCapabilities({ providerId: `mcp:${serverId}`, includeDisabled: true });
+      return {
+        brief: `MCP ${server.id}: ${server.status}, tools=${server.toolCount}. Ctrl+O for details.`,
+        detail: [
+          formatMcpServers([server]),
+          "",
+          "Capabilities",
+          capabilities.length ? capabilities.map((capability) => `${capability.id} ${capability.title ?? capability.name}`).join("\n") : "(none)"
+        ].join("\n")
       };
     }
 
@@ -2753,6 +2785,23 @@ function formatActivatedSkill(skill: ActivatedSkill): string {
     "",
     skill.content
   ].filter(Boolean).join("\n");
+}
+
+function formatMcpServers(servers: McpServerRecord[]): string {
+  if (servers.length === 0) {
+    return "No MCP servers configured.";
+  }
+  return servers.map((server) => [
+    `${server.id} [${server.status}/${server.transport}/${server.trust}] tools=${server.toolCount}`,
+    server.serverName ? `server=${server.serverName}${server.serverVersion ? ` ${server.serverVersion}` : ""}` : undefined,
+    server.command ? `command=${[server.command, ...(server.args ?? [])].join(" ")}` : undefined,
+    server.cwd ? `cwd=${server.cwd}` : undefined,
+    server.url ? `url=${server.url}` : undefined,
+    `expose tools=${server.exposeTools ? "yes" : "no"} resources=${server.exposeResources ? "yes" : "no"} prompts=${server.exposePrompts ? "yes" : "no"}`,
+    server.lastConnectedAt ? `connected=${server.lastConnectedAt}` : undefined,
+    server.lastError ? `error=${server.lastError}` : undefined,
+    ...(server.diagnostics ?? []).slice(-8).map((item) => `${item.severity}: ${item.code ?? "diagnostic"} ${item.message}`)
+  ].filter(Boolean).join("\n")).join("\n\n");
 }
 
 function formatApprovalRecord(approval: ReturnType<SwarmRuntime["approvalStore"]["list"]>[number]): string {

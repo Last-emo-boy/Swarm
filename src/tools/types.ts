@@ -205,7 +205,7 @@ export type FileLockEvent = {
 };
 
 export type ToolResult = {
-  action: ToolAction["type"];
+  action: ToolAction["type"] | string;
   status?: "success" | "partial" | "failed";
   summary: string;
   content?: string;

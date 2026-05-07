@@ -10,6 +10,7 @@ import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
 import { WorkerStateStore } from "../storage/worker-state-store.js";
 import { listAgentSpecs, type AgentInvocationRequest } from "./agent-specs.js";
 import { delegatedToolStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
+import type { CapabilityDescriptor } from "../extensions/types.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -106,6 +107,8 @@ type CodingLoopOptions = {
   workerId?: string;
   workerStore?: WorkerStateStore;
   invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
+  listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
+  invokeCapability?: (capabilityId: string, args: Record<string, unknown>) => Promise<ToolResult>;
   agentInstructions?: string;
   allowedTools?: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
@@ -260,7 +263,8 @@ export class CodingAgentLoop {
       });
       try {
         const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
-        const availableTools = allowedToolNames(this.options.allowedTools, delegateAvailable);
+        const modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
+        const availableTools = allowedToolNames(this.options.allowedTools, delegateAvailable, modelCapabilities);
         const modelText = await this.options.provider.generateText({
           model: this.options.provider.workerModel,
           system: codingLoopSystemPrompt({
@@ -516,6 +520,10 @@ export class CodingAgentLoop {
   private async executeToolCall(call: CodingLoopToolCall, sessionId: string, turn?: number): Promise<{ result: CodingLoopToolResult }> {
     const id = call.id ?? `tool_${randomUUID()}`;
     try {
+      const capabilityResult = await this.tryExecuteDynamicCapability(call, id, sessionId, turn);
+      if (capabilityResult) {
+        return capabilityResult;
+      }
       const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
       if (this.options.allowedTools && !this.options.allowedTools.includes(action.type)) {
         throw new Error(`Tool action is not allowed for this agent persona: ${action.type}`);
@@ -628,6 +636,61 @@ export class CodingAgentLoop {
       tool: options.tool,
       task_id: options.taskId
     });
+  }
+
+  private async tryExecuteDynamicCapability(
+    call: CodingLoopToolCall,
+    id: string,
+    sessionId: string,
+    turn?: number
+  ): Promise<{ result: CodingLoopToolResult } | undefined> {
+    if (!this.options.invokeCapability || !call.action?.startsWith("mcp__")) {
+      return undefined;
+    }
+    const capabilities = await this.options.listModelCapabilities?.() ?? [];
+    const capability = capabilities.find((item) => item.kind === "mcp_tool" && item.name === call.action);
+    if (!capability) {
+      return undefined;
+    }
+    if (this.options.approvalHandler && dynamicCapabilityRequiresApproval(capability, this.options.settings)) {
+      const request = createCapabilityApprovalRequest(capability, id, sessionId);
+      this.emitActivity(sessionId, "waiting_approval", `Waiting for approval: ${capability.name}`, { turn, tool: capability.name, taskId: id });
+      this.options.events.emitEvent({ type: "approval", request, status: "pending" });
+      const approved = await this.options.approvalHandler(request);
+      this.options.events.emitEvent({ type: "approval", request, status: approved ? "approved" : "denied" });
+      if (!approved) {
+        throw new Error(`Capability denied: ${capability.permissionName}`);
+      }
+    }
+    this.emitActivity(sessionId, "running_tool", `Running ${capability.name}`, { turn, tool: capability.name, taskId: id });
+    const rawResult = await this.options.invokeCapability(capability.id, call.inputs ?? {});
+    const prepared = await prepareToolOutput(sessionId, id, rawResult, renderToolResultDetail(rawResult));
+    const result: CodingLoopToolResult = {
+      id,
+      action: capability.name,
+      status: rawResult.status ?? "success",
+      summary: rawResult.summary,
+      content: prepared.content,
+      outputRef: prepared.outputRef,
+      data: prepared.data,
+      errors: rawResult.errors,
+      errorCode: rawResult.errorCode,
+      recoverySuggestion: rawResult.recoverySuggestion
+    };
+    this.options.events.emitEvent({
+      type: "tool_result",
+      session_id: sessionId,
+      task_id: id,
+      title: call.reason ?? capability.name,
+      action: capability.name,
+      summary: rawResult.summary,
+      content: prepared.content,
+      status: result.status,
+      outputRef: prepared.outputRef,
+      errorCode: rawResult.errorCode,
+      recoverySuggestion: rawResult.recoverySuggestion
+    });
+    return { result };
   }
 
   private async delegateWorker(action: AgentDelegateAction, sessionId: string, parentTaskId: string): Promise<ToolResult> {
@@ -869,11 +932,18 @@ function codingLoopDelegationPolicy(): Record<string, unknown> {
   };
 }
 
-function allowedToolNames(allowedTools: string[] | undefined, delegateAvailable: boolean): string[] {
+function allowedToolNames(allowedTools: string[] | undefined, delegateAvailable: boolean, capabilities: CapabilityDescriptor[] = []): string[] {
   const tools = allowedTools?.length ? allowedTools : [...DEFAULT_TOOL_NAMES];
-  return delegateAvailable && !tools.includes("agent.delegate")
+  const withDelegate = delegateAvailable && !tools.includes("agent.delegate")
     ? [...tools, "agent.delegate"]
     : tools.filter((tool) => delegateAvailable || tool !== "agent.delegate");
+  if (allowedTools?.length) {
+    return withDelegate;
+  }
+  const dynamicTools = capabilities
+    .filter((capability) => capability.kind === "mcp_tool" && capability.modelVisible && capability.status !== "disabled")
+    .map((capability) => capability.name);
+  return [...new Set([...withDelegate, ...dynamicTools])];
 }
 
 function renderToolSchemas(allowedTools: string[]): Array<Record<string, unknown>> {
@@ -1051,7 +1121,11 @@ function partitionToolCalls(calls: CodingLoopToolCall[]): Array<{ concurrent: bo
   for (const call of calls) {
     let concurrent = false;
     try {
-      concurrent = isReadOnlyToolAction(normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action }));
+      if (call.action?.startsWith("mcp__")) {
+        concurrent = false;
+      } else {
+        concurrent = isReadOnlyToolAction(normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action }));
+      }
     } catch {
       concurrent = false;
     }
@@ -1078,6 +1152,45 @@ function isReadOnlyToolAction(action: ToolAction): boolean {
     "web.search",
     "web.fetch"
   ].includes(action.type);
+}
+
+function dynamicCapabilityRequiresApproval(capability: CapabilityDescriptor, settings: SwarmSettings): boolean {
+  if (settings.permissions.deny.includes(capability.permissionName) || settings.permissions.deny.includes(`${capability.permissionName}(*)`)) {
+    throw new Error(`Capability denied by settings: ${capability.permissionName}`);
+  }
+  if (settings.permissions.allow.includes(capability.permissionName) || settings.permissions.allow.includes(`${capability.permissionName}(*)`)) {
+    return false;
+  }
+  if (settings.permissions.defaultMode === "yolo" || settings.permissions.defaultMode === "full-auto" || settings.permissions.defaultMode === "auto") {
+    return false;
+  }
+  return capability.riskClass !== "r0" || settings.permissions.ask.includes(capability.permissionName) || settings.permissions.ask.includes(`${capability.permissionName}(*)`);
+}
+
+function createCapabilityApprovalRequest(capability: CapabilityDescriptor, taskId: string, sessionId: string): ToolApprovalRequest {
+  return {
+    id: `approval_${randomUUID()}`,
+    session_id: sessionId,
+    task_id: taskId,
+    action: capability.name,
+    summary: `Use capability: ${capability.title ?? capability.name}`,
+    detail: [
+      capability.description,
+      "",
+      `Capability: ${capability.id}`,
+      `Provider: ${capability.providerId}`,
+      `Permission: ${capability.permissionName}`,
+      capability.inputSchema ? `Input schema:\n${JSON.stringify(capability.inputSchema, null, 2)}` : undefined
+    ].filter(Boolean).join("\n"),
+    risk: capability.riskClass === "r0" ? "web" : capability.riskClass === "r1" ? "delegate" : "shell",
+    risk_class: capability.riskClass,
+    target: capability.providerId,
+    why_now: `Swarm needs ${capability.name} to continue the current task.`,
+    predicted_impact: capability.riskClass === "r0"
+      ? "Read-only external capability call."
+      : "External capability call may access remote or local server behavior depending on the MCP server implementation.",
+    rollback_plan: "No workspace changes are made directly by Swarm for this approval; inspect MCP output and follow up if the server changed external state."
+  };
 }
 
 async function prepareToolOutput(

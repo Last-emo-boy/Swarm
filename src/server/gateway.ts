@@ -64,6 +64,8 @@ const PUBLIC_API_SURFACE = [
   "/v1/capabilities/refresh",
   "/v1/skills",
   "/v1/skills/:name/activate",
+  "/v1/mcp/servers",
+  "/v1/mcp/servers/:id/refresh",
   "/v1/symphony/preview",
   "/v1/symphony/tick",
   "/v1/symphony/status",
@@ -229,6 +231,11 @@ export class SwarmGatewayServer {
 
     if (resource === "skills") {
       await this.handleSkills(request, response, id, child);
+      return;
+    }
+
+    if (resource === "mcp") {
+      await this.handleMcp(request, response, id, child, childId);
       return;
     }
 
@@ -411,6 +418,37 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown skills route.");
+  }
+
+  private async handleMcp(
+    request: IncomingMessage,
+    response: ServerResponse,
+    resource?: string,
+    serverId?: string,
+    action?: string
+  ): Promise<void> {
+    if (resource === "servers" && request.method === "GET" && !serverId) {
+      sendJson(response, 200, { servers: this.runtime.listMcpServers() });
+      return;
+    }
+
+    if (resource === "servers" && request.method === "GET" && serverId) {
+      const server = this.runtime.listMcpServers().find((item) => item.id === serverId);
+      if (!server) {
+        throw new HttpError(404, `Unknown MCP server: ${serverId}`);
+      }
+      sendJson(response, 200, { server });
+      return;
+    }
+
+    if (resource === "servers" && request.method === "POST" && serverId && action === "refresh") {
+      const server = await this.runtime.refreshMcpServer(serverId);
+      const capabilities = await this.runtime.listCapabilities({ providerId: `mcp:${serverId}`, includeDisabled: true });
+      sendJson(response, 200, { server, capabilities });
+      return;
+    }
+
+    throw new HttpError(404, "Unknown MCP route.");
   }
 
   private async handleSymphonyDaemon(

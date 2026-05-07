@@ -50,6 +50,14 @@ export class CapabilityRegistry {
     return this.listProviders();
   }
 
+  invalidate(providerId?: string): void {
+    if (providerId) {
+      this.cache.delete(providerId);
+      return;
+    }
+    this.cache.clear();
+  }
+
   async list(filter: CapabilityFilter = {}): Promise<CapabilityDescriptor[]> {
     await this.ensureLoaded();
     return [...this.cache.values()]
@@ -180,4 +188,3 @@ function compareCapabilities(a: CapabilityDescriptor, b: CapabilityDescriptor): 
     a.name.localeCompare(b.name) ||
     a.id.localeCompare(b.id);
 }
-
