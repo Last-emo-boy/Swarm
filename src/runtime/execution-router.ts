@@ -80,7 +80,8 @@ function routeDecisionInput(objective: string): Record<string, unknown> {
       "Natural language goes to the main Swarm; slash commands are controls, not the primary UX.",
       "LLM control decisions drive routing and interruption.",
       "The reliable local coding loop is the default path for coding and project work.",
-      "Full swarm is experimental and should be reserved for work with real parallel or multi-agent value.",
+      "Full swarm is preferred when the user explicitly asks for Agent Swarm, multiple roles, or independent expert workstreams and the task is more than a small edit.",
+      "The coding loop may also escalate into an internal swarm by spawning subagents with agent.delegate; execution mode is a starting point, not a permanent state.",
       "Workers never speak directly to users; worker results return to the main Swarm."
     ],
     available_modes: [
@@ -98,13 +99,14 @@ function routeDecisionInput(objective: string): Record<string, unknown> {
         use_when: [
           "The task touches the local repository or workspace.",
           "The request is a bug fix, feature, refactor, review of current code, setup, command run, or implementation task.",
-          "The task can be handled by one coherent agent loop with optional bounded internal review or verification."
+          "The task can be handled by one coherent agent loop with optional dynamic subagent escalation through agent.delegate."
         ]
       },
       {
         mode: "full_swarm",
-        description: "Experimental ASP planner/worker/reviewer/aggregator pipeline.",
+        description: "ASP planner/worker/reviewer/aggregator pipeline for explicit or naturally parallel multi-agent work.",
         use_when: [
+          "The user explicitly asks to use Agent Swarm, subagents, multiple people/roles, or a team-style split and names independent roles such as frontend, backend, architecture, design, review, or verification.",
           "The task has independent work streams that can run in parallel.",
           "The task benefits from separate expert perspectives, map-reduce over many files/documents, broad audits, or multi-module implementation with independent review.",
           "The extra token, latency, coordination, and predictability costs are justified."
@@ -119,11 +121,12 @@ function routeDecisionInput(objective: string): Record<string, unknown> {
     routing_policy: {
       default_mode: "coding_loop",
       chat_requires_no_workspace_access: true,
-      full_swarm_requires_structured_parallelism: true,
+      full_swarm_decision_owner: "llm",
       conservative_fallback: "coding_loop",
       rationale: [
         "Codex-like usability comes first: local read/edit/run/check flow should be reliable before broad swarm automation.",
-        "Multi-agent work should be intentional, scoped, observable, and justified by independent work streams.",
+        "Multi-agent work should be intentional, scoped, observable, and justified by independent work streams; explicit user requests for swarm or named roles are strong evidence.",
+        "Do not keep a project in one state forever: coding_loop can spawn internal workers, and full_swarm can be selected when broad coordination is valuable.",
         "If the decision is uncertain, choose coding_loop."
       ]
     },
@@ -177,27 +180,7 @@ function applyStructuredRoutingPolicy(route: ExecutionRoute): ExecutionRoute {
     return route;
   }
 
-  if (route.needs_parallelism && hasSubstantialJustification(route.parallelism_reason) && hasSubstantialJustification(route.swarm_value)) {
-    return route;
-  }
-
-  const fallbackMode = route.fallback_mode === "chat" && !route.requires_workspace && route.expected_side_effects === "none"
-    ? "chat"
-    : "coding_loop";
-  return {
-    ...route,
-    mode: fallbackMode,
-    confidence: Math.min(route.confidence, 0.75),
-    reason: [
-      "Structured route selected full_swarm, but did not provide enough parallelism justification for the experimental swarm path.",
-      `Router reason: ${route.reason}`
-    ].join(" "),
-    fallback_mode: fallbackMode
-  };
-}
-
-function hasSubstantialJustification(value: string | undefined): boolean {
-  return typeof value === "string" && value.trim().length >= 24;
+  return route;
 }
 
 function parseRoute(text: string): ExecutionRoute {

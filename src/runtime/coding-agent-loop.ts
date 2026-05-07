@@ -301,6 +301,9 @@ export class CodingAgentLoop {
               delegation_policy: role === "main" && delegateAvailable
                 ? codingLoopDelegationPolicy()
                 : undefined,
+              swarm_runtime_state: role === "main" && delegateAvailable
+                ? swarmRuntimeState(toolResults, turn)
+                : undefined,
               live_user_messages: this.liveMessages,
               control_decisions: this.controlDecisions,
               tool_results: toolResults,
@@ -883,10 +886,10 @@ function codingLoopSystemPrompt(input: {
     "Prefer file.edit for existing files and file.write for new files. Do not write final reports unless requested.",
     "For tool_calls, each item is {id, action, inputs, reason}. The action must match an allowed tool, and inputs must match the tool_schemas in the user payload.",
     input.delegateAvailable
-      ? "Use agent.delegate only for bounded research, critique, or planning help; the main Swarm remains responsible for user-facing synthesis and real workspace edits."
+      ? "You may dynamically upgrade the coding loop into an internal swarm by using agent.delegate when the task naturally splits into independent roles, workstreams, or expert checks. The main Swarm remains responsible for user-facing synthesis and final decisions."
       : "Do not use agent.delegate in this loop.",
     input.delegateAvailable && input.role === "main"
-      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, and file_scope when known. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns."
+      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, and file_scope when known. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns."
       : undefined,
     "Keep message grounded in actual tool results. Mention verification commands that were run."
     , input.role === "main"
@@ -912,8 +915,19 @@ function renderAvailableAgentSpecs(source: AgentSpecSource): Array<Record<string
 function codingLoopDelegationPolicy(): Record<string, unknown> {
   return {
     main_swarm_owns_user_facing_answer: true,
+    dynamic_escalation: {
+      enabled: true,
+      principle: "The run may move from single-agent coding_loop into an internal swarm when new task shape, risk, or user instruction justifies it.",
+      strong_triggers: [
+        "The user explicitly asks to use Agent Swarm, subagents, a team, or multiple named roles.",
+        "The task includes separable architecture, frontend, backend, data, security, review, or verification tracks.",
+        "A design decision would benefit from independent critique before edits.",
+        "Implementation has finished and fresh review or verification would reduce regression risk."
+      ]
+    },
     delegate_when: [
-      "A bounded read-only exploration can run independently.",
+      "A bounded read-only exploration can run independently while the main Swarm plans or implements another part.",
+      "An explicit swarm/team-role request names independent workstreams such as architecture, frontend, backend, database, review, or verification.",
       "A fresh reviewer, critic, or verifier can catch defects after edits or before risky changes.",
       "A focused specialist can own a clearly scoped implementation or deep-work segment."
     ],
@@ -923,12 +937,26 @@ function codingLoopDelegationPolicy(): Record<string, unknown> {
       "The subagent would need broad unsupervised write access without a clear file scope."
     ],
     preferred_patterns: [
+      "architect/call_subagent for upfront system architecture and module boundaries.",
       "researcher/call_subagent for parallel repo exploration and evidence gathering.",
       "reviewer or critic/call_subagent for independent checks.",
       "verifier/call_subagent after workspace changes.",
       "coder/scoped_write only with file_scope.",
       "handoff only when a focused specialist should preserve context across several turns."
     ]
+  };
+}
+
+function swarmRuntimeState(toolResults: CodingLoopToolResult[], turn: number): Record<string, unknown> {
+  const delegationResults = toolResults.filter((result) => result.action === "agent.delegate");
+  return {
+    turn,
+    internal_swarm_available: true,
+    delegated_workers_started: delegationResults.length,
+    no_workers_started_yet: delegationResults.length === 0,
+    escalation_hint: delegationResults.length === 0
+      ? "If the objective has separable roles or explicitly requests swarm/team execution, consider spawning appropriate agent.delegate workers before continuing alone."
+      : "Use existing worker results to coordinate, fill gaps, review, or verify before final synthesis."
   };
 }
 
