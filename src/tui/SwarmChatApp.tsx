@@ -51,6 +51,13 @@ import {
   renderSlashHelp
 } from "./slash-commands.js";
 import { ChatInputArea } from "./ChatInputArea.js";
+import {
+  emptyIdlePaneSnapshot,
+  idlePaneSnapshotSignature,
+  readIdlePaneSnapshot,
+  symphonyDaemonRecordsSignature,
+  type IdlePaneSnapshot
+} from "./idle-pane-snapshot.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -107,14 +114,6 @@ type RouteState = {
 type RecentSessionRow = ReturnType<SwarmRuntime["sessionStore"]["listRecent"]>[number];
 type ApprovalStoreRecord = ReturnType<SwarmRuntime["approvalStore"]["list"]>[number];
 
-type IdlePaneSnapshot = {
-  sessions: RecentSessionRow[];
-  attempts: RunAttempt[];
-  leases: WorkspaceLease[];
-  approvals: ApprovalStoreRecord[];
-  blackboard: BlackboardEntry[];
-};
-
 const fieldOrder: OnboardField[] = ["provider", "apiKey", "planner", "worker", "aggregator"];
 const customFieldOrder: OnboardField[] = [
   "provider",
@@ -129,29 +128,6 @@ const customFieldOrder: OnboardField[] = [
 const SLASH_OUTPUT_INLINE_BYTES = 18_000;
 const SLASH_OUTPUT_PREVIEW_BYTES = 6_000;
 const LOOP_ACTIVITY_TIMELINE_LIMIT = 6;
-
-function emptyIdlePaneSnapshot(): IdlePaneSnapshot {
-  return {
-    sessions: [],
-    attempts: [],
-    leases: [],
-    approvals: [],
-    blackboard: []
-  };
-}
-
-function readIdlePaneSnapshot(runtime: SwarmRuntime | undefined): IdlePaneSnapshot {
-  if (!runtime) {
-    return emptyIdlePaneSnapshot();
-  }
-  return {
-    sessions: runtime.sessionStore.listRecent(5),
-    attempts: runtime.runAttemptStore.listRecent(6),
-    leases: runtime.workspaceLeaseStore.listRecent(4),
-    approvals: runtime.approvalStore.list(undefined, 8).filter((record) => record.status === "pending").slice(0, 4),
-    blackboard: runtime.blackboardStore.listRecent(5)
-  };
-}
 
 function createChatSessionId(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -196,7 +172,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [runMode, setRunMode] = useState<RunMode>("auto");
   const [mainPane, setMainPane] = useState<MainPaneId>("overview");
   const [idlePaneSnapshot, setIdlePaneSnapshot] = useState<IdlePaneSnapshot>(() => emptyIdlePaneSnapshot());
+  const idlePaneSnapshotSignatureRef = useRef(idlePaneSnapshotSignature(idlePaneSnapshot));
   const [completionRows, setCompletionRows] = useState(0);
+  const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
 
   const terminalRows = stdout.rows || 32;
   // Keep live output below the terminal height; Ink clears the terminal when outputHeight >= rows.
@@ -312,22 +290,38 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   useEffect(() => {
     if (!runtime) {
-      setIdlePaneSnapshot(emptyIdlePaneSnapshot());
-      setSymphonyDaemons([]);
+      refreshIdlePaneSnapshot(emptyIdlePaneSnapshot());
+      refreshSymphonyDaemons([]);
       return;
     }
     const timer = setInterval(() => {
-      setIdlePaneSnapshot(readIdlePaneSnapshot(runtime));
-      setSymphonyDaemons(symphonyDaemonManager.current?.listRecords() ?? []);
+      refreshIdlePaneSnapshot(readIdlePaneSnapshot(runtime));
+      refreshSymphonyDaemons(symphonyDaemonManager.current?.listRecords() ?? []);
     }, 1_000);
-    setIdlePaneSnapshot(readIdlePaneSnapshot(runtime));
+    refreshIdlePaneSnapshot(readIdlePaneSnapshot(runtime));
     timer.unref?.();
     return () => clearInterval(timer);
   }, [runtime]);
 
   useEffect(() => {
-    setIdlePaneSnapshot(readIdlePaneSnapshot(runtime));
+    refreshIdlePaneSnapshot(readIdlePaneSnapshot(runtime));
   }, [runtime, mainPane, messages.length, toolResults.length, lastSessionId]);
+
+  function refreshIdlePaneSnapshot(next: IdlePaneSnapshot): void {
+    const signature = idlePaneSnapshotSignature(next);
+    if (signature !== idlePaneSnapshotSignatureRef.current) {
+      idlePaneSnapshotSignatureRef.current = signature;
+      setIdlePaneSnapshot(next);
+    }
+  }
+
+  function refreshSymphonyDaemons(next: SymphonyDaemonRecord[]): void {
+    const signature = symphonyDaemonRecordsSignature(next);
+    if (signature !== symphonyDaemonRecordsSignatureRef.current) {
+      symphonyDaemonRecordsSignatureRef.current = signature;
+      setSymphonyDaemons(next);
+    }
+  }
 
   useInput((character, key) => {
     if (approval) {

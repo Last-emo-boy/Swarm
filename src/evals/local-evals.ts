@@ -29,6 +29,12 @@ import {
   chatInputCompletionCandidates,
   createChatInputControllerState
 } from "../tui/chat-input-controller.js";
+import {
+  emptyIdlePaneSnapshot,
+  idlePaneSnapshotSignature,
+  symphonyDaemonRecordsSignature
+} from "../tui/idle-pane-snapshot.js";
+import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
 export type EvalCaseResult = {
   name: string;
@@ -407,6 +413,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkTuiMainPaneCycleBehavior(),
+    checkTuiIdleSnapshotSignatureBehavior(),
     checkNoForbiddenProductName(root)
   ];
 }
@@ -815,6 +822,67 @@ function checkTuiMainPaneCycleBehavior(): EvalCaseResult {
   return ok
     ? { name: "TUI main pane cycle behavior works", status: "pass", message: "Ctrl+N/P pane order wraps predictably" }
     : { name: "TUI main pane cycle behavior works", status: "fail", message: `forward=${forward} backward=${backward} wraps=${wraps}` };
+}
+
+function checkTuiIdleSnapshotSignatureBehavior(): EvalCaseResult {
+  const emptyA = emptyIdlePaneSnapshot();
+  const emptyB = emptyIdlePaneSnapshot();
+  const snapshotA = {
+    ...emptyA,
+    sessions: [
+      {
+        session_id: "session-1",
+        swarm_id: "swarm-1",
+        objective: "do work",
+        status: "running" as const,
+        policy_json: "{}",
+        participants_json: "[]",
+        created_at: "2026-05-07T00:00:00.000Z",
+        updated_at: "2026-05-07T00:00:01.000Z"
+      }
+    ]
+  };
+  const snapshotB = {
+    ...emptyB,
+    sessions: [
+      {
+        ...snapshotA.sessions[0],
+        objective: "different display text with same freshness fields"
+      }
+    ]
+  };
+  const snapshotChanged = {
+    ...snapshotA,
+    sessions: [
+      {
+        ...snapshotA.sessions[0],
+        status: "completed" as const,
+        updated_at: "2026-05-07T00:00:02.000Z"
+      }
+    ]
+  };
+  const daemon: SymphonyDaemonRecord = {
+    daemon_id: "daemon-1",
+    daemon_key: "key-1",
+    status: "running",
+    create_workspace: true,
+    execute: false,
+    tick_count: 1,
+    created_at: "2026-05-07T00:00:00.000Z",
+    started_at: "2026-05-07T00:00:00.000Z",
+    updated_at: "2026-05-07T00:00:01.000Z",
+    next_tick_at: "2026-05-07T00:01:01.000Z",
+    history: []
+  };
+  const sameIdle = idlePaneSnapshotSignature(emptyA) === idlePaneSnapshotSignature(emptyB)
+    && idlePaneSnapshotSignature(snapshotA) === idlePaneSnapshotSignature(snapshotB);
+  const changedIdle = idlePaneSnapshotSignature(snapshotA) !== idlePaneSnapshotSignature(snapshotChanged);
+  const sameDaemons = symphonyDaemonRecordsSignature([daemon]) === symphonyDaemonRecordsSignature([{ ...daemon }]);
+  const changedDaemons = symphonyDaemonRecordsSignature([daemon]) !== symphonyDaemonRecordsSignature([{ ...daemon, tick_count: 2, updated_at: "2026-05-07T00:01:01.000Z" }]);
+  const ok = sameIdle && changedIdle && sameDaemons && changedDaemons;
+  return ok
+    ? { name: "TUI idle pane polling ignores unchanged snapshots", status: "pass", message: "stable signatures prevent no-op Kernel and Symphony poll updates" }
+    : { name: "TUI idle pane polling ignores unchanged snapshots", status: "fail", message: `sameIdle=${sameIdle} changedIdle=${changedIdle} sameDaemons=${sameDaemons} changedDaemons=${changedDaemons}` };
 }
 
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("/local-evals.js")) {
