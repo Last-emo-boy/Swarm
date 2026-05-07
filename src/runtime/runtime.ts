@@ -554,6 +554,12 @@ export class SwarmRuntime {
     return this.capabilityPlane.listProviders();
   }
 
+  reloadSettings(): SwarmSettings {
+    Object.assign(this.settings, loadSwarmSettings(this.workspace));
+    this.capabilityPlane.registry.invalidate();
+    return this.settings;
+  }
+
   listSkills(): SkillRecord[] {
     return this.capabilityPlane.listSkills();
   }

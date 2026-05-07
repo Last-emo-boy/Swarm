@@ -14,6 +14,7 @@ import {
   loadSwarmSettings,
   setModelSelection,
   setPermissionMode,
+  setPluginEnabled,
   setProviderApiKey
 } from "../config/settings.js";
 import { refreshProviderModels } from "../providers/model-discovery.js";
@@ -1169,6 +1170,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return {
         brief: `${selected.length} plugin${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`,
         detail: formatPlugins(selected)
+      };
+    }
+
+    if (command === "plugin-enable" || command === "plugin-disable") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const pluginId = args[0];
+      if (!pluginId) {
+        throw new Error(`Usage: /${command} <plugin_id>`);
+      }
+      const enabled = command === "plugin-enable";
+      setPluginEnabled(pluginId, enabled);
+      runtime.reloadSettings();
+      await runtime.refreshCapabilities();
+      const plugins = runtime.listPlugins();
+      const selected = plugins.find((plugin) => plugin.id === pluginId);
+      return {
+        brief: `Plugin ${pluginId} ${enabled ? "enabled" : "disabled"}. Ctrl+O for plugin list.`,
+        detail: selected ? formatPlugins([selected]) : formatPlugins(plugins)
       };
     }
 

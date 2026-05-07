@@ -7,6 +7,7 @@ import type { RuntimeEvent } from "../runtime/events.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
+import { setPluginEnabled } from "../config/settings.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import type { CapabilityDescriptor, CapabilityFilter } from "../extensions/types.js";
@@ -69,6 +70,8 @@ const PUBLIC_API_SURFACE = [
   "/v1/skills/:name/activate",
   "/v1/plugins",
   "/v1/plugins/:id",
+  "/v1/plugins/:id/enable",
+  "/v1/plugins/:id/disable",
   "/v1/mcp/servers",
   "/v1/mcp/servers/:id/refresh",
   "/v1/mcp/servers/:id/resources",
@@ -266,7 +269,7 @@ export class SwarmGatewayServer {
     }
 
     if (resource === "plugins") {
-      await this.handlePlugins(request, response, id);
+      await this.handlePlugins(request, response, id, child);
       return;
     }
 
@@ -559,20 +562,30 @@ export class SwarmGatewayServer {
   private async handlePlugins(
     request: IncomingMessage,
     response: ServerResponse,
-    pluginId?: string
+    pluginId?: string,
+    action?: string
   ): Promise<void> {
     if (request.method === "GET" && !pluginId) {
       sendJson(response, 200, { plugins: this.runtime.listPlugins() });
       return;
     }
 
-    if (request.method === "GET" && pluginId) {
+    if (request.method === "GET" && pluginId && !action) {
       const plugin = this.runtime.listPlugins().find((item) => item.id === pluginId);
       if (!plugin) {
         throw new HttpError(404, `Unknown plugin: ${pluginId}`);
       }
       const capabilities = await this.runtime.listCapabilities({ providerId: `plugin:${pluginId}`, includeDisabled: true });
       sendJson(response, 200, { plugin, capabilities });
+      return;
+    }
+
+    if (request.method === "POST" && pluginId && (action === "enable" || action === "disable")) {
+      setPluginEnabled(pluginId, action === "enable");
+      this.runtime.reloadSettings();
+      const providers = await this.runtime.refreshCapabilities();
+      const plugins = this.runtime.listPlugins();
+      sendJson(response, 200, { plugins, providers });
       return;
     }
 

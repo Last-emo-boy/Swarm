@@ -512,6 +512,30 @@ export function setPermissionMode(mode: PermissionMode): void {
   });
 }
 
+export function setPluginEnabled(pluginId: string, enabled: boolean): void {
+  const settings = loadSwarmSettings();
+  const normalized = pluginId.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Plugin id is required.");
+  }
+  const disabled = new Set(settings.extensions.plugins.disabled);
+  if (enabled) {
+    disabled.delete(normalized);
+  } else {
+    disabled.add(normalized);
+  }
+  saveSwarmSettings({
+    ...settings,
+    extensions: {
+      ...settings.extensions,
+      plugins: {
+        ...settings.extensions.plugins,
+        disabled: [...disabled].sort()
+      }
+    }
+  });
+}
+
 export function saveSwarmSettings(settings: SwarmSettings): void {
   const paths = getSwarmPaths();
   writeJson(paths.settingsPath, normalizeSwarmSettings(expandSettings(settings)));
