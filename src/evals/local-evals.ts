@@ -24,7 +24,7 @@ import {
   rawSlashArgsAfter
 } from "../tui/slash-commands.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
-import { finalActivityMessage, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
+import { finalActivityMessage, finalActivityPhase, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
   applyChatInputKey,
@@ -958,13 +958,24 @@ function checkCodingLoopActivityFormattingBehavior(): EvalCaseResult {
     tool: "shell.exec",
     task_id: "tool_eval"
   };
+  const failed = {
+    type: "loop_activity" as const,
+    session_id: "loop_eval",
+    phase: "failed" as const,
+    message: "Failed: Budget exhausted before completion.",
+    task_id: "final"
+  };
   const brief = formatRuntimeEventBrief(event);
   const headless = formatHeadlessProgress(event);
+  const failedBrief = formatRuntimeEventBrief(failed);
+  const failedHeadless = formatHeadlessProgress(failed);
   const ok = brief === "activity: Running shell.exec npm test"
-    && headless === "activity: Running shell.exec npm test";
+    && headless === "activity: Running shell.exec npm test"
+    && failedBrief === "activity: Failed: Budget exhausted before completion."
+    && failedHeadless === "activity: Failed: Budget exhausted before completion.";
   return ok
-    ? { name: "coding loop activity events format for TUI and headless output", status: "pass", message: "loop_activity produces a stable current-action line" }
-    : { name: "coding loop activity events format for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"}` };
+    ? { name: "coding loop activity events format for TUI and headless output", status: "pass", message: "loop_activity produces stable current-action and failed-final lines" }
+    : { name: "coding loop activity events format for TUI and headless output", status: "fail", message: `brief=${brief} headless=${headless ?? "-"} failed=${failedBrief}/${failedHeadless ?? "-"}` };
 }
 
 function checkToolRecoveryFormattingBehavior(): EvalCaseResult {
@@ -1015,11 +1026,14 @@ function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
   const ok = status.status === "failed"
     && status.summary.includes("Failed tool: npm test exited 1")
     && finalActivityMessage(status).startsWith("Failed:")
+    && finalActivityPhase(status) === "failed"
     && stopped.status === "stopped"
     && finalActivityMessage(stopped, "user interrupt") === "Stopped: user interrupt"
+    && finalActivityPhase(stopped) === "stopped"
     && exhausted.status === "failed"
     && exhausted.summary.includes("Budget exhausted before completion")
-    && finalActivityMessage(exhausted).startsWith("Failed:");
+    && finalActivityMessage(exhausted).startsWith("Failed:")
+    && finalActivityPhase(exhausted) === "failed";
   return ok
     ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results and exhausted budgets prevent completed status from masking unfinished local execution" }
     : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status} exhausted=${exhausted.status}/${exhausted.summary}` };

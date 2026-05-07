@@ -52,6 +52,18 @@ export type CodingLoopFinalStatus = {
   summary: string;
 };
 
+type LoopActivityPhase = Extract<Parameters<RuntimeEvents["emitEvent"]>[0], { type: "loop_activity" }>["phase"];
+
+export function finalActivityPhase(finalStatus: CodingLoopFinalStatus): LoopActivityPhase {
+  if (finalStatus.status === "stopped") {
+    return "stopped";
+  }
+  if (finalStatus.status === "failed") {
+    return "failed";
+  }
+  return "completed";
+}
+
 export function finalActivityMessage(finalStatus: CodingLoopFinalStatus, stopReason?: string): string {
   if (finalStatus.status === "stopped") {
     return `Stopped: ${stopReason || finalStatus.summary}`;
@@ -444,7 +456,7 @@ export class CodingAgentLoop {
     }
     this.emitActivity(
       sessionId,
-      finalStatus.status === "stopped" ? "stopped" : "completed",
+      finalActivityPhase(finalStatus),
       finalActivityMessage(finalStatus, this.stopReason),
       { taskId: "final" }
     );
@@ -598,7 +610,7 @@ export class CodingAgentLoop {
 
   private emitActivity(
     sessionId: string,
-    phase: Extract<Parameters<RuntimeEvents["emitEvent"]>[0], { type: "loop_activity" }>["phase"],
+    phase: LoopActivityPhase,
     message: string,
     options: { turn?: number; tool?: string; taskId?: string } = {}
   ): void {

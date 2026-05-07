@@ -1552,14 +1552,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             {busy ? (
               <>
                 <Text color="yellow" bold>Tasks</Text>
-                <Text color="cyan" wrap="truncate">
+                <Text color={loopActivity ? loopActivityColor(loopActivity.phase) : "cyan"} wrap="truncate">
                   {loopActivity ? loopActivity.message : "Starting local coding loop..."}
                 </Text>
                 {loopActivityTimeline.length > 1 && (
                   <>
                     <Text color="yellow" bold>Activity</Text>
                     {loopActivityTimeline.slice(0, -1).slice(-4).map((activity, index) => (
-                      <Text key={`${activity.phase}-${activity.turn ?? 0}-${activity.task_id ?? ""}-${index}`} color="gray" wrap="truncate">
+                      <Text key={`${activity.phase}-${activity.turn ?? 0}-${activity.task_id ?? ""}-${index}`} color={loopActivityColor(activity.phase)} wrap="truncate">
                         {formatLoopActivityLine(activity)}
                       </Text>
                     ))}
@@ -2093,6 +2093,17 @@ function formatLoopActivityLine(activity: LoopActivityState): string {
   const turn = activity.turn ? `#${activity.turn} ` : "";
   const tool = activity.tool ? `${activity.tool} ` : "";
   return `${turn}${activity.phase}: ${tool}${activity.message}`;
+}
+
+function loopActivityColor(phase: LoopActivityState["phase"]): string {
+  switch (phase) {
+    case "failed": return "red";
+    case "completed": return "green";
+    case "stopped": return "yellow";
+    case "waiting_approval": return "yellow";
+    case "turn_complete": return "gray";
+    default: return "cyan";
+  }
 }
 
 async function formatDoctorReport(runtime: SwarmRuntime | undefined, workflowPath?: string): Promise<string> {
