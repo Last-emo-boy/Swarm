@@ -74,6 +74,7 @@ type RunningRecord = {
   session_id: string;
   work_item: WorkItem;
   workspace_path: string;
+  workflow_path: string;
   started_at: string;
   status: SwarmSession["status"];
 };
@@ -87,6 +88,7 @@ type RetryRecord = {
 };
 
 export class SymphonyScheduler {
+  private readonly ownerId = `symphony_scheduler_${process.pid}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   private readonly claimed = new Set<string>();
   private readonly running = new Map<string, RunningRecord>();
   private readonly retrying = new Map<string, RetryRecord>();
@@ -114,7 +116,7 @@ export class SymphonyScheduler {
     if (!workflow.ok) {
       return;
     }
-    this.recoverFromKernel(normalizeWorkflowConfig(workflow.workflow));
+    this.recoverFromKernel(normalizeWorkflowConfig(workflow.workflow), workflow.workflow.path);
     this.reconcileFinishedSessions();
   }
 
@@ -126,7 +128,7 @@ export class SymphonyScheduler {
     }
 
     const config = normalizeWorkflowConfig(workflow.workflow);
-    this.recoverFromKernel(config);
+    this.recoverFromKernel(config, workflow.workflow.path);
     this.reconcileFinishedSessions();
     await this.reconcileSourceState(config);
     const candidates = await this.source.fetchCandidateItems();
@@ -199,14 +201,43 @@ export class SymphonyScheduler {
         continue;
       }
 
+      const claim = this.input.runtime.symphonyClaimStore.tryClaim({
+        work_item_key: key,
+        source_identity: workSourceIdentity(item),
+        workflow_path: workflow.workflow.path,
+        owner_id: this.ownerId,
+        ttl_ms: Math.max(30_000, this.input.runtime.settings.runtime.taskTimeoutMs * 2),
+        attempt: retry?.attempt ?? 0,
+        metadata: {
+          work_item: item,
+          source: item.source,
+          human_id: item.human_id,
+          source_id: item.source_id
+        }
+      });
+      if (!claim.claimed) {
+        skipped.push({ status: "skipped", reason: claim.reason, work_item: item });
+        continue;
+      }
       this.claimed.add(key);
       try {
         const record = await this.dispatchItem(item, config, workflow.workflow, retry?.attempt ?? 0);
+        this.input.runtime.symphonyClaimStore.mark({
+          claim_key: claim.record.claim_key,
+          status: "running",
+          session_id: record.session?.session_id,
+          owner_id: this.ownerId,
+          metadata: {
+            workspace_path: record.workspace_path,
+            dispatch_attempt_id: record.attempt?.attempt_id
+          }
+        });
         this.running.set(key, {
           key,
           session_id: record.session?.session_id ?? "",
           work_item: item,
           workspace_path: record.workspace_path ?? "",
+          workflow_path: workflow.workflow.path,
           started_at: new Date().toISOString(),
           status: record.session?.status ?? "created"
         });
@@ -215,6 +246,16 @@ export class SymphonyScheduler {
       } catch (error) {
         const context = error instanceof SymphonyDispatchError ? error.context : {};
         const retryRecord = this.scheduleRetry(item, retry, config, error, context);
+        this.input.runtime.symphonyClaimStore.mark({
+          claim_key: claim.record.claim_key,
+          status: "retrying",
+          owner_id: this.ownerId,
+          metadata: {
+            retry_attempt: retryRecord.attempt,
+            retry_due_at: new Date(retryRecord.due_at_ms).toISOString(),
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
         failed.push({
           status: "failed",
           reason: "dispatch_failed",
@@ -490,7 +531,7 @@ export class SymphonyScheduler {
     return retry;
   }
 
-  private recoverFromKernel(config: WorkflowRuntimeConfig): void {
+  private recoverFromKernel(config: WorkflowRuntimeConfig, workflowPath: string): void {
     const rows = this.input.runtime.sessionStore.listBySources([...SYMPHONY_SESSION_SOURCES], 1_000);
     const seen = new Set<string>();
     for (const row of rows) {
@@ -577,6 +618,7 @@ export class SymphonyScheduler {
           session_id: row.session_id,
           work_item: item,
           workspace_path: workspacePath,
+          workflow_path: typeof anchor.metadata.workflow_path === "string" ? anchor.metadata.workflow_path : workflowPath,
           started_at: anchor.started_at,
           status: row.status
         });
@@ -652,6 +694,16 @@ export class SymphonyScheduler {
     this.running.delete(record.key);
     this.retrying.delete(record.key);
     this.claimed.delete(record.key);
+    this.input.runtime.symphonyClaimStore.mark({
+      work_item_key: record.key,
+      workflow_path: record.workflow_path,
+      status: "cancelled",
+      session_id: record.session_id,
+      owner_id: this.ownerId,
+      allow_owner_takeover: true,
+      expires_at: new Date().toISOString(),
+      metadata: { reason, work_item: item }
+    });
     this.input.runtime.runAttemptStore.upsert({
       session_id: record.session_id,
       task_id: "symphony.reconcile",
@@ -702,6 +754,15 @@ export class SymphonyScheduler {
       if (!row || row.status === "completed" || row.status === "failed" || row.status === "cancelled") {
         this.running.delete(key);
         this.claimed.delete(key);
+        this.input.runtime.symphonyClaimStore.mark({
+          work_item_key: key,
+          workflow_path: record.workflow_path,
+          status: row?.status === "completed" ? "completed" : row?.status === "cancelled" ? "cancelled" : "failed",
+          session_id: record.session_id,
+          owner_id: this.ownerId,
+          allow_owner_takeover: true,
+          metadata: { reconciled_session_status: row?.status ?? "missing_session" }
+        });
         continue;
       }
       record.status = row.status;
@@ -772,6 +833,18 @@ export class SymphonyScheduler {
       if (record.status === "completed" || record.status === "failed" || record.status === "skipped" || record.status === "cancelled") {
         this.running.delete(key);
         this.claimed.delete(key);
+        this.input.runtime.symphonyClaimStore.mark({
+          work_item_key: key,
+          workflow_path: this.workflowPathForDispatch(record.dispatch),
+          status: record.status === "completed" ? "completed" : record.status === "cancelled" ? "cancelled" : record.status === "failed" ? "failed" : "released",
+          session_id: record.dispatch.session?.session_id,
+          owner_id: this.ownerId,
+          allow_owner_takeover: true,
+          metadata: {
+            runner_status: record.status,
+            runner_error: record.error
+          }
+        });
       }
       if (record.status === "completed") {
         this.completed.add(key);
@@ -789,6 +862,13 @@ export class SymphonyScheduler {
       status: record.status,
       error: record.error
     }));
+  }
+
+  private workflowPathForDispatch(dispatch: SymphonyDispatchRecord): string {
+    if (dispatch.attempt && typeof dispatch.attempt.metadata.workflow_path === "string") {
+      return dispatch.attempt.metadata.workflow_path;
+    }
+    return currentWorkflowPath(this.input.workflowPath);
   }
 }
 
@@ -942,6 +1022,11 @@ function workspacePathForSession(runtime: SwarmRuntime, row: SessionRow, fallbac
     ? runtime.workspaceLeaseStore.get(row.workspace_lease_id)
     : runtime.workspaceLeaseStore.getBySession(row.session_id);
   return lease?.workspace_path ?? fallback.workspace_path ?? "";
+}
+
+function currentWorkflowPath(workflowPath: string | undefined): string {
+  const workflow = loadWorkflow(workflowPath);
+  return workflow.ok ? workflow.workflow.path : workflowPath ?? "";
 }
 
 function sanitizeAttemptId(value: string): string {

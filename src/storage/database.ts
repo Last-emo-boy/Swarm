@@ -230,6 +230,24 @@ export class SwarmDatabase {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS symphony_claims (
+        claim_key TEXT PRIMARY KEY,
+        work_item_key TEXT NOT NULL,
+        source_identity TEXT NOT NULL,
+        workflow_path TEXT NOT NULL,
+        session_id TEXT,
+        status TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        owner_id TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT,
+        metadata_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_symphony_claims_work_item
+        ON symphony_claims(work_item_key, workflow_path);
     `);
     this.addColumnIfMissing("envelopes", "subtask_id", "TEXT");
     this.addColumnIfMissing("envelopes", "attempt", "INTEGER");

@@ -18,6 +18,7 @@ import { TaskGraphStore, type TaskGraph } from "../storage/task-graph-store.js";
 import { UsageStore } from "../storage/usage-store.js";
 import { RunAttemptStore } from "../storage/run-attempt-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
+import { SymphonyClaimStore } from "../storage/symphony-claim-store.js";
 import { OpenAIProvider } from "../providers/openai-provider.js";
 import { ensureSwarmHome, getSwarmPaths, loadSwarmSettings, type SwarmSettings } from "../config/settings.js";
 import { builtinAgents } from "./builtin-agents.js";
@@ -48,9 +49,9 @@ import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
+import { CapabilityBroker, type CapabilityInvokeOptions } from "../extensions/broker.js";
 import type { McpServerRecord } from "../extensions/mcp.js";
 import type { PluginRecord } from "../extensions/plugins.js";
-import { SKILL_ACTIVATE_CAPABILITY_ID } from "../extensions/skills.js";
 import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 
@@ -72,9 +73,11 @@ export class SwarmRuntime {
   readonly usageStore: UsageStore;
   readonly runAttemptStore: RunAttemptStore;
   readonly workspaceLeaseStore: WorkspaceLeaseStore;
+  readonly symphonyClaimStore: SymphonyClaimStore;
   readonly artifactStore: ArtifactStore;
   readonly settings: SwarmSettings;
   readonly capabilityPlane: CapabilityPlane;
+  readonly capabilityBroker: CapabilityBroker;
   readonly debug: DebugLogger | null;
   readonly debugSessionId?: string;
   private readonly provider: OpenAIProvider;
@@ -114,6 +117,7 @@ export class SwarmRuntime {
     this.usageStore = new UsageStore(this.database);
     this.runAttemptStore = new RunAttemptStore(this.database);
     this.workspaceLeaseStore = new WorkspaceLeaseStore(this.database);
+    this.symphonyClaimStore = new SymphonyClaimStore(this.database);
     this.taskGraphStore = new TaskGraphStore(this.database, taskStateStore);
     const artifactStore = new ArtifactStore(this.database);
     this.artifactStore = artifactStore;
@@ -121,6 +125,29 @@ export class SwarmRuntime {
     this.router = new EnvelopeRouter(this.registry, traceStore, this.events);
     const provider = new OpenAIProvider();
     this.provider = provider;
+    this.capabilityBroker = new CapabilityBroker({
+      capabilityPlane: this.capabilityPlane,
+      settings: this.settings,
+      workspaceForSession: (sessionId) => sessionId ? this.workspaceForSession(sessionId) : this.workspace,
+      approvalHandler: this.approvalHandler,
+      emitApproval: (request, status) => this.events.emitEvent({ type: "approval", request, status }),
+      emitToolResult: (event) => this.events.emitEvent({ type: "tool_result", ...event }),
+      delegate: (action, sessionId, taskId) => this.invokeAgent({
+        parent_session_id: sessionId,
+        requested_by: "main_swarm",
+        capability: action.capability,
+        task: action.task,
+        context: action.context,
+        preferred_agent_spec_id: action.preferred_agent_spec_id,
+        preferred_mode: action.preferred_mode,
+        file_scope: action.file_scope,
+        spawn_reason: `capability broker delegate from ${taskId}`
+      }),
+      onWorkspaceChange: (sessionId, change) => this.recordWorkspaceChange(change.sessionId ?? sessionId ?? "unknown", change),
+      onFileLock: (event) => this.recordFileLock(event),
+      activateSkill: (name, sessionId, reason) => this.activateSkill(name, sessionId, reason),
+      serverWebSearch: (searchAction) => provider.webSearch(searchAction)
+    });
     this.orchestrator = new Orchestrator(
       this.router,
       sessionStore,
@@ -312,7 +339,8 @@ export class SwarmRuntime {
       workerStore: this.workerStateStore,
       invokeAgent: (request) => this.invokeAgent(request),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
-      invokeCapability: (capabilityId, args, sessionId) => this.invokeCapability(capabilityId, args, sessionId),
+      invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
+      durableContext: () => this.renderDurableContextForSession(input.session_id),
       sessionId: input.session_id,
       maxTurns: input.maxTurns,
       maxToolCalls: input.maxToolCalls,
@@ -441,7 +469,8 @@ export class SwarmRuntime {
       workerStore: this.workerStateStore,
       invokeAgent: (request) => this.invokeAgent(request),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
-      invokeCapability: (capabilityId, args, sessionId) => this.invokeCapability(capabilityId, args, sessionId),
+      invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
+      durableContext: (sessionId) => this.renderDurableContextForSession(sessionId),
       onSessionStart: (sessionId, loopObjective) => this.ensureLoopSession(sessionId, loopObjective),
       onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event)
@@ -583,7 +612,28 @@ export class SwarmRuntime {
           activated_at: skill.activatedAt,
           reason
         },
-        tags: ["skill", "skill-activation", skill.name],
+      tags: ["skill", "skill-activation", skill.name],
+      created_by: { agent_id: "main_swarm", role: "controller" }
+      });
+      this.writeBlackboardEvidence(sessionId, {
+        key: `durable_context.skill.${skill.name}`,
+        type: "evidence",
+        value: {
+          kind: "skill",
+          name: skill.name,
+          title: skill.displayName,
+          description: skill.description,
+          content: skill.content,
+          path: skill.path,
+          directory: skill.directory,
+          allowed_tools: skill.allowedTools,
+          resource_paths: skill.resourcePaths,
+          activated_at: skill.activatedAt,
+          reason,
+          durable: true,
+          compaction_policy: "preserve_full_content"
+        },
+        tags: ["skill", "durable-context", "preserve-compaction", skill.name],
         created_by: { agent_id: "main_swarm", role: "controller" }
       });
     }
@@ -602,72 +652,13 @@ export class SwarmRuntime {
     return this.capabilityPlane.refreshMcpServer(serverId);
   }
 
-  async invokeCapability(capabilityId: string, args: Record<string, unknown>, sessionId?: string): Promise<ToolResult> {
-    if (capabilityId.startsWith("mcp_tool.")) {
-      return this.capabilityPlane.callMcpTool(capabilityId, args);
-    }
-    if (capabilityId === SKILL_ACTIVATE_CAPABILITY_ID) {
-      return this.invokeSkillActivation(args, sessionId);
-    }
-    throw new Error(`Capability invocation is not implemented for ${capabilityId}`);
-  }
-
-  private async invokeSkillActivation(args: Record<string, unknown>, sessionId?: string): Promise<ToolResult> {
-    const name = typeof args.name === "string" ? args.name : typeof args.skill === "string" ? args.skill : "";
-    if (!name.trim()) {
-      return {
-        action: SKILL_ACTIVATE_CAPABILITY_ID,
-        status: "failed",
-        summary: "Skill activation failed: missing skill name.",
-        errors: ["Missing required input: name"],
-        errorCode: "SKILL_NAME_MISSING",
-        recoverable: true,
-        retryable: true,
-        recoverySuggestion: "Call skill.activate with a trusted skill name from the capabilities catalog."
-      };
-    }
-    const reason = typeof args.reason === "string" ? args.reason : "model requested skill activation";
-    try {
-      const skill = this.activateSkill(name, sessionId, reason);
-      return {
-        action: SKILL_ACTIVATE_CAPABILITY_ID,
-        status: "success",
-        summary: `Skill activated: ${skill.name}.`,
-        content: [
-          `Skill: ${skill.displayName} (${skill.name})`,
-          skill.description,
-          "",
-          skill.content
-        ].join("\n"),
-        data: {
-          name: skill.name,
-          title: skill.displayName,
-          description: skill.description,
-          path: skill.path,
-          directory: skill.directory,
-          allowed_tools: skill.allowedTools,
-          resource_paths: skill.resourcePaths,
-          activated_at: skill.activatedAt
-        },
-        metadata: {
-          skill: skill.name,
-          scope: skill.scope,
-          trust: skill.trust
-        }
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        action: SKILL_ACTIVATE_CAPABILITY_ID,
-        status: "failed",
-        summary: `Skill activation failed: ${message}`,
-        errors: [message],
-        errorCode: "SKILL_ACTIVATE_FAILED",
-        recoverable: true,
-        retryable: false,
-        recoverySuggestion: "Inspect /skills or GET /v1/skills, then retry with an available trusted skill."
-      };
-    }
+  async invokeCapability(
+    capabilityId: string,
+    args: Record<string, unknown>,
+    sessionId?: string,
+    options?: CapabilityInvokeOptions
+  ): Promise<ToolResult> {
+    return this.capabilityBroker.invoke(capabilityId, args, sessionId, options);
   }
 
   listMcpResources(serverId: string) {
@@ -678,12 +669,27 @@ export class SwarmRuntime {
     return this.capabilityPlane.listMcpPrompts(serverId);
   }
 
-  readMcpResource(serverId: string, uri: string) {
-    return this.capabilityPlane.readMcpResource(serverId, uri);
+  async readMcpResource(serverId: string, uri: string, sessionId?: string) {
+    const result = await this.capabilityPlane.readMcpResource(serverId, uri);
+    return this.recordMcpMaterial({
+      kind: "resource",
+      serverId,
+      nameOrUri: uri,
+      result,
+      sessionId
+    });
   }
 
-  getMcpPrompt(serverId: string, name: string, args?: Record<string, string>) {
-    return this.capabilityPlane.getMcpPrompt(serverId, name, args);
+  async getMcpPrompt(serverId: string, name: string, args?: Record<string, string>, sessionId?: string) {
+    const result = await this.capabilityPlane.getMcpPrompt(serverId, name, args);
+    return this.recordMcpMaterial({
+      kind: "prompt",
+      serverId,
+      nameOrUri: name,
+      result,
+      sessionId,
+      args
+    });
   }
 
   listHandoffs(limit = 20): HandoffSessionRecord[] {
@@ -1040,6 +1046,39 @@ export class SwarmRuntime {
               status: event.status ?? "success"
             }
           });
+        } else {
+          this.usageStore.append({
+            task_id: event.task_id,
+            kind: "tool_call",
+            amount: 1,
+            unit: "count",
+            metadata: {
+              action: event.action,
+              status: event.status ?? "success",
+              summary: event.summary,
+              capability_id: event.capability?.id,
+              provider_id: event.capability?.providerId,
+              permission: event.capability?.permissionName
+            }
+          });
+          this.auditStore.append({
+            task_id: event.task_id,
+            actor_type: "tool",
+            actor_id: event.action,
+            action: event.action,
+            resource: {
+              capability_id: event.capability?.id,
+              provider_id: event.capability?.providerId,
+              permission: event.capability?.permissionName,
+              summary: event.summary,
+              outputRef: event.outputRef,
+              errorCode: event.errorCode,
+              recoverySuggestion: event.recoverySuggestion
+            },
+            risk_class: event.capability?.riskClass ?? riskClassForActionName(event.action),
+            decision: event.status === "failed" ? "failed" : "executed",
+            reason: event.summary
+          });
         }
         return;
       }
@@ -1250,6 +1289,9 @@ export class SwarmRuntime {
       maxToolCalls: taskPacket.budget.max_tool_calls,
       emitFinal: false,
       emitProgress: false,
+      listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
+      invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
+      durableContext: () => this.renderDurableContextForSession(request.parent_session_id),
       agentInstructions: renderAgentRuntimeInstructions(spec, decision, taskPacket),
       allowedTools: taskPacket.allowed_tools,
       writePolicy: taskPacket.write_policy,
@@ -1338,16 +1380,119 @@ export class SwarmRuntime {
     return lease?.workspace_path ?? this.workspace;
   }
 
+  private renderDurableContextForSession(sessionId: string): string {
+    const entries = this.blackboardStore.query(sessionId, { tag: "durable-context" });
+    if (entries.length === 0) {
+      return "";
+    }
+    return entries
+      .filter((entry) => entry.key.startsWith("durable_context."))
+      .slice(-8)
+      .map((entry) => {
+        const value = isRecord(entry.value) ? entry.value : {};
+        if (value.kind === "skill") {
+          return [
+            `Active skill: ${String(value.title ?? value.name ?? entry.key)}`,
+            typeof value.description === "string" ? value.description : undefined,
+            typeof value.content === "string" ? value.content : undefined
+          ].filter(Boolean).join("\n");
+        }
+        return JSON.stringify(entry.value, null, 2);
+      })
+      .join("\n\n");
+  }
+
+  private async recordMcpMaterial<T>(input: {
+    kind: "resource" | "prompt";
+    serverId: string;
+    nameOrUri: string;
+    result: T;
+    sessionId?: string;
+    args?: Record<string, string>;
+  }): Promise<T & { _swarm_artifact?: { path: string; bytes: number; lines: number } }> {
+    const sessionId = input.sessionId ?? `mcp_${sanitizeKey(input.serverId)}`;
+    this.ensureMcpSession(sessionId, input);
+    const taskId = `mcp.${input.kind}.${sanitizeKey(input.serverId)}.${sanitizeKey(input.nameOrUri).slice(0, 80)}`;
+    const content = JSON.stringify(input.result, null, 2);
+    const { writeTaskOutput } = await import("../storage/task-output-store.js");
+    const artifact = await writeTaskOutput({
+      sessionId,
+      taskId,
+      attempt: 0,
+      content
+    });
+    this.artifactStore.create({
+      session_id: sessionId,
+      path: artifact.path,
+      type: `mcp.${input.kind}`,
+      summary: `${input.serverId}:${input.nameOrUri}`
+    });
+    this.writeBlackboardEvidence(sessionId, {
+      key: `mcp.${input.kind}.${sanitizeKey(input.serverId)}.${sanitizeKey(input.nameOrUri)}`,
+      type: "evidence",
+      value: {
+        server_id: input.serverId,
+        name_or_uri: input.nameOrUri,
+        args: input.args,
+        artifact,
+        bytes: artifact.bytes
+      },
+      tags: ["mcp", input.kind, "artifact", "work-kernel"],
+      created_by: { agent_id: "main_swarm", role: "controller" },
+      task_id: taskId
+    });
+    this.auditStore.append({
+      session_id: sessionId,
+      task_id: taskId,
+      actor_type: "tool",
+      actor_id: `mcp.${input.serverId}`,
+      action: `mcp.${input.kind}`,
+      resource: {
+        server_id: input.serverId,
+        name_or_uri: input.nameOrUri,
+        args: input.args,
+        artifact
+      },
+      risk_class: "r0",
+      decision: "executed",
+      reason: `MCP ${input.kind} materialized as artifact.`
+    });
+    if (!input.sessionId) {
+      this.sessionStore.setFinalOutput(sessionId, `MCP ${input.kind} materialized: ${input.serverId}:${input.nameOrUri}`, "completed");
+      this.events.emitEvent({
+        type: "session",
+        session_id: sessionId,
+        status: "completed",
+        objective: `MCP ${input.kind}: ${input.serverId}:${input.nameOrUri}`
+      });
+    }
+    return {
+      ...(isRecord(input.result) ? input.result : { value: input.result }),
+      _swarm_artifact: artifact
+    } as T & { _swarm_artifact?: { path: string; bytes: number; lines: number } };
+  }
+
+  private ensureMcpSession(sessionId: string, input: { kind: string; serverId: string; nameOrUri: string }): void {
+    if (this.sessionStore.get(sessionId)) {
+      return;
+    }
+    this.ensureLoopSession(sessionId, `MCP ${input.kind}: ${input.serverId}:${input.nameOrUri}`, undefined, {
+      labels: ["mcp", input.kind],
+      mode: "mcp_material",
+      source: "mcp"
+    });
+  }
+
   private ensureLoopSession(
     sessionId: string,
     objective: string,
     parentSessionId?: string,
-    options: { labels?: string[]; mode?: string } = {}
+    options: { labels?: string[]; mode?: string; source?: WorkItem["source"] } = {}
   ): void {
     const timestamp = new Date().toISOString();
     const policy = createLocalPolicy(this.settings);
     const source: WorkItem = {
-      source: parentSessionId ? "worker" : sessionId.startsWith("chat_") ? "user" : "user",
+      source: options.source ?? (parentSessionId ? "worker" : sessionId.startsWith("chat_") ? "user" : "user"),
       source_id: parentSessionId,
       human_id: sessionId,
       title: firstLine(objective) || objective.slice(0, 120),

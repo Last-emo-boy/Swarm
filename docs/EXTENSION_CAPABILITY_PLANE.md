@@ -445,6 +445,28 @@ Every capability lifecycle event should map to existing kernel records:
 
 No MCP, skill, or plugin path should create a second private status system.
 
+## Current Implementation Notes
+
+Swarm now has a Runtime-owned `CapabilityBroker` that sits behind Gateway
+capability invocation, model-visible dynamic capabilities, and built-in local
+tool calls from the coding loop. The broker resolves the descriptor, applies
+settings/trust/deny/approval policy, invokes the provider, normalizes long
+output into task artifacts, and emits one `tool_result` event so usage, audit,
+attempt, and task graph records are written by the existing runtime event
+pipeline.
+
+Skill activation writes both a normal `skill.*` blackboard evidence row and a
+`durable_context.skill.*` row tagged `durable-context` and
+`preserve-compaction`. Coding-loop prompts reload these durable context rows on
+later turns so active skill instructions are not only historical evidence.
+
+MCP stdio tools support per-tool `toolRiskOverrides` in MCP server settings.
+High-risk stdio tools are hidden from the model unless trusted settings mark
+their risk low enough; they can still be invoked explicitly through Gateway/TUI
+subject to approval. MCP resource and prompt reads are materialized into task
+output artifacts and audit/blackboard records rather than remaining private
+provider responses.
+
 ## Security Model
 
 Threats to handle explicitly:

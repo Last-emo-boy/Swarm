@@ -160,6 +160,14 @@ function validateHooks(config: WorkflowRuntimeConfig): SymphonyPreflightIssue[] 
         message: `hooks.${name} is configured but hook execution is not trusted; set SWARM_SYMPHONY_TRUST_HOOKS=1 or SWARM_TRUSTED_WORKSPACE_ROOT.`
       });
     }
+    if (script && !isHookApprovalConfigured()) {
+      issues.push({
+        code: "HOOKS_REQUIRE_APPROVAL",
+        severity: "warning",
+        field: `hooks.${name}`,
+        message: `hooks.${name} is configured but hook execution is not approved; set SWARM_SYMPHONY_APPROVE_HOOKS=1 after reviewing WORKFLOW.md hooks.`
+      });
+    }
   }
   return issues;
 }
@@ -189,4 +197,9 @@ function isHookTrustConfigured(): boolean {
   return process.env.SWARM_SYMPHONY_TRUST_HOOKS === "1" ||
     process.env.SWARM_SYMPHONY_TRUST_HOOKS === "true" ||
     Boolean(process.env.SWARM_TRUSTED_WORKSPACE_ROOT);
+}
+
+function isHookApprovalConfigured(): boolean {
+  return process.env.SWARM_SYMPHONY_APPROVE_HOOKS === "1" ||
+    process.env.SWARM_SYMPHONY_APPROVE_HOOKS === "true";
 }

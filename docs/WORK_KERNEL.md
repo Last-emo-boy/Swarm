@@ -485,6 +485,12 @@ The current codebase now has the first concrete slice of this architecture:
   calls the Runtime to interrupt that specific session, records whether a live
   stop was requested in `symphony.reconcile`, marks the session cancelled, and
   treats cancelled runner outcomes as terminal rather than retryable failures.
+- Symphony dispatch now has a database-backed claim record in
+  `symphony_claims`. The scheduler still keeps process-local `claimed`,
+  `running`, and `retrying` sets for fast snapshots, but dispatch eligibility is
+  guarded by a persisted `workflow_path + work_item_key` claim with owner,
+  status, expiry, attempt, and session metadata. This reduces duplicate
+  dispatch when CLI, TUI, and Gateway ticks run in different local processes.
 - Terminal Symphony workspaces can now be cleaned up through a shared cleanup
   path. `symphony cleanup`, `POST /v1/symphony/cleanup`, and TUI
   `/symphony-cleanup` all use `src/symphony/cleanup.ts`. Cleanup is dry-run by
@@ -492,7 +498,12 @@ The current codebase now has the first concrete slice of this architecture:
   leases inside the configured workspace root, applies retention gates
   (`min_age_ms`, `keep_latest`, and optional manifest preservation), runs
   `before_remove` before removal, and records `symphony.cleanup` attempts plus
-  blackboard decisions.
+  blackboard decisions. Executing recursive workspace removal now also requires
+  explicit `SWARM_SYMPHONY_CLEANUP_APPROVE=1` after the dry-run is reviewed.
+- Symphony hooks still require workspace trust, and now also require explicit
+  `SWARM_SYMPHONY_APPROVE_HOOKS=1` before configured shell hooks execute.
+  Approval, block, duration, stdout/stderr summary, and hook decisions are
+  recorded as Work Kernel approval, audit, attempt, usage, and blackboard facts.
 - The TUI now anchors its current chat state as a local Work Kernel session.
   Slash command approvals, tool calls, audit rows, usage rows, attempts, and
   workspace leases use that session id, so TUI-local work is inspectable through

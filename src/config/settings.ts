@@ -40,6 +40,7 @@ export type McpServerSettings = {
   exposeTools?: boolean;
   exposeResources?: boolean;
   exposePrompts?: boolean;
+  toolRiskOverrides?: Record<string, "r0" | "r1" | "r2" | "r3" | "r4">;
   timeoutMs?: number;
 };
 
@@ -887,6 +888,7 @@ function normalizeMcpServers(servers: Record<string, McpServerSettings>): Record
           args: Array.isArray(server.args) ? server.args.map(String) : [],
           env: isObject(server.env) ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, String(value)])) : undefined,
           headers: isObject(server.headers) ? Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, String(value)])) : undefined,
+          toolRiskOverrides: normalizeMcpToolRiskOverrides(server.toolRiskOverrides),
           trust: server.trust === "project" || server.trust === "workspace" ? server.trust : "user",
           exposeTools: server.exposeTools !== false,
           exposeResources: server.exposeResources === true,
@@ -895,6 +897,16 @@ function normalizeMcpServers(servers: Record<string, McpServerSettings>): Record
         }
       ])
   );
+}
+
+function normalizeMcpToolRiskOverrides(value: unknown): McpServerSettings["toolRiskOverrides"] {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, risk]) => risk === "r0" || risk === "r1" || risk === "r2" || risk === "r3" || risk === "r4")
+  ) as McpServerSettings["toolRiskOverrides"];
 }
 
 function positiveInteger(value: unknown, fallback: number): number {

@@ -109,7 +109,18 @@ type CodingLoopOptions = {
   workerStore?: WorkerStateStore;
   invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
   listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
-  invokeCapability?: (capabilityId: string, args: Record<string, unknown>, sessionId?: string) => Promise<ToolResult>;
+  invokeCapability?: (
+    capabilityId: string,
+    args: Record<string, unknown>,
+    sessionId?: string,
+    options?: {
+      taskId?: string;
+      title?: string;
+      allowDelegate?: boolean;
+      source?: "coding_loop" | "gateway" | "runtime";
+    }
+  ) => Promise<ToolResult>;
+  durableContext?: (sessionId: string) => string | Promise<string>;
   agentInstructions?: string;
   allowedTools?: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
@@ -265,6 +276,7 @@ export class CodingAgentLoop {
       try {
         const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
         const modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
+        const durableContext = await this.options.durableContext?.(sessionId) ?? "";
         const availableTools = allowedToolNames(this.options.allowedTools, delegateAvailable, modelCapabilities);
         const dynamicToolSchemas = dynamicCapabilityToolSchemas(modelCapabilities);
         const modelText = await this.options.provider.generateText({
@@ -273,6 +285,7 @@ export class CodingAgentLoop {
             role,
             delegateAvailable,
             agentInstructions: this.options.agentInstructions,
+            durableContext,
             allowedTools: availableTools,
             writePolicy: this.options.writePolicy
           }),
@@ -531,6 +544,20 @@ export class CodingAgentLoop {
         throw new Error(`Tool action is not allowed for this agent persona: ${action.type}`);
       }
       this.emitActivity(sessionId, "running_tool", `Running ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
+      if (this.options.invokeCapability) {
+        const rawResult = await this.options.invokeCapability(
+          `local_tool.${action.type}`,
+          { ...(call.inputs ?? {}), action: action.type },
+          sessionId,
+          {
+            taskId: id,
+            title: call.reason ?? action.type,
+            allowDelegate: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0,
+            source: "coding_loop"
+          }
+        );
+        return { result: codingLoopResultFromTool(id, action.type, rawResult) };
+      }
       if (toolRequiresApproval(action, this.options.settings, { workspace: this.options.workspace })) {
         if (!this.options.approvalHandler) {
           throw new Error(`Tool action requires approval but no approval handler is available: ${action.type}`);
@@ -654,50 +681,13 @@ export class CodingAgentLoop {
     if (!capability) {
       return undefined;
     }
-    if (this.options.approvalHandler && dynamicCapabilityRequiresApproval(capability, this.options.settings)) {
-      const request = createCapabilityApprovalRequest(capability, id, sessionId);
-      this.emitActivity(sessionId, "waiting_approval", `Waiting for approval: ${capability.name}`, { turn, tool: capability.name, taskId: id });
-      this.options.events.emitEvent({ type: "approval", request, status: "pending" });
-      const approved = await this.options.approvalHandler(request);
-      this.options.events.emitEvent({ type: "approval", request, status: approved ? "approved" : "denied" });
-      if (!approved) {
-        throw new Error(`Capability denied: ${capability.permissionName}`);
-      }
-    }
     this.emitActivity(sessionId, "running_tool", `Running ${capability.name}`, { turn, tool: capability.name, taskId: id });
-    const rawResult = await this.options.invokeCapability(capability.id, call.inputs ?? {}, sessionId);
-    const prepared = await prepareToolOutput(sessionId, id, rawResult, renderToolResultDetail(rawResult));
-    const result: CodingLoopToolResult = {
-      id,
-      action: capability.name,
-      status: rawResult.status ?? "success",
-      summary: rawResult.summary,
-      content: prepared.content,
-      outputRef: prepared.outputRef,
-      data: prepared.data,
-      errors: rawResult.errors,
-      errorCode: rawResult.errorCode,
-      recoverySuggestion: rawResult.recoverySuggestion
-    };
-    this.options.events.emitEvent({
-      type: "tool_result",
-      session_id: sessionId,
-      task_id: id,
+    const rawResult = await this.options.invokeCapability(capability.id, call.inputs ?? {}, sessionId, {
+      taskId: id,
       title: call.reason ?? capability.name,
-      action: capability.name,
-      summary: rawResult.summary,
-      content: prepared.content,
-      status: result.status,
-      outputRef: prepared.outputRef,
-      errorCode: rawResult.errorCode,
-      recoverySuggestion: rawResult.recoverySuggestion,
-      capability: {
-        id: capability.id,
-        providerId: capability.providerId,
-        permissionName: capability.permissionName,
-        riskClass: capability.riskClass
-      }
+      source: "coding_loop"
     });
+    const result = codingLoopResultFromTool(id, capability.name, rawResult);
     return { result };
   }
 
@@ -869,6 +859,7 @@ function codingLoopSystemPrompt(input: {
   role: "main" | "worker";
   delegateAvailable: boolean;
   agentInstructions?: string;
+  durableContext?: string;
   allowedTools?: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
 }): string {
@@ -887,6 +878,7 @@ function codingLoopSystemPrompt(input: {
     `Allowed tools: ${tools}.`,
     input.writePolicy ? `Write policy: ${input.writePolicy}. Never use tools outside this policy.` : undefined,
     input.agentInstructions,
+    input.durableContext ? `Durable session context that must survive compaction:\n${input.durableContext}` : undefined,
     "Read existing files before editing them. For edits, read the full file first.",
     "Prefer file.edit for existing files and file.write for new files. Do not write final reports unless requested.",
     "For tool_calls, each item is {id, action, inputs, reason}. The action must match an allowed tool, and inputs must match the tool_schemas in the user payload.",
@@ -1194,45 +1186,6 @@ function isReadOnlyToolAction(action: ToolAction): boolean {
   ].includes(action.type);
 }
 
-function dynamicCapabilityRequiresApproval(capability: CapabilityDescriptor, settings: SwarmSettings): boolean {
-  if (settings.permissions.deny.includes(capability.permissionName) || settings.permissions.deny.includes(`${capability.permissionName}(*)`)) {
-    throw new Error(`Capability denied by settings: ${capability.permissionName}`);
-  }
-  if (settings.permissions.allow.includes(capability.permissionName) || settings.permissions.allow.includes(`${capability.permissionName}(*)`)) {
-    return false;
-  }
-  if (settings.permissions.defaultMode === "yolo" || settings.permissions.defaultMode === "full-auto" || settings.permissions.defaultMode === "auto") {
-    return false;
-  }
-  return capability.riskClass !== "r0" || settings.permissions.ask.includes(capability.permissionName) || settings.permissions.ask.includes(`${capability.permissionName}(*)`);
-}
-
-function createCapabilityApprovalRequest(capability: CapabilityDescriptor, taskId: string, sessionId: string): ToolApprovalRequest {
-  return {
-    id: `approval_${randomUUID()}`,
-    session_id: sessionId,
-    task_id: taskId,
-    action: capability.name,
-    summary: `Use capability: ${capability.title ?? capability.name}`,
-    detail: [
-      capability.description,
-      "",
-      `Capability: ${capability.id}`,
-      `Provider: ${capability.providerId}`,
-      `Permission: ${capability.permissionName}`,
-      capability.inputSchema ? `Input schema:\n${JSON.stringify(capability.inputSchema, null, 2)}` : undefined
-    ].filter(Boolean).join("\n"),
-    risk: capability.riskClass === "r0" ? "web" : capability.riskClass === "r1" ? "delegate" : "shell",
-    risk_class: capability.riskClass,
-    target: capability.providerId,
-    why_now: `Swarm needs ${capability.name} to continue the current task.`,
-    predicted_impact: capability.riskClass === "r0"
-      ? "Read-only external capability call."
-      : "External capability call may access remote or local server behavior depending on the MCP server implementation.",
-    rollback_plan: "No workspace changes are made directly by Swarm for this approval; inspect MCP output and follow up if the server changed external state."
-  };
-}
-
 async function prepareToolOutput(
   sessionId: string,
   taskId: string,
@@ -1249,6 +1202,25 @@ async function prepareToolOutput(
     content: truncateMiddle(detail, LONG_OUTPUT_PREVIEW_BYTES, ref.bytes, ref.lines, ref.path),
     outputRef: ref.path,
     data: isRecord(data) ? { ...data, outputRef: ref } : { value: data, outputRef: ref }
+  };
+}
+
+function codingLoopResultFromTool(
+  id: string,
+  action: string,
+  result: ToolResult
+): CodingLoopToolResult {
+  return {
+    id,
+    action,
+    status: result.status ?? "success",
+    summary: result.summary,
+    content: result.content,
+    outputRef: result.outputRef,
+    data: result.data ?? result.metadata,
+    errors: result.errors,
+    errorCode: result.errorCode,
+    recoverySuggestion: result.recoverySuggestion
   };
 }
 

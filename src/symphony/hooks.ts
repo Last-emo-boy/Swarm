@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { BlackboardEntry, RunAttempt, SwarmSession, WorkItem } from "../protocol/types.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
+import type { ToolApprovalRequest } from "../tools/types.js";
 import { workItemKey } from "./work-item.js";
 import type { WorkflowRuntimeConfig } from "./workflow.js";
 
@@ -53,6 +55,15 @@ export async function runSymphonyHook(
       duration_ms: Date.now() - start
     });
   }
+  if (!hookExecutionApproved(hook, context)) {
+    return recordHookResult(context, {
+      hook,
+      status: "failed",
+      decision: "block",
+      reason: "Hook execution approval is required. Set SWARM_SYMPHONY_APPROVE_HOOKS=1 after reviewing WORKFLOW.md hooks.",
+      duration_ms: Date.now() - start
+    });
+  }
 
   context.runtime.events.emitEvent({
     type: "log",
@@ -75,6 +86,55 @@ export async function runSymphonyHook(
     exit_code: result.exit_code,
     duration_ms: Date.now() - start
   });
+}
+
+function hookExecutionApproved(hook: SymphonyHookName, context: SymphonyHookContext): boolean {
+  const approved = process.env.SWARM_SYMPHONY_APPROVE_HOOKS === "1" || process.env.SWARM_SYMPHONY_APPROVE_HOOKS === "true";
+  const request = createHookApprovalRequest(hook, context);
+  context.runtime.events.emitEvent({ type: "approval", request, status: "pending" });
+  context.runtime.auditStore.append({
+    session_id: context.session.session_id,
+    task_id: `symphony.hook.${hook}`,
+    actor_type: "policy",
+    actor_id: "symphony.hook",
+    action: `hook.${hook}.approval`,
+    resource: {
+      hook,
+      workspace_path: context.workspace_path,
+      script: context.config.hooks[hook],
+      approved_by_env: approved
+    },
+    risk_class: "r3",
+    decision: approved ? "approved" : "blocked",
+    reason: approved
+      ? "SWARM_SYMPHONY_APPROVE_HOOKS is set."
+      : "Hook execution requires explicit approval even after workspace trust is enabled."
+  });
+  context.runtime.events.emitEvent({ type: "approval", request, status: approved ? "approved" : "denied" });
+  return approved;
+}
+
+function createHookApprovalRequest(hook: SymphonyHookName, context: SymphonyHookContext): ToolApprovalRequest {
+  return {
+    id: `approval_${randomUUID()}`,
+    session_id: context.session.session_id,
+    task_id: `symphony.hook.${hook}`,
+    action: `symphony.hook.${hook}`,
+    summary: `Run Symphony hook: ${hook}`,
+    detail: [
+      `Hook: ${hook}`,
+      `Workspace: ${context.workspace_path}`,
+      `Work item: ${context.work_item.human_id ?? context.work_item.source_id ?? context.work_item.title}`,
+      "",
+      context.config.hooks[hook] ?? ""
+    ].join("\n"),
+    risk: "shell",
+    risk_class: "r3",
+    target: context.workspace_path,
+    why_now: `Symphony lifecycle hook ${hook} is configured in WORKFLOW.md.`,
+    predicted_impact: "Runs repository-configured shell code in the Symphony workspace.",
+    rollback_plan: "No automatic rollback is guaranteed; inspect hook output, audit logs, and workspace changes."
+  };
 }
 
 export function isFatalHookResult(hook: SymphonyHookName, result: SymphonyHookResult): boolean {

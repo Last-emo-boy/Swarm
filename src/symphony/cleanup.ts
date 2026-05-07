@@ -101,6 +101,39 @@ export async function cleanupSymphonyWorkspaces(input: {
       const artifactPath = config.cleanup.retention.preserve_artifacts
         ? preserveCleanupManifest(input.runtime, row, workItem, workspace, eligibility.age_ms)
         : undefined;
+      const approval = await requestCleanupApproval(input.runtime, row, workItem, workspace, eligibility.age_ms);
+      if (!approval) {
+        const attempt = input.runtime.runAttemptStore.upsert({
+          session_id: row.session_id,
+          task_id: "symphony.cleanup",
+          runner_id: "symphony.cleanup",
+          kind: "swarm_task",
+          status: "cancelled",
+          attempt: 0,
+          title: `Cleanup ${workItemLabel(workItem)}`,
+          terminal_reason: "Cleanup blocked by approval policy.",
+          workspace_path: workspace.workspace_path,
+          error_code: "SYMPHONY_CLEANUP_APPROVAL_REQUIRED",
+          recovery_suggestion: "ask_human",
+          metadata: {
+            work_item_key: workItemKey(workItem),
+            workspace_root: workspace.workspace_root,
+            age_ms: eligibility.age_ms,
+            approval_required: true
+          }
+        });
+        records.push({
+          session_id: row.session_id,
+          status: "skipped",
+          reason: "approval_required",
+          work_item: workItem,
+          workspace,
+          attempt,
+          age_ms: eligibility.age_ms,
+          artifact_path: artifactPath
+        });
+        continue;
+      }
       await runSymphonyHook("before_remove", {
         runtime: input.runtime,
         session,
@@ -109,6 +142,7 @@ export async function cleanupSymphonyWorkspaces(input: {
         config
       });
       const existed = existsSync(workspace.workspace_path);
+      assertSafeRemovalTarget(workspace.workspace_root, workspace.workspace_path);
       if (existed) {
         rmSync(workspace.workspace_path, { recursive: true, force: true });
       }
@@ -203,6 +237,76 @@ export async function cleanupSymphonyWorkspaces(input: {
     retention: config.cleanup.retention,
     records
   };
+}
+
+async function requestCleanupApproval(
+  runtime: SwarmRuntime,
+  row: SessionRow,
+  workItem: WorkItem,
+  workspace: WorkspaceLease,
+  ageMs: number
+): Promise<boolean> {
+  if (process.env.SWARM_SYMPHONY_CLEANUP_APPROVE === "1" || process.env.SWARM_SYMPHONY_CLEANUP_APPROVE === "true") {
+    runtime.auditStore.append({
+      session_id: row.session_id,
+      task_id: "symphony.cleanup",
+      actor_type: "policy",
+      actor_id: "symphony.cleanup",
+      action: "cleanup.approval",
+      resource: {
+        work_item_key: workItemKey(workItem),
+        workspace_path: workspace.workspace_path,
+        approval: "env"
+      },
+      risk_class: "r4",
+      decision: "approved",
+      reason: "SWARM_SYMPHONY_CLEANUP_APPROVE is set."
+    });
+    return true;
+  }
+  runtime.auditStore.append({
+    session_id: row.session_id,
+    task_id: "symphony.cleanup",
+    actor_type: "policy",
+    actor_id: "symphony.cleanup",
+    action: "cleanup.approval",
+    resource: {
+      work_item_key: workItemKey(workItem),
+      workspace_path: workspace.workspace_path,
+      workspace_root: workspace.workspace_root,
+      age_ms: ageMs,
+      approval: "missing"
+    },
+    risk_class: "r4",
+    decision: "blocked",
+    reason: "Set SWARM_SYMPHONY_CLEANUP_APPROVE=1 to execute recursive workspace removal after reviewing dry-run output."
+  });
+  const entry = runtime.blackboardStore.write({
+    swarm_id: row.swarm_id,
+    session_id: row.session_id,
+    task_id: "symphony.cleanup",
+    key: "symphony.cleanup.approval_required",
+    type: "decision",
+    value: {
+      work_item: workItem,
+      workspace,
+      age_ms: ageMs,
+      required_env: "SWARM_SYMPHONY_CLEANUP_APPROVE=1"
+    },
+    created_by: { agent_id: "symphony", role: "cleanup" },
+    tags: ["symphony", "cleanup", "approval", "blocked", "work-kernel"]
+  });
+  runtime.events.emitEvent({ type: "blackboard", entry });
+  return false;
+}
+
+function assertSafeRemovalTarget(workspaceRoot: string, workspacePath: string): void {
+  const root = resolve(workspaceRoot);
+  const target = resolve(workspacePath);
+  const relativePath = relative(root, target);
+  if (!relativePath || relativePath.startsWith("..") || resolve(target) === root) {
+    throw new Error(`Refusing to remove unsafe Symphony workspace target: ${workspacePath}`);
+  }
 }
 
 function cleanupEligibility(

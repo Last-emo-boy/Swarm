@@ -157,7 +157,7 @@ export class McpClientProvider implements CapabilityProvider {
       }
     } catch (error) {
       server.status = "failed";
-      server.lastError = error instanceof Error ? error.message : String(error);
+      server.lastError = redactMcpText(error instanceof Error ? error.message : String(error), server.config);
       server.diagnostics.push({
         severity: "error",
         code: "MCP_CONNECT_FAILED",
@@ -296,9 +296,9 @@ export class McpClientProvider implements CapabilityProvider {
       exposeResources: server.config.exposeResources === true,
       exposePrompts: server.config.exposePrompts === true,
       command: server.config.command,
-      args: server.config.args,
+      args: redactMcpArgs(server.config.args),
       cwd: server.config.cwd,
-      url: server.config.url,
+      url: server.config.url ? redactMcpText(server.config.url, server.config) : undefined,
       serverName: version?.name,
       serverVersion: version?.version,
       toolCount: server.tools.length,
@@ -349,20 +349,25 @@ function mcpToolDescriptor(server: McpServerRuntime, tool: Tool): CapabilityDesc
   const readOnly = tool.annotations?.readOnlyHint === true;
   const destructive = tool.annotations?.destructiveHint === true;
   const openWorld = tool.annotations?.openWorldHint === true;
+  const overriddenRisk = server.config.toolRiskOverrides?.[tool.name];
+  const derivedRisk: CapabilityDescriptor["riskClass"] = destructive ? "r3" : openWorld ? "r2" : readOnly ? "r0" : "r1";
+  const riskClass = overriddenRisk ?? derivedRisk;
+  const trust = mcpTrust(server.config);
+  const exposesLocalProcess = server.config.transport === "stdio";
   return {
     id: `mcp_tool.${server.capabilityIdPart}.${encodeMcpIdPart(tool.name)}`,
     kind: "mcp_tool",
     source: "mcp",
-    trust: mcpTrust(server.config),
+    trust,
     providerId: `mcp:${server.id}`,
     name: `mcp__${modelToolNamePart(server.id)}__${modelToolNamePart(tool.name)}`,
     title: tool.title ?? tool.name,
     description: tool.description ?? `MCP tool ${tool.name} from ${server.id}.`,
     inputSchema: tool.inputSchema,
     outputSchema: tool.outputSchema,
-    riskClass: destructive ? "r3" : openWorld ? "r2" : readOnly ? "r0" : "r1",
+    riskClass,
     permissionName: `McpTool(${server.id}:${tool.name})`,
-    modelVisible: server.config.exposeTools !== false && mcpTrust(server.config) === "trusted",
+    modelVisible: server.config.exposeTools !== false && trust === "trusted" && !exposesLocalProcessRisk(server, riskClass),
     userVisible: true,
     status: server.status === "connected" ? "available" : server.status,
     diagnostics: server.diagnostics,
@@ -371,7 +376,12 @@ function mcpToolDescriptor(server: McpServerRuntime, tool: Tool): CapabilityDesc
       tool_name: tool.name,
       annotations: tool.annotations,
       execution: tool.execution,
-      server_capabilities: server.client?.getServerCapabilities()
+      server_capabilities: server.client?.getServerCapabilities(),
+      risk_source: overriddenRisk ? "settings_override" : "tool_annotations",
+      local_process: exposesLocalProcess,
+      model_hidden_reason: exposesLocalProcessRisk(server, riskClass)
+        ? "stdio MCP tools with mutable risk require explicit user/Gateway invocation unless risk is overridden to r0/r1 by trusted settings."
+        : undefined
     }
   };
 }
@@ -549,14 +559,7 @@ function resolveEnvValue(value: string): string {
 }
 
 function redactEnvValues(message: string, env: Record<string, string> | undefined): string {
-  let redacted = message;
-  for (const value of Object.values(env ?? {})) {
-    const resolved = resolveEnvValue(value);
-    if (resolved) {
-      redacted = redacted.split(resolved).join("[redacted]");
-    }
-  }
-  return redacted;
+  return redactMcpText(message, { env } as McpServerSettings);
 }
 
 function mcpTrust(config: McpServerSettings): CapabilityTrust {
@@ -592,4 +595,29 @@ function isStringRecord(value: unknown): Record<string, string> | undefined {
     return undefined;
   }
   return Object.fromEntries(Object.entries(value).map(([key, next]) => [key, String(next)]));
+}
+
+function exposesLocalProcessRisk(server: McpServerRuntime, riskClass: CapabilityDescriptor["riskClass"]): boolean {
+  return server.config.transport === "stdio" && (riskClass === "r2" || riskClass === "r3" || riskClass === "r4");
+}
+
+function redactMcpText(message: string, config: McpServerSettings): string {
+  let redacted = message;
+  for (const value of [
+    ...Object.values(config.env ?? {}),
+    ...Object.values(config.headers ?? {})
+  ]) {
+    const resolved = resolveEnvValue(value);
+    if (resolved) {
+      redacted = redacted.split(resolved).join("[redacted]");
+    }
+  }
+  return redacted.replace(/(authorization|api[_-]?key|token|secret|password)=([^&\s]+)/gi, "$1=[redacted]");
+}
+
+function redactMcpArgs(args: string[] | undefined): string[] | undefined {
+  if (!args) {
+    return undefined;
+  }
+  return args.map((arg) => /token|secret|password|api[_-]?key/i.test(arg) ? "[redacted]" : arg);
 }
