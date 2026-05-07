@@ -468,22 +468,25 @@ function escapeRegExp(value: string): string {
 }
 
 function matchesReadDenyRule(rule: string, candidates: string[]): boolean {
-  if (rule === "**/.swarm/config.json") {
-    return candidates.some((path) => path.endsWith("/.swarm/config.json") || path.endsWith("\\.swarm\\config.json"));
+  const normalizedRule = rule.replace(/\\/g, "/");
+  return candidates.some((path) => matchesReadDenyCandidate(path.replace(/\\/g, "/"), normalizedRule));
+}
+
+function matchesReadDenyCandidate(path: string, rule: string): boolean {
+  if (wildcardMatch(path, rule)) {
+    return true;
   }
-  if (rule === ".env") {
-    return candidates.some((path) => basename(path) === ".env");
+  if (rule.startsWith("**/") && wildcardMatch(path, rule.slice(3))) {
+    return true;
   }
-  if (rule === ".env.*") {
-    return candidates.some((path) => basename(path).startsWith(".env."));
+  if (containsGlob(rule)) {
+    return false;
   }
-  if (rule === "secrets/**") {
-    return candidates.some((path) => path.includes("/secrets/") || path.startsWith("secrets/"));
-  }
-  if (rule === "config/credentials.json") {
-    return candidates.some((path) => path.endsWith("config/credentials.json"));
-  }
-  return candidates.some((path) => path === rule || path.endsWith(`/${rule}`));
+  return path === rule || path.endsWith(`/${rule}`);
+}
+
+function containsGlob(value: string): boolean {
+  return value.includes("*");
 }
 
 function expandPath(path: string): string {

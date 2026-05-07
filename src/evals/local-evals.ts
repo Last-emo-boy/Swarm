@@ -41,7 +41,7 @@ import { approvalInputDecision } from "../tui/approval-input.js";
 import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/input-rendering.js";
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
-import { assertToolAllowedByPermissions, toolRequiresApproval } from "../tools/permissions.js";
+import { assertToolAllowedByPermissions, resolveReadablePath, toolRequiresApproval } from "../tools/permissions.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
 export type EvalCaseResult = {
@@ -1165,21 +1165,32 @@ function checkPermissionDenyPrecedenceBehavior(): EvalCaseResult {
   settings.permissions.defaultMode = "yolo";
   settings.permissions.allow = ["Bash(*)", "Write(**)", "WebFetch(*)"];
   settings.permissions.ask = [];
-  settings.permissions.deny = ["Bash(npm publish*)", "Write(secrets/**)", "WebFetch(https://example.com/secrets*)"];
+  settings.permissions.deny = [
+    "Bash(npm publish*)",
+    "Write(secrets/**)",
+    "WebFetch(https://example.com/secrets*)",
+    "Read(private/**)",
+    "Read(**/*.pem)"
+  ];
 
   const deniedShell = { type: "shell.exec" as const, command: "npm publish --dry-run" };
   const deniedWrite = { type: "file.write" as const, path: "secrets/token.txt", content: "secret" };
   const deniedWeb = { type: "web.fetch" as const, url: "https://example.com/secrets?id=1" };
   const allowedShell = { type: "shell.exec" as const, command: "npm test" };
+  const workspace = resolve("eval-workspace");
+  const readContext = { workspace, settings };
 
   const shellDenied = throws(() => toolRequiresApproval(deniedShell, settings));
   const writeDenied = throws(() => assertToolAllowedByPermissions(deniedWrite, settings));
   const webDenied = throws(() => toolRequiresApproval(deniedWeb, settings));
+  const privateReadDenied = throws(() => resolveReadablePath("private/token.txt", readContext));
+  const pemReadDenied = throws(() => resolveReadablePath("certs/service.pem", readContext));
+  const readAllowed = resolveReadablePath("src/index.ts", readContext).endsWith(resolve(workspace, "src/index.ts"));
   const allowed = !toolRequiresApproval(allowedShell, settings);
-  const ok = shellDenied && writeDenied && webDenied && allowed;
+  const ok = shellDenied && writeDenied && webDenied && privateReadDenied && pemReadDenied && readAllowed && allowed;
   return ok
-    ? { name: "permission deny rules override allow and yolo modes", status: "pass", message: "deny rules are enforced before approval bypasses" }
-    : { name: "permission deny rules override allow and yolo modes", status: "fail", message: `shellDenied=${shellDenied} writeDenied=${writeDenied} webDenied=${webDenied} allowed=${allowed}` };
+    ? { name: "permission deny rules override allow and yolo modes", status: "pass", message: "deny rules, including Read globs, are enforced before approval bypasses" }
+    : { name: "permission deny rules override allow and yolo modes", status: "fail", message: `shellDenied=${shellDenied} writeDenied=${writeDenied} webDenied=${webDenied} privateReadDenied=${privateReadDenied} pemReadDenied=${pemReadDenied} readAllowed=${readAllowed} allowed=${allowed}` };
 }
 
 function throws(fn: () => unknown): boolean {
