@@ -82,6 +82,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/runtime/coding-agent-loop.ts", "delegation_policy", "coding loop exposes delegation policy"),
     checkContains(root, "src/runtime/coding-agent-loop.ts", "tool_schemas", "coding loop exposes tool schemas"),
     checkContains(root, "src/runtime/coding-agent-loop.ts", "TOOL_SCHEMAS", "coding loop has local tool schemas"),
+    checkContains(root, "src/agents/child-entry.ts", "routeableDelegateCapability", "Child agent delegation rejects empty or unrouteable capabilities"),
+    checkContains(root, "src/agents/child-entry.ts", "DELEGATE_CAPABILITY_MISSING", "Child agent delegation returns a structured error for missing capability"),
     checkFile(root, "src/extensions/broker.ts", "Capability broker exists"),
     checkContains(root, "src/runtime/runtime.ts", "new CapabilityBroker", "Runtime owns the capability broker"),
     checkContains(root, "src/runtime/coding-agent-loop.ts", "local_tool.", "Coding loop routes built-in tools through capability broker when available"),

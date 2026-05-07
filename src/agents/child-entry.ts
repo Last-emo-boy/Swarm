@@ -444,6 +444,20 @@ async function delegateToAgent(
   delegateAction: AgentDelegateAction,
   parentEnvelope: SwarmEnvelope
 ): Promise<ToolResult> {
+  const capability = routeableDelegateCapability(delegateAction.capability);
+  if (!capability) {
+    return {
+      action: "agent.delegate",
+      status: "failed",
+      summary: "agent.delegate failed: missing delegate capability.",
+      errors: ["Missing required input: capability"],
+      errorCode: "DELEGATE_CAPABILITY_MISSING",
+      recoverable: true,
+      retryable: false,
+      recoverySuggestion: "Retry agent.delegate with a concrete routeable capability such as design.reason, code.inspect, research.summarize, or review.general.",
+      data: { capability: delegateAction.capability, task: delegateAction.task }
+    };
+  }
   const delegateId = `delegate_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const taskId = `subtask_${delegateId}`;
 
@@ -452,9 +466,9 @@ async function delegateToAgent(
     session_id: parentEnvelope.session_id,
     task_id: taskId,
     from: { agent_id: spec.agent_id, role: spec.role },
-    to: { capability: delegateAction.capability },
+    to: { capability },
     type: "task.assign",
-    intent: delegateAction.capability,
+    intent: capability,
     payload: {
       task: {
         task_id: taskId,
@@ -476,9 +490,9 @@ async function delegateToAgent(
     return {
       action: "agent.delegate",
       status: "failed",
-      summary: `delegation to ${delegateAction.capability} timed out`,
+      summary: `delegation to ${capability} timed out`,
       errors: ["delegation timed out"],
-      data: { capability: delegateAction.capability, task: delegateAction.task, timedOut: true }
+      data: { capability, requested_capability: delegateAction.capability, task: delegateAction.task, timedOut: true }
     };
   }
 
@@ -487,9 +501,9 @@ async function delegateToAgent(
     return {
       action: "agent.delegate",
       status: "failed",
-      summary: `delegation to ${delegateAction.capability} failed: ${errorPayload.message ?? "unknown error"}`,
+      summary: `delegation to ${capability} failed: ${errorPayload.message ?? "unknown error"}`,
       errors: [errorPayload.message ?? "unknown error"],
-      data: { capability: delegateAction.capability, task: delegateAction.task, error: errorPayload.message ?? "unknown error" }
+      data: { capability, requested_capability: delegateAction.capability, task: delegateAction.task, error: errorPayload.message ?? "unknown error" }
     };
   }
 
@@ -497,18 +511,59 @@ async function delegateToAgent(
   return {
     action: "agent.delegate",
     status: resultPayload?.status === "failed" ? "failed" : "success",
-    summary: `delegated to ${delegateAction.capability}: ${resultPayload?.summary ?? "completed"}`,
+    summary: `delegated to ${capability}: ${resultPayload?.summary ?? "completed"}`,
     content: resultPayload?.content ?? JSON.stringify(resultPayload),
     outputRef: resultPayload?.outputRef,
     errors: resultPayload?.errors,
     data: {
-      capability: delegateAction.capability,
+      capability,
+      requested_capability: delegateAction.capability,
       task: delegateAction.task,
       status: resultPayload?.status,
       summary: resultPayload?.summary
     }
   };
 }
+
+function routeableDelegateCapability(capability: string | undefined): string | undefined {
+  const normalized = (capability ?? "").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (CHILD_ROUTABLE_CAPABILITIES.has(normalized)) {
+    return normalized;
+  }
+  return CHILD_DELEGATE_CAPABILITY_ALIASES[normalized];
+}
+
+const CHILD_ROUTABLE_CAPABILITIES = new Set([
+  "analysis.synthesize",
+  "research.summarize",
+  "code.inspect",
+  "design.reason",
+  "review.general",
+  "review.security",
+  "review.code",
+  "critique.result",
+  "aggregation.summarize",
+  "artifact.compose"
+]);
+
+const CHILD_DELEGATE_CAPABILITY_ALIASES: Record<string, string> = {
+  "architecture.design": "design.reason",
+  "refactor.plan": "design.reason",
+  "protocol.design": "design.reason",
+  "code.research": "code.inspect",
+  "file.search": "code.inspect",
+  "docs.summarize": "research.summarize",
+  "log.analysis": "research.summarize",
+  "risk.analysis": "critique.result",
+  "architecture.critique": "critique.result",
+  "security.review": "review.security",
+  "code.review": "review.code",
+  "diff.review": "review.code",
+  "test.review": "review.code"
+};
 
 const LONG_OUTPUT_THRESHOLD_BYTES = 32_000;
 const LONG_OUTPUT_PREVIEW_BYTES = 18_000;
