@@ -1369,11 +1369,19 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
   const results: ToolResult[] = [];
   for (const cmd of commands) {
     const shellResult = await runShellCommand(cmd, { cwd: root, timeoutMs: 120_000, maxOutputBytes: 300_000 });
+    const status = shellResult.exitCode === 0 && !shellResult.timedOut && !shellResult.error ? "success" : "failed";
+    const content = [`$ ${cmd}`, shellResult.stdout, shellResult.stderr ? `stderr:\n${shellResult.stderr}` : ""].filter(Boolean).join("\n").trim();
+    const errorCode = status === "failed" ? classifyProcessError(shellResult) : undefined;
     results.push({
       action: "code.lint",
-      status: shellResult.exitCode === 0 && !shellResult.timedOut && !shellResult.error ? "success" : "failed",
+      status,
       summary: `lint command exited ${shellResult.exitCode}`,
-      content: [`$ ${cmd}`, shellResult.stdout].filter(Boolean).join("\n").trim(),
+      content,
+      errors: status === "failed" ? [shellResult.error ?? `lint command exited ${shellResult.exitCode ?? shellResult.signal ?? "unknown"}`] : undefined,
+      errorCode,
+      retryable: status === "failed" ? isRetryableProcessError(shellResult) : undefined,
+      recoverable: status === "failed" ? true : undefined,
+      recoverySuggestion: status === "failed" ? recoverySuggestionForToolFailure("code.lint", errorCode, content, shellResult) : undefined,
       data: {
         command: cmd,
         exitCode: shellResult.exitCode,
@@ -1383,11 +1391,20 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
     });
   }
 
+  return aggregateLintResults(results);
+}
+
+export function aggregateLintResults(results: ToolResult[]): ToolResult {
   return {
     action: "code.lint",
     status: results.some((result) => result.status === "failed") ? "failed" : "success",
     summary: `ran ${results.length} linter(s)`,
     content: results.map((r) => r.content).filter(Boolean).join("\n\n"),
+    errors: results.flatMap((result) => result.errors ?? []),
+    errorCode: results.find((result) => result.status === "failed")?.errorCode,
+    retryable: results.some((result) => result.retryable),
+    recoverable: results.some((result) => result.status === "failed") ? true : undefined,
+    recoverySuggestion: results.find((result) => result.status === "failed")?.recoverySuggestion,
     data: results.map((r) => r.data)
   };
 }

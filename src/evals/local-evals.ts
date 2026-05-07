@@ -42,7 +42,7 @@ import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/i
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
 import { assertToolAllowedByPermissions, resolveReadablePath, resolveWritablePath, toolRequiresApproval } from "../tools/permissions.js";
-import { webFetchHttpFailureMetadata } from "../tools/local-tools.js";
+import { aggregateLintResults, webFetchHttpFailureMetadata } from "../tools/local-tools.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
 export type EvalCaseResult = {
@@ -439,6 +439,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkToolFailureContentBehavior(),
+    checkLintFailureAggregationBehavior(),
     checkWebFetchHttpFailureMetadataBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
     checkCodingLoopPersistenceStatusBehavior(),
@@ -1041,6 +1042,44 @@ function checkToolFailureContentBehavior(): EvalCaseResult {
   return ok
     ? { name: "tool exception failures include expandable detail content", status: "pass", message: "coding-loop tool exceptions carry ERROR, error code, recovery, and action detail for TUI detail panes" }
     : { name: "tool exception failures include expandable detail content", status: "fail", message: content };
+}
+
+function checkLintFailureAggregationBehavior(): EvalCaseResult {
+  const result = aggregateLintResults([
+    {
+      action: "code.lint",
+      status: "failed",
+      summary: "lint command exited 1",
+      content: "$ npm run lint\nstderr:\nno-unused-vars",
+      errors: ["lint command exited 1"],
+      errorCode: "EXIT_1",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: "Read lint output, patch the relevant code, then rerun the same command.",
+      data: { command: "npm run lint", exitCode: 1 }
+    },
+    {
+      action: "code.lint",
+      status: "success",
+      summary: "lint command exited 0",
+      content: "$ cargo clippy",
+      data: { command: "cargo clippy", exitCode: 0 }
+    }
+  ]);
+  const ok = result.status === "failed"
+    && result.errorCode === "EXIT_1"
+    && result.retryable === false
+    && result.recoverable === true
+    && result.recoverySuggestion?.includes("Read lint output")
+    && result.content?.includes("stderr:")
+    && result.errors?.[0] === "lint command exited 1";
+  return ok
+    ? { name: "code.lint failures aggregate recovery metadata", status: "pass", message: "lint failures carry stderr, error code, retryability, and recovery guidance into the combined result" }
+    : {
+        name: "code.lint failures aggregate recovery metadata",
+        status: "fail",
+        message: `status=${result.status} error=${result.errorCode ?? "-"} retry=${String(result.retryable)} recovery=${result.recoverySuggestion ?? "-"} errors=${result.errors?.join(",") ?? "-"}`
+      };
 }
 
 function checkWebFetchHttpFailureMetadataBehavior(): EvalCaseResult {
