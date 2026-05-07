@@ -10,6 +10,7 @@ import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
 import { WorkerStateStore } from "../storage/worker-state-store.js";
 import { listAgentSpecs, type AgentInvocationRequest, type AgentSpecSource } from "./agent-specs.js";
 import { delegatedToolStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
+import { SKILL_ACTIVATE_CAPABILITY_ID, SKILL_ACTIVATE_TOOL_NAME } from "../extensions/skills.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 
 type CodingLoopToolCall = {
@@ -108,7 +109,7 @@ type CodingLoopOptions = {
   workerStore?: WorkerStateStore;
   invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
   listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
-  invokeCapability?: (capabilityId: string, args: Record<string, unknown>) => Promise<ToolResult>;
+  invokeCapability?: (capabilityId: string, args: Record<string, unknown>, sessionId?: string) => Promise<ToolResult>;
   agentInstructions?: string;
   allowedTools?: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
@@ -644,11 +645,11 @@ export class CodingAgentLoop {
     sessionId: string,
     turn?: number
   ): Promise<{ result: CodingLoopToolResult } | undefined> {
-    if (!this.options.invokeCapability || !call.action?.startsWith("mcp__")) {
+    if (!this.options.invokeCapability || !isDynamicCapabilityAction(call.action)) {
       return undefined;
     }
     const capabilities = await this.options.listModelCapabilities?.() ?? [];
-    const capability = capabilities.find((item) => item.kind === "mcp_tool" && item.name === call.action);
+    const capability = capabilities.find((item) => dynamicCapabilityMatchesAction(item, call.action));
     if (!capability) {
       return undefined;
     }
@@ -663,7 +664,7 @@ export class CodingAgentLoop {
       }
     }
     this.emitActivity(sessionId, "running_tool", `Running ${capability.name}`, { turn, tool: capability.name, taskId: id });
-    const rawResult = await this.options.invokeCapability(capability.id, call.inputs ?? {});
+    const rawResult = await this.options.invokeCapability(capability.id, call.inputs ?? {}, sessionId);
     const prepared = await prepareToolOutput(sessionId, id, rawResult, renderToolResultDetail(rawResult));
     const result: CodingLoopToolResult = {
       id,
@@ -947,9 +948,20 @@ function allowedToolNames(allowedTools: string[] | undefined, delegateAvailable:
     return withDelegate;
   }
   const dynamicTools = capabilities
-    .filter((capability) => capability.kind === "mcp_tool" && capability.modelVisible && capability.status !== "disabled")
+    .filter((capability) => (capability.kind === "mcp_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) && capability.modelVisible && capability.status !== "disabled")
     .map((capability) => capability.name);
   return [...new Set([...withDelegate, ...dynamicTools])];
+}
+
+function isDynamicCapabilityAction(action: string | undefined): action is string {
+  return typeof action === "string" && (action.startsWith("mcp__") || action === SKILL_ACTIVATE_TOOL_NAME);
+}
+
+function dynamicCapabilityMatchesAction(capability: CapabilityDescriptor, action: string): boolean {
+  if (capability.kind === "mcp_tool") {
+    return capability.name === action;
+  }
+  return capability.id === SKILL_ACTIVATE_CAPABILITY_ID && capability.name === action;
 }
 
 function renderToolSchemas(allowedTools: string[]): Array<Record<string, unknown>> {
@@ -1128,6 +1140,8 @@ function partitionToolCalls(calls: CodingLoopToolCall[]): Array<{ concurrent: bo
     let concurrent = false;
     try {
       if (call.action?.startsWith("mcp__")) {
+        concurrent = false;
+      } else if (call.action === SKILL_ACTIVATE_TOOL_NAME) {
         concurrent = false;
       } else {
         concurrent = isReadOnlyToolAction(normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action }));

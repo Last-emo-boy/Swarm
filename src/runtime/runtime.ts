@@ -50,6 +50,7 @@ import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStat
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
 import type { McpServerRecord } from "../extensions/mcp.js";
 import type { PluginRecord } from "../extensions/plugins.js";
+import { SKILL_ACTIVATE_CAPABILITY_ID } from "../extensions/skills.js";
 import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 
@@ -311,7 +312,7 @@ export class SwarmRuntime {
       workerStore: this.workerStateStore,
       invokeAgent: (request) => this.invokeAgent(request),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
-      invokeCapability: (capabilityId, args) => this.invokeCapability(capabilityId, args),
+      invokeCapability: (capabilityId, args, sessionId) => this.invokeCapability(capabilityId, args, sessionId),
       sessionId: input.session_id,
       maxTurns: input.maxTurns,
       maxToolCalls: input.maxToolCalls,
@@ -440,7 +441,7 @@ export class SwarmRuntime {
       workerStore: this.workerStateStore,
       invokeAgent: (request) => this.invokeAgent(request),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
-      invokeCapability: (capabilityId, args) => this.invokeCapability(capabilityId, args),
+      invokeCapability: (capabilityId, args, sessionId) => this.invokeCapability(capabilityId, args, sessionId),
       onSessionStart: (sessionId, loopObjective) => this.ensureLoopSession(sessionId, loopObjective),
       onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event)
@@ -601,11 +602,72 @@ export class SwarmRuntime {
     return this.capabilityPlane.refreshMcpServer(serverId);
   }
 
-  invokeCapability(capabilityId: string, args: Record<string, unknown>): Promise<ToolResult> {
+  async invokeCapability(capabilityId: string, args: Record<string, unknown>, sessionId?: string): Promise<ToolResult> {
     if (capabilityId.startsWith("mcp_tool.")) {
       return this.capabilityPlane.callMcpTool(capabilityId, args);
     }
+    if (capabilityId === SKILL_ACTIVATE_CAPABILITY_ID) {
+      return this.invokeSkillActivation(args, sessionId);
+    }
     throw new Error(`Capability invocation is not implemented for ${capabilityId}`);
+  }
+
+  private async invokeSkillActivation(args: Record<string, unknown>, sessionId?: string): Promise<ToolResult> {
+    const name = typeof args.name === "string" ? args.name : typeof args.skill === "string" ? args.skill : "";
+    if (!name.trim()) {
+      return {
+        action: SKILL_ACTIVATE_CAPABILITY_ID,
+        status: "failed",
+        summary: "Skill activation failed: missing skill name.",
+        errors: ["Missing required input: name"],
+        errorCode: "SKILL_NAME_MISSING",
+        recoverable: true,
+        retryable: true,
+        recoverySuggestion: "Call skill.activate with a trusted skill name from the capabilities catalog."
+      };
+    }
+    const reason = typeof args.reason === "string" ? args.reason : "model requested skill activation";
+    try {
+      const skill = this.activateSkill(name, sessionId, reason);
+      return {
+        action: SKILL_ACTIVATE_CAPABILITY_ID,
+        status: "success",
+        summary: `Skill activated: ${skill.name}.`,
+        content: [
+          `Skill: ${skill.displayName} (${skill.name})`,
+          skill.description,
+          "",
+          skill.content
+        ].join("\n"),
+        data: {
+          name: skill.name,
+          title: skill.displayName,
+          description: skill.description,
+          path: skill.path,
+          directory: skill.directory,
+          allowed_tools: skill.allowedTools,
+          resource_paths: skill.resourcePaths,
+          activated_at: skill.activatedAt
+        },
+        metadata: {
+          skill: skill.name,
+          scope: skill.scope,
+          trust: skill.trust
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        action: SKILL_ACTIVATE_CAPABILITY_ID,
+        status: "failed",
+        summary: `Skill activation failed: ${message}`,
+        errors: [message],
+        errorCode: "SKILL_ACTIVATE_FAILED",
+        recoverable: true,
+        retryable: false,
+        recoverySuggestion: "Inspect /skills or GET /v1/skills, then retry with an available trusted skill."
+      };
+    }
   }
 
   listMcpResources(serverId: string) {

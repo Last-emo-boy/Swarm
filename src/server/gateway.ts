@@ -455,7 +455,7 @@ export class SwarmGatewayServer {
         }
       }
       try {
-        const result = await this.runtime.invokeCapability(capability.id, args);
+        const result = await this.runtime.invokeCapability(capability.id, args, sessionId);
         this.recordGatewayCapabilityInvocation(capability, result, sessionId, taskId);
         sendJson(response, 200, { capability, result });
       } catch (error) {

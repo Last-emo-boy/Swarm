@@ -26,6 +26,9 @@ export type ActivatedSkill = SkillRecord & {
   activatedAt: string;
 };
 
+export const SKILL_ACTIVATE_CAPABILITY_ID = "skill.activate";
+export const SKILL_ACTIVATE_TOOL_NAME = "skill.activate";
+
 type SkillRoot = {
   path: string;
   scope: SkillScope;
@@ -91,12 +94,12 @@ export class SkillProvider implements CapabilityProvider {
     if (this.records.length === 0 && this.providerDiagnostics.length === 0) {
       this.refresh();
     }
-    return this.records
+    const skills: CapabilityDescriptor[] = this.records
       .filter((record) => !record.shadowedBy)
-      .map((record) => ({
+      .map((record): CapabilityDescriptor => ({
         id: skillCapabilityId(record.name),
         kind: "skill",
-        source: record.scope === "project" ? "project" : "user",
+        source: skillSource(record.scope),
         trust: record.trust,
         providerId: this.id,
         name: record.name,
@@ -124,6 +127,34 @@ export class SkillProvider implements CapabilityProvider {
           frontmatter: record.frontmatter
         }
       }));
+    const availableSkills = skills.filter((skill) => skill.status !== "disabled" && skill.trust !== "disabled" && skill.trust !== "untrusted");
+    const activateTool: CapabilityDescriptor = {
+      id: SKILL_ACTIVATE_CAPABILITY_ID,
+      kind: "skill",
+      source: "builtin",
+      trust: availableSkills.length ? "trusted" : "disabled",
+      providerId: this.id,
+      name: SKILL_ACTIVATE_TOOL_NAME,
+      title: "Activate skill",
+      description: "Activate one trusted Agent Skill by name and add its instructions to the current Swarm session.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "trusted skill name" },
+          reason: { type: "string", description: "why the skill is needed now" }
+        },
+        required: ["name"]
+      },
+      riskClass: "r0",
+      permissionName: "SkillActivate",
+      modelVisible: availableSkills.length > 0,
+      userVisible: true,
+      status: availableSkills.length ? "available" : "disabled",
+      metadata: {
+        available_skills: availableSkills.map((skill) => skill.name)
+      }
+    };
+    return [activateTool, ...skills];
   }
 
   diagnostics(): CapabilityDiagnostic[] {
@@ -164,6 +195,16 @@ export function skillCapabilityId(name: string): string {
 
 export function normalizeSkillName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function skillSource(scope: SkillScope): CapabilityDescriptor["source"] {
+  if (scope === "project") {
+    return "project";
+  }
+  if (scope === "plugin") {
+    return "plugin";
+  }
+  return "user";
 }
 
 function skillRoots(settings: SwarmSettings, workspace: string): SkillRoot[] {
