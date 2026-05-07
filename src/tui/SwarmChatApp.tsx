@@ -59,7 +59,7 @@ import {
   type IdlePaneSnapshot
 } from "./idle-pane-snapshot.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
-import { appendTuiRuntimeEvent } from "./tui-event-buffer.js";
+import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -209,12 +209,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         });
       }
       if (event.type === "progress") {
-        setTaskCompleted(event.completed);
-        setTaskTotal(event.total);
+        setTaskCompleted((previous) => previous === event.completed ? previous : event.completed);
+        setTaskTotal((previous) => previous === event.total ? previous : event.total);
       }
       if (event.type === "loop_activity") {
-        setLoopActivity(event);
-        setLoopActivityTimeline((previous) => [...previous, event].slice(-LOOP_ACTIVITY_TIMELINE_LIMIT));
+        setLoopActivity((previous) => sameRuntimeEventDisplay(previous, event) ? previous : event);
+        setLoopActivityTimeline((previous) => appendTuiLoopActivity(previous, event, LOOP_ACTIVITY_TIMELINE_LIMIT));
       }
       if (event.type === "controller") {
         const route = routeStateFromControllerEvent(event);

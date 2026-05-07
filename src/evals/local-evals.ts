@@ -38,7 +38,7 @@ import {
 } from "../tui/idle-pane-snapshot.js";
 import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/input-rendering.js";
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
-import { appendTuiRuntimeEvent, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
+import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
 import { assertToolAllowedByPermissions, toolRequiresApproval } from "../tools/permissions.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
@@ -883,6 +883,9 @@ function checkTuiEventBufferBehavior(): EvalCaseResult {
   const first = appendTuiRuntimeEvent([], duplicateActivity);
   const deduped = appendTuiRuntimeEvent(first, { ...duplicateActivity });
   const changed = appendTuiRuntimeEvent(deduped, changedActivity);
+  const timelineFirst = appendTuiLoopActivity([], duplicateActivity, 3);
+  const timelineDeduped = appendTuiLoopActivity(timelineFirst, { ...duplicateActivity }, 3);
+  const timelineChanged = appendTuiLoopActivity(timelineDeduped, changedActivity, 3);
   let capped = changed;
   for (let index = 0; index < TUI_EVENT_BUFFER_LIMIT + 8; index += 1) {
     capped = appendTuiRuntimeEvent(capped, {
@@ -895,6 +898,11 @@ function checkTuiEventBufferBehavior(): EvalCaseResult {
   const ok = first.length === 1
     && deduped === first
     && changed.length === 2
+    && sameRuntimeEventDisplay(duplicateActivity, { ...duplicateActivity })
+    && !sameRuntimeEventDisplay(duplicateActivity, changedActivity)
+    && timelineFirst.length === 1
+    && timelineDeduped === timelineFirst
+    && timelineChanged.length === 2
     && capped.length === TUI_EVENT_BUFFER_LIMIT
     && last?.type === "progress"
     && last.completed === TUI_EVENT_BUFFER_LIMIT + 7;
@@ -903,7 +911,7 @@ function checkTuiEventBufferBehavior(): EvalCaseResult {
     : {
         name: "TUI event buffer skips duplicate redraw events",
         status: "fail",
-        message: `first=${first.length} dedupedSame=${deduped === first} changed=${changed.length} capped=${capped.length} last=${last?.type === "progress" ? last.completed : "-"}`
+        message: `first=${first.length} dedupedSame=${deduped === first} changed=${changed.length} timeline=${timelineFirst.length}/${timelineDeduped === timelineFirst}/${timelineChanged.length} same=${sameRuntimeEventDisplay(duplicateActivity, { ...duplicateActivity })} capped=${capped.length} last=${last?.type === "progress" ? last.completed : "-"}`
       };
 }
 

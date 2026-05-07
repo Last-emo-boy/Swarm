@@ -15,6 +15,22 @@ export function appendTuiRuntimeEvent(
   return [...previous.slice(-(Math.max(1, limit) - 1)), event];
 }
 
+export function appendTuiLoopActivity(
+  previous: Extract<RuntimeEvent, { type: "loop_activity" }>[],
+  event: Extract<RuntimeEvent, { type: "loop_activity" }>,
+  limit: number
+): Extract<RuntimeEvent, { type: "loop_activity" }>[] {
+  const last = previous[previous.length - 1];
+  if (last && runtimeEventDisplaySignature(last) === runtimeEventDisplaySignature(event)) {
+    return previous;
+  }
+  return [...previous, event].slice(-Math.max(1, limit));
+}
+
+export function sameRuntimeEventDisplay(a: RuntimeEvent | undefined, b: RuntimeEvent): boolean {
+  return Boolean(a && runtimeEventDisplaySignature(a) === runtimeEventDisplaySignature(b));
+}
+
 export function runtimeEventDisplaySignature(event: RuntimeEvent): string {
   switch (event.type) {
     case "loop_activity":
