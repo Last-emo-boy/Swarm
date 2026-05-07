@@ -1,3 +1,6 @@
+import type { SwarmSettings } from "../config/settings.js";
+import { loadPluginAgentSpecs } from "../extensions/plugins.js";
+
 export type AgentSpec = {
   id: string;
   name: string;
@@ -157,12 +160,20 @@ export const builtinAgentSpecs: AgentSpec[] = [
   }
 ];
 
-export function listAgentSpecs(): AgentSpec[] {
-  return builtinAgentSpecs;
+export type AgentSpecSource = {
+  settings?: SwarmSettings;
+  workspace?: string;
+};
+
+export function listAgentSpecs(source: AgentSpecSource = {}): AgentSpec[] {
+  return dedupeAgentSpecs([
+    ...builtinAgentSpecs,
+    ...pluginAgentSpecs(source)
+  ]);
 }
 
-export function getAgentSpec(id: string): AgentSpec | undefined {
-  return builtinAgentSpecs.find((spec) => spec.id === id);
+export function getAgentSpec(id: string, source: AgentSpecSource = {}): AgentSpec | undefined {
+  return listAgentSpecs(source).find((spec) => spec.id === id);
 }
 
 export function renderAgentSpec(spec: AgentSpec): string {
@@ -181,4 +192,36 @@ export function renderAgentSpec(spec: AgentSpec): string {
     "",
     spec.prompt
   ].join("\n");
+}
+
+function pluginAgentSpecs(source: AgentSpecSource): AgentSpec[] {
+  if (!source.settings || !source.workspace) {
+    return [];
+  }
+  return loadPluginAgentSpecs(source.settings, source.workspace).map((spec) => ({
+    id: spec.id,
+    name: spec.name,
+    role: spec.role,
+    description: spec.description,
+    when_to_use: spec.when_to_use,
+    capabilities: spec.capabilities,
+    tools: spec.tools,
+    write_policy: spec.write_policy,
+    default_budget: spec.default_budget,
+    output_contract: spec.output_contract,
+    prompt: spec.prompt
+  }));
+}
+
+function dedupeAgentSpecs(specs: AgentSpec[]): AgentSpec[] {
+  const seen = new Set<string>();
+  const result: AgentSpec[] = [];
+  for (const spec of specs) {
+    if (seen.has(spec.id)) {
+      continue;
+    }
+    seen.add(spec.id);
+    result.push(spec);
+  }
+  return result;
 }

@@ -8,7 +8,7 @@ import type { SwarmSettings } from "../config/settings.js";
 import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
 import { WorkerStateStore } from "../storage/worker-state-store.js";
-import { listAgentSpecs, type AgentInvocationRequest } from "./agent-specs.js";
+import { listAgentSpecs, type AgentInvocationRequest, type AgentSpecSource } from "./agent-specs.js";
 import { delegatedToolStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 
@@ -281,7 +281,7 @@ export class CodingAgentLoop {
               parent_session_id: this.options.parentSessionId,
               tool_schemas: renderToolSchemas(availableTools),
               available_agent_specs: role === "main" && delegateAvailable
-                ? renderAvailableAgentSpecs()
+                ? renderAvailableAgentSpecs({ settings: this.options.settings, workspace: this.options.workspace })
                 : undefined,
               delegation_policy: role === "main" && delegateAvailable
                 ? codingLoopDelegationPolicy()
@@ -896,8 +896,8 @@ function codingLoopSystemPrompt(input: {
   ].filter(Boolean).join(" ");
 }
 
-function renderAvailableAgentSpecs(): Array<Record<string, unknown>> {
-  return listAgentSpecs().map((spec) => ({
+function renderAvailableAgentSpecs(source: AgentSpecSource): Array<Record<string, unknown>> {
+  return listAgentSpecs(source).map((spec) => ({
     id: spec.id,
     role: spec.role,
     description: spec.description,

@@ -24,7 +24,7 @@ export class CapabilityPlane {
     this.plugins = new PluginProvider({ settings, workspace });
     this.registry.register(new BuiltinLocalToolProvider());
     this.registry.register(new SlashCommandProvider());
-    this.registry.register(new AgentSpecProvider());
+    this.registry.register(new AgentSpecProvider({ settings, workspace }));
     this.registry.register(this.skills);
     this.registry.register(this.mcp);
     this.registry.register(this.plugins);

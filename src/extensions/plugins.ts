@@ -66,8 +66,33 @@ type PluginAgentSpecManifest = {
   name?: string;
   role?: string;
   description?: string;
+  when_to_use?: string;
   write_policy?: "read_only" | "scoped_write" | "workspace_write";
   capabilities?: string[];
+  tools?: string[];
+  default_budget?: {
+    max_turns?: number;
+    max_tool_calls?: number;
+  };
+  output_contract?: string;
+  prompt?: string;
+};
+
+export type PluginAgentSpec = {
+  id: string;
+  name: string;
+  role: "researcher" | "coder" | "reviewer" | "critic" | "verifier" | "architect" | "self_improver" | "handoff_specialist";
+  description: string;
+  when_to_use: string;
+  capabilities: string[];
+  tools: string[];
+  write_policy: "read_only" | "scoped_write" | "workspace_write";
+  default_budget: {
+    max_turns: number;
+    max_tool_calls: number;
+  };
+  output_contract: string;
+  prompt: string;
 };
 
 type PluginMcpServerManifest = Partial<McpServerSettings> & {
@@ -291,16 +316,23 @@ function agentSpecContribution(item: PluginAgentSpecManifest): PluginContributio
     return undefined;
   }
   const writePolicy = item.write_policy === "workspace_write" || item.write_policy === "scoped_write" ? item.write_policy : "read_only";
+  const role = normalizeAgentRole(item.role, writePolicy);
+  const description = stringValue(item.description) || "Plugin agent spec contribution.";
   return {
     kind: "agent_spec",
     id,
     title: stringValue(item.name) || id,
-    description: stringValue(item.description) || "Plugin agent spec contribution.",
+    description,
     riskClass: writePolicy === "workspace_write" ? "r2" : writePolicy === "scoped_write" ? "r1" : "r0",
     metadata: {
-      role: stringValue(item.role),
+      role,
       write_policy: writePolicy,
-      capabilities: Array.isArray(item.capabilities) ? item.capabilities.map(String) : [],
+      capabilities: stringArray(item.capabilities),
+      tools: stringArray(item.tools),
+      when_to_use: stringValue(item.when_to_use),
+      default_budget: normalizeAgentBudget(item.default_budget, writePolicy),
+      output_contract: stringValue(item.output_contract),
+      prompt: stringValue(item.prompt),
       manifest: item
     }
   };
@@ -372,6 +404,15 @@ export function loadPluginSkillRoots(settings: SwarmSettings, workspace: string)
         trust: plugin.trust,
         pluginId: plugin.id
       })));
+}
+
+export function loadPluginAgentSpecs(settings: SwarmSettings, workspace: string): PluginAgentSpec[] {
+  const provider = new PluginProvider({ settings, workspace });
+  return provider.listPlugins()
+    .filter((plugin) => plugin.trust === "trusted")
+    .flatMap((plugin) => plugin.contributions
+      .filter((contribution) => contribution.kind === "agent_spec")
+      .map((contribution) => pluginAgentSpec(plugin, contribution)));
 }
 
 function normalizePluginMcpServer(item: Record<string, unknown>): McpServerSettings | undefined {
@@ -532,7 +573,90 @@ function isStringRecord(value: unknown): Record<string, string> | undefined {
   return Object.fromEntries(Object.entries(value).map(([key, next]) => [key, String(next)]));
 }
 
+function pluginAgentSpec(plugin: PluginRecord, contribution: PluginContributionRecord): PluginAgentSpec {
+  const manifest: Record<string, unknown> = isRecord(contribution.metadata.manifest)
+    ? contribution.metadata.manifest
+    : {};
+  const writePolicy: PluginAgentSpec["write_policy"] = contribution.metadata.write_policy === "workspace_write" || contribution.metadata.write_policy === "scoped_write"
+    ? contribution.metadata.write_policy
+    : "read_only";
+  const role = normalizeAgentRole(contribution.metadata.role, writePolicy);
+  const capabilities = stringArray(contribution.metadata.capabilities);
+  const tools = stringArray(contribution.metadata.tools);
+  const budget: Record<string, unknown> = isRecord(contribution.metadata.default_budget)
+    ? contribution.metadata.default_budget
+    : {};
+  const description = contribution.description || "Plugin agent spec contribution.";
+  const whenToUse = stringValue(contribution.metadata.when_to_use)
+    || stringValue(manifest.when_to_use)
+    || `Use when the plugin ${plugin.id} contribution ${contribution.id} matches the delegated task.`;
+  const outputContract = stringValue(contribution.metadata.output_contract)
+    || stringValue(manifest.output_contract)
+    || "Return summary, evidence, changed_files when relevant, checks_run, risks, and unresolved questions.";
+  const prompt = stringValue(contribution.metadata.prompt)
+    || stringValue(manifest.prompt)
+    || `You are ${contribution.title}, a plugin-provided Swarm agent from ${plugin.id}. ${description}`;
+  return {
+    id: `plugin.${plugin.id}.${contribution.id}`,
+    name: contribution.title,
+    role,
+    description,
+    when_to_use: whenToUse,
+    capabilities: capabilities.length ? capabilities : [`plugin.${plugin.id}`, contribution.id],
+    tools: tools.length ? tools : defaultAgentTools(writePolicy),
+    write_policy: writePolicy,
+    default_budget: {
+      max_turns: boundedPositiveInteger(budget.max_turns, writePolicy === "read_only" ? 5 : 8, 20),
+      max_tool_calls: boundedPositiveInteger(budget.max_tool_calls, writePolicy === "read_only" ? 20 : 32, 80)
+    },
+    output_contract: outputContract,
+    prompt
+  };
+}
+
+function normalizeAgentRole(value: unknown, writePolicy: PluginAgentSpec["write_policy"]): PluginAgentSpec["role"] {
+  if (
+    value === "researcher" ||
+    value === "coder" ||
+    value === "reviewer" ||
+    value === "critic" ||
+    value === "verifier" ||
+    value === "architect" ||
+    value === "self_improver" ||
+    value === "handoff_specialist"
+  ) {
+    return value;
+  }
+  return writePolicy === "read_only" ? "researcher" : "coder";
+}
+
+function normalizeAgentBudget(value: unknown, writePolicy: PluginAgentSpec["write_policy"]): PluginAgentSpec["default_budget"] {
+  const budget: Record<string, unknown> = isRecord(value) ? value : {};
+  return {
+    max_turns: boundedPositiveInteger(budget.max_turns, writePolicy === "read_only" ? 5 : 8, 20),
+    max_tool_calls: boundedPositiveInteger(budget.max_tool_calls, writePolicy === "read_only" ? 20 : 32, 80)
+  };
+}
+
+function defaultAgentTools(writePolicy: PluginAgentSpec["write_policy"]): string[] {
+  const readTools = ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "git.status", "git.diff", "git.log", "todo.write"];
+  if (writePolicy === "read_only") {
+    return readTools;
+  }
+  return [...readTools, "file.write", "file.edit", "shell.exec", "code.test", "code.lint"];
+}
+
 function positiveInteger(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function boundedPositiveInteger(value: unknown, fallback: number, max: number): number {
+  return Math.min(positiveInteger(value, fallback), max);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(String).map((item) => item.trim()).filter(Boolean)
+    : [];
 }

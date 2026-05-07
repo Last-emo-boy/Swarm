@@ -530,11 +530,11 @@ export class SwarmRuntime {
   }
 
   listAgentSpecs(): AgentSpec[] {
-    return listAgentSpecs();
+    return listAgentSpecs(this.agentSpecSource());
   }
 
   renderAgentSpec(id: string): string | undefined {
-    const spec = getAgentSpec(id);
+    const spec = this.getAgentSpec(id);
     return spec ? renderAgentSpec(spec) : undefined;
   }
 
@@ -1108,9 +1108,9 @@ export class SwarmRuntime {
     this.checkWorkerBudget(request.parent_session_id);
     const workerId = `worker_${randomUUID()}`;
     const decision = await this.decideAgentSpawn(request);
-    const spec = getAgentSpec(decision.agent_spec_id) ?? getAgentSpec("researcher");
+    const spec = this.getAgentSpec(decision.agent_spec_id) ?? this.getAgentSpec("researcher");
     if (!spec) {
-      throw new Error("No built-in agent specs are available.");
+      throw new Error("No agent specs are available.");
     }
     const taskPacket = buildAgentTaskPacket(request, spec, decision);
     const handoffId = decision.invocation_mode === "handoff" ? `handoff_${randomUUID()}` : undefined;
@@ -1506,7 +1506,7 @@ export class SwarmRuntime {
         ].join(" "),
         user: JSON.stringify({
           request,
-          available_agent_specs: listAgentSpecs().map((spec) => ({
+          available_agent_specs: this.listAgentSpecs().map((spec) => ({
             id: spec.id,
             role: spec.role,
             description: spec.description,
@@ -1518,9 +1518,9 @@ export class SwarmRuntime {
           }))
         }, null, 2)
       });
-      return normalizeAgentSpawnDecision(parseJsonObject(response), request);
+      return normalizeAgentSpawnDecision(parseJsonObject(response), request, this.listAgentSpecs());
     } catch (error) {
-      const preferred = request.preferred_agent_spec_id && getAgentSpec(request.preferred_agent_spec_id)
+      const preferred = request.preferred_agent_spec_id && this.getAgentSpec(request.preferred_agent_spec_id)
         ? request.preferred_agent_spec_id
         : "researcher";
       return {
@@ -1538,6 +1538,14 @@ export class SwarmRuntime {
       return;
     }
     this.events.emitEvent({ type: "log", level: "warn", message: "No active coding loop to interrupt." });
+  }
+
+  private agentSpecSource(): { settings: SwarmSettings; workspace: string } {
+    return { settings: this.settings, workspace: this.workspace };
+  }
+
+  private getAgentSpec(id: string): AgentSpec | undefined {
+    return getAgentSpec(id, this.agentSpecSource());
   }
 
   private async decideLiveControl(content: string, session: SwarmSession): Promise<{
@@ -1732,15 +1740,20 @@ function renderAgentTaskPrompt(taskPacket: AgentTaskPacket, decision: AgentSpawn
   ].join("\n");
 }
 
-function normalizeAgentSpawnDecision(parsed: Record<string, unknown>, request: AgentInvocationRequest): AgentSpawnDecision {
+function normalizeAgentSpawnDecision(
+  parsed: Record<string, unknown>,
+  request: AgentInvocationRequest,
+  specs: AgentSpec[]
+): AgentSpawnDecision {
   const parsedSpecId = typeof parsed.agent_spec_id === "string" ? parsed.agent_spec_id.trim() : "";
-  const preferredSpecId = request.preferred_agent_spec_id && getAgentSpec(request.preferred_agent_spec_id)
+  const byId = new Map(specs.map((spec) => [spec.id, spec]));
+  const preferredSpecId = request.preferred_agent_spec_id && byId.has(request.preferred_agent_spec_id)
     ? request.preferred_agent_spec_id
     : "";
-  let agentSpecId = getAgentSpec(parsedSpecId)
+  let agentSpecId = byId.has(parsedSpecId)
     ? parsedSpecId
     : preferredSpecId || "researcher";
-  const selectedSpec = getAgentSpec(agentSpecId);
+  const selectedSpec = byId.get(agentSpecId);
   let policyAdjustment: string | undefined;
   if (
     selectedSpec?.write_policy === "scoped_write" &&
@@ -1751,6 +1764,9 @@ function normalizeAgentSpawnDecision(parsed: Record<string, unknown>, request: A
   ) {
     policyAdjustment = `Policy adjusted ${agentSpecId} to researcher because scoped_write requires a file_scope for this capability.`;
     agentSpecId = "researcher";
+  }
+  if (!byId.has(agentSpecId)) {
+    agentSpecId = byId.has("researcher") ? "researcher" : specs[0]?.id ?? "researcher";
   }
 
   const parsedMode = typeof parsed.invocation_mode === "string" ? parsed.invocation_mode.trim() : "";

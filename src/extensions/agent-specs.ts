@@ -1,17 +1,20 @@
 import { listAgentSpecs } from "../runtime/agent-specs.js";
 import type { AgentSpec } from "../runtime/agent-specs.js";
+import type { SwarmSettings } from "../config/settings.js";
 import type { CapabilityDescriptor, CapabilityProvider } from "./types.js";
 
 export class AgentSpecProvider implements CapabilityProvider {
   readonly id = "agent-specs";
-  readonly title = "Built-in agent specs";
+  readonly title = "Agent specs";
+
+  constructor(private readonly input: { settings: SwarmSettings; workspace: string }) {}
 
   listCapabilities(): CapabilityDescriptor[] {
-    return listAgentSpecs().map((spec) => ({
+    return listAgentSpecs(this.input).map((spec) => ({
       id: `agent_spec.${spec.id}`,
       kind: "agent_spec",
-      source: "builtin",
-      trust: "builtin",
+      source: spec.id.startsWith("plugin.") ? "plugin" : "builtin",
+      trust: spec.id.startsWith("plugin.") ? "trusted" : "builtin",
       providerId: this.id,
       name: spec.id,
       title: spec.name,
@@ -51,4 +54,3 @@ function riskClassForAgentSpec(spec: AgentSpec): CapabilityDescriptor["riskClass
   }
   return "r0";
 }
-
