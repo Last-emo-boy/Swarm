@@ -219,6 +219,11 @@ Shared State (SQLite)
 | Solidity | compile | `solidity.compile` |
 | Agent | delegate | `agent.delegate` |
 
+Swarm's extension capability plane is designed to unify built-in tools, MCP
+servers, Agent Skills, slash commands, agent specs, and future plugins behind
+the same Gateway, TUI, permission, audit, and Work Kernel records. See
+`docs/EXTENSION_CAPABILITY_PLANE.md`.
+
 Tool approval is driven by `~/.swarm/settings.json` permission rules. High-risk
 actions such as shell, package install, delegate, write/edit, web fetch, and
 branch mutation are held until the user confirms in the TUI unless the active
