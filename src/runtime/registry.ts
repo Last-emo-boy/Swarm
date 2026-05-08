@@ -30,6 +30,10 @@ export class AgentRegistry {
     return [...this.agents.values()].map((agent) => agent.card);
   }
 
+  listRegistered(): RegisteredAgent[] {
+    return [...this.agents.values()];
+  }
+
   get(agentId: string): RegisteredAgent | undefined {
     return this.agents.get(agentId);
   }
@@ -50,7 +54,18 @@ export class AgentRegistry {
   }
 
   findByRole(role: string): RegisteredAgent | undefined {
-    return [...this.agents.values()].find((agent) => agent.card.role === role);
+    return this.queryByRole(role)[0];
+  }
+
+  queryByRole(role: string): RegisteredAgent[] {
+    const candidates = [...this.agents.values()].filter((agent) =>
+      agent.card.role === role && agent.card.status !== "offline"
+    );
+    return candidates.sort(
+      (a, b) =>
+        a.card.load.running_tasks - b.card.load.running_tasks ||
+        (b.card.reliability?.success_rate ?? 0) - (a.card.reliability?.success_rate ?? 0)
+    );
   }
 
   incrementLoad(agentId: string): void {

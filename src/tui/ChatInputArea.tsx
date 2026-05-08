@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import {
   applyChatInputKey,
+  CHAT_INPUT_COMPLETION_VISIBLE_ROWS,
   chatInputCompletionCandidates,
   chatInputCompletionRows,
   createChatInputControllerState,
@@ -74,7 +75,7 @@ function CommandCandidates({ candidates, selectedIndex }: { candidates: SlashCom
   return (
     <Box marginTop={1} borderStyle="single" paddingX={1} flexDirection="column">
       <Text color="gray">slash commands  Up/Down select  Tab accepts  Esc closes</Text>
-      {candidates.slice(0, 4).map((candidate, index) => (
+      {candidates.slice(0, CHAT_INPUT_COMPLETION_VISIBLE_ROWS).map((candidate, index) => (
         <Text key={candidate.name} color={index === selectedIndex ? "cyan" : undefined} wrap="truncate">
           {index === selectedIndex ? ">" : " "} {candidate.usage} <Text color="gray">[{candidate.group}] {candidate.description}</Text>
         </Text>

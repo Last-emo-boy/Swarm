@@ -1,5 +1,5 @@
 import type { SwarmSettings } from "../config/settings.js";
-import type { RiskClass } from "../protocol/types.js";
+import type { AgentAddress, BlackboardEntry, RiskClass } from "../protocol/types.js";
 
 export type FileReadAction = {
   type: "file.read";
@@ -41,6 +41,11 @@ export type FileStatAction = {
   path: string;
 };
 
+export type FileResolveAction = {
+  type: "file.resolve";
+  path: string;
+};
+
 export type FileWriteAction = {
   type: "file.write";
   path: string;
@@ -53,16 +58,110 @@ export type FileEditAction = {
   operation: "str_replace" | "insert";
   oldText?: string;
   newText?: string;
+  replaceAll?: boolean;
   line?: number;
   content?: string;
+};
+
+export type FileMkdirAction = {
+  type: "file.mkdir";
+  path: string;
+  recursive?: boolean;
+};
+
+export type FileMoveAction = {
+  type: "file.move";
+  source: string;
+  destination: string;
+  overwrite?: boolean;
+};
+
+export type FileCopyAction = {
+  type: "file.copy";
+  source: string;
+  destination: string;
+  overwrite?: boolean;
+  recursive?: boolean;
+};
+
+export type FileDeleteAction = {
+  type: "file.delete";
+  path: string;
+  recursive?: boolean;
+};
+
+export type FilePatchAction = {
+  type: "file.patch";
+  path: string;
+  hunks: Array<{
+    oldText: string;
+    newText: string;
+  }>;
+};
+
+export type JsonReadAction = {
+  type: "json.read";
+  path: string;
+  pointer?: string;
+};
+
+export type JsonEditAction = {
+  type: "json.edit";
+  path: string;
+  operation: "set" | "delete" | "merge";
+  pointer: string;
+  value?: unknown;
 };
 
 export type TodoWriteAction = {
   type: "todo.write";
   todos: Array<{
     content: string;
+    activeForm?: string;
     status: "pending" | "in_progress" | "completed";
   }>;
+};
+
+export type BlackboardWriteAction = {
+  type: "blackboard.write";
+  key: string;
+  value: unknown;
+  entryType: BlackboardEntry["type"];
+  visibility?: BlackboardEntry["visibility"];
+  tags?: string[];
+  sessionId?: string;
+  taskId?: string;
+};
+
+export type BlackboardReadAction = {
+  type: "blackboard.read";
+  entryId?: string;
+  key?: string;
+  sessionId?: string;
+  limit?: number;
+};
+
+export type BlackboardSearchAction = {
+  type: "blackboard.search";
+  query?: string;
+  entryType?: BlackboardEntry["type"];
+  tag?: string;
+  keyPrefix?: string;
+  taskId?: string;
+  agentId?: string;
+  sessionId?: string;
+  limit?: number;
+};
+
+export type BlackboardListAction = {
+  type: "blackboard.list";
+  entryType?: BlackboardEntry["type"];
+  tag?: string;
+  keyPrefix?: string;
+  taskId?: string;
+  agentId?: string;
+  sessionId?: string;
+  limit?: number;
 };
 
 export type ShellExecAction = {
@@ -71,6 +170,65 @@ export type ShellExecAction = {
   cwd?: string;
   timeoutMs?: number;
   maxOutputBytes?: number;
+  runInBackground?: boolean;
+  description?: string;
+  maxLogBytes?: number;
+};
+
+export type ExecAction = {
+  type: "exec";
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  runInBackground?: boolean;
+  description?: string;
+  maxLogBytes?: number;
+};
+
+export type ProcessStartAction = {
+  type: "process.start";
+  command: string;
+  cwd?: string;
+  description?: string;
+  timeoutMs?: number;
+  maxLogBytes?: number;
+};
+
+export type ProcessStatusAction = {
+  type: "process.status";
+  processId?: string;
+  sessionId?: string;
+};
+
+export type ProcessListAction = {
+  type: "process.list";
+  sessionId?: string;
+  status?: "running" | "completed" | "failed" | "stopped" | "unknown";
+  limit?: number;
+};
+
+export type ProcessTailAction = {
+  type: "process.tail";
+  processId: string;
+  sessionId?: string;
+  lines?: number;
+  maxBytes?: number;
+};
+
+export type ProcessGrepAction = {
+  type: "process.grep";
+  processId: string;
+  sessionId?: string;
+  pattern: string;
+  maxMatches?: number;
+  contextLines?: number;
+};
+
+export type ProcessStopAction = {
+  type: "process.stop";
+  processId: string;
+  sessionId?: string;
 };
 
 export type WebSearchAction = {
@@ -84,8 +242,18 @@ export type WebSearchAction = {
 export type WebFetchAction = {
   type: "web.fetch";
   url: string;
+  prompt?: string;
   timeoutMs?: number;
   maxBytes?: number;
+};
+
+export type NotebookEditAction = {
+  type: "notebook.edit";
+  notebookPath: string;
+  cellId?: string;
+  newSource?: string;
+  cellType?: "code" | "markdown";
+  editMode?: "replace" | "insert" | "delete";
 };
 
 export type CodeTestAction = {
@@ -99,6 +267,14 @@ export type CodeLintAction = {
   type: "code.lint";
   root?: string;
   include?: string;
+};
+
+export type CodeBuildAction = {
+  type: "code.build";
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
 };
 
 export type GitStatusAction = {
@@ -125,6 +301,14 @@ export type GitBranchAction = {
   name?: string;
 };
 
+export type GitShowAction = {
+  type: "git.show";
+  cwd?: string;
+  revision?: string;
+  path?: string;
+  maxOutputBytes?: number;
+};
+
 export type PackageInstallAction = {
   type: "package.install";
   command: string;
@@ -132,10 +316,15 @@ export type PackageInstallAction = {
   timeoutMs?: number;
 };
 
-export type SolidityCompileAction = {
-  type: "solidity.compile";
+export type PackageInfoAction = {
+  type: "package.info";
   cwd?: string;
-  framework?: "solc" | "hardhat" | "foundry";
+  manifest?: string;
+};
+
+export type ProjectDetectAction = {
+  type: "project.detect";
+  root?: string;
 };
 
 export type AgentDelegateAction = {
@@ -154,20 +343,43 @@ export type ToolAction =
   | FileGlobAction
   | FileGrepAction
   | FileStatAction
+  | FileResolveAction
   | FileWriteAction
   | FileEditAction
+  | FileMkdirAction
+  | FileMoveAction
+  | FileCopyAction
+  | FileDeleteAction
+  | FilePatchAction
+  | JsonReadAction
+  | JsonEditAction
   | TodoWriteAction
+  | BlackboardWriteAction
+  | BlackboardReadAction
+  | BlackboardSearchAction
+  | BlackboardListAction
   | ShellExecAction
+  | ExecAction
+  | ProcessStartAction
+  | ProcessStatusAction
+  | ProcessListAction
+  | ProcessTailAction
+  | ProcessGrepAction
+  | ProcessStopAction
   | WebSearchAction
   | WebFetchAction
+  | NotebookEditAction
   | CodeTestAction
   | CodeLintAction
+  | CodeBuildAction
   | GitStatusAction
   | GitDiffAction
   | GitLogAction
   | GitBranchAction
+  | GitShowAction
   | PackageInstallAction
-  | SolidityCompileAction
+  | PackageInfoAction
+  | ProjectDetectAction
   | AgentDelegateAction;
 
 export type LocalToolContext = {
@@ -178,13 +390,29 @@ export type LocalToolContext = {
   attempt?: number;
   delegate?: (action: AgentDelegateAction) => Promise<ToolResult>;
   serverWebSearch?: (action: WebSearchAction) => Promise<ToolResult>;
+  blackboard?: {
+    write: (action: BlackboardWriteAction, context: BlackboardToolContext) => Promise<BlackboardEntry> | BlackboardEntry;
+    read: (action: BlackboardReadAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]> | BlackboardEntry[];
+    search: (action: BlackboardSearchAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]> | BlackboardEntry[];
+    list: (action: BlackboardListAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]> | BlackboardEntry[];
+  };
+  blackboardSessionId?: string;
+  agent?: AgentAddress;
   onWorkspaceChange?: (change: WorkspaceChangeMetadata) => void;
   onFileLock?: (event: FileLockEvent) => void;
 };
 
+export type BlackboardToolContext = {
+  sessionId?: string;
+  blackboardSessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: AgentAddress;
+};
+
 export type WorkspaceChangeMetadata = {
   path: string;
-  operation: "create" | "update" | "edit";
+  operation: "create" | "update" | "edit" | "mkdir" | "move" | "copy" | "delete";
   beforeHash?: string;
   afterHash: string;
   beforeBytes: number;

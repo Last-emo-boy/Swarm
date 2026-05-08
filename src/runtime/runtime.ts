@@ -10,7 +10,7 @@ import { SwarmDatabase } from "../storage/database.js";
 import { SessionStore } from "../storage/session-store.js";
 import { TaskStateStore } from "../storage/task-state-store.js";
 import { TraceStore } from "../storage/trace-store.js";
-import { WorkerStateStore } from "../storage/worker-state-store.js";
+import { makeWorkerIdentity, WorkerStateStore } from "../storage/worker-state-store.js";
 import { HandoffStore } from "../storage/handoff-store.js";
 import { ApprovalStore } from "../storage/approval-store.js";
 import { AuditStore } from "../storage/audit-store.js";
@@ -19,10 +19,13 @@ import { UsageStore } from "../storage/usage-store.js";
 import { RunAttemptStore } from "../storage/run-attempt-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
 import { SymphonyClaimStore } from "../storage/symphony-claim-store.js";
-import { OpenAIProvider } from "../providers/openai-provider.js";
+import { SessionContextStore } from "../storage/session-context-store.js";
+import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
+import { writeTaskOutput } from "../storage/task-output-store.js";
+import { OpenAIProvider, type ProviderUsageReport } from "../providers/openai-provider.js";
 import { ensureSwarmHome, getSwarmPaths, loadSwarmSettings, type SwarmSettings } from "../config/settings.js";
 import { builtinAgents } from "./builtin-agents.js";
-import { RuntimeEvents } from "./events.js";
+import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import { AgentRegistry } from "./registry.js";
 import { EnvelopeRouter } from "./router.js";
 import { PlanGenerator } from "./plan-generator.js";
@@ -42,10 +45,11 @@ import {
   type AgentSpec,
   type AgentTaskPacket
 } from "./agent-specs.js";
-import type { FileLockEvent, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
+import type { BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, FileLockEvent, LocalToolContext, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
 import { riskClassForAction } from "../tools/permissions.js";
 import { normalizeToolAction } from "../tools/local-tools.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
+import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
@@ -54,6 +58,10 @@ import type { McpServerRecord } from "../extensions/mcp.js";
 import type { PluginRecord } from "../extensions/plugins.js";
 import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
+import { renderHostEnvironmentPrompt } from "./host-context.js";
+
+const CHAT_MAX_OUTPUT_TOKENS = 4_000;
+const CONTROL_PLANE_MAX_OUTPUT_TOKENS = 1_200;
 
 export class SwarmRuntime {
   readonly events = new RuntimeEvents();
@@ -74,6 +82,8 @@ export class SwarmRuntime {
   readonly runAttemptStore: RunAttemptStore;
   readonly workspaceLeaseStore: WorkspaceLeaseStore;
   readonly symphonyClaimStore: SymphonyClaimStore;
+  readonly sessionContextStore: SessionContextStore;
+  readonly toolContentReplacementStore: ToolContentReplacementStore;
   readonly artifactStore: ArtifactStore;
   readonly settings: SwarmSettings;
   readonly capabilityPlane: CapabilityPlane;
@@ -88,6 +98,7 @@ export class SwarmRuntime {
   private activeCodingLoopSessionId?: string;
   private activeSwarmSession?: SwarmSession;
   private readonly sessionWorkspaceOverrides = new Map<string, string>();
+  private readonly ownedSessionIds = new Set<string>();
   private readonly children: ChildProcess[] = [];
   private disposed = false;
 
@@ -118,12 +129,19 @@ export class SwarmRuntime {
     this.runAttemptStore = new RunAttemptStore(this.database);
     this.workspaceLeaseStore = new WorkspaceLeaseStore(this.database);
     this.symphonyClaimStore = new SymphonyClaimStore(this.database);
+    this.sessionContextStore = new SessionContextStore(this.database);
+    this.toolContentReplacementStore = new ToolContentReplacementStore(this.database);
     this.taskGraphStore = new TaskGraphStore(this.database, taskStateStore);
     const artifactStore = new ArtifactStore(this.database);
     this.artifactStore = artifactStore;
     this.registry = new AgentRegistry(this.events);
-    this.router = new EnvelopeRouter(this.registry, traceStore, this.events);
-    const provider = new OpenAIProvider();
+    this.router = new EnvelopeRouter(this.registry, traceStore, this.events, blackboardStore, artifactStore, taskStateStore);
+    this.router.on("incoming", (envelope: SwarmEnvelope) => {
+      if (envelope.from.agent_id === "router") {
+        this.forwardToAddressedAgent(envelope);
+      }
+    });
+    const provider = new OpenAIProvider({ onUsage: (usage) => this.recordProviderUsage(usage) });
     this.provider = provider;
     this.capabilityBroker = new CapabilityBroker({
       capabilityPlane: this.capabilityPlane,
@@ -145,6 +163,7 @@ export class SwarmRuntime {
       }),
       onWorkspaceChange: (sessionId, change) => this.recordWorkspaceChange(change.sessionId ?? sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event),
+      blackboard: this.createRuntimeBlackboardTools(),
       activateSkill: (name, sessionId, reason) => this.activateSkill(name, sessionId, reason),
       serverWebSearch: (searchAction) => provider.webSearch(searchAction)
     });
@@ -154,7 +173,7 @@ export class SwarmRuntime {
       blackboardStore,
       artifactStore,
       taskStateStore,
-      new PlanGenerator(provider),
+      new PlanGenerator(provider, workspace),
       this.events,
       this.settings,
       workspace,
@@ -219,7 +238,7 @@ export class SwarmRuntime {
           this.debug?.debug("worker", `${event.worker.worker_id} ${event.status}: ${event.message ?? event.worker.objective}`);
         } else if (event.type === "agent_spawn_decision") {
           this.debug?.debug("agent-spawn", `${event.worker_id} ${event.decision.agent_spec_id}/${event.decision.invocation_mode}: ${event.decision.reason}`, {
-            taskPacket: event.task_packet
+            taskPacket: stripEphemeralAgentPersona(event.task_packet)
           });
         } else if (event.type === "agent_run_started") {
           this.debug?.debug("agent-run", `${event.worker.worker_id} started as ${event.worker.agent_spec_id ?? event.worker.capability}`);
@@ -337,6 +356,7 @@ export class SwarmRuntime {
       events: this.events,
       approvalHandler: this.approvalHandler,
       workerStore: this.workerStateStore,
+      toolReplacementStore: this.toolContentReplacementStore,
       invokeAgent: (request) => this.invokeAgent(request),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
@@ -345,6 +365,7 @@ export class SwarmRuntime {
       maxTurns: input.maxTurns,
       maxToolCalls: input.maxToolCalls,
       onSessionStart: (sessionId, loopObjective) => {
+        this.activeCodingLoopSessionId = sessionId;
         this.events.emitEvent({ type: "session", session_id: sessionId, status: "running", objective: loopObjective });
         this.usageStore.append({
           session_id: sessionId,
@@ -437,13 +458,19 @@ export class SwarmRuntime {
       this.ensureLoopSession(sessionId, objective);
       const content = await this.provider.generateText({
         model: this.provider.workerModel,
-        system: [
-          "You are Swarm, a local coding CLI assistant.",
-          "Answer the user's question directly.",
-          "Do not claim you inspected or modified workspace files unless tool results were provided.",
-          "Keep the answer concise and practical."
-        ].join(" "),
-        user: objective
+        system: [{
+          text: [
+            "You are Swarm, a local coding CLI assistant.",
+            "Answer the user's question directly.",
+            "Do not claim you inspected or modified workspace files unless tool results were provided.",
+            "Keep the answer concise and practical.",
+            renderHostEnvironmentPrompt(this.workspace)
+          ].join(" "),
+          cache: true
+        }],
+        user: objective,
+        usage: { sessionId, taskId: `${sessionId}_chat`, purpose: "chat" },
+        maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS
       });
       const result = {
         session_id: sessionId,
@@ -467,11 +494,15 @@ export class SwarmRuntime {
       events: this.events,
       approvalHandler: this.approvalHandler,
       workerStore: this.workerStateStore,
+      toolReplacementStore: this.toolContentReplacementStore,
       invokeAgent: (request) => this.invokeAgent(request),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: (sessionId) => this.renderDurableContextForSession(sessionId),
-      onSessionStart: (sessionId, loopObjective) => this.ensureLoopSession(sessionId, loopObjective),
+      onSessionStart: (sessionId, loopObjective) => {
+        this.activeCodingLoopSessionId = sessionId;
+        this.ensureLoopSession(sessionId, loopObjective);
+      },
       onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event)
     });
@@ -572,6 +603,48 @@ export class SwarmRuntime {
     return this.capabilityPlane.listCapabilities(filter);
   }
 
+  listRecentSessionsForWorkspace(limit = 10, workspace = this.workspace): ReturnType<SessionStore["listRecent"]> {
+    return this.sessionStore.listRecent(Math.max(limit * 4, limit))
+      .filter((session) => this.workspaceForSession(session.session_id) === workspace)
+      .slice(0, limit);
+  }
+
+  listRecentAttemptsForWorkspace(limit = 20, workspace = this.workspace): ReturnType<RunAttemptStore["listRecent"]> {
+    return this.runAttemptStore.listRecent(Math.max(limit * 8, limit))
+      .filter((attempt) => this.workspaceForRecordSession(attempt.session_id, attempt.workspace_path) === workspace)
+      .slice(0, limit);
+  }
+
+  listRecentLeasesForWorkspace(limit = 20, workspace = this.workspace): ReturnType<WorkspaceLeaseStore["listRecent"]> {
+    return this.workspaceLeaseStore.listRecent(Math.max(limit * 4, limit))
+      .filter((lease) => lease.workspace_path === workspace)
+      .slice(0, limit);
+  }
+
+  listRecentBlackboardForWorkspace(limit = 20, workspace = this.workspace): BlackboardEntry[] {
+    return this.blackboardStore.listRecent(Math.max(limit * 8, limit))
+      .filter((entry) => this.workspaceForRecordSession(entry.session_id) === workspace)
+      .slice(0, limit);
+  }
+
+  listRecentApprovalsForWorkspace(limit = 20, workspace = this.workspace): ApprovalRecord[] {
+    return this.approvalStore.list(undefined, Math.max(limit * 8, limit))
+      .filter((approval) => approval.session_id ? this.workspaceForRecordSession(approval.session_id) === workspace : false)
+      .slice(0, limit);
+  }
+
+  listRecentWorkersForWorkspace(limit = 20, workspace = this.workspace): WorkerRecord[] {
+    return this.workerStateStore.listRecent(Math.max(limit * 8, limit))
+      .filter((worker) => this.workspaceForRecordSession(worker.parent_session_id) === workspace)
+      .slice(0, limit);
+  }
+
+  listRecentHandoffsForWorkspace(limit = 20, workspace = this.workspace): HandoffSessionRecord[] {
+    return this.handoffStore.listRecent(Math.max(limit * 8, limit))
+      .filter((handoff) => this.workspaceForRecordSession(handoff.parent_session_id) === workspace)
+      .slice(0, limit);
+  }
+
   getCapability(id: string): Promise<CapabilityDescriptor | undefined> {
     return this.capabilityPlane.getCapability(id);
   }
@@ -661,6 +734,15 @@ export class SwarmRuntime {
     return this.capabilityBroker.invoke(capabilityId, args, sessionId, options);
   }
 
+  createRuntimeBlackboardTools(): NonNullable<LocalToolContext["blackboard"]> {
+    return {
+      write: (action, context) => this.writeBlackboardViaEnvelope(action, context),
+      read: (action, context) => this.readBlackboardViaEnvelope(action, context),
+      search: (action, context) => this.searchBlackboardViaEnvelope(action, context),
+      list: (action, context) => this.listBlackboardViaEnvelope(action, context)
+    };
+  }
+
   listMcpResources(serverId: string) {
     return this.capabilityPlane.listMcpResources(serverId);
   }
@@ -696,6 +778,10 @@ export class SwarmRuntime {
     return this.handoffStore.listRecent(limit);
   }
 
+  listHandoffsForWorkspace(limit = 20, workspace = this.workspace): HandoffSessionRecord[] {
+    return this.listRecentHandoffsForWorkspace(limit, workspace);
+  }
+
   getHandoff(handoffId: string): HandoffSessionRecord | undefined {
     return this.handoffStore.get(handoffId);
   }
@@ -720,12 +806,18 @@ export class SwarmRuntime {
     if (!worker) {
       throw new Error(`Unknown worker: ${workerId}`);
     }
+    const workspaceFreshness = this.renderWorkspaceFreshnessContract({
+      sessionId: worker.parent_session_id,
+      fileScope: worker.file_scope,
+      reason: "continuing a previous worker"
+    });
     return this.invokeAgent({
       parent_session_id: worker.parent_session_id,
       requested_by: "main_swarm",
       capability: worker.capability,
       task: message,
       context: [
+        workspaceFreshness,
         `Continuation of worker ${worker.worker_id}.`,
         worker.agent_spec_id ? `Previous agent spec: ${worker.agent_spec_id}.` : undefined,
         worker.invocation_mode ? `Previous invocation mode: ${worker.invocation_mode}.` : undefined,
@@ -763,13 +855,13 @@ export class SwarmRuntime {
 
   listBlackboardEntries(sessionId?: string, query: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string; agentId?: string } = {}): BlackboardEntry[] {
     if (!sessionId) {
-      return this.blackboardStore.listRecent(80).filter((entry) => blackboardEntryMatches(entry, query));
+      return this.listRecentBlackboardForWorkspace(80).filter((entry) => blackboardEntryMatches(entry, query));
     }
     return this.blackboardStore.query(sessionId, query);
   }
 
   listWorkspaceChanges(sessionId?: string): BlackboardEntry[] {
-    const entries = sessionId ? this.blackboardStore.query(sessionId, { tag: "workspace-change" }) : this.blackboardStore.listRecent(100);
+    const entries = sessionId ? this.blackboardStore.query(sessionId, { tag: "workspace-change" }) : this.listRecentBlackboardForWorkspace(100);
     return entries.filter((entry) => (entry.tags ?? []).includes("workspace-change"));
   }
 
@@ -812,6 +904,9 @@ export class SwarmRuntime {
       : undefined;
     const reviewEntry = [...blackboard].reverse().find((entry) => entry.type === "critique" && (entry.tags ?? []).includes("review"));
     const verificationEntry = [...blackboard].reverse().find((entry) => entry.type === "evidence" && (entry.tags ?? []).includes("verify"));
+    const contextEntries = this.sessionContextStore.list(sessionId, 10_000);
+    const compactions = this.sessionContextStore.listCompactions(sessionId, 100);
+    const latestCompaction = compactions[0];
     const changedFiles = finalOutcome?.changed_files ?? uniqueStrings(
       blackboard
         .filter((entry) => (entry.tags ?? []).includes("workspace-change"))
@@ -851,6 +946,19 @@ export class SwarmRuntime {
       review: reviewEntry?.value as ReviewResult | undefined,
       verification: verificationEntry?.value,
       usage_summary: this.usageStore.summarize(sessionId),
+      context_summary: {
+        entries: contextEntries.length,
+        compactions: compactions.length,
+        latest_compaction: latestCompaction
+          ? {
+              compaction_id: latestCompaction.compaction_id,
+              pre_tokens: latestCompaction.pre_tokens,
+              post_tokens: latestCompaction.post_tokens,
+              strategy: latestCompaction.strategy,
+              created_at: latestCompaction.created_at
+            }
+          : undefined
+      },
       final_outcome: finalOutcome
     };
   }
@@ -893,6 +1001,11 @@ export class SwarmRuntime {
       "",
       `Trace envelopes: ${trace.length}`,
       ...trace.slice(-30).map((env) => `${env.created_at} ${env.type} ${env.task_id ?? ""} ${env.intent}`),
+      "",
+      "Context memory",
+      snapshot.context_summary
+        ? `entries=${snapshot.context_summary.entries} compactions=${snapshot.context_summary.compactions}${snapshot.context_summary.latest_compaction ? ` latest=${snapshot.context_summary.latest_compaction.compaction_id} ${snapshot.context_summary.latest_compaction.pre_tokens}->${snapshot.context_summary.latest_compaction.post_tokens}` : ""}`
+        : "(none)",
       "",
       `Usage: ${JSON.stringify(snapshot.usage_summary)}`,
       "",
@@ -960,9 +1073,19 @@ export class SwarmRuntime {
         if (event.parent_session_id) {
           this.sessionStore.updateMetadata(event.session_id, { parent_session_id: event.parent_session_id });
         }
+        if (event.objective) {
+          this.recordSessionContext(event.session_id, "objective", "user", event.objective, {
+            status: event.status,
+            parent_session_id: event.parent_session_id
+          });
+        }
         return;
       }
       if (event.type === "task_attempt" && event.session_id) {
+        this.recordSessionContext(event.session_id, "loop_activity", "system", `${event.status}: ${event.title}`, {
+          task_id: event.task_id,
+          attempt: event.attempt
+        });
         this.runAttemptStore.upsert({
           session_id: event.session_id,
           task_id: event.task_id,
@@ -978,6 +1101,16 @@ export class SwarmRuntime {
       }
       if (event.type === "tool_result") {
         if (event.session_id) {
+          this.recordSessionContext(event.session_id, "tool_result", "tool", [
+            `${event.action}: ${event.summary}`,
+            event.content
+          ].filter(Boolean).join("\n"), {
+            task_id: event.task_id,
+            status: event.status ?? "success",
+            outputRef: event.outputRef,
+            errorCode: event.errorCode,
+            recoverySuggestion: event.recoverySuggestion
+          });
           const row = this.sessionStore.get(event.session_id);
           this.taskGraphStore.upsertSyntheticTool({
             session_id: event.session_id,
@@ -1082,7 +1215,16 @@ export class SwarmRuntime {
         }
         return;
       }
+      if (event.type === "provider_usage") {
+        this.recordProviderUsage(event.usage);
+        return;
+      }
       if (event.type === "workspace_change") {
+        this.recordSessionContext(event.session_id, "workspace_change", "tool", `${event.change.operation} ${event.change.path}`, {
+          task_id: event.change.taskId,
+          beforeHash: event.change.beforeHash,
+          afterHash: event.change.afterHash
+        });
         this.auditStore.append({
           session_id: event.session_id,
           task_id: event.change.taskId,
@@ -1097,7 +1239,37 @@ export class SwarmRuntime {
         });
         return;
       }
+      if (event.type === "live_message" && event.session_id && event.status === "received") {
+        this.recordSessionContext(event.session_id, "user", "user", event.content, {
+          message_id: event.id
+        });
+        return;
+      }
+      if (event.type === "control") {
+        const sessionId = this.activeCodingLoopSessionId ?? this.activeSwarmSession?.session_id;
+        if (sessionId) {
+          this.recordSessionContext(sessionId, "loop_activity", "system", `${event.action}: ${event.instruction}`, {
+            message_id: event.message_id,
+            reason: event.reason
+          });
+        }
+        return;
+      }
+      if (event.type === "loop_activity") {
+        this.recordSessionContext(event.session_id, "loop_activity", "system", event.message, {
+          phase: event.phase,
+          turn: event.turn,
+          tool: event.tool,
+          task_id: event.task_id
+        });
+        return;
+      }
       if (event.type === "agent_run_started") {
+        this.recordSessionContext(event.worker.parent_session_id, "worker", "worker", `Started ${event.worker.worker_id}: ${event.worker.objective}`, {
+          worker_id: event.worker.worker_id,
+          agent_spec_id: event.worker.agent_spec_id,
+          invocation_mode: event.worker.invocation_mode
+        });
         this.runAttemptStore.upsert({
           session_id: event.worker.parent_session_id,
           task_id: event.worker.worker_id,
@@ -1111,7 +1283,7 @@ export class SwarmRuntime {
             worker_id: event.worker.worker_id,
             agent_spec_id: event.worker.agent_spec_id,
             invocation_mode: event.worker.invocation_mode,
-            task_packet: event.task_packet
+            task_packet: stripEphemeralAgentPersona(event.task_packet)
           }
         });
         this.usageStore.append({
@@ -1129,7 +1301,7 @@ export class SwarmRuntime {
           actor_type: "runtime",
           actor_id: "main_swarm",
           action: "agent.spawn",
-          resource: { worker_id: event.worker.worker_id, task_packet: event.task_packet },
+          resource: { worker_id: event.worker.worker_id, task_packet: stripEphemeralAgentPersona(event.task_packet) },
           risk_class: "r1",
           decision: "executed",
           reason: event.worker.spawn_reason
@@ -1137,6 +1309,10 @@ export class SwarmRuntime {
         return;
       }
       if (event.type === "agent_run_completed") {
+        this.recordSessionContext(event.worker.parent_session_id, "worker", "worker", `Completed ${event.worker.worker_id}: ${event.result}`, {
+          worker_id: event.worker.worker_id,
+          status: event.worker.status
+        });
         this.runAttemptStore.upsert({
           session_id: event.worker.parent_session_id,
           task_id: event.worker.worker_id,
@@ -1168,6 +1344,9 @@ export class SwarmRuntime {
         return;
       }
       if (event.type === "review_completed") {
+        this.recordSessionContext(event.session_id, "summary", "system", `Review: ${event.result.verdict} ${event.result.score} - ${event.result.summary}`, {
+          target_task_id: event.result.target_task_id
+        });
         this.runAttemptStore.upsert({
           session_id: event.session_id,
           task_id: "review.coding_loop",
@@ -1183,6 +1362,7 @@ export class SwarmRuntime {
         return;
       }
       if (event.type === "verification_completed") {
+        this.recordSessionContext(event.session_id, "summary", "system", `Verification: ${event.result.status} - ${event.result.summary}`);
         this.runAttemptStore.upsert({
           session_id: event.session_id,
           task_id: "verification.coding_loop",
@@ -1198,6 +1378,11 @@ export class SwarmRuntime {
         return;
       }
       if (event.type === "final") {
+        this.recordSessionContext(event.session_id, "final", "assistant", event.content, {
+          status: event.status ?? "completed",
+          artifact_path: event.artifact_path,
+          outcome: event.outcome
+        });
         if (event.outcome) {
           this.sessionStore.setFinalOutcome(event.session_id, event.outcome);
         }
@@ -1223,6 +1408,55 @@ export class SwarmRuntime {
     }
   }
 
+  private recordProviderUsage(usage: ProviderUsageReport): void {
+    this.usageStore.append({
+      session_id: usage.sessionId,
+      task_id: usage.taskId,
+      kind: "llm_call",
+      amount: 1,
+      unit: "count",
+      metadata: usage
+    });
+    for (const [name, amount] of [
+      ["input", usage.inputTokens],
+      ["output", usage.outputTokens],
+      ["cached_input", usage.cachedInputTokens],
+      ["cache_creation_input", usage.cacheCreationInputTokens],
+      ["cacheable_prefix_estimate", usage.cacheablePrefixTokensEstimate]
+    ] as const) {
+      if (typeof amount !== "number" || amount <= 0) {
+        continue;
+      }
+      this.usageStore.append({
+        session_id: usage.sessionId,
+        task_id: usage.taskId,
+        kind: "llm_call",
+        amount,
+        unit: "tokens",
+        metadata: {
+          ...usage,
+          token_type: name
+        }
+      });
+    }
+    if (usage.promptCacheDiagnostics?.status === "changed" || usage.promptCacheDiagnostics?.status === "cache_miss") {
+      this.usageStore.append({
+        session_id: usage.sessionId,
+        task_id: usage.taskId,
+        kind: "llm_call",
+        amount: 1,
+        unit: "count",
+        metadata: {
+          ...usage,
+          event: "prompt_cache_diagnostic",
+          diagnostic_status: usage.promptCacheDiagnostics.status,
+          changed: usage.promptCacheDiagnostics.changed,
+          scope: usage.promptCacheDiagnostics.scope
+        }
+      });
+    }
+  }
+
   private async invokeAgent(request: AgentInvocationRequest): Promise<ToolResult> {
     this.checkWorkerBudget(request.parent_session_id);
     const workerId = `worker_${randomUUID()}`;
@@ -1231,34 +1465,47 @@ export class SwarmRuntime {
     if (!spec) {
       throw new Error("No agent specs are available.");
     }
-    const taskPacket = buildAgentTaskPacket(request, spec, decision);
-    const handoffId = decision.invocation_mode === "handoff" ? `handoff_${randomUUID()}` : undefined;
+    const workerDecision = withWorkerIdentityFallback(decision, workerId, request, spec);
+    const taskPacket = buildAgentTaskPacket(request, spec, workerDecision);
+    taskPacket.relevant_context = [
+      this.renderWorkspaceFreshnessContract({
+        sessionId: request.parent_session_id,
+        fileScope: taskPacket.file_scope,
+        reason: "starting an internal worker from parent session context"
+      }),
+      taskPacket.relevant_context
+    ].filter(Boolean).join("\n\n");
+    const durableTaskPacket = stripEphemeralAgentPersona(taskPacket);
+    const durableDecision = stripEphemeralAgentDecision(workerDecision);
+    const handoffId = workerDecision.invocation_mode === "handoff" ? `handoff_${randomUUID()}` : undefined;
     const worker = this.workerStateStore.create({
       worker_id: workerId,
+      display_name: workerDecision.display_name,
+      role_title: workerDecision.role_title,
       parent_session_id: request.parent_session_id,
       capability: request.capability,
       objective: request.task,
       agent_spec_id: spec.id,
-      invocation_mode: decision.invocation_mode,
+      invocation_mode: workerDecision.invocation_mode,
       handoff_id: handoffId,
       file_scope: taskPacket.file_scope,
       tool_budget: taskPacket.budget,
-      persona_snapshot: taskPacket.persona_snapshot,
-      task_packet: taskPacket,
+      persona_snapshot: durableTaskPacket.persona_snapshot,
+      task_packet: durableTaskPacket,
       output_contract: taskPacket.expected_output,
-      spawn_reason: decision.reason || request.spawn_reason,
+      spawn_reason: workerDecision.reason || request.spawn_reason,
       requested_by: request.requested_by
     });
-    this.events.emitEvent({ type: "agent_spawn_decision", worker_id: workerId, decision, task_packet: taskPacket });
+    this.events.emitEvent({ type: "agent_spawn_decision", worker_id: workerId, decision: durableDecision, task_packet: durableTaskPacket });
     this.writeBlackboardEvidence(request.parent_session_id, {
       key: `decision.spawn.${workerId}`,
       type: "decision",
-      value: { worker_id: workerId, decision, task_packet: taskPacket },
-      tags: ["decision", "spawn", spec.id, decision.invocation_mode],
+      value: { worker_id: workerId, decision: durableDecision, task_packet: durableTaskPacket },
+      tags: ["decision", "spawn", spec.id, workerDecision.invocation_mode],
       created_by: { agent_id: "main_swarm", role: "controller" }
     });
-    this.events.emitEvent({ type: "agent_run_started", worker, task_packet: taskPacket });
-    this.events.emitEvent({ type: "worker", worker, status: worker.status, message: `${spec.id}/${decision.invocation_mode}: ${request.task}` });
+    this.events.emitEvent({ type: "agent_run_started", worker, task_packet: durableTaskPacket });
+    this.events.emitEvent({ type: "worker", worker, status: worker.status, message: `${spec.id}/${workerDecision.invocation_mode}: ${request.task}` });
 
     let handoff: HandoffSessionRecord | undefined;
     if (handoffId) {
@@ -1268,8 +1515,8 @@ export class SwarmRuntime {
         parent_session_id: request.parent_session_id,
         source_agent: request.requested_by,
         target_agent_spec_id: spec.id,
-        reason: decision.reason,
-        task_packet: taskPacket
+        reason: workerDecision.reason,
+        task_packet: durableTaskPacket
       });
       this.events.emitEvent({ type: "handoff_started", handoff });
     }
@@ -1284,24 +1531,29 @@ export class SwarmRuntime {
       parentSessionId: request.parent_session_id,
       workerId,
       workerStore: this.workerStateStore,
+      toolReplacementStore: this.toolContentReplacementStore,
       delegateDepth: 0,
       maxTurns: taskPacket.budget.max_turns,
       maxToolCalls: taskPacket.budget.max_tool_calls,
+      sessionObjective: request.task,
       emitFinal: false,
       emitProgress: false,
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: () => this.renderDurableContextForSession(request.parent_session_id),
-      agentInstructions: renderAgentRuntimeInstructions(spec, decision, taskPacket),
+      agentInstructions: renderAgentRuntimeInstructions(spec, workerDecision, taskPacket),
       allowedTools: taskPacket.allowed_tools,
       writePolicy: taskPacket.write_policy,
-      onSessionStart: (sessionId, loopObjective) => this.ensureLoopSession(sessionId, loopObjective, request.parent_session_id),
+      onSessionStart: (sessionId, loopObjective) => {
+        this.activeCodingLoopSessionId = sessionId;
+        this.ensureLoopSession(sessionId, loopObjective, request.parent_session_id);
+      },
       onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? request.parent_session_id, change),
       onFileLock: (event) => this.recordFileLock(event)
     });
 
     try {
-      const result = await workerLoop.run(renderAgentTaskPrompt(taskPacket, decision));
+      const result = await workerLoop.run(renderAgentTaskPrompt(taskPacket, workerDecision));
       const latestWorker = this.workerStateStore.get(workerId);
       const latestHandoff = handoff ? this.handoffStore.get(handoff.handoff_id) : undefined;
       const stopped = latestWorker?.status === "stopped" || latestHandoff?.status === "taken_back";
@@ -1322,20 +1574,31 @@ export class SwarmRuntime {
         this.events.emitEvent({ type: "handoff_returned", handoff: finalHandoff, result: result.content });
       }
 
+      const compactedResult = await this.compactWorkerResultForParent({
+        parentSessionId: request.parent_session_id,
+        workerId,
+        workerSessionId: result.session_id,
+        specId: spec.id,
+        status,
+        content: result.content,
+        outcome: result.outcome
+      });
       return {
         action: "agent.delegate",
         status: delegatedToolStatus(status),
-        summary: `${spec.name} ${status}: ${firstLine(result.content)}`,
-        content: result.content,
+        summary: `${spec.name} ${status}: ${compactedResult.summary}`,
+        content: compactedResult.content,
+        outputRef: compactedResult.outputRef,
         data: {
           worker_id: workerId,
           worker_session_id: result.session_id,
           agent_spec_id: spec.id,
-          invocation_mode: decision.invocation_mode,
+          invocation_mode: workerDecision.invocation_mode,
           handoff_id: finalHandoff?.handoff_id,
           capability: request.capability,
           outcome: result.outcome,
-          worker_status: status
+          worker_status: status,
+          result_ref: compactedResult.outputRef
         }
       };
     } catch (error) {
@@ -1360,7 +1623,7 @@ export class SwarmRuntime {
         data: {
           worker_id: workerId,
           agent_spec_id: spec.id,
-          invocation_mode: decision.invocation_mode,
+          invocation_mode: workerDecision.invocation_mode,
           handoff_id: handoff?.handoff_id,
           capability: request.capability
         }
@@ -1380,12 +1643,54 @@ export class SwarmRuntime {
     return lease?.workspace_path ?? this.workspace;
   }
 
-  private renderDurableContextForSession(sessionId: string): string {
-    const entries = this.blackboardStore.query(sessionId, { tag: "durable-context" });
-    if (entries.length === 0) {
-      return "";
+  private async compactWorkerResultForParent(input: {
+    parentSessionId: string;
+    workerId: string;
+    workerSessionId: string;
+    specId: string;
+    status: string;
+    content: string;
+    outcome?: SessionOutcome;
+  }): Promise<{ summary: string; content: string; outputRef: string }> {
+    const ref = await writeTaskOutput({
+      sessionId: input.parentSessionId,
+      taskId: `${input.workerId}.result`,
+      attempt: 0,
+      content: input.content
+    });
+    const outcome = input.outcome;
+    const changed = outcome?.changed_files?.length
+      ? `Changed files: ${outcome.changed_files.slice(0, 12).join(", ")}${outcome.changed_files.length > 12 ? `, +${outcome.changed_files.length - 12}` : ""}`
+      : undefined;
+    const tests = outcome?.tests_run?.length
+      ? `Tests run: ${outcome.tests_run.slice(0, 8).join("; ")}${outcome.tests_run.length > 8 ? `; +${outcome.tests_run.length - 8}` : ""}`
+      : undefined;
+    const artifacts = outcome?.intermediate_artifacts?.length
+      ? `Artifacts: ${outcome.intermediate_artifacts.slice(0, 8).join(", ")}${outcome.intermediate_artifacts.length > 8 ? `, +${outcome.intermediate_artifacts.length - 8}` : ""}`
+      : undefined;
+    const summary = firstLine(outcome?.final_summary ?? input.content) || `${input.specId} ${input.status}`;
+    const content = [
+      `Worker ${input.workerId} (${input.specId}) ${input.status}: ${summary}`,
+      `Worker session: ${input.workerSessionId}`,
+      changed,
+      tests,
+      artifacts,
+      `Full worker result: ${ref.path}`
+    ].filter(Boolean).join("\n");
+    return { summary, content, outputRef: ref.path };
+  }
+
+  private workspaceForRecordSession(sessionId: string | undefined, persistedWorkspace?: string): string {
+    if (persistedWorkspace) {
+      return persistedWorkspace;
     }
-    return entries
+    return sessionId ? this.workspaceForSession(sessionId) : this.workspace;
+  }
+
+  private renderDurableContextForSession(sessionId: string): string {
+    const sessionMemory = this.sessionContextStore.renderForSession(sessionId);
+    const entries = this.blackboardStore.query(sessionId, { tag: "durable-context" });
+    const durableEntries = entries
       .filter((entry) => entry.key.startsWith("durable_context."))
       .slice(-8)
       .map((entry) => {
@@ -1398,8 +1703,38 @@ export class SwarmRuntime {
           ].filter(Boolean).join("\n");
         }
         return JSON.stringify(entry.value, null, 2);
-      })
-      .join("\n\n");
+      });
+    if (!sessionMemory && durableEntries.length === 0) {
+      return "";
+    }
+    return [
+      sessionMemory ? `WorkSession context memory:\n${sessionMemory}` : undefined,
+      durableEntries.length ? `Pinned durable context:\n${durableEntries.join("\n\n")}` : undefined
+    ].filter(Boolean).join("\n\n");
+  }
+
+  renderWorkspaceFreshnessContract(input: {
+    sessionId: string;
+    fileScope?: string[];
+    reason?: string;
+  }): string {
+    const workspace = this.workspaceForSession(input.sessionId);
+    const changes = this.listWorkspaceChanges(input.sessionId).slice(-12).map((entry) => entry.value);
+    const scopedFiles = uniqueStrings(input.fileScope ?? []);
+    return [
+      "Workspace freshness contract:",
+      `- Reason: ${input.reason ?? "continuing from prior session memory"}.`,
+      `- Workspace: ${workspace}.`,
+      scopedFiles.length
+        ? `- File scope to refresh before relying on memory: ${scopedFiles.join(", ")}.`
+        : "- No fixed file scope is known; discover and read the relevant current files before acting.",
+      changes.length
+        ? `- Recorded changes in this session: ${changes.slice(-6).map(formatWorkspaceChangeForFreshness).join("; ")}.`
+        : "- No recorded workspace changes are available for this session; inspect current files instead of assuming they are unchanged.",
+      "- Treat previous task packets, compacted memory, and worker results as historical clues, not current facts.",
+      "- Before editing or giving a code-state conclusion, refresh the current workspace with Read/Grep/Glob/git.status/git.diff or an equivalent tool for the relevant files.",
+      "- If refreshed facts differ from memory, follow the current workspace state and mention the stale assumption briefly."
+    ].join("\n");
   }
 
   private async recordMcpMaterial<T>(input: {
@@ -1529,6 +1864,7 @@ export class SwarmRuntime {
       policy
     };
     this.sessionStore.createIfMissing(session);
+    this.ownedSessionIds.add(sessionId);
     this.sessionStore.updateMetadata(sessionId, { source, parent_session_id: parentSessionId, workspace_lease_id: lease.lease_id });
     this.events.emitEvent({ type: "session", session_id: sessionId, status: "running", objective, parent_session_id: parentSessionId });
     this.usageStore.append({
@@ -1558,6 +1894,28 @@ export class SwarmRuntime {
       });
       throw new Error(`Worker budget exceeded for ${parentSessionId}: ${running}/${maxAgents}`);
     }
+  }
+
+  private recordSessionContext(
+    sessionId: string | undefined,
+    kind: Parameters<SessionContextStore["append"]>[0]["kind"],
+    role: Parameters<SessionContextStore["append"]>[0]["role"],
+    content: string | undefined,
+    metadata: Record<string, unknown> = {}
+  ): void {
+    const normalizedSessionId = sessionId?.trim();
+    const normalizedContent = content?.trim();
+    if (!normalizedSessionId || !normalizedContent) {
+      return;
+    }
+    this.sessionContextStore.append({
+      session_id: normalizedSessionId,
+      kind,
+      role,
+      content: normalizedContent,
+      metadata
+    });
+    this.sessionContextStore.compact(normalizedSessionId);
   }
 
   private recordWorkspaceChange(sessionId: string, change: WorkspaceChangeMetadata): void {
@@ -1660,15 +2018,20 @@ export class SwarmRuntime {
     try {
       const response = await this.provider.generateText({
         model: this.provider.workerModel,
-        system: [
-          "Convert an internal Swarm review-agent result into exactly one JSON object.",
-          "Keys: target_task_id, reviewer, verdict, score, issues, summary.",
-          "verdict must be approve, reject, or needs_revision.",
-          "score must be a number from 0 to 100.",
-          "issues must be an array of {severity, message, evidence, suggested_fix}.",
-          "Do not include Markdown fences or prose outside JSON."
-        ].join(" "),
-        user: JSON.stringify({ session_id: sessionId, tool }, null, 2)
+        system: [{
+          text: [
+            "Convert an internal Swarm review-agent result into exactly one JSON object.",
+            "Keys: target_task_id, reviewer, verdict, score, issues, summary.",
+            "verdict must be approve, reject, or needs_revision.",
+            "score must be a number from 0 to 100.",
+            "issues must be an array of {severity, message, evidence, suggested_fix}.",
+            "Do not include Markdown fences or prose outside JSON."
+          ].join(" "),
+          cache: true
+        }],
+        user: JSON.stringify({ session_id: sessionId, tool }, null, 2),
+        usage: { sessionId, purpose: "review_normalization" },
+        maxOutputTokens: CONTROL_PLANE_MAX_OUTPUT_TOKENS
       });
       const parsed = parseJsonObject(response);
       return normalizeReviewJson(parsed, sessionId);
@@ -1710,38 +2073,176 @@ export class SwarmRuntime {
     return entry;
   }
 
+  private async writeBlackboardViaEnvelope(action: BlackboardWriteAction, context: BlackboardToolContext): Promise<BlackboardEntry> {
+    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
+    if (!sessionId) {
+      throw new Error("BlackboardWrite requires a runtime session");
+    }
+    const row = this.sessionStore.get(sessionId);
+    const envelope = createEnvelope({
+      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
+      session_id: sessionId,
+      task_id: action.taskId ?? context.taskId,
+      attempt: context.attempt,
+      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.write",
+      intent: "blackboard.write",
+      payload: {
+        key: action.key,
+        type: action.entryType,
+        value: action.value,
+        visibility: action.visibility,
+        tags: action.tags,
+        task_id: action.taskId ?? context.taskId
+      },
+      correlation_id: `bb_write_${randomUUID()}`,
+    });
+    const response = await this.router.request<{ entry?: BlackboardEntry }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
+    const entry = response.payload.entry;
+    if (!entry) {
+      throw new Error("BlackboardWrite did not return an entry");
+    }
+    return entry;
+  }
+
+  private async readBlackboardViaEnvelope(action: BlackboardReadAction, context: BlackboardToolContext): Promise<BlackboardEntry[]> {
+    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
+    if (!sessionId) {
+      throw new Error("BlackboardRead requires a runtime session");
+    }
+    const row = this.sessionStore.get(sessionId);
+    const envelope = createEnvelope({
+      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
+      session_id: sessionId,
+      task_id: context.taskId,
+      attempt: context.attempt,
+      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.read",
+      intent: "blackboard.read",
+      payload: {
+        entry_id: action.entryId,
+        key: action.key,
+        limit: action.limit
+      },
+      correlation_id: `bb_read_${randomUUID()}`
+    });
+    const response = await this.router.request<{ entries?: BlackboardEntry[] }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
+    return response.payload.entries ?? [];
+  }
+
+  private async searchBlackboardViaEnvelope(action: BlackboardSearchAction, context: BlackboardToolContext): Promise<BlackboardEntry[]> {
+    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
+    if (!sessionId) {
+      throw new Error("BlackboardSearch requires a runtime session");
+    }
+    const row = this.sessionStore.get(sessionId);
+    const envelope = createEnvelope({
+      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
+      session_id: sessionId,
+      task_id: context.taskId,
+      attempt: context.attempt,
+      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.read",
+      intent: "blackboard.search",
+      payload: {
+        type: action.entryType,
+        tag: action.tag,
+        key_prefix: action.keyPrefix,
+        task_id: action.taskId,
+        agent_id: action.agentId,
+        limit: action.limit
+      },
+      correlation_id: `bb_search_${randomUUID()}`
+    });
+    const response = await this.router.request<{ entries?: BlackboardEntry[] }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
+    return filterBlackboardSearch(response.payload.entries ?? [], action.query);
+  }
+
+  private async listBlackboardViaEnvelope(action: BlackboardListAction, context: BlackboardToolContext): Promise<BlackboardEntry[]> {
+    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
+    if (!sessionId) {
+      throw new Error("BlackboardList requires a runtime session");
+    }
+    const row = this.sessionStore.get(sessionId);
+    const envelope = createEnvelope({
+      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
+      session_id: sessionId,
+      task_id: context.taskId,
+      attempt: context.attempt,
+      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.read",
+      intent: "blackboard.list",
+      payload: {
+        type: action.entryType,
+        tag: action.tag,
+        key_prefix: action.keyPrefix,
+        task_id: action.taskId,
+        agent_id: action.agentId,
+        limit: action.limit
+      },
+      correlation_id: `bb_list_${randomUUID()}`
+    });
+    const response = await this.router.request<{ entries?: BlackboardEntry[] }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
+    return response.payload.entries ?? [];
+  }
+
   private async decideAgentSpawn(request: AgentInvocationRequest): Promise<AgentSpawnDecision> {
     try {
       const response = await this.provider.generateText({
         model: this.provider.workerModel,
-        system: [
-          "You are the main Swarm controller deciding how to dispatch an internal agent request.",
-          "The user only talks to the main Swarm. Subagents and handoffs are internal implementation details.",
-          "Choose the best agent persona and invocation mode using the available specs.",
-          "Return exactly one JSON object with keys: agent_spec_id, invocation_mode, reason, confidence.",
-          "invocation_mode must be one of: call_subagent, handoff, parallel.",
-          "Use handoff only when a focused specialist should own a segment across multiple tool turns.",
-          "Use call_subagent for bounded research, review, implementation, or verification whose result returns to main Swarm.",
-          "Use parallel only when the request describes independent side work that can run concurrently with other internal work; if concurrency is not actually available at this call site, it will be executed as a bounded subagent call.",
-          "Prefer read_only agents for exploration, review, critique, and verification.",
-          "Choose scoped_write or workspace_write agents only when the task genuinely requires edits and the request includes an appropriate file_scope or the task is explicitly self-improvement.",
-          "Do not escalate a read-only request to a writer agent just because the target capability is vague.",
-          "Respect preferred_agent_spec_id or preferred_mode when it is appropriate, but explain the choice.",
-          "Do not include Markdown fences or prose outside JSON."
-        ].join(" "),
-        user: JSON.stringify({
-          request,
-          available_agent_specs: this.listAgentSpecs().map((spec) => ({
-            id: spec.id,
-            role: spec.role,
-            description: spec.description,
-            when_to_use: spec.when_to_use,
-            capabilities: spec.capabilities,
-            write_policy: spec.write_policy,
-            budget: spec.default_budget,
-            output_contract: spec.output_contract
-          }))
-        }, null, 2)
+        system: [{
+          text: [
+            "You are the main Swarm controller deciding how to dispatch an internal agent request.",
+            "The user only talks to the main Swarm. Subagents and handoffs are internal implementation details.",
+            "Choose the best fixed agent_spec_id and invocation mode using the available specs.",
+            "agent_spec_id controls the tool surface, write policy, and budget. It must be one of the available specs.",
+            "Generate a fresh worker identity for this task without changing the selected fixed spec.",
+            "Return exactly one JSON object with keys: agent_spec_id, invocation_mode, reason, confidence, display_name, role_title, persona_brief.",
+            "invocation_mode must be one of: call_subagent, handoff, parallel.",
+            "display_name must be a short human name in ASCII, using English or romanized Japanese, 2-16 characters.",
+            "role_title must be a concrete task-specific role title in ASCII, 2-32 characters, such as Diff Investigator or Cache Analyst.",
+            "persona_brief must be one concise sentence describing this worker's operating style for only the current task; do not mention persistence, memory, or future recall.",
+            "Use handoff only when a focused specialist should own a segment across multiple tool turns.",
+            "Use call_subagent for bounded research, review, implementation, or verification whose result returns to main Swarm.",
+            "Use parallel only when the request describes independent side work that can run concurrently with other internal work; if concurrency is not actually available at this call site, it will be executed as a bounded subagent call.",
+            "Prefer read_only agents for exploration, review, critique, and verification.",
+            "Choose scoped_write or workspace_write agents only when the task genuinely requires edits and the request includes an appropriate file_scope or the task is explicitly self-improvement.",
+            "Do not escalate a read-only request to a writer agent just because the target capability is vague.",
+            "Respect preferred_agent_spec_id or preferred_mode when it is appropriate, but explain the choice.",
+            "Do not include Markdown fences or prose outside JSON."
+          ].join(" "),
+          cache: true
+        }],
+        user: [
+          {
+            text: JSON.stringify({
+              available_agent_specs: this.listAgentSpecs().map((spec) => ({
+                id: spec.id,
+                role: spec.role,
+                description: spec.description,
+                when_to_use: spec.when_to_use,
+                capabilities: spec.capabilities,
+                write_policy: spec.write_policy,
+                budget: spec.default_budget,
+                output_contract: spec.output_contract
+              }))
+            }, null, 2),
+            cache: true
+          },
+          {
+            text: JSON.stringify({ request }, null, 2),
+            cache: false
+          }
+        ],
+        usage: {
+          sessionId: request.parent_session_id,
+          purpose: "agent_spawn_decision"
+        },
+        maxOutputTokens: CONTROL_PLANE_MAX_OUTPUT_TOKENS
       });
       return normalizeAgentSpawnDecision(parseJsonObject(response), request, this.listAgentSpecs());
     } catch (error) {
@@ -1752,7 +2253,12 @@ export class SwarmRuntime {
         agent_spec_id: preferred,
         invocation_mode: request.preferred_mode ?? "call_subagent",
         reason: `LLM dispatch decision failed; using fallback spec ${preferred}: ${error instanceof Error ? error.message : String(error)}`,
-        confidence: 0
+        confidence: 0,
+        ...makeWorkerIdentity({
+          worker_id: `fallback:${request.parent_session_id}:${request.task}`,
+          agent_spec_id: preferred,
+          capability: request.capability
+        })
       };
     }
   }
@@ -1780,19 +2286,27 @@ export class SwarmRuntime {
   }> {
     const response = await this.provider.generateText({
       model: this.provider.workerModel,
-      system: [
-        "You are Swarm's live control plane for a full swarm run.",
-        "The user is always talking to the main Swarm. Decide how the active swarm should incorporate this message.",
-        "Return exactly one JSON object with keys: action, reason, instruction.",
-        "action must be one of: continue_current, inject_next_turn, interrupt_and_redirect, ask_clarification.",
-        "Do not include Markdown fences or prose outside JSON."
-      ].join(" "),
+      system: [{
+        text: [
+          "You are Swarm's live control plane for a full swarm run.",
+          "The user is always talking to the main Swarm. Decide how the active swarm should incorporate this message.",
+          "Return exactly one JSON object with keys: action, reason, instruction.",
+          "action must be one of: continue_current, inject_next_turn, interrupt_and_redirect, ask_clarification.",
+          "Do not include Markdown fences or prose outside JSON."
+        ].join(" "),
+        cache: true
+      }],
       user: JSON.stringify({
         objective: session.objective,
         session_status: session.status,
         active_handoffs: this.handoffStore.listRecent(20).filter((item) => item.parent_session_id === session.session_id && item.status === "active"),
         live_message: content
-      }, null, 2)
+      }, null, 2),
+      usage: {
+        sessionId: session.session_id,
+        purpose: "full_swarm_control"
+      },
+      maxOutputTokens: CONTROL_PLANE_MAX_OUTPUT_TOKENS
     });
     const parsed = parseJsonObject(response);
     const action = parsed.action === "continue_current" ||
@@ -1813,6 +2327,7 @@ export class SwarmRuntime {
       return;
     }
     this.disposed = true;
+    this.markActiveWorkStopped("Runtime disposed before active work completed.");
     for (const child of this.children) {
       child.removeAllListeners("message");
       child.kill();
@@ -1846,8 +2361,12 @@ export class SwarmRuntime {
       if (this.disposed) {
         return;
       }
+      if (isChildProviderUsageMessage(message)) {
+        this.events.emitEvent({ type: "provider_usage", usage: message.usage });
+        return;
+      }
       const envelope = message as SwarmEnvelope;
-      if (isChildDispatchedEnvelope(envelope)) {
+      if (isChildRuntimeEnvelope(envelope)) {
         this.router.dispatch(envelope).catch((error: unknown) => {
           const reason = error instanceof Error ? error.message : String(error);
           this.events.emitEvent({ type: "error", message: reason });
@@ -1875,10 +2394,32 @@ export class SwarmRuntime {
         return;
       }
 
+      if (envelope.type === "task.progress") {
+        this.router.receive(envelope);
+        const payload = isRecord(envelope.payload) ? envelope.payload : {};
+        const message = typeof payload.message === "string"
+          ? payload.message
+          : typeof payload.summary === "string"
+            ? payload.summary
+            : `Progress from ${envelope.from.agent_id ?? envelope.from.role ?? "agent"}`;
+        this.events.emitEvent({
+          type: "loop_activity",
+          session_id: envelope.session_id,
+          phase: "turn_complete",
+          message,
+          task_id: envelope.task_id
+        });
+        return;
+      }
+
       this.router.receive(envelope);
       this.forwardToAddressedAgent(envelope);
     });
     child.on("exit", (code) => {
+      if (this.disposed) {
+        this.debug?.debug("agent", `${card.agent_id} exited during runtime dispose code=${code ?? "unknown"}`);
+        return;
+      }
       this.registry.updateStatus(card.agent_id, "offline");
       this.events.emitEvent({
         type: "log",
@@ -1887,6 +2428,10 @@ export class SwarmRuntime {
       });
     });
     child.on("error", (error) => {
+      if (this.disposed) {
+        this.debug?.debug("agent", `${card.agent_id} child error during runtime dispose: ${error.message}`);
+        return;
+      }
       this.registry.updateStatus(card.agent_id, "degraded");
       this.events.emitEvent({ type: "error", message: `${card.agent_id}: ${error.message}` });
     });
@@ -1905,6 +2450,58 @@ export class SwarmRuntime {
       target?.process?.send(envelope);
     }
   }
+
+  private markActiveWorkStopped(reason: string): void {
+    const timestamp = new Date().toISOString();
+    const sessionIds = new Set<string>();
+    if (this.activeCodingLoopSessionId) {
+      sessionIds.add(this.activeCodingLoopSessionId);
+    }
+    if (this.activeSwarmSession?.session_id) {
+      sessionIds.add(this.activeSwarmSession.session_id);
+    }
+    try {
+      for (const sessionId of this.ownedSessionIds) {
+        sessionIds.add(sessionId);
+      }
+      for (const sessionId of sessionIds) {
+        const row = this.sessionStore.get(sessionId);
+        if (row?.status === "running") {
+          this.sessionStore.setFinalOutput(sessionId, reason, "cancelled");
+        }
+      }
+
+      const runningWorkers = this.workerStateStore.listRecent(1000).filter((worker) =>
+        worker.status === "running" &&
+        (sessionIds.has(worker.parent_session_id) || (worker.worker_session_id ? sessionIds.has(worker.worker_session_id) : false))
+      );
+      for (const worker of runningWorkers) {
+        const stopped = this.workerStateStore.setResult({
+          worker_id: worker.worker_id,
+          status: "stopped",
+          last_result: reason
+        });
+        this.runAttemptStore.upsert({
+          session_id: stopped.parent_session_id,
+          task_id: stopped.worker_id,
+          runner_id: stopped.agent_spec_id ?? stopped.capability,
+          kind: "worker_run",
+          status: "stopped",
+          attempt: 1,
+          title: stopped.objective,
+          terminal_reason: reason,
+          workspace_path: this.workspaceForSession(stopped.parent_session_id),
+          metadata: { worker_id: stopped.worker_id, dispose_at: timestamp }
+        });
+        if (stopped.worker_session_id) {
+          this.sessionStore.setFinalOutput(stopped.worker_session_id, reason, "cancelled");
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.debug?.warn("runtime", `failed to mark active work stopped during dispose: ${message}`);
+    }
+  }
 }
 
 function buildAgentTaskPacket(
@@ -1917,6 +2514,8 @@ function buildAgentTaskPacket(
     agent_spec_id: spec.id,
     invocation_mode: decision.invocation_mode,
     persona_snapshot: spec.prompt,
+    role_title: decision.role_title,
+    persona_brief: decision.persona_brief,
     relevant_context: request.context,
     file_scope: request.file_scope ?? [],
     allowed_tools: spec.tools,
@@ -1941,6 +2540,8 @@ function renderAgentRuntimeInstructions(
     spec.prompt,
     "",
     `Agent spec: ${spec.id} (${spec.role}).`,
+    decision.role_title ? `Runtime role title: ${decision.role_title}.` : undefined,
+    decision.persona_brief ? `Ephemeral worker persona for this task only: ${decision.persona_brief}` : undefined,
     `Invocation mode: ${decision.invocation_mode}.`,
     `Dispatch reason: ${decision.reason}`,
     `Expected output: ${spec.output_contract}`,
@@ -1949,7 +2550,7 @@ function renderAgentRuntimeInstructions(
       ? `File scope: ${taskPacket.file_scope.join(", ")}. Stay inside this write scope unless the main Swarm explicitly expands it.`
       : "File scope is not predeclared. Read broadly as needed, but keep writes tightly connected to the delegated objective.",
     "You are an internal specialist. The main Swarm owns user-facing synthesis, interruption handling, and final responsibility."
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function renderAgentTaskPrompt(taskPacket: AgentTaskPacket, decision: AgentSpawnDecision): string {
@@ -1959,6 +2560,7 @@ function renderAgentTaskPrompt(taskPacket: AgentTaskPacket, decision: AgentSpawn
       ? "This is a handoff: own the focused task segment until done, blocked, or taken back by main Swarm."
       : "This is a subagent call: complete the bounded task and return evidence to main Swarm.",
     "Do not address the user directly.",
+    "Historical memory and prior worker results are hints only. Refresh the current workspace facts before relying on them, especially before editing files or making a code-state claim.",
     "Return concrete evidence, changed files, checks, risks, and unresolved questions according to the output contract.",
     "",
     JSON.stringify(taskPacket, null, 2)
@@ -2005,12 +2607,95 @@ function normalizeAgentSpawnDecision(
   const reason = typeof parsed.reason === "string" && parsed.reason.trim()
     ? parsed.reason.trim().slice(0, 800)
     : "Main Swarm selected an internal agent based on the delegated task packet.";
+  const normalizedIdentity = normalizeWorkerIdentityFields(parsed, agentSpecId, request, reason);
   return {
     agent_spec_id: agentSpecId,
     invocation_mode: invocationMode,
     reason: policyAdjustment ? `${policyAdjustment} ${reason}` : reason,
-    confidence
+    confidence,
+    display_name: normalizedIdentity.display_name,
+    role_title: normalizedIdentity.role_title,
+    persona_brief: normalizedIdentity.persona_brief
   };
+}
+
+function withWorkerIdentityFallback(
+  decision: AgentSpawnDecision,
+  workerId: string,
+  request: AgentInvocationRequest,
+  spec: AgentSpec
+): AgentSpawnDecision {
+  const fallback = makeWorkerIdentity({
+    worker_id: workerId,
+    agent_spec_id: spec.id,
+    capability: request.capability
+  });
+  return {
+    ...decision,
+    display_name: sanitizeWorkerIdentityText(decision.display_name, 16) || fallback.display_name,
+    role_title: sanitizeWorkerIdentityText(decision.role_title, 32) || fallback.role_title,
+    persona_brief: sanitizeWorkerPersona(decision.persona_brief) || `Operate as ${fallback.role_title}; follow the selected ${spec.id} tool and write policy.`
+  };
+}
+
+function stripEphemeralAgentPersona(taskPacket: AgentTaskPacket): AgentTaskPacket {
+  const { persona_brief: _personaBrief, ...durableTaskPacket } = taskPacket;
+  return durableTaskPacket;
+}
+
+function stripEphemeralAgentDecision(decision: AgentSpawnDecision): AgentSpawnDecision {
+  const { persona_brief: _personaBrief, ...durableDecision } = decision;
+  return durableDecision;
+}
+
+function normalizeWorkerIdentityFields(
+  parsed: Record<string, unknown>,
+  agentSpecId: string,
+  request: AgentInvocationRequest,
+  reason: string
+): Pick<AgentSpawnDecision, "display_name" | "role_title" | "persona_brief"> {
+  const fallback = makeWorkerIdentity({
+    worker_id: `${request.parent_session_id}:${request.task}:${reason}`,
+    agent_spec_id: agentSpecId,
+    capability: request.capability
+  });
+  const displayName = sanitizeWorkerIdentityText(parsed.display_name, 16) || fallback.display_name;
+  const roleTitle = sanitizeWorkerIdentityText(parsed.role_title, 32) || fallback.role_title;
+  const personaBrief = sanitizeWorkerPersona(parsed.persona_brief) ||
+    `Operate as ${roleTitle}; follow the selected ${agentSpecId} tool and write policy.`;
+  return {
+    display_name: displayName,
+    role_title: roleTitle,
+    persona_brief: personaBrief
+  };
+}
+
+function sanitizeWorkerIdentityText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const cleaned = value
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[\\/|]+/g, " ")
+    .replace(/["'`]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength)
+    .trim();
+  return cleaned.length >= 2 ? cleaned : undefined;
+}
+
+function sanitizeWorkerPersona(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const cleaned = value
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 280)
+    .trim();
+  return cleaned.length >= 12 ? cleaned : undefined;
 }
 
 function normalizeAttemptStatus(status: "started" | "completed" | "failed"): RunAttemptStatus {
@@ -2111,6 +2796,22 @@ function sanitizeKey(value: string): string {
   return value.replace(/\\/g, "/").replace(/[^A-Za-z0-9._/-]+/g, "_").replace(/\//g, ".");
 }
 
+function filterBlackboardSearch(entries: BlackboardEntry[], query: string | undefined): BlackboardEntry[] {
+  const needle = query?.trim().toLowerCase();
+  if (!needle) {
+    return entries;
+  }
+  return entries.filter((entry) => {
+    const haystack = [
+      entry.key,
+      entry.type,
+      entry.tags?.join(" "),
+      JSON.stringify(entry.value)
+    ].filter(Boolean).join("\n").toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2119,8 +2820,28 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && value.trim().length > 0))].sort();
 }
 
-function isChildDispatchedEnvelope(envelope: SwarmEnvelope): boolean {
-  return envelope.type === "task.assign" || envelope.type === "review.request";
+function formatWorkspaceChangeForFreshness(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const operation = typeof record.operation === "string" ? record.operation : "change";
+  const path = typeof record.path === "string" ? record.path : "(unknown path)";
+  const afterHash = typeof record.afterHash === "string" ? record.afterHash.slice(0, 12) : undefined;
+  return afterHash ? `${operation} ${path}@${afterHash}` : `${operation} ${path}`;
+}
+
+function isChildRuntimeEnvelope(envelope: SwarmEnvelope): boolean {
+  return envelope.type === "task.assign" ||
+    envelope.type === "review.request" ||
+    envelope.type === "bid.submit" ||
+    envelope.type === "consensus.vote" ||
+    envelope.type === "blackboard.write" ||
+    envelope.type === "blackboard.read" ||
+    envelope.type === "blackboard.update" ||
+    envelope.type === "blackboard.lock" ||
+    envelope.type === "blackboard.unlock";
+}
+
+function isChildProviderUsageMessage(value: unknown): value is { type: "provider_usage"; usage: ProviderUsageReport } {
+  return isRecord(value) && value.type === "provider_usage" && isRecord(value.usage);
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {

@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import {
+  MODEL_MAX_OUTPUT_TOKENS_DEFAULT,
+  MODEL_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
   getProviderApiKey,
   getSelectedModelReadiness,
   loadSwarmConfig,
@@ -11,19 +14,29 @@ import {
 } from "../config/settings.js";
 import type { ToolResult, WebSearchAction } from "../tools/types.js";
 
+const WEB_SEARCH_MAX_OUTPUT_TOKENS = 4_000;
+const MAX_CACHE_DIAGNOSTIC_SOURCES = 10;
+const MIN_CACHE_MISS_TOKENS = 2_000;
+const promptCachePolicies = new Map<string, PromptCachePolicy>();
+const promptCacheDiagnostics = new Map<string, PromptCacheDiagnosticState>();
+
 export class OpenAIProvider {
   readonly model: string;
   readonly workerModel: string;
   readonly aggregatorModel: string;
   private readonly settings: SwarmSettings;
   private readonly config: SwarmConfig;
+  private readonly onUsage?: ProviderUsageHandler;
+  private readonly geminiExplicitCaches = new Map<string, GeminiExplicitCache>();
 
-  constructor() {
+  constructor(options: { onUsage?: ProviderUsageHandler } = {}) {
     this.settings = loadSwarmSettings();
     this.config = loadSwarmConfig();
-    this.model = process.env.SWARM_MODEL ?? this.settings.models.planner;
-    this.workerModel = process.env.SWARM_WORKER_MODEL ?? this.settings.models.worker;
-    this.aggregatorModel = process.env.SWARM_AGGREGATOR_MODEL ?? this.settings.models.aggregator;
+    this.onUsage = options.onUsage;
+    const envModel = nonEmptyEnv("SWARM_MODEL");
+    this.model = envModel ?? this.settings.models.planner;
+    this.workerModel = nonEmptyEnv("SWARM_WORKER_MODEL") ?? envModel ?? this.settings.models.worker;
+    this.aggregatorModel = nonEmptyEnv("SWARM_AGGREGATOR_MODEL") ?? envModel ?? this.settings.models.aggregator;
   }
 
   get enabled(): boolean {
@@ -31,9 +44,12 @@ export class OpenAIProvider {
   }
 
   async generateText(input: {
-    system: string;
-    user: string;
+    system: PromptInput;
+    user: PromptInput;
     model?: string;
+    cache?: PromptCacheOptions;
+    maxOutputTokens?: number;
+    usage?: ProviderUsageContext;
   }): Promise<string> {
     const resolved = this.resolveModel(input.model ?? this.model);
     if (resolved.provider.apiKeyRequired && !resolved.apiKey) {
@@ -78,45 +94,59 @@ export class OpenAIProvider {
 
   private async generateWithResponses(
     resolved: ResolvedModel,
-    input: { system: string; user: string }
+    input: GenerateTextInput
   ): Promise<string> {
-    const client = new OpenAI({
-      apiKey: resolved.apiKey || "local",
-      baseURL: resolved.provider.baseURL
-    });
-    const response = await client.responses.create({
-      model: resolved.model,
-      input: [
-        { role: "system", content: input.system },
-        { role: "user", content: input.user }
-      ]
-    } as never);
-    return requireText(extractOutputText(response), resolved);
-  }
-
-  private async generateWithChatCompletions(
-    resolved: ResolvedModel,
-    input: { system: string; user: string }
-  ): Promise<string> {
+    const prompt = preparePrompt(input);
     const client = new OpenAI({
       apiKey: resolved.apiKey || "local",
       baseURL: resolved.provider.baseURL,
       defaultHeaders: resolved.provider.headers
     });
+    const startedAt = Date.now();
+    const response = await client.responses.create({
+      model: resolved.model,
+      max_output_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, input.maxOutputTokens),
+      ...openAIPromptCacheParams(resolved, prompt, input.cache),
+      input: [
+        { role: "system", content: prompt.systemText },
+        { role: "user", content: prompt.userText }
+      ]
+    } as never);
+    this.emitUsage(resolved, "generateText", input.usage, usageFromOpenAIResponse(response), prompt, startedAt);
+    return requireText(extractOutputText(response), resolved);
+  }
+
+  private async generateWithChatCompletions(
+    resolved: ResolvedModel,
+    input: GenerateTextInput
+  ): Promise<string> {
+    const prompt = preparePrompt(input);
+    const client = new OpenAI({
+      apiKey: resolved.apiKey || "local",
+      baseURL: resolved.provider.baseURL,
+      defaultHeaders: resolved.provider.headers
+    });
+    const startedAt = Date.now();
     const response = await client.chat.completions.create({
       model: resolved.model,
+      max_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, input.maxOutputTokens),
+      ...openAIPromptCacheParams(resolved, prompt, input.cache),
       messages: [
-        { role: "system", content: input.system },
-        { role: "user", content: input.user }
+        { role: "system", content: prompt.systemText },
+        { role: "user", content: prompt.userText }
       ]
-    });
+    } as never);
+    this.emitUsage(resolved, "generateText", input.usage, usageFromOpenAIResponse(response), prompt, startedAt);
     return requireText(response.choices[0]?.message?.content ?? "", resolved);
   }
 
   private async generateWithAnthropic(
     resolved: ResolvedModel,
-    input: { system: string; user: string }
+    input: GenerateTextInput
   ): Promise<string> {
+    const prompt = preparePrompt(input);
+    const enableCache = promptCacheEnabled() && input.cache?.enabled !== false;
+    const startedAt = Date.now();
     const response = await fetch(resolved.provider.baseURL, {
       method: "POST",
       headers: {
@@ -126,15 +156,16 @@ export class OpenAIProvider {
       },
       body: JSON.stringify({
         model: resolved.model,
-        max_tokens: 4096,
-        system: input.system,
-        messages: [{ role: "user", content: input.user }]
+        max_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, input.maxOutputTokens),
+        system: anthropicSystem(prompt, enableCache, input.cache),
+        messages: [{ role: "user", content: anthropicContentBlocks(prompt.userBlocks, enableCache, input.cache) }]
       })
     });
     if (!response.ok) {
       throw new Error(`Anthropic provider failed with HTTP ${response.status}: ${await response.text()}`);
     }
-    const json = (await response.json()) as { content?: { type?: string; text?: string }[] };
+    const json = (await response.json()) as { content?: { type?: string; text?: string }[]; usage?: unknown };
+    this.emitUsage(resolved, "generateText", input.usage, usageFromAnthropic(json), prompt, startedAt);
     return requireText(json.content?.map((part) => part.text).filter(Boolean).join("\n") ?? "", resolved);
   }
 
@@ -147,6 +178,7 @@ export class OpenAIProvider {
     });
     const response = await client.responses.create({
       model: resolved.model,
+      max_output_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, WEB_SEARCH_MAX_OUTPUT_TOKENS),
       tools: [{ type: "web_search_preview" }],
       input: [
         { role: "system", content: webSearchSystemPrompt(action) },
@@ -184,7 +216,7 @@ export class OpenAIProvider {
       headers,
       body: JSON.stringify({
         model: resolved.model,
-        max_tokens: 4096,
+        max_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, WEB_SEARCH_MAX_OUTPUT_TOKENS),
         system: webSearchSystemPrompt(action),
         messages: [{ role: "user", content: `Perform a web search for the query: ${action.query}` }],
         tools: [tool]
@@ -206,24 +238,37 @@ export class OpenAIProvider {
 
   private async generateWithGemini(
     resolved: ResolvedModel,
-    input: { system: string; user: string }
+    input: GenerateTextInput
   ): Promise<string> {
+    const prompt = preparePrompt(input);
+    const cache = await this.getGeminiExplicitCache(resolved, prompt, input.cache);
     const url = new URL(`${resolved.provider.baseURL.replace(/\/$/, "")}/models/${resolved.model}:generateContent`);
     url.searchParams.set("key", resolved.apiKey);
+    const startedAt = Date.now();
+    const body: Record<string, unknown> = {
+      contents: [{ role: "user", parts: [{ text: cache ? prompt.dynamicUserText || prompt.userText : prompt.userText }] }],
+      generationConfig: {
+        maxOutputTokens: maxOutputTokensForResolvedModel(resolved, this.settings, input.maxOutputTokens)
+      }
+    };
+    if (cache) {
+      body.cachedContent = cache.name;
+    } else {
+      body.systemInstruction = { parts: [{ text: prompt.systemText }] };
+    }
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", ...resolved.provider.headers },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: input.system }] },
-        contents: [{ role: "user", parts: [{ text: input.user }] }]
-      })
+      body: JSON.stringify(body)
     });
     if (!response.ok) {
       throw new Error(`Gemini provider failed with HTTP ${response.status}: ${await response.text()}`);
     }
     const json = (await response.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: unknown;
     };
+    this.emitUsage(resolved, "generateText", input.usage, usageFromGemini(json), prompt, startedAt, cache ? "explicit" : "implicit");
     return requireText(
       json.candidates?.[0]?.content?.parts
         ?.map((part) => part.text)
@@ -250,7 +295,217 @@ export class OpenAIProvider {
     const apiKey = getProviderApiKey(provider, this.config);
     return { provider, providerId, model, apiKey };
   }
+
+  private emitUsage(
+    resolved: ResolvedModel,
+    purpose: string,
+    context: ProviderUsageContext | undefined,
+    usage: ProviderUsage,
+    prompt: PreparedPrompt,
+    startedAt: number,
+    cacheMode = providerCacheMode(resolved)
+  ): void {
+    this.onUsage?.({
+      providerId: resolved.providerId,
+      protocol: resolved.provider.protocol,
+      model: resolved.model,
+      purpose: context?.purpose ?? purpose,
+      sessionId: context?.sessionId,
+      taskId: context?.taskId,
+      cacheMode,
+      promptCacheKey: prompt.cacheKey,
+      promptCacheScope: promptCacheScope(resolved, prompt, context),
+      promptCacheDiagnostics: trackPromptCacheDiagnostics(resolved, prompt, context, usage),
+      cacheablePrefixTokensEstimate: estimateTokens(prompt.cacheablePrefixText),
+      durationMs: Date.now() - startedAt,
+      ...usage
+    });
+  }
+
+  private async getGeminiExplicitCache(
+    resolved: ResolvedModel,
+    prompt: PreparedPrompt,
+    options?: PromptCacheOptions
+  ): Promise<GeminiExplicitCache | undefined> {
+    if (!promptCacheEnabled() || !isOfficialGeminiProvider(resolved) || options?.enabled === false) {
+      return undefined;
+    }
+    const cacheableText = prompt.cacheablePrefixText.trim();
+    if (!cacheableText) {
+      return undefined;
+    }
+    const minTokens = geminiExplicitCacheMinTokens(resolved.model);
+    if (estimateTokens(cacheableText) < minTokens) {
+      return undefined;
+    }
+    const ttlSeconds = geminiCacheTtlSeconds(options);
+    const key = `${resolved.providerId}:${resolved.model}:${ttlSeconds}:${stableHash(cacheableText)}`;
+    const existing = this.geminiExplicitCaches.get(key);
+    if (existing && existing.expiresAt > Date.now() + 30_000) {
+      return existing;
+    }
+    try {
+      const created = await this.createGeminiExplicitCache(resolved, prompt, ttlSeconds);
+      this.geminiExplicitCaches.set(key, created);
+      return created;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async createGeminiExplicitCache(
+    resolved: ResolvedModel,
+    prompt: PreparedPrompt,
+    ttlSeconds: number
+  ): Promise<GeminiExplicitCache> {
+    const url = new URL(`${resolved.provider.baseURL.replace(/\/$/, "")}/cachedContents`);
+    url.searchParams.set("key", resolved.apiKey);
+    const body: Record<string, unknown> = {
+      model: geminiModelResource(resolved.model),
+      ttl: `${ttlSeconds}s`
+    };
+    if (prompt.cacheableSystemText.trim()) {
+      body.systemInstruction = { parts: [{ text: prompt.cacheableSystemText }] };
+    }
+    if (prompt.cacheableUserText.trim()) {
+      body.contents = [{ role: "user", parts: [{ text: prompt.cacheableUserText }] }];
+    }
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...resolved.provider.headers },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      throw new Error(`Gemini cache create failed with HTTP ${response.status}: ${await response.text()}`);
+    }
+    const json = await response.json();
+    const name = isRecord(json) && typeof json.name === "string" ? json.name : "";
+    if (!name) {
+      throw new Error("Gemini cache create response did not include a cache name");
+    }
+    return { name, expiresAt: Date.now() + ttlSeconds * 1000 };
+  }
 }
+
+export type PromptBlock = {
+  text: string;
+  cache?: boolean;
+};
+
+export type PromptInput = string | PromptBlock[];
+
+export type PromptCacheOptions = {
+  enabled?: boolean;
+  key?: string;
+  retention?: "in_memory" | "24h";
+  ttlSeconds?: number;
+};
+
+export type ProviderUsageContext = {
+  sessionId?: string;
+  taskId?: string;
+  purpose?: string;
+};
+
+export type ProviderUsageReport = {
+  providerId: string;
+  protocol: ProviderDefinition["protocol"];
+  model: string;
+  purpose: string;
+  sessionId?: string;
+  taskId?: string;
+  cacheMode: string;
+  promptCacheKey: string;
+  promptCacheScope: string;
+  promptCacheDiagnostics?: PromptCacheDiagnostics;
+  cacheablePrefixTokensEstimate: number;
+  durationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+};
+
+export type ProviderUsageHandler = (usage: ProviderUsageReport) => void;
+
+type GenerateTextInput = {
+  system: PromptInput;
+  user: PromptInput;
+  model?: string;
+  cache?: PromptCacheOptions;
+  maxOutputTokens?: number;
+  usage?: ProviderUsageContext;
+};
+
+type PreparedPrompt = {
+  systemBlocks: NormalizedPromptBlock[];
+  userBlocks: NormalizedPromptBlock[];
+  systemText: string;
+  userText: string;
+  cacheableSystemText: string;
+  cacheableUserText: string;
+  cacheablePrefixText: string;
+  dynamicUserText: string;
+  cacheKey: string;
+  explicitCacheKey: string;
+  diagnostics: PreparedPromptDiagnostics;
+};
+
+type PreparedPromptDiagnostics = {
+  systemHash: string;
+  userHash: string;
+  cacheablePrefixHash: string;
+  cacheableSystemHash: string;
+  cacheableUserHash: string;
+  toolSchemaHash: string;
+  dynamicUserHash: string;
+};
+
+type PromptCachePolicy = {
+  key: string;
+  retention: "in_memory" | "24h";
+  ttlSeconds: number;
+  anthropicTtl: "5m" | "1h";
+};
+
+export type PromptCacheDiagnostics = {
+  scope: string;
+  status: "new_scope" | "stable" | "changed" | "expected_empty_cache" | "cache_miss";
+  changed: string[];
+  current: PreparedPromptDiagnostics & {
+    cacheKey: string;
+    model: string;
+    protocol: ProviderDefinition["protocol"];
+    retention: "in_memory" | "24h";
+    ttlSeconds: number;
+    anthropicTtl: "5m" | "1h";
+  };
+  previous?: Partial<PromptCacheDiagnostics["current"]>;
+  cachedInputTokens?: number;
+};
+
+type PromptCacheDiagnosticState = PromptCacheDiagnostics["current"] & {
+  seenAt: number;
+};
+
+type NormalizedPromptBlock = {
+  text: string;
+  cache: boolean;
+};
+
+type ProviderUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+};
+
+type GeminiExplicitCache = {
+  name: string;
+  expiresAt: number;
+};
 
 type ResolvedModel = {
   provider: ProviderDefinition;
@@ -263,6 +518,384 @@ type WebSearchLink = {
   title: string;
   url: string;
 };
+
+function maxOutputTokensForResolvedModel(resolved: ResolvedModel, settings: SwarmSettings, requestMaxOutputTokens?: number): number {
+  return boundedMaxOutputTokens(
+    requestMaxOutputTokens,
+    process.env.SWARM_MAX_OUTPUT_TOKENS,
+    settings.models.maxOutputTokens,
+    defaultMaxOutputTokensForModel(resolved.model)
+  );
+}
+
+function preparePrompt(input: GenerateTextInput): PreparedPrompt {
+  const systemBlocks = normalizePromptBlocks(input.system);
+  const userBlocks = normalizePromptBlocks(input.user);
+  const systemText = joinPromptBlocks(systemBlocks);
+  const userText = joinPromptBlocks(userBlocks);
+  const cacheableSystemText = joinPromptBlocks(systemBlocks.filter((block) => block.cache));
+  const cacheableUserText = joinPromptBlocks(userBlocks.filter((block) => block.cache));
+  const cacheablePrefixText = [cacheableSystemText, cacheableUserText].filter(Boolean).join("\n\n");
+  const lastCacheableUserIndex = lastCacheableIndex(userBlocks);
+  const dynamicUserText = lastCacheableUserIndex >= 0
+    ? joinPromptBlocks(userBlocks.slice(lastCacheableUserIndex + 1))
+    : userText;
+  const explicitKey = input.cache?.key?.trim();
+  const cacheKey = explicitKey || (cacheablePrefixText ? `swarm:${stableHash(cacheablePrefixText).slice(0, 24)}` : "");
+  const toolSchemaHash = hashToolSchemaFromText(userText);
+  return {
+    systemBlocks,
+    userBlocks,
+    systemText,
+    userText,
+    cacheableSystemText,
+    cacheableUserText,
+    cacheablePrefixText,
+    dynamicUserText,
+    cacheKey,
+    explicitCacheKey: explicitKey ?? "",
+    diagnostics: {
+      systemHash: stableHash(systemText),
+      userHash: stableHash(userText),
+      cacheablePrefixHash: stableHash(cacheablePrefixText),
+      cacheableSystemHash: stableHash(cacheableSystemText),
+      cacheableUserHash: stableHash(cacheableUserText),
+      toolSchemaHash,
+      dynamicUserHash: stableHash(dynamicUserText)
+    }
+  };
+}
+
+function normalizePromptBlocks(input: PromptInput): NormalizedPromptBlock[] {
+  if (typeof input === "string") {
+    return input.trim() ? [{ text: input, cache: false }] : [];
+  }
+  return input
+    .map((block) => ({ text: block.text.trim(), cache: block.cache === true }))
+    .filter((block) => block.text.length > 0);
+}
+
+function joinPromptBlocks(blocks: NormalizedPromptBlock[]): string {
+  return blocks.map((block) => block.text).filter(Boolean).join("\n\n");
+}
+
+function lastCacheableIndex(blocks: NormalizedPromptBlock[]): number {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index]?.cache) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function anthropicSystem(prompt: PreparedPrompt, enableCache: boolean, options?: PromptCacheOptions): string | Array<Record<string, unknown>> {
+  const markerIndex = lastCacheableIndex(prompt.userBlocks) >= 0 ? -1 : lastCacheableIndex(prompt.systemBlocks);
+  if (!enableCache || (markerIndex < 0 && !prompt.systemBlocks.some((block) => block.cache))) {
+    return prompt.systemText;
+  }
+  return prompt.systemBlocks.map((block, index) => ({
+    type: "text",
+    text: block.text,
+    ...(enableCache && index === markerIndex ? { cache_control: anthropicCacheControl(options) } : {})
+  }));
+}
+
+function anthropicContentBlocks(blocks: NormalizedPromptBlock[], enableCache: boolean, options?: PromptCacheOptions): Array<Record<string, unknown>> {
+  const markerIndex = lastCacheableIndex(blocks);
+  return blocks.map((block, index) => ({
+    type: "text",
+    text: block.text,
+    ...(enableCache && index === markerIndex ? { cache_control: anthropicCacheControl(options) } : {})
+  }));
+}
+
+function anthropicCacheControl(options?: PromptCacheOptions): Record<string, unknown> {
+  return {
+    type: "ephemeral",
+    ...(promptCachePolicy({ options }).anthropicTtl === "1h" ? { ttl: "1h" } : {})
+  };
+}
+
+function anthropicCacheTtl(options?: PromptCacheOptions): "5m" | "1h" {
+  return promptCachePolicy({ options }).anthropicTtl;
+}
+
+function rawAnthropicCacheTtl(): "5m" | "1h" {
+  return process.env.SWARM_PROMPT_CACHE_TTL === "1h" ? "1h" : "5m";
+}
+
+function openAIPromptCacheParams(
+  resolved: ResolvedModel,
+  prompt: PreparedPrompt,
+  options?: PromptCacheOptions
+): Record<string, unknown> {
+  if (!promptCacheEnabled() || options?.enabled === false || !isOfficialOpenAIProvider(resolved) || !prompt.cacheKey) {
+    return {};
+  }
+  const retention = promptCachePolicy({ prompt, options }).retention;
+  return {
+    prompt_cache_key: prompt.cacheKey,
+    ...(retention === "24h" ? { prompt_cache_retention: "24h" } : {})
+  };
+}
+
+function openAIPromptCacheRetention(options?: PromptCacheOptions): "in_memory" | "24h" {
+  return promptCachePolicy({ options }).retention;
+}
+
+function rawOpenAIPromptCacheRetention(): "in_memory" | "24h" {
+  return process.env.SWARM_PROMPT_CACHE_RETENTION === "24h" ? "24h" : "in_memory";
+}
+
+function promptCachePolicy(input: { prompt?: PreparedPrompt; options?: PromptCacheOptions }): PromptCachePolicy {
+  const scope = input.options?.key?.trim() || input.prompt?.cacheKey || "default";
+  const existing = promptCachePolicies.get(scope);
+  if (existing) {
+    return existing;
+  }
+  const envTtl = Number(process.env.SWARM_GEMINI_CACHE_TTL_SECONDS);
+  const ttlSeconds = Math.max(
+    60,
+    Math.min(Math.floor(input.options?.ttlSeconds ?? (Number.isFinite(envTtl) && envTtl > 0 ? envTtl : 3600)), 86_400)
+  );
+  const policy: PromptCachePolicy = {
+    key: scope,
+    retention: input.options?.retention ?? rawOpenAIPromptCacheRetention(),
+    ttlSeconds,
+    anthropicTtl: rawAnthropicCacheTtl()
+  };
+  promptCachePolicies.set(scope, policy);
+  if (promptCachePolicies.size > MAX_CACHE_DIAGNOSTIC_SOURCES) {
+    const oldest = promptCachePolicies.keys().next().value;
+    if (typeof oldest === "string") {
+      promptCachePolicies.delete(oldest);
+    }
+  }
+  return policy;
+}
+
+function promptCacheEnabled(): boolean {
+  return !isTruthyEnv(process.env.SWARM_DISABLE_PROMPT_CACHING);
+}
+
+function isOfficialOpenAIProvider(resolved: ResolvedModel): boolean {
+  return resolved.providerId === "openai" && /^https:\/\/api\.openai\.com\/v1\/?$/i.test(resolved.provider.baseURL);
+}
+
+function isOfficialGeminiProvider(resolved: ResolvedModel): boolean {
+  return resolved.providerId === "gemini" && /generativelanguage\.googleapis\.com/i.test(resolved.provider.baseURL);
+}
+
+function providerCacheMode(resolved: ResolvedModel): string {
+  if (resolved.provider.protocol === "anthropic-messages") {
+    return "anthropic-cache-control";
+  }
+  if (isOfficialOpenAIProvider(resolved)) {
+    return "openai-automatic";
+  }
+  if (isOfficialGeminiProvider(resolved)) {
+    return "gemini-implicit";
+  }
+  if (resolved.provider.protocol === "openai-chat-completions") {
+    return "prefix-structured";
+  }
+  return "none";
+}
+
+function promptCacheScope(
+  resolved: ResolvedModel,
+  prompt: PreparedPrompt,
+  context?: ProviderUsageContext
+): string {
+  return [
+    context?.sessionId ?? "nosession",
+    context?.purpose ?? "generateText",
+    resolved.providerId,
+    resolved.model,
+    prompt.explicitCacheKey || prompt.cacheKey || "nocache"
+  ].join(":");
+}
+
+function trackPromptCacheDiagnostics(
+  resolved: ResolvedModel,
+  prompt: PreparedPrompt,
+  context: ProviderUsageContext | undefined,
+  usage: ProviderUsage
+): PromptCacheDiagnostics {
+  const policy = promptCachePolicy({ prompt });
+  const scope = promptCacheScope(resolved, prompt, context);
+  const current: PromptCacheDiagnostics["current"] = {
+    ...prompt.diagnostics,
+    cacheKey: prompt.cacheKey,
+    model: resolved.model,
+    protocol: resolved.provider.protocol,
+    retention: policy.retention,
+    ttlSeconds: policy.ttlSeconds,
+    anthropicTtl: policy.anthropicTtl
+  };
+  const previous = promptCacheDiagnostics.get(scope);
+  const changed = previous ? changedPromptCacheFields(previous, current) : [];
+  const cacheableTokens = estimateTokens(prompt.cacheablePrefixText);
+  const cachedInputTokens = usage.cachedInputTokens;
+  const status: PromptCacheDiagnostics["status"] = !previous
+    ? "new_scope"
+    : changed.length > 0
+      ? "changed"
+      : cacheableTokens < MIN_CACHE_MISS_TOKENS
+        ? "expected_empty_cache"
+        : (typeof cachedInputTokens === "number" && cachedInputTokens <= 0 ? "cache_miss" : "stable");
+  promptCacheDiagnostics.set(scope, { ...current, seenAt: Date.now() });
+  trimPromptCacheDiagnostics();
+  return {
+    scope,
+    status,
+    changed,
+    current,
+    previous: previous ? { ...previous } : undefined,
+    cachedInputTokens
+  };
+}
+
+function changedPromptCacheFields(
+  previous: PromptCacheDiagnosticState,
+  current: PromptCacheDiagnostics["current"]
+): string[] {
+  const fields = [
+    "systemHash",
+    "cacheablePrefixHash",
+    "cacheableSystemHash",
+    "cacheableUserHash",
+    "toolSchemaHash",
+    "cacheKey",
+    "model",
+    "protocol",
+    "retention",
+    "ttlSeconds",
+    "anthropicTtl"
+  ] as const;
+  return fields.filter((field) => previous[field] !== current[field]);
+}
+
+function trimPromptCacheDiagnostics(): void {
+  if (promptCacheDiagnostics.size <= MAX_CACHE_DIAGNOSTIC_SOURCES) {
+    return;
+  }
+  const oldest = [...promptCacheDiagnostics.entries()]
+    .sort((a, b) => a[1].seenAt - b[1].seenAt)[0]?.[0];
+  if (oldest) {
+    promptCacheDiagnostics.delete(oldest);
+  }
+}
+
+function usageFromOpenAIResponse(response: unknown): ProviderUsage {
+  const usage = isRecord(response) && isRecord(response.usage) ? response.usage : {};
+  const promptTokens = numberField(usage, "prompt_tokens") ?? numberField(usage, "input_tokens");
+  const completionTokens = numberField(usage, "completion_tokens") ?? numberField(usage, "output_tokens");
+  const promptDetails = isRecord(usage.prompt_tokens_details)
+    ? usage.prompt_tokens_details
+    : isRecord(usage.input_tokens_details)
+      ? usage.input_tokens_details
+      : {};
+  return {
+    inputTokens: promptTokens,
+    outputTokens: completionTokens,
+    totalTokens: numberField(usage, "total_tokens") ?? sumDefined(promptTokens, completionTokens),
+    cachedInputTokens: numberField(promptDetails, "cached_tokens")
+  };
+}
+
+function usageFromAnthropic(response: { usage?: unknown }): ProviderUsage {
+  const usage = isRecord(response.usage) ? response.usage : {};
+  return {
+    inputTokens: numberField(usage, "input_tokens"),
+    outputTokens: numberField(usage, "output_tokens"),
+    totalTokens: sumDefined(numberField(usage, "input_tokens"), numberField(usage, "output_tokens")),
+    cachedInputTokens: numberField(usage, "cache_read_input_tokens"),
+    cacheCreationInputTokens: numberField(usage, "cache_creation_input_tokens")
+  };
+}
+
+function usageFromGemini(response: { usageMetadata?: unknown }): ProviderUsage {
+  const usage = isRecord(response.usageMetadata) ? response.usageMetadata : {};
+  return {
+    inputTokens: numberField(usage, "promptTokenCount"),
+    outputTokens: numberField(usage, "candidatesTokenCount"),
+    totalTokens: numberField(usage, "totalTokenCount"),
+    cachedInputTokens: numberField(usage, "cachedContentTokenCount")
+  };
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function sumDefined(...values: Array<number | undefined>): number | undefined {
+  const defined = values.filter((value): value is number => typeof value === "number");
+  return defined.length ? defined.reduce((sum, value) => sum + value, 0) : undefined;
+}
+
+function stableHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hashToolSchemaFromText(value: string): string {
+  const matches = value.match(/"tool_schemas"\s*:\s*(?:\{|\[)[\s\S]*?(?=\n\s*"available_agent_specs"|\n\s*"delegation_policy"|\n\s*"swarm_runtime_state"|\n\s*"live_user_messages"|$)/);
+  return stableHash(matches?.[0] ?? "");
+}
+
+function estimateTokens(value: string): number {
+  return Math.ceil(value.length / 4);
+}
+
+function geminiExplicitCacheMinTokens(model: string): number {
+  return model.toLowerCase().includes("pro") ? 4096 : 1024;
+}
+
+function geminiCacheTtlSeconds(options?: PromptCacheOptions): number {
+  return promptCachePolicy({ options }).ttlSeconds;
+}
+
+function geminiModelResource(model: string): string {
+  return model.startsWith("models/") ? model : `models/${model}`;
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
+}
+
+function nonEmptyEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+function boundedMaxOutputTokens(...candidates: Array<number | string | null | undefined>): number {
+  for (const candidate of candidates) {
+    const parsed = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(Math.floor(parsed), MODEL_MAX_OUTPUT_TOKENS_UPPER_LIMIT);
+    }
+  }
+  return MODEL_MAX_OUTPUT_TOKENS_DEFAULT;
+}
+
+function defaultMaxOutputTokensForModel(model: string): number {
+  const lower = model.toLowerCase();
+  if (lower.includes("opus-4-6") || lower.includes("opus_4_6")) {
+    return 64_000;
+  }
+  if (lower.includes("claude-3-opus") || lower.includes("claude-3-haiku")) {
+    return 4_096;
+  }
+  if (
+    lower.includes("claude-3-sonnet") ||
+    lower.includes("3-5-sonnet") ||
+    lower.includes("3-5-haiku")
+  ) {
+    return 8_192;
+  }
+  return MODEL_MAX_OUTPUT_TOKENS_DEFAULT;
+}
 
 function webSearchSystemPrompt(action: WebSearchAction): string {
   const domainRule = action.allowed_domains?.length

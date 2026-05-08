@@ -181,6 +181,44 @@ export class SwarmDatabase {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS session_context_entries (
+        entry_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        tokens INTEGER NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_compactions (
+        compaction_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        from_entry_id TEXT,
+        to_entry_id TEXT,
+        pre_tokens INTEGER NOT NULL,
+        post_tokens INTEGER NOT NULL,
+        kept_entries_json TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_content_replacements (
+        replacement_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        scope_kind TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        tool_result_id TEXT NOT NULL,
+        action TEXT,
+        original_bytes INTEGER NOT NULL,
+        replacement_content TEXT NOT NULL,
+        output_ref_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(scope_kind, scope_id, tool_result_id)
+      );
+
       CREATE TABLE IF NOT EXISTS artifacts (
         artifact_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -192,6 +230,8 @@ export class SwarmDatabase {
 
       CREATE TABLE IF NOT EXISTS worker_states (
         worker_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        role_title TEXT,
         parent_session_id TEXT NOT NULL,
         worker_session_id TEXT,
         agent_spec_id TEXT,
@@ -248,6 +288,13 @@ export class SwarmDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_symphony_claims_work_item
         ON symphony_claims(work_item_key, workflow_path);
+
+      CREATE INDEX IF NOT EXISTS idx_session_context_entries_session
+        ON session_context_entries(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_session_compactions_session
+        ON session_compactions(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_tool_content_replacements_scope
+        ON tool_content_replacements(scope_kind, scope_id, created_at);
     `);
     this.addColumnIfMissing("envelopes", "subtask_id", "TEXT");
     this.addColumnIfMissing("envelopes", "attempt", "INTEGER");
@@ -261,6 +308,8 @@ export class SwarmDatabase {
     this.addColumnIfMissing("sessions", "parent_session_id", "TEXT");
     this.addColumnIfMissing("sessions", "workspace_lease_id", "TEXT");
     this.addColumnIfMissing("sessions", "final_outcome_json", "TEXT");
+    this.addColumnIfMissing("worker_states", "display_name", "TEXT");
+    this.addColumnIfMissing("worker_states", "role_title", "TEXT");
     this.addColumnIfMissing("worker_states", "agent_spec_id", "TEXT");
     this.addColumnIfMissing("worker_states", "invocation_mode", "TEXT");
     this.addColumnIfMissing("worker_states", "handoff_id", "TEXT");

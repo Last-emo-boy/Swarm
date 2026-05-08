@@ -504,25 +504,29 @@ function readMcpJson(path: string, trust: McpServerSettings["trust"]): Record<st
     const servers = parsed.mcpServers ?? parsed.servers ?? {};
     return Object.fromEntries(
       Object.entries(servers)
-        .filter(([, value]) => isRecord(value))
-        .map(([id, value]) => [
-          id,
-          {
-            disabled: value.disabled === true || trust === "project",
-            transport: value.transport === "http" ? "http" : "stdio",
-            command: typeof value.command === "string" ? value.command : undefined,
-            args: Array.isArray(value.args) ? value.args.map(String) : [],
-            cwd: typeof value.cwd === "string" ? resolve(dirname(path), value.cwd) : undefined,
-            env: isStringRecord(value.env),
-            url: typeof value.url === "string" ? value.url : undefined,
-            headers: isStringRecord(value.headers),
-            trust,
-            exposeTools: value.exposeTools !== false,
-            exposeResources: value.exposeResources === true,
-            exposePrompts: value.exposePrompts === true,
-            timeoutMs: positiveInteger(value.timeoutMs, 30_000)
-          } satisfies McpServerSettings
-        ])
+        .flatMap(([id, value]) => {
+          if (!isRecord(value)) {
+            return [];
+          }
+          return [[
+            id,
+            {
+              disabled: value.disabled === true || trust === "project",
+              transport: value.transport === "http" ? "http" : "stdio",
+              command: typeof value.command === "string" ? value.command : undefined,
+              args: Array.isArray(value.args) ? value.args.map(String) : [],
+              cwd: typeof value.cwd === "string" ? resolve(dirname(path), value.cwd) : undefined,
+              env: isStringRecord(value.env),
+              url: typeof value.url === "string" ? value.url : undefined,
+              headers: isStringRecord(value.headers),
+              trust,
+              exposeTools: value.exposeTools !== false,
+              exposeResources: value.exposeResources === true,
+              exposePrompts: value.exposePrompts === true,
+              timeoutMs: positiveInteger(value.timeoutMs, 30_000)
+            } satisfies McpServerSettings
+          ]];
+        })
     );
   } catch {
     return {};

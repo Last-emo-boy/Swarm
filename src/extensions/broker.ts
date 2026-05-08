@@ -46,6 +46,7 @@ export type CapabilityBrokerInput = {
     trust: CapabilityDescriptor["trust"];
   };
   serverWebSearch?: LocalToolContext["serverWebSearch"];
+  blackboard?: LocalToolContext["blackboard"];
 };
 
 export type CapabilityInvokeOptions = {
@@ -139,7 +140,7 @@ export class CapabilityBroker {
   ): Promise<ToolResult> {
     if (capability.kind === "local_tool" || capability.id.startsWith("local_tool.")) {
       const actionName = localActionNameForCapability(capability);
-      const action = normalizeToolAction({ ...args, action: actionName });
+      const action = normalizeToolAction({ ...args, action: args.action ?? capability.name ?? actionName }, actionName);
       const context: LocalToolContext = {
         workspace: this.input.workspaceForSession(sessionId),
         settings: this.input.settings,
@@ -147,6 +148,7 @@ export class CapabilityBroker {
         taskId,
         attempt: 0,
         serverWebSearch: this.input.serverWebSearch,
+        blackboard: this.input.blackboard,
         onWorkspaceChange: (change) => this.input.onWorkspaceChange?.(sessionId, change),
         onFileLock: this.input.onFileLock,
         delegate: options.allowDelegate && sessionId && this.input.delegate

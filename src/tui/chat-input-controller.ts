@@ -40,6 +40,10 @@ export type ChatInputControllerResult = {
   submit?: string;
 };
 
+const GLOBAL_CTRL_KEYS = new Set(["c", "o", "t", "n", "p"]);
+export const CHAT_INPUT_COMPLETION_LIMIT = 8;
+export const CHAT_INPUT_COMPLETION_VISIBLE_ROWS = 6;
+
 export function createChatInputControllerState(): ChatInputControllerState {
   return {
     input: { value: "", cursor: 0 },
@@ -52,13 +56,13 @@ export function createChatInputControllerState(): ChatInputControllerState {
 export function chatInputCompletionCandidates(state: ChatInputControllerState): SlashCommandSpec[] {
   const key = slashCommandCompletionKey(state.input.value, state.input.cursor);
   return key && key !== state.input.dismissedCompletionKey
-    ? commandCandidatesForInput(state.input.value, state.input.cursor).slice(0, 6)
+    ? commandCandidatesForInput(state.input.value, state.input.cursor).slice(0, CHAT_INPUT_COMPLETION_LIMIT)
     : [];
 }
 
 export function chatInputCompletionRows(state: ChatInputControllerState): number {
   const candidates = chatInputCompletionCandidates(state);
-  return candidates.length > 0 ? Math.min(candidates.length, 4) + 4 : 0;
+  return candidates.length > 0 ? Math.min(candidates.length, CHAT_INPUT_COMPLETION_VISIBLE_ROWS) + 4 : 0;
 }
 
 export function selectedChatInputCompletionIndex(state: ChatInputControllerState): number {
@@ -71,6 +75,10 @@ export function applyChatInputKey(
   character: string | undefined,
   key: ChatInputKey
 ): ChatInputControllerResult {
+  if (isGlobalControlKey(character, key)) {
+    return { state };
+  }
+
   if (key.escape) {
     const activeCompletionKey = slashCommandCompletionKey(state.input.value, state.input.cursor);
     if (activeCompletionKey && activeCompletionKey !== state.input.dismissedCompletionKey) {
@@ -231,6 +239,36 @@ export function applyChatInputKey(
   }
 
   return { state };
+}
+
+function isGlobalControlKey(character: string | undefined, key: ChatInputKey): boolean {
+  if (isRawGlobalControlCharacter(character)) {
+    return true;
+  }
+  if (!key.ctrl) {
+    return false;
+  }
+  return GLOBAL_CTRL_KEYS.has(normalizeCtrlCharacter(character));
+}
+
+function isRawGlobalControlCharacter(character: string | undefined): boolean {
+  return character === "\x03" ||
+    character === "\x0e" ||
+    character === "\x0f" ||
+    character === "\x10" ||
+    character === "\x14";
+}
+
+function normalizeCtrlCharacter(character: string | undefined): string {
+  if (!character) {
+    return "";
+  }
+  if (character === "\x03") return "c";
+  if (character === "\x0e") return "n";
+  if (character === "\x0f") return "o";
+  if (character === "\x10") return "p";
+  if (character === "\x14") return "t";
+  return character.toLowerCase();
 }
 
 function reduceInputState(state: InputState, action: InputAction): InputState {

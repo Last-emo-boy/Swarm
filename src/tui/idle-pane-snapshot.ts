@@ -1,6 +1,7 @@
 import type { BlackboardEntry, RunAttempt, WorkspaceLease } from "../protocol/types.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
+import type { WorkerRecord } from "../storage/worker-state-store.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 
 type RecentSessionRow = ReturnType<SwarmRuntime["sessionStore"]["listRecent"]>[number];
@@ -10,6 +11,7 @@ export type IdlePaneSnapshot = {
   attempts: RunAttempt[];
   leases: WorkspaceLease[];
   approvals: ApprovalRecord[];
+  workers: WorkerRecord[];
   blackboard: BlackboardEntry[];
 };
 
@@ -19,6 +21,7 @@ export function emptyIdlePaneSnapshot(): IdlePaneSnapshot {
     attempts: [],
     leases: [],
     approvals: [],
+    workers: [],
     blackboard: []
   };
 }
@@ -28,11 +31,12 @@ export function readIdlePaneSnapshot(runtime: SwarmRuntime | undefined): IdlePan
     return emptyIdlePaneSnapshot();
   }
   return {
-    sessions: runtime.sessionStore.listRecent(5),
-    attempts: runtime.runAttemptStore.listRecent(6),
-    leases: runtime.workspaceLeaseStore.listRecent(4),
-    approvals: runtime.approvalStore.list(undefined, 8).filter((record) => record.status === "pending").slice(0, 4),
-    blackboard: runtime.blackboardStore.listRecent(5)
+    sessions: runtime.listRecentSessionsForWorkspace(5),
+    attempts: runtime.listRecentAttemptsForWorkspace(6),
+    leases: runtime.listRecentLeasesForWorkspace(4),
+    approvals: runtime.listRecentApprovalsForWorkspace(8).filter((record) => record.status === "pending").slice(0, 4),
+    workers: runtime.listRecentWorkersForWorkspace(6),
+    blackboard: runtime.listRecentBlackboardForWorkspace(5)
   };
 }
 
@@ -64,6 +68,15 @@ export function idlePaneSnapshotSignature(snapshot: IdlePaneSnapshot): string {
       approval.updated_at,
       approval.risk_class,
       approval.target
+    ]),
+    workers: snapshot.workers.map((worker) => [
+      worker.worker_id,
+      worker.display_name,
+      worker.role_title ?? "",
+      worker.status,
+      worker.agent_spec_id ?? "",
+      worker.updated_at,
+      worker.last_result ?? ""
     ]),
     blackboard: snapshot.blackboard.map((entry) => [
       entry.entry_id,

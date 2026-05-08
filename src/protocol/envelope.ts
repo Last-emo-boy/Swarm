@@ -7,8 +7,7 @@ export function nowIso(): string {
 
 const IDEMPOTENT_TYPES = new Set([
   "task.result",
-  "artifact.create",
-  "blackboard.write"
+  "artifact.create"
 ]);
 
 export function createEnvelope<T>(input: {

@@ -10,6 +10,9 @@ type ConcreteRunMode = Exclude<RunMode, "auto">;
 type RouteRisk = "low" | "medium" | "high";
 type RouteSideEffects = "none" | "read_workspace" | "modify_workspace" | "run_commands" | "network" | "unknown";
 
+const ROUTER_MAX_OUTPUT_TOKENS = 1_200;
+const ROUTER_REPAIR_MAX_OUTPUT_TOKENS = 1_500;
+
 export type ExecutionRoute = {
   mode: ConcreteRunMode;
   reason: string;
@@ -35,26 +38,33 @@ export async function routeExecution(
   try {
     const content = await provider.generateText({
       model: provider.workerModel,
-      system: routeSystemPrompt(),
-      user: JSON.stringify(routeDecisionInput(objective), null, 2)
+      system: [{ text: routeSystemPrompt(), cache: true }],
+      user: JSON.stringify(routeDecisionInput(objective), null, 2),
+      usage: { purpose: "execution_router" },
+      maxOutputTokens: ROUTER_MAX_OUTPUT_TOKENS
     });
     try {
       return applyStructuredRoutingPolicy(parseRoute(content));
     } catch (error) {
       const repaired = await provider.generateText({
         model: provider.workerModel,
-        system: [
-          "You repair invalid JSON for Swarm's execution mode router.",
-          "Return exactly one valid JSON object and nothing else.",
-          "Preserve the intended decision when possible, but fill every required field from the output contract.",
-          "If the invalid output is not recoverable, choose coding_loop with low confidence."
-        ].join(" "),
+        system: [{
+          text: [
+            "You repair invalid JSON for Swarm's execution mode router.",
+            "Return exactly one valid JSON object and nothing else.",
+            "Preserve the intended decision when possible, but fill every required field from the output contract.",
+            "If the invalid output is not recoverable, choose coding_loop with low confidence."
+          ].join(" "),
+          cache: true
+        }],
         user: JSON.stringify({
           objective,
           invalid_output: content,
           parse_error: error instanceof Error ? error.message : String(error),
           output_contract: routeOutputContract()
-        }, null, 2)
+        }, null, 2),
+        usage: { purpose: "execution_router_repair" },
+        maxOutputTokens: ROUTER_REPAIR_MAX_OUTPUT_TOKENS
       });
       return applyStructuredRoutingPolicy(parseRoute(repaired));
     }
@@ -81,6 +91,7 @@ function routeDecisionInput(objective: string): Record<string, unknown> {
       "LLM control decisions drive routing and interruption.",
       "The reliable local coding loop is the default path for coding and project work.",
       "Full swarm is preferred when the user explicitly asks for Agent Swarm, multiple roles, or independent expert workstreams and the task is more than a small edit.",
+      "Until full_swarm supports model-generated mutating tool tasks safely, workspace-modifying explicit swarm requests should start in coding_loop and use Agent delegation for parallel roles.",
       "The coding loop may also escalate into an internal swarm by spawning subagents with agent.delegate; execution mode is a starting point, not a permanent state.",
       "Workers never speak directly to users; worker results return to the main Swarm."
     ],
@@ -127,6 +138,7 @@ function routeDecisionInput(objective: string): Record<string, unknown> {
         "Codex-like usability comes first: local read/edit/run/check flow should be reliable before broad swarm automation.",
         "Multi-agent work should be intentional, scoped, observable, and justified by independent work streams; explicit user requests for swarm or named roles are strong evidence.",
         "Do not keep a project in one state forever: coding_loop can spawn internal workers, and full_swarm can be selected when broad coordination is valuable.",
+        "For workspace-modifying or command-running explicit swarm requests, choose coding_loop so the edit/test loop can dynamically spawn agents instead of executing blind planner tool calls.",
         "If the decision is uncertain, choose coding_loop."
       ]
     },
@@ -162,7 +174,7 @@ function routeDecisionFallback(error: unknown): ExecutionRoute {
   };
 }
 
-function applyStructuredRoutingPolicy(route: ExecutionRoute): ExecutionRoute {
+export function applyStructuredRoutingPolicy(route: ExecutionRoute): ExecutionRoute {
   if (route.mode === "chat" && (route.requires_workspace || route.expected_side_effects !== "none")) {
     return {
       ...route,
@@ -178,6 +190,20 @@ function applyStructuredRoutingPolicy(route: ExecutionRoute): ExecutionRoute {
 
   if (route.mode !== "full_swarm") {
     return route;
+  }
+
+  if (route.expected_side_effects === "modify_workspace" || route.expected_side_effects === "run_commands") {
+    return {
+      ...route,
+      mode: "coding_loop",
+      confidence: Math.min(route.confidence, 0.8),
+      reason: [
+        "Structured route selected full_swarm, but the request is expected to modify the workspace or run commands.",
+        "Using coding_loop preserves the read/edit/verify loop and can still spawn internal Agent workers for explicit swarm roles.",
+        `Router reason: ${route.reason}`
+      ].join(" "),
+      fallback_mode: "coding_loop"
+    };
   }
 
   return route;

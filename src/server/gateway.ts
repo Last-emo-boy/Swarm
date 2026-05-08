@@ -11,6 +11,7 @@ import { installPluginRoot, removePluginRoot, setCapabilityEnabled, setCapabilit
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import type { CapabilityFilter } from "../extensions/types.js";
+import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
 import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
 
 export type GatewayOptions = {
@@ -405,7 +406,7 @@ export class SwarmGatewayServer {
         this.runtime.listCapabilities(filter),
         this.runtime.listCapabilityProviders()
       ]);
-      sendJson(response, 200, { capabilities, providers });
+      sendJson(response, 200, { capabilities, providers, summary: summarizeCapabilityCatalog(capabilities, providers) });
       return;
     }
 
@@ -459,7 +460,7 @@ export class SwarmGatewayServer {
       const providerId = optionalString(body.provider_id ?? body.providerId ?? url.searchParams.get("provider_id") ?? url.searchParams.get("provider"));
       const providers = await this.runtime.refreshCapabilities(providerId);
       const capabilities = await this.runtime.listCapabilities(capabilityFilterFromUrl(url));
-      sendJson(response, 200, { providers, capabilities });
+      sendJson(response, 200, { providers, capabilities, summary: summarizeCapabilityCatalog(capabilities, providers) });
       return;
     }
 
@@ -473,7 +474,8 @@ export class SwarmGatewayServer {
     action?: string
   ): Promise<void> {
     if (request.method === "GET" && !skillName) {
-      sendJson(response, 200, { skills: this.runtime.listSkills() });
+      const skills = this.runtime.listSkills();
+      sendJson(response, 200, { skills, summary: summarizeSkillCatalog(skills) });
       return;
     }
 
@@ -507,7 +509,8 @@ export class SwarmGatewayServer {
     action?: string
   ): Promise<void> {
     if (request.method === "GET" && !pluginId) {
-      sendJson(response, 200, { plugins: this.runtime.listPlugins() });
+      const plugins = this.runtime.listPlugins();
+      sendJson(response, 200, { plugins, summary: summarizePluginCatalog(plugins) });
       return;
     }
 
@@ -567,7 +570,8 @@ export class SwarmGatewayServer {
     subAction?: string
   ): Promise<void> {
     if (resource === "servers" && request.method === "GET" && !serverId) {
-      sendJson(response, 200, { servers: this.runtime.listMcpServers() });
+      const servers = this.runtime.listMcpServers();
+      sendJson(response, 200, { servers, summary: summarizeMcpCatalog(servers) });
       return;
     }
 
@@ -576,14 +580,14 @@ export class SwarmGatewayServer {
       if (!server) {
         throw new HttpError(404, `Unknown MCP server: ${serverId}`);
       }
-      sendJson(response, 200, { server });
+      sendJson(response, 200, { server, summary: summarizeMcpCatalog([server]) });
       return;
     }
 
     if (resource === "servers" && request.method === "POST" && serverId && action === "refresh") {
       const server = await this.runtime.refreshMcpServer(serverId);
       const capabilities = await this.runtime.listCapabilities({ providerId: `mcp:${serverId}`, includeDisabled: true });
-      sendJson(response, 200, { server, capabilities });
+      sendJson(response, 200, { server, capabilities, summary: summarizeMcpCatalog([server]) });
       return;
     }
 

@@ -1,7 +1,15 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile, rename } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
+import {
+  getBackgroundProcess,
+  grepBackgroundProcessLog,
+  listBackgroundProcesses,
+  readBackgroundProcessTail,
+  startBackgroundProcess,
+  stopBackgroundProcess
+} from "./background-processes.js";
 import {
   assertToolAllowedByPermissions,
   assertReadableByDenyRules,
@@ -11,6 +19,8 @@ import {
   resolveWritablePath
 } from "./permissions.js";
 import type { LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
+
+const AGENT_TOOL_DEFAULT_CAPABILITY = "code.research";
 
 type WalkedFile = {
   path: string;
@@ -38,16 +48,17 @@ type ShellCommandResult = {
 };
 
 const readSnapshots = new Map<string, ReadSnapshot>();
-const todoStates = new Map<string, Array<{ content: string; status: "pending" | "in_progress" | "completed" }>>();
+const todoStates = new Map<string, Array<{ content: string; activeForm?: string; status: "pending" | "in_progress" | "completed" }>>();
 const writeLocks = new Map<string, { holder: string; acquiredAt: string }>();
 
 export function normalizeToolAction(inputs: Record<string, unknown>, capability?: string): ToolAction {
   const rawAction = String(inputs.action ?? capability ?? "").trim();
   const action = normalizeActionName(rawAction);
+  const isVisibleAgentAction = rawAction === "Agent" || rawAction === "Task";
   if (action === "file.read") {
     return {
       type: "file.read",
-      path: optionalStringInput(inputs.path),
+      path: optionalStringInput(inputs.file_path ?? inputs.filePath ?? inputs.path),
       paths: stringArrayInput(inputs.paths),
       startLine: numberInput(inputs.startLine ?? inputs.start_line ?? inputs.start),
       endLine: numberInput(inputs.endLine ?? inputs.end_line ?? inputs.end),
@@ -67,7 +78,7 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
   if (action === "file.glob") {
     return {
       type: "file.glob",
-      root: stringInput(inputs.root || "."),
+      root: stringInput(inputs.root || inputs.path || "."),
       pattern: stringInput(inputs.pattern || inputs.glob || "**/*"),
       maxResults: numberInput(inputs.maxResults ?? inputs.max_results),
       maxDepth: numberInput(inputs.maxDepth ?? inputs.max_depth)
@@ -76,28 +87,86 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
   if (action === "file.grep") {
     return {
       type: "file.grep",
-      root: stringInput(inputs.root || "."),
+      root: stringInput(inputs.root || inputs.path || "."),
       pattern: stringInput(inputs.pattern || inputs.query),
-      include: optionalStringInput(inputs.include),
-      maxMatches: numberInput(inputs.maxMatches ?? inputs.max_matches),
-      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines)
+      include: optionalStringInput(inputs.include ?? inputs.glob),
+      maxMatches: numberInput(inputs.maxMatches ?? inputs.max_matches ?? inputs.head_limit),
+      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines ?? inputs.context ?? inputs["-C"])
     };
   }
   if (action === "file.stat") {
     return { type: "file.stat", path: stringInput(inputs.path) };
   }
+  if (action === "file.resolve") {
+    return { type: "file.resolve", path: requiredStringInput(inputs.path, "file.resolve requires path") };
+  }
   if (action === "file.write") {
-    return { type: "file.write", path: stringInput(inputs.path), content: stringInput(inputs.content) };
+    return { type: "file.write", path: requiredStringInput(inputs.file_path ?? inputs.filePath ?? inputs.path, "file.write requires path"), content: stringInput(inputs.content) };
   }
   if (action === "file.edit") {
     return {
       type: "file.edit",
-      path: stringInput(inputs.path),
+      path: requiredStringInput(inputs.file_path ?? inputs.filePath ?? inputs.path, "file.edit requires path"),
       operation: String(inputs.operation ?? inputs.command ?? "str_replace") === "insert" ? "insert" : "str_replace",
-      oldText: optionalStringInput(inputs.oldText ?? inputs.old_text ?? inputs.oldString ?? inputs.old_string),
-      newText: optionalStringInput(inputs.newText ?? inputs.new_text ?? inputs.newString ?? inputs.new_string),
+      oldText: optionalStringInput(inputs.old_string ?? inputs.oldText ?? inputs.old_text ?? inputs.oldString ?? inputs.old_string),
+      newText: optionalStringInput(inputs.new_string ?? inputs.newText ?? inputs.new_text ?? inputs.newString ?? inputs.new_string),
+      replaceAll: inputs.replaceAll === true || inputs.replace_all === true || inputs.replaceAll === "true" || inputs.replace_all === "true",
       line: numberInput(inputs.line ?? inputs.insertLine ?? inputs.insert_line),
       content: optionalStringInput(inputs.content ?? inputs.insertText ?? inputs.insert_text)
+    };
+  }
+  if (action === "file.mkdir") {
+    return {
+      type: "file.mkdir",
+      path: requiredStringInput(inputs.path, "file.mkdir requires path"),
+      recursive: inputs.recursive !== false && inputs.recursive !== "false"
+    };
+  }
+  if (action === "file.move") {
+    return {
+      type: "file.move",
+      source: requiredStringInput(inputs.source ?? inputs.from ?? inputs.src, "file.move requires source"),
+      destination: requiredStringInput(inputs.destination ?? inputs.to ?? inputs.dest, "file.move requires destination"),
+      overwrite: inputs.overwrite === true || inputs.overwrite === "true"
+    };
+  }
+  if (action === "file.copy") {
+    return {
+      type: "file.copy",
+      source: requiredStringInput(inputs.source ?? inputs.from ?? inputs.src, "file.copy requires source"),
+      destination: requiredStringInput(inputs.destination ?? inputs.to ?? inputs.dest, "file.copy requires destination"),
+      overwrite: inputs.overwrite === true || inputs.overwrite === "true",
+      recursive: inputs.recursive === true || inputs.recursive === "true"
+    };
+  }
+  if (action === "file.delete") {
+    return {
+      type: "file.delete",
+      path: requiredStringInput(inputs.path, "file.delete requires path"),
+      recursive: inputs.recursive === true || inputs.recursive === "true"
+    };
+  }
+  if (action === "file.patch") {
+    return {
+      type: "file.patch",
+      path: requiredStringInput(inputs.path, "file.patch requires path"),
+      hunks: patchHunksInput(inputs.hunks ?? inputs.replacements ?? inputs.patch)
+    };
+  }
+  if (action === "json.read") {
+    return {
+      type: "json.read",
+      path: requiredStringInput(inputs.path, "json.read requires path"),
+      pointer: optionalStringInput(inputs.pointer ?? inputs.jsonPointer ?? inputs.json_pointer)
+    };
+  }
+  if (action === "json.edit") {
+    return {
+      type: "json.edit",
+      path: requiredStringInput(inputs.path, "json.edit requires path"),
+      operation: jsonEditOperationInput(inputs.operation ?? inputs.command),
+      pointer: requiredStringInput(inputs.pointer ?? inputs.jsonPointer ?? inputs.json_pointer, "json.edit requires pointer"),
+      value: inputs.value
     };
   }
   if (action === "todo.write") {
@@ -106,13 +175,130 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       todos: todoListInput(inputs.todos)
     };
   }
+  if (action === "blackboard.write") {
+    return {
+      type: "blackboard.write",
+      key: requiredStringInput(inputs.key, "BlackboardWrite requires key"),
+      value: inputs.value ?? inputs.content,
+      entryType: blackboardEntryTypeInput(inputs.entryType ?? inputs.entry_type ?? inputs.type),
+      visibility: blackboardVisibilityInput(inputs.visibility),
+      tags: stringListInput(inputs.tags),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      taskId: optionalStringInput(inputs.taskId ?? inputs.task_id)
+    };
+  }
+  if (action === "blackboard.read") {
+    const entryId = optionalStringInput(inputs.entryId ?? inputs.entry_id);
+    const key = optionalStringInput(inputs.key);
+    if (!entryId && !key) {
+      throw new Error("BlackboardRead requires entry_id or key");
+    }
+    return {
+      type: "blackboard.read",
+      entryId,
+      key,
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      limit: numberInput(inputs.limit)
+    };
+  }
+  if (action === "blackboard.search") {
+    return {
+      type: "blackboard.search",
+      query: optionalStringInput(inputs.query),
+      entryType: optionalBlackboardEntryTypeInput(inputs.entryType ?? inputs.entry_type ?? inputs.type),
+      tag: optionalStringInput(inputs.tag),
+      keyPrefix: optionalStringInput(inputs.keyPrefix ?? inputs.key_prefix),
+      taskId: optionalStringInput(inputs.taskId ?? inputs.task_id),
+      agentId: optionalStringInput(inputs.agentId ?? inputs.agent_id),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      limit: numberInput(inputs.limit)
+    };
+  }
+  if (action === "blackboard.list") {
+    return {
+      type: "blackboard.list",
+      entryType: optionalBlackboardEntryTypeInput(inputs.entryType ?? inputs.entry_type ?? inputs.type),
+      tag: optionalStringInput(inputs.tag),
+      keyPrefix: optionalStringInput(inputs.keyPrefix ?? inputs.key_prefix),
+      taskId: optionalStringInput(inputs.taskId ?? inputs.task_id),
+      agentId: optionalStringInput(inputs.agentId ?? inputs.agent_id),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      limit: numberInput(inputs.limit)
+    };
+  }
   if (action === "shell.exec") {
     return {
       type: "shell.exec",
       command: stringInput(inputs.command),
       cwd: optionalStringInput(inputs.cwd),
-      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms),
-      maxOutputBytes: numberInput(inputs.maxOutputBytes ?? inputs.max_output_bytes)
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
+      maxOutputBytes: numberInput(inputs.maxOutputBytes ?? inputs.max_output_bytes),
+      runInBackground: booleanInput(inputs.runInBackground ?? inputs.run_in_background ?? inputs.background),
+      description: optionalStringInput(inputs.description),
+      maxLogBytes: numberInput(inputs.maxLogBytes ?? inputs.max_log_bytes)
+    };
+  }
+  if (action === "exec") {
+    return {
+      type: "exec",
+      command: stringInput(inputs.command),
+      cwd: optionalStringInput(inputs.cwd),
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
+      maxOutputBytes: numberInput(inputs.maxOutputBytes ?? inputs.max_output_bytes),
+      runInBackground: booleanInput(inputs.runInBackground ?? inputs.run_in_background ?? inputs.background),
+      description: optionalStringInput(inputs.description),
+      maxLogBytes: numberInput(inputs.maxLogBytes ?? inputs.max_log_bytes)
+    };
+  }
+  if (action === "process.start") {
+    return {
+      type: "process.start",
+      command: stringInput(inputs.command),
+      cwd: optionalStringInput(inputs.cwd),
+      description: optionalStringInput(inputs.description),
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
+      maxLogBytes: numberInput(inputs.maxLogBytes ?? inputs.max_log_bytes)
+    };
+  }
+  if (action === "process.status") {
+    return {
+      type: "process.status",
+      processId: optionalStringInput(inputs.processId ?? inputs.process_id ?? inputs.id),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id)
+    };
+  }
+  if (action === "process.list") {
+    return {
+      type: "process.list",
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      status: processStatusInput(inputs.status),
+      limit: numberInput(inputs.limit)
+    };
+  }
+  if (action === "process.tail") {
+    return {
+      type: "process.tail",
+      processId: requiredStringInput(inputs.processId ?? inputs.process_id ?? inputs.id, "process.tail requires processId"),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      lines: numberInput(inputs.lines ?? inputs.limit),
+      maxBytes: numberInput(inputs.maxBytes ?? inputs.max_bytes)
+    };
+  }
+  if (action === "process.grep") {
+    return {
+      type: "process.grep",
+      processId: requiredStringInput(inputs.processId ?? inputs.process_id ?? inputs.id, "process.grep requires processId"),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id),
+      pattern: requiredStringInput(inputs.pattern ?? inputs.query, "process.grep requires pattern"),
+      maxMatches: numberInput(inputs.maxMatches ?? inputs.max_matches ?? inputs.head_limit),
+      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines ?? inputs.context)
+    };
+  }
+  if (action === "process.stop") {
+    return {
+      type: "process.stop",
+      processId: requiredStringInput(inputs.processId ?? inputs.process_id ?? inputs.id, "process.stop requires processId"),
+      sessionId: optionalStringInput(inputs.sessionId ?? inputs.session_id)
     };
   }
   if (action === "web.search") {
@@ -128,8 +314,19 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
     return {
       type: "web.fetch",
       url: stringInput(inputs.url),
+      prompt: optionalStringInput(inputs.prompt),
       timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms),
       maxBytes: numberInput(inputs.maxBytes ?? inputs.max_bytes)
+    };
+  }
+  if (action === "notebook.edit") {
+    return {
+      type: "notebook.edit",
+      notebookPath: requiredStringInput(inputs.notebook_path ?? inputs.notebookPath ?? inputs.path, "NotebookEdit requires notebook_path"),
+      cellId: optionalStringInput(inputs.cell_id ?? inputs.cellId),
+      newSource: optionalStringInput(inputs.new_source ?? inputs.newSource),
+      cellType: notebookCellTypeInput(inputs.cell_type ?? inputs.cellType),
+      editMode: notebookEditModeInput(inputs.edit_mode ?? inputs.editMode)
     };
   }
   if (action === "code.test") {
@@ -137,7 +334,7 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       type: "code.test",
       command: stringInput(inputs.command),
       cwd: optionalStringInput(inputs.cwd),
-      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms)
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout)
     };
   }
   if (action === "code.lint") {
@@ -145,6 +342,15 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       type: "code.lint",
       root: optionalStringInput(inputs.root ?? inputs.path),
       include: optionalStringInput(inputs.include)
+    };
+  }
+  if (action === "code.build") {
+    return {
+      type: "code.build",
+      command: stringInput(inputs.command),
+      cwd: optionalStringInput(inputs.cwd),
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
+      maxOutputBytes: numberInput(inputs.maxOutputBytes ?? inputs.max_output_bytes)
     };
   }
   if (action === "git.status") {
@@ -173,28 +379,43 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       name: optionalStringInput(inputs.name)
     };
   }
+  if (action === "git.show") {
+    return {
+      type: "git.show",
+      cwd: optionalStringInput(inputs.cwd),
+      revision: optionalStringInput(inputs.revision ?? inputs.rev ?? inputs.ref),
+      path: optionalStringInput(inputs.path),
+      maxOutputBytes: numberInput(inputs.maxOutputBytes ?? inputs.max_output_bytes)
+    };
+  }
   if (action === "package.install") {
     return {
       type: "package.install",
       command: stringInput(inputs.command),
       cwd: optionalStringInput(inputs.cwd),
-      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms)
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout)
     };
   }
-  if (action === "solidity.compile") {
+  if (action === "package.info") {
     return {
-      type: "solidity.compile",
+      type: "package.info",
       cwd: optionalStringInput(inputs.cwd),
-      framework: String(inputs.framework ?? "hardhat") === "solc" ? "solc" : String(inputs.framework) === "foundry" ? "foundry" : "hardhat"
+      manifest: optionalStringInput(inputs.manifest ?? inputs.path)
+    };
+  }
+  if (action === "project.detect") {
+    return {
+      type: "project.detect",
+      root: optionalStringInput(inputs.root ?? inputs.cwd ?? inputs.path)
     };
   }
   if (action === "agent.delegate") {
     return {
       type: "agent.delegate",
-      capability: stringInput(inputs.capability),
-      task: stringInput(inputs.task ?? inputs.description ?? inputs.objective),
+      capability: requiredStringInput(inputs.capability ?? inputs.subagent_type ?? inputs.agent_type ?? (isVisibleAgentAction ? AGENT_TOOL_DEFAULT_CAPABILITY : undefined), "agent.delegate requires capability"),
+      task: requiredStringInput(inputs.task ?? inputs.prompt ?? inputs.description ?? inputs.objective, "agent.delegate requires task"),
       context: optionalStringInput(inputs.context),
-      preferred_agent_spec_id: optionalStringInput(inputs.preferred_agent_spec_id ?? inputs.agent_spec_id ?? inputs.agent),
+      preferred_agent_spec_id: optionalStringInput(inputs.preferred_agent_spec_id ?? inputs.agent_spec_id ?? inputs.agent ?? inputs.subagent_type),
       preferred_mode: agentInvocationModeInput(inputs.preferred_mode ?? inputs.invocation_mode ?? inputs.mode),
       file_scope: stringArrayInput(inputs.file_scope ?? inputs.fileScope ?? inputs.paths)
     };
@@ -220,6 +441,9 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
   if (action.type === "file.stat") {
     return statLocalPath(action, context);
   }
+  if (action.type === "file.resolve") {
+    return resolveLocalPath(action, context);
+  }
   if (action.type === "file.write") {
     if (!context.settings.tools.directWrite) {
       throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
@@ -232,11 +456,83 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
     }
     return editLocalFile(action, context);
   }
+  if (action.type === "file.mkdir") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
+    }
+    return makeLocalDirectory(action, context);
+  }
+  if (action.type === "file.move") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
+    }
+    return moveLocalPath(action, context);
+  }
+  if (action.type === "file.copy") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
+    }
+    return copyLocalPath(action, context);
+  }
+  if (action.type === "file.delete") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
+    }
+    return deleteLocalPath(action, context);
+  }
+  if (action.type === "file.patch") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
+    }
+    return patchLocalFile(action, context);
+  }
+  if (action.type === "json.read") {
+    return readJsonFile(action, context);
+  }
+  if (action.type === "json.edit") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct file writes are disabled by ~/.swarm/settings.json");
+    }
+    return editJsonFile(action, context);
+  }
   if (action.type === "todo.write") {
     return writeTodos(action, context);
   }
+  if (action.type === "blackboard.write") {
+    return writeBlackboard(action, context);
+  }
+  if (action.type === "blackboard.read") {
+    return readBlackboard(action, context);
+  }
+  if (action.type === "blackboard.search") {
+    return searchBlackboard(action, context);
+  }
+  if (action.type === "blackboard.list") {
+    return listBlackboard(action, context);
+  }
   if (action.type === "shell.exec") {
     return executeShell(action, context);
+  }
+  if (action.type === "exec") {
+    return executeExec(action, context);
+  }
+  if (action.type === "process.start") {
+    return executeProcessStart(action, context);
+  }
+  if (action.type === "process.status") {
+    return executeProcessStatus(action, context);
+  }
+  if (action.type === "process.list") {
+    return executeProcessList(action, context);
+  }
+  if (action.type === "process.tail") {
+    return executeProcessTail(action, context);
+  }
+  if (action.type === "process.grep") {
+    return executeProcessGrep(action, context);
+  }
+  if (action.type === "process.stop") {
+    return executeProcessStop(action, context);
   }
   if (action.type === "web.search") {
     if (!context.settings.tools.webSearch) {
@@ -250,11 +546,20 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
     }
     return webFetch(action);
   }
+  if (action.type === "notebook.edit") {
+    if (!context.settings.tools.directWrite) {
+      throw new Error("Direct notebook edits are disabled by ~/.swarm/settings.json");
+    }
+    return editNotebook(action, context);
+  }
   if (action.type === "code.test") {
     return executeCodeTest(action, context);
   }
   if (action.type === "code.lint") {
     return executeCodeLint(action, context);
+  }
+  if (action.type === "code.build") {
+    return executeCodeBuild(action, context);
   }
   if (action.type === "git.status") {
     return executeGitStatus(action, context);
@@ -268,11 +573,17 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
   if (action.type === "git.branch") {
     return executeGitBranch(action, context);
   }
+  if (action.type === "git.show") {
+    return executeGitShow(action, context);
+  }
   if (action.type === "package.install") {
     return executePackageInstall(action, context);
   }
-  if (action.type === "solidity.compile") {
-    return executeSolidityCompile(action, context);
+  if (action.type === "package.info") {
+    return readPackageInfo(action, context);
+  }
+  if (action.type === "project.detect") {
+    return detectProject(action, context);
   }
   if (action.type === "agent.delegate") {
     if (!context.delegate) {
@@ -325,15 +636,15 @@ async function readLocalFile(action: Extract<ToolAction, { type: "file.read" }>,
         }
       })
     );
-    const failures = results.filter((result) => result.metadata?.error).length;
+    const failures = results.filter((result) => result.status === "failed" || result.metadata?.error).length;
     return {
       action: action.type,
       status: failures === results.length ? "failed" : failures > 0 ? "partial" : "success",
       summary: `read ${results.length - failures}/${results.length} files${failures ? `, ${failures} failed` : ""}`,
       content: results
         .map((result) =>
-          result.metadata?.error
-            ? `--- ${String(result.metadata.path ?? "file")} ---\nERROR: ${String(result.metadata.error)}`
+          result.status === "failed" || result.metadata?.error
+            ? `--- ${String(result.metadata?.path ?? "file")} ---\nERROR: ${String(result.errors?.[0] ?? result.metadata?.error ?? result.summary)}`
             : `--- ${String(result.metadata?.path ?? "file")} ---\n${result.content ?? ""}`
         )
         .join("\n\n"),
@@ -351,6 +662,28 @@ async function readSingleLocalFile(
   context: LocalToolContext
 ): Promise<ToolResult> {
   const resolved = resolveReadablePath(action.path, context);
+  const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (targetInfo instanceof Error) {
+    const errorCode = classifyFsError(targetInfo);
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `file.read target not found: ${displayPath(resolved, context.workspace)}`,
+      errors: [targetInfo.message],
+      errorCode,
+      retryable: false,
+      recoverable: errorCode === "FS_NOT_FOUND",
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, errorCode, targetInfo.message),
+      metadata: {
+        path: displayPath(resolved, context.workspace),
+        requestedPath: action.path,
+        error: targetInfo.message
+      }
+    };
+  }
+  if (!targetInfo.isFile()) {
+    return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
+  }
   const rawBuffer = await readFile(resolved);
   if (rawBuffer.includes(0)) {
     const path = displayPath(resolved, context.workspace);
@@ -366,7 +699,6 @@ async function readSingleLocalFile(
     };
   }
   const raw = rawBuffer.toString("utf8");
-  const info = await stat(resolved);
   const lines = raw.split(/\r?\n/);
   const totalLines = lines.length;
   const startLine = Math.max(1, action.startLine ?? action.offset ?? 1);
@@ -381,7 +713,7 @@ async function readSingleLocalFile(
   const buffer = Buffer.from(selected, "utf8");
   const truncated = buffer.length > maxBytes;
   const content = truncated ? buffer.subarray(0, maxBytes).toString("utf8") : selected;
-  rememberReadSnapshot(resolved, raw, info.mtimeMs, context, {
+  rememberReadSnapshot(resolved, raw, targetInfo.mtimeMs, context, {
     fullView: startLine === 1 && endLine === totalLines && !truncated,
     startLine,
     endLine,
@@ -546,11 +878,42 @@ async function statLocalPath(action: Extract<ToolAction, { type: "file.stat" }>,
   };
 }
 
+async function resolveLocalPath(action: Extract<ToolAction, { type: "file.resolve" }>, context: LocalToolContext): Promise<ToolResult> {
+  const resolved = resolve(context.workspace, action.path);
+  const info = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+  const readable = permissionCheck(() => resolveReadablePath(action.path, context));
+  const writable = permissionCheck(() => resolveWritablePath(action.path, context));
+  const exists = !(info instanceof Error);
+  const data = {
+    requestedPath: action.path,
+    path: displayPath(resolved, context.workspace),
+    absolutePath: resolved,
+    exists,
+    type: exists ? info.isDirectory() ? "directory" : info.isFile() ? "file" : "other" : undefined,
+    bytes: exists ? info.size : undefined,
+    readable,
+    writable
+  };
+  return {
+    action: action.type,
+    status: "success",
+    summary: `${data.path}: ${exists ? data.type : "missing"}, readable=${readable.allowed}, writable=${writable.allowed}`,
+    data
+  };
+}
+
 async function writeLocalFile(action: Extract<ToolAction, { type: "file.write" }>, context: LocalToolContext): Promise<ToolResult> {
   const resolved = resolveWritablePath(action.path, context);
   const release = acquireWriteLock(resolved, context);
   try {
-    const existed = await stat(resolved).then((info) => info.isFile()).catch(() => false);
+    const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+    if (!(targetInfo instanceof Error) && !targetInfo.isFile()) {
+      return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
+    }
+    if (targetInfo instanceof Error && classifyFsError(targetInfo) !== "FS_NOT_FOUND") {
+      throw targetInfo;
+    }
+    const existed = !(targetInfo instanceof Error) && targetInfo.isFile();
     await assertWritePrecondition(resolved, context);
     const original = existed ? await readFile(resolved, "utf8") : "";
     await mkdir(dirname(resolved), { recursive: true });
@@ -585,10 +948,473 @@ async function writeLocalFile(action: Extract<ToolAction, { type: "file.write" }
   }
 }
 
+async function makeLocalDirectory(action: Extract<ToolAction, { type: "file.mkdir" }>, context: LocalToolContext): Promise<ToolResult> {
+  const resolved = resolveWritablePath(action.path, context);
+  const existing = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (!(existing instanceof Error) && !existing.isDirectory()) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `file.mkdir target exists and is not a directory: ${displayPath(resolved, context.workspace)}`,
+      errors: [`target exists and is not a directory: ${displayPath(resolved, context.workspace)}`],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      data: { path: displayPath(resolved, context.workspace), requestedPath: action.path, targetType: fileTargetKind(existing) }
+    };
+  }
+  if (existing instanceof Error && classifyFsError(existing) !== "FS_NOT_FOUND") {
+    throw existing;
+  }
+  await mkdir(resolved, { recursive: action.recursive ?? true });
+  const path = displayPath(resolved, context.workspace);
+  const change = createWorkspaceChange({
+    path,
+    operation: "mkdir",
+    before: "",
+    after: path,
+    context
+  });
+  context.onWorkspaceChange?.(change);
+  return {
+    action: action.type,
+    status: "success",
+    summary: `${existing instanceof Error ? "created" : "confirmed"} directory ${path}`,
+    data: { path, operation: existing instanceof Error ? "create" : "exists", change }
+  };
+}
+
+async function moveLocalPath(action: Extract<ToolAction, { type: "file.move" }>, context: LocalToolContext): Promise<ToolResult> {
+  const source = resolveWritablePath(action.source, context, "Edit");
+  const destination = resolveWritablePath(action.destination, context);
+  const sourceInfo = await stat(source).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (sourceInfo instanceof Error) {
+    const errorCode = classifyFsError(sourceInfo);
+    return fsFailureResult(action.type, source, action.source, context, `file.move source not found`, sourceInfo, errorCode);
+  }
+  const destinationInfo = await stat(destination).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (!(destinationInfo instanceof Error) && !action.overwrite) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `file.move destination already exists: ${displayPath(destination, context.workspace)}`,
+      errors: [`destination already exists: ${displayPath(destination, context.workspace)}`],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      data: { source: displayPath(source, context.workspace), destination: displayPath(destination, context.workspace) }
+    };
+  }
+  if (destinationInfo instanceof Error && classifyFsError(destinationInfo) !== "FS_NOT_FOUND") {
+    throw destinationInfo;
+  }
+  const releaseSource = acquireWriteLock(source, context);
+  const releaseDestination = acquireWriteLock(destination, context);
+  try {
+    const original = sourceInfo.isFile() ? await readFile(source, "utf8").catch(() => "") : "";
+    if (sourceInfo.isFile()) {
+      await assertWritePrecondition(source, context);
+    }
+    if (!(destinationInfo instanceof Error)) {
+      await rm(destination, { recursive: destinationInfo.isDirectory(), force: true });
+    }
+    await mkdir(dirname(destination), { recursive: true });
+    await rename(source, destination);
+    if (sourceInfo.isFile()) {
+      const info = await stat(destination);
+      rememberReadSnapshot(destination, original, info.mtimeMs, context);
+    }
+    const sourceDisplay = displayPath(source, context.workspace);
+    const destinationDisplay = displayPath(destination, context.workspace);
+    const change = createWorkspaceChange({
+      path: destinationDisplay,
+      operation: "move",
+      before: sourceDisplay,
+      after: destinationDisplay,
+      context,
+      lockKey: `${releaseSource.key},${releaseDestination.key}`
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `moved ${sourceDisplay} to ${destinationDisplay}`,
+      data: {
+        source: sourceDisplay,
+        destination: destinationDisplay,
+        targetType: fileTargetKind(sourceInfo),
+        overwritten: !(destinationInfo instanceof Error),
+        change
+      }
+    };
+  } finally {
+    releaseDestination();
+    releaseSource();
+  }
+}
+
+async function copyLocalPath(action: Extract<ToolAction, { type: "file.copy" }>, context: LocalToolContext): Promise<ToolResult> {
+  const source = resolveReadablePath(action.source, context);
+  const destination = resolveWritablePath(action.destination, context);
+  const sourceInfo = await stat(source).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (sourceInfo instanceof Error) {
+    return fsFailureResult(action.type, source, action.source, context, "file.copy source not found", sourceInfo, classifyFsError(sourceInfo));
+  }
+  if (sourceInfo.isDirectory() && !action.recursive) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `file.copy source is a directory; set recursive=true to copy it: ${displayPath(source, context.workspace)}`,
+      errors: ["recursive=true is required to copy directories"],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      data: { source: displayPath(source, context.workspace), destination: displayPath(destination, context.workspace) }
+    };
+  }
+  const destinationInfo = await stat(destination).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (!(destinationInfo instanceof Error) && !action.overwrite) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `file.copy destination already exists: ${displayPath(destination, context.workspace)}`,
+      errors: [`destination already exists: ${displayPath(destination, context.workspace)}`],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      data: { source: displayPath(source, context.workspace), destination: displayPath(destination, context.workspace) }
+    };
+  }
+  if (destinationInfo instanceof Error && classifyFsError(destinationInfo) !== "FS_NOT_FOUND") {
+    throw destinationInfo;
+  }
+  const release = acquireWriteLock(destination, context);
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await cp(source, destination, { recursive: action.recursive ?? false, force: action.overwrite ?? false, errorOnExist: !(action.overwrite ?? false) });
+    const copiedInfo = await stat(destination);
+    if (copiedInfo.isFile()) {
+      const copied = await readFile(destination, "utf8").catch(() => "");
+      rememberReadSnapshot(destination, copied, copiedInfo.mtimeMs, context);
+    }
+    const sourceDisplay = displayPath(source, context.workspace);
+    const destinationDisplay = displayPath(destination, context.workspace);
+    const change = createWorkspaceChange({
+      path: destinationDisplay,
+      operation: "copy",
+      before: sourceDisplay,
+      after: destinationDisplay,
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `copied ${sourceDisplay} to ${destinationDisplay}`,
+      data: {
+        source: sourceDisplay,
+        destination: destinationDisplay,
+        targetType: fileTargetKind(sourceInfo),
+        overwritten: !(destinationInfo instanceof Error),
+        change
+      }
+    };
+  } finally {
+    release();
+  }
+}
+
+async function deleteLocalPath(action: Extract<ToolAction, { type: "file.delete" }>, context: LocalToolContext): Promise<ToolResult> {
+  const resolved = resolveWritablePath(action.path, context, "Edit");
+  const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (targetInfo instanceof Error) {
+    return fsFailureResult(action.type, resolved, action.path, context, "file.delete target not found", targetInfo, classifyFsError(targetInfo));
+  }
+  if (targetInfo.isDirectory() && !action.recursive) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `file.delete target is a directory; set recursive=true to delete it: ${displayPath(resolved, context.workspace)}`,
+      errors: ["recursive=true is required to delete directories"],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      data: { path: displayPath(resolved, context.workspace), requestedPath: action.path }
+    };
+  }
+  const release = acquireWriteLock(resolved, context);
+  try {
+    if (targetInfo.isFile()) {
+      await assertWritePrecondition(resolved, context);
+    }
+    const original = targetInfo.isFile() ? await readFile(resolved, "utf8").catch(() => "") : "";
+    await rm(resolved, { recursive: action.recursive ?? false, force: false });
+    const path = displayPath(resolved, context.workspace);
+    const change = createWorkspaceChange({
+      path,
+      operation: "delete",
+      before: original || path,
+      after: "",
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `deleted ${path}`,
+      data: {
+        path,
+        targetType: fileTargetKind(targetInfo),
+        change
+      }
+    };
+  } finally {
+    release();
+  }
+}
+
+async function patchLocalFile(action: Extract<ToolAction, { type: "file.patch" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (action.hunks.length === 0) {
+    throw new Error("file.patch requires at least one hunk");
+  }
+  const resolved = resolveWritablePath(action.path, context, "Edit");
+  const release = acquireWriteLock(resolved, context);
+  try {
+    const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+    if (targetInfo instanceof Error) {
+      return fsFailureResult(action.type, resolved, action.path, context, "file.patch target not found", targetInfo, classifyFsError(targetInfo));
+    }
+    if (!targetInfo.isFile()) {
+      return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
+    }
+    await assertWritePrecondition(resolved, context);
+    const original = await readFile(resolved, "utf8");
+    let next = original;
+    for (const [index, hunk] of action.hunks.entries()) {
+      if (!hunk.oldText) {
+        throw new Error(`file.patch hunk ${index + 1} requires oldText`);
+      }
+      const matches = next.split(hunk.oldText).length - 1;
+      if (matches !== 1) {
+        throw new Error(`file.patch hunk ${index + 1} requires exactly one match; found ${matches}.`);
+      }
+      next = next.replace(hunk.oldText, hunk.newText);
+    }
+    await writeFile(resolved, next, "utf8");
+    const info = await stat(resolved);
+    rememberReadSnapshot(resolved, next, info.mtimeMs, context);
+    const path = displayPath(resolved, context.workspace);
+    const change = createWorkspaceChange({
+      path,
+      operation: "edit",
+      before: original,
+      after: next,
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `patched ${path} with ${action.hunks.length} hunk(s)`,
+      data: {
+        path,
+        hunks: action.hunks.length,
+        beforeBytes: Buffer.byteLength(original, "utf8"),
+        afterBytes: Buffer.byteLength(next, "utf8"),
+        change,
+        diff: createSimpleDiff(path, original, next)
+      }
+    };
+  } finally {
+    release();
+  }
+}
+
+async function readJsonFile(action: Extract<ToolAction, { type: "json.read" }>, context: LocalToolContext): Promise<ToolResult> {
+  const resolved = resolveReadablePath(action.path, context);
+  const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+  if (targetInfo instanceof Error) {
+    return fsFailureResult(action.type, resolved, action.path, context, "json.read target not found", targetInfo, classifyFsError(targetInfo));
+  }
+  if (!targetInfo.isFile()) {
+    return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
+  }
+  const raw = await readFile(resolved, "utf8");
+  rememberReadSnapshot(resolved, raw, targetInfo.mtimeMs, context);
+  const parsed = parseJsonWithContext(raw, action.path);
+  const value = action.pointer ? readJsonPointer(parsed, action.pointer) : parsed;
+  const path = displayPath(resolved, context.workspace);
+  return {
+    action: action.type,
+    status: "success",
+    summary: `read JSON${action.pointer ? ` pointer ${action.pointer}` : ""} from ${path}`,
+    content: JSON.stringify(value, null, 2),
+    data: value,
+    metadata: { path, pointer: action.pointer }
+  };
+}
+
+async function editJsonFile(action: Extract<ToolAction, { type: "json.edit" }>, context: LocalToolContext): Promise<ToolResult> {
+  const resolved = resolveWritablePath(action.path, context, "Edit");
+  const release = acquireWriteLock(resolved, context);
+  try {
+    const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+    if (targetInfo instanceof Error) {
+      return fsFailureResult(action.type, resolved, action.path, context, "json.edit target not found", targetInfo, classifyFsError(targetInfo));
+    }
+    if (!targetInfo.isFile()) {
+      return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
+    }
+    await assertWritePrecondition(resolved, context);
+    const original = await readFile(resolved, "utf8");
+    const parsed = parseJsonWithContext(original, action.path);
+    applyJsonEdit(parsed, action.pointer, action.operation, action.value);
+    const next = `${JSON.stringify(parsed, null, 2)}\n`;
+    await writeFile(resolved, next, "utf8");
+    const info = await stat(resolved);
+    rememberReadSnapshot(resolved, next, info.mtimeMs, context);
+    const path = displayPath(resolved, context.workspace);
+    const change = createWorkspaceChange({
+      path,
+      operation: "edit",
+      before: original,
+      after: next,
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `json.edit ${action.operation} ${action.pointer} in ${path}`,
+      data: {
+        path,
+        operation: action.operation,
+        pointer: action.pointer,
+        change,
+        diff: createSimpleDiff(path, original, next)
+      }
+    };
+  } finally {
+    release();
+  }
+}
+
+async function editNotebook(action: Extract<ToolAction, { type: "notebook.edit" }>, context: LocalToolContext): Promise<ToolResult> {
+  const resolved = resolveWritablePath(action.notebookPath, context, "Edit");
+  const release = acquireWriteLock(resolved, context);
+  try {
+    const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+    if (targetInfo instanceof Error) {
+      return fsFailureResult(action.type, resolved, action.notebookPath, context, "NotebookEdit target not found", targetInfo, classifyFsError(targetInfo));
+    }
+    if (!targetInfo.isFile()) {
+      return invalidFileTargetResult(action.type, resolved, action.notebookPath, context, fileTargetKind(targetInfo));
+    }
+    if (!resolved.toLowerCase().endsWith(".ipynb")) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: `NotebookEdit requires a .ipynb file: ${displayPath(resolved, context.workspace)}`,
+        errors: ["notebook_path must end with .ipynb"],
+        errorCode: "INVALID_INPUT",
+        retryable: false,
+        recoverable: true,
+        data: { path: displayPath(resolved, context.workspace), requestedPath: action.notebookPath }
+      };
+    }
+    await assertWritePrecondition(resolved, context);
+    const original = await readFile(resolved, "utf8");
+    const notebook = parseJsonWithContext(original, action.notebookPath);
+    if (!isRecord(notebook) || !Array.isArray(notebook.cells)) {
+      throw new Error("NotebookEdit requires an ipynb JSON object with a cells array");
+    }
+
+    const editMode = action.editMode ?? "replace";
+    const cells = notebook.cells as unknown[];
+    let cellIndex = action.cellId ? cells.findIndex((cell) => isRecord(cell) && cell.id === action.cellId) : -1;
+    if ((editMode === "replace" || editMode === "delete") && cellIndex < 0) {
+      throw new Error(`${action.type} ${editMode} requires a matching cell_id`);
+    }
+    if (editMode === "delete") {
+      cells.splice(cellIndex, 1);
+    } else if (editMode === "insert") {
+      const cellType = action.cellType ?? "code";
+      const newCell = createNotebookCell(cellType, action.newSource ?? "");
+      const insertAt = cellIndex < 0 ? 0 : cellIndex + 1;
+      cells.splice(insertAt, 0, newCell);
+      cellIndex = insertAt;
+    } else {
+      const target = cells[cellIndex];
+      if (!isRecord(target)) {
+        throw new Error("NotebookEdit target cell is not an object");
+      }
+      if (action.cellType) {
+        target.cell_type = action.cellType;
+      }
+      target.source = notebookSourceLines(action.newSource ?? "");
+    }
+
+    const next = `${JSON.stringify(notebook, null, 2)}\n`;
+    await writeFile(resolved, next, "utf8");
+    const info = await stat(resolved);
+    rememberReadSnapshot(resolved, next, info.mtimeMs, context);
+    const path = displayPath(resolved, context.workspace);
+    const change = createWorkspaceChange({
+      path,
+      operation: "edit",
+      before: original,
+      after: next,
+      context,
+      lockKey: release.key
+    });
+    context.onWorkspaceChange?.(change);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `NotebookEdit ${editMode} cell in ${path}`,
+      data: {
+        path,
+        editMode,
+        cellId: action.cellId,
+        cellIndex,
+        change,
+        diff: createSimpleDiff(path, original, next)
+      }
+    };
+  } finally {
+    release();
+  }
+}
+
 async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>, context: LocalToolContext): Promise<ToolResult> {
   const resolved = resolveWritablePath(action.path, context, "Edit");
   const release = acquireWriteLock(resolved, context);
   try {
+    const targetInfo = await stat(resolved).catch((error: unknown) => error as NodeJS.ErrnoException);
+    if (targetInfo instanceof Error) {
+      const errorCode = classifyFsError(targetInfo);
+      return {
+        action: action.type,
+        status: "failed",
+        summary: `file.edit target not found: ${displayPath(resolved, context.workspace)}`,
+        errors: [targetInfo.message],
+        errorCode,
+        retryable: false,
+        recoverable: errorCode === "FS_NOT_FOUND",
+        recoverySuggestion: recoverySuggestionForToolFailure(action.type, errorCode, targetInfo.message),
+        data: {
+          path: displayPath(resolved, context.workspace),
+          requestedPath: action.path
+        }
+      };
+    }
+    if (!targetInfo.isFile()) {
+      return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
+    }
     await assertWritePrecondition(resolved, context);
     const original = await readFile(resolved, "utf8");
     let next: string;
@@ -610,10 +1436,13 @@ async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>,
         throw new Error("file.edit str_replace requires oldText");
       }
       const matches = original.split(action.oldText).length - 1;
-      if (matches !== 1) {
+      if (action.replaceAll && matches < 1) {
+        throw new Error("file.edit replace_all requires at least one match; found 0.");
+      }
+      if (!action.replaceAll && matches !== 1) {
         throw new Error(`file.edit str_replace requires exactly one match; found ${matches}. Use file.grep or file.read to narrow the replacement target, then retry with a unique oldText.`);
       }
-      next = original.replace(action.oldText, action.newText ?? "");
+      next = action.replaceAll ? original.split(action.oldText).join(action.newText ?? "") : original.replace(action.oldText, action.newText ?? "");
     }
     await writeFile(resolved, next, "utf8");
     const info = await stat(resolved);
@@ -644,6 +1473,48 @@ async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>,
   } finally {
     release();
   }
+}
+
+function invalidFileTargetResult(
+  action: ToolAction["type"],
+  resolved: string,
+  requestedPath: string,
+  context: LocalToolContext,
+  targetType: string
+): ToolResult {
+  const path = displayPath(resolved, context.workspace);
+  return {
+    action,
+    status: "failed",
+    summary: `${action} target is a ${targetType}, not a file: ${path}`,
+    errors: [`target is a ${targetType}, not a file: ${path}`],
+    errorCode: "INVALID_INPUT",
+    retryable: false,
+    recoverable: action !== "file.read",
+    recoverySuggestion: invalidFileTargetRecovery(action),
+    data: {
+      path,
+      requestedPath,
+      targetType
+    }
+  };
+}
+
+function invalidFileTargetRecovery(action: ToolAction["type"]): string {
+  if (action === "file.read") {
+    return "Use file.list, file.glob, or file.grep to select a concrete file, then retry file.read with that file path.";
+  }
+  return `Use file.stat or file.list to inspect the target, then retry ${action} with a full file path including a filename.`;
+}
+
+function fileTargetKind(info: Pick<Awaited<ReturnType<typeof stat>>, "isDirectory" | "isFile">): string {
+  if (info.isDirectory()) {
+    return "directory";
+  }
+  if (info.isFile()) {
+    return "file";
+  }
+  return "non-file";
 }
 
 async function assertWritePrecondition(path: string, context: LocalToolContext): Promise<void> {
@@ -768,6 +1639,257 @@ async function writeTodos(action: Extract<ToolAction, { type: "todo.write" }>, c
   };
 }
 
+async function writeBlackboard(action: Extract<ToolAction, { type: "blackboard.write" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.blackboard) {
+    throw new Error("BlackboardWrite is only available inside a Swarm runtime session");
+  }
+  const entry = await context.blackboard.write(action, blackboardToolContext(context));
+  return {
+    action: action.type,
+    status: "success",
+    summary: `blackboard.write ${entry.key}`,
+    content: renderBlackboardEntries([entry]),
+    data: { entry }
+  };
+}
+
+async function readBlackboard(action: Extract<ToolAction, { type: "blackboard.read" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.blackboard) {
+    throw new Error("BlackboardRead is only available inside a Swarm runtime session");
+  }
+  const entries = await context.blackboard.read(action, blackboardToolContext(context));
+  return {
+    action: action.type,
+    status: "success",
+    summary: `blackboard.read returned ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+    content: renderBlackboardEntries(entries),
+    data: { entries }
+  };
+}
+
+async function searchBlackboard(action: Extract<ToolAction, { type: "blackboard.search" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.blackboard) {
+    throw new Error("BlackboardSearch is only available inside a Swarm runtime session");
+  }
+  const entries = await context.blackboard.search(action, blackboardToolContext(context));
+  return {
+    action: action.type,
+    status: "success",
+    summary: `blackboard.search returned ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+    content: renderBlackboardEntries(entries),
+    data: { entries }
+  };
+}
+
+async function listBlackboard(action: Extract<ToolAction, { type: "blackboard.list" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.blackboard) {
+    throw new Error("BlackboardList is only available inside a Swarm runtime session");
+  }
+  const entries = await context.blackboard.list(action, blackboardToolContext(context));
+  return {
+    action: action.type,
+    status: "success",
+    summary: `blackboard.list returned ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+    content: renderBlackboardEntries(entries),
+    data: { entries }
+  };
+}
+
+function blackboardToolContext(context: LocalToolContext): {
+  sessionId?: string;
+  blackboardSessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: import("../protocol/types.js").AgentAddress;
+} {
+  return {
+    sessionId: context.sessionId,
+    blackboardSessionId: context.blackboardSessionId,
+    taskId: context.taskId,
+    attempt: context.attempt,
+    agent: context.agent
+  };
+}
+
+function renderBlackboardEntries(entries: import("../protocol/types.js").BlackboardEntry[]): string {
+  if (entries.length === 0) {
+    return "(no blackboard entries)";
+  }
+  return entries.map((entry) => [
+    `${entry.entry_id} ${entry.key} [${entry.type}] v${entry.version}`,
+    `created_by=${entry.created_by.agent_id ?? entry.created_by.role ?? entry.created_by.capability ?? "unknown"} visibility=${entry.visibility} tags=${(entry.tags ?? []).join(",") || "-"}`,
+    JSON.stringify(entry.value, null, 2)
+  ].join("\n")).join("\n\n");
+}
+
+function permissionCheck(check: () => string): { allowed: boolean; reason?: string } {
+  try {
+    check();
+    return { allowed: true };
+  } catch (error) {
+    return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function fsFailureResult(
+  action: ToolAction["type"],
+  resolved: string,
+  requestedPath: string,
+  context: LocalToolContext,
+  message: string,
+  error: NodeJS.ErrnoException,
+  errorCode: string
+): ToolResult {
+  return {
+    action,
+    status: "failed",
+    summary: `${message}: ${displayPath(resolved, context.workspace)}`,
+    errors: [error.message],
+    errorCode,
+    retryable: false,
+    recoverable: errorCode === "FS_NOT_FOUND",
+    recoverySuggestion: recoverySuggestionForToolFailure(action, errorCode, error.message),
+    data: {
+      path: displayPath(resolved, context.workspace),
+      requestedPath
+    }
+  };
+}
+
+function parseJsonWithContext(raw: string, path: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid JSON in ${path}: ${reason}`);
+  }
+}
+
+function readJsonPointer(root: unknown, pointer: string): unknown {
+  if (pointer === "" || pointer === "/") {
+    return root;
+  }
+  const tokens = jsonPointerTokens(pointer);
+  let current = root;
+  for (const token of tokens) {
+    if (Array.isArray(current)) {
+      const index = parseArrayIndex(token, current.length, false);
+      current = current[index];
+      continue;
+    }
+    if (isRecord(current) && Object.prototype.hasOwnProperty.call(current, token)) {
+      current = current[token];
+      continue;
+    }
+    throw new Error(`JSON pointer not found: ${pointer}`);
+  }
+  return current;
+}
+
+function applyJsonEdit(root: unknown, pointer: string, operation: "set" | "delete" | "merge", value: unknown): void {
+  const tokens = jsonPointerTokens(pointer);
+  if (tokens.length === 0) {
+    throw new Error("json.edit cannot replace the document root; use file.write for complete replacement");
+  }
+  const key = tokens[tokens.length - 1];
+  const parent = tokens.slice(0, -1).reduce((current, token) => {
+    if (Array.isArray(current)) {
+      return current[parseArrayIndex(token, current.length, false)];
+    }
+    if (isRecord(current)) {
+      if (!Object.prototype.hasOwnProperty.call(current, token)) {
+        throw new Error(`JSON pointer parent not found: ${pointer}`);
+      }
+      return current[token];
+    }
+    throw new Error(`JSON pointer parent is not an object or array: ${pointer}`);
+  }, root);
+
+  if (Array.isArray(parent)) {
+    const index = parseArrayIndex(key, parent.length, operation === "set");
+    if (operation === "delete") {
+      parent.splice(index, 1);
+    } else if (operation === "merge") {
+      parent[index] = mergeJsonValues(parent[index], value);
+    } else {
+      parent[index] = value;
+    }
+    return;
+  }
+  if (!isRecord(parent)) {
+    throw new Error(`JSON pointer parent is not an object or array: ${pointer}`);
+  }
+  if (operation === "delete") {
+    if (!Object.prototype.hasOwnProperty.call(parent, key)) {
+      throw new Error(`JSON pointer not found: ${pointer}`);
+    }
+    delete parent[key];
+  } else if (operation === "merge") {
+    parent[key] = mergeJsonValues(parent[key], value);
+  } else {
+    parent[key] = value;
+  }
+}
+
+function mergeJsonValues(existing: unknown, value: unknown): unknown {
+  if (!isRecord(existing) || !isRecord(value)) {
+    return value;
+  }
+  return { ...existing, ...value };
+}
+
+function jsonPointerTokens(pointer: string): string[] {
+  if (!pointer || pointer === "/") {
+    return [];
+  }
+  if (!pointer.startsWith("/")) {
+    throw new Error(`JSON pointer must start with /: ${pointer}`);
+  }
+  return pointer
+    .slice(1)
+    .split("/")
+    .map((token) => token.replace(/~1/g, "/").replace(/~0/g, "~"));
+}
+
+function parseArrayIndex(token: string, length: number, allowAppend: boolean): number {
+  if (allowAppend && token === "-") {
+    return length;
+  }
+  const index = Number(token);
+  if (!Number.isInteger(index) || index < 0 || index >= length) {
+    throw new Error(`JSON array index out of range: ${token}`);
+  }
+  return index;
+}
+
+function createNotebookCell(cellType: "code" | "markdown", source: string): Record<string, unknown> {
+  return cellType === "code"
+    ? {
+        cell_type: "code",
+        execution_count: null,
+        metadata: {},
+        outputs: [],
+        source: notebookSourceLines(source)
+      }
+    : {
+        cell_type: "markdown",
+        metadata: {},
+        source: notebookSourceLines(source)
+      };
+}
+
+function notebookSourceLines(source: string): string[] {
+  if (!source) {
+    return [];
+  }
+  const lines = source.split(/\r?\n/);
+  return lines.map((line, index) => index < lines.length - 1 ? `${line}\n` : line);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function hashText(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -810,9 +1932,36 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
   if (!action.command.trim()) {
     throw new Error("shell.exec requires command");
   }
+  const hostValidationError = validateShellCommandForHost(action.command);
+  if (hostValidationError) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: hostValidationError,
+      content: [`$ ${action.command}`, `ERROR: ${hostValidationError}`].join("\n"),
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: process.platform === "win32"
+        ? "Rewrite the command using PowerShell syntax, or explicitly invoke an available shell such as bash/wsl/cmd when that is intentional."
+        : "Rewrite the command for the configured host shell."
+    };
+  }
   const cwd = resolveShellCwd(action.cwd, context);
   const timeoutMs = Math.max(1000, action.timeoutMs ?? 120_000);
   const maxOutputBytes = Math.max(1024, action.maxOutputBytes ?? 200_000);
+  if (action.runInBackground) {
+    const processRecord = await startBackgroundProcess({
+      command: action.command,
+      cwd,
+      sessionId: context.sessionId,
+      taskId: context.taskId,
+      description: action.description,
+      timeoutMs: action.timeoutMs,
+      maxLogBytes: action.maxLogBytes
+    });
+    return backgroundProcessToolResult(action.type, processRecord, context);
+  }
   const result = await runShellCommand(action.command, { cwd, timeoutMs, maxOutputBytes });
 
   if (result.error) {
@@ -824,7 +1973,8 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
       content,
       metadata: {
         cwd: displayPath(cwd, context.workspace),
-        error: result.error
+        error: result.error,
+        timeoutMs
       },
       errorCode: classifyProcessError(result),
       retryable: isRetryableProcessError(result),
@@ -837,23 +1987,236 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     .filter(Boolean)
     .join("\n")
     .trim();
+  const succeeded = result.exitCode === 0 && !result.timedOut;
+  const errorCode = succeeded ? undefined : classifyProcessError(result);
   return {
     action: action.type,
-    status: result.exitCode === 0 && !result.timedOut ? "success" : "failed",
-    summary: `command exited ${result.exitCode ?? result.signal ?? "unknown"}${result.timedOut ? " after timeout" : ""}`,
+    status: succeeded ? "success" : "failed",
+    summary: result.timedOut
+      ? `command timed out after ${timeoutMs}ms`
+      : `command exited ${result.exitCode ?? result.signal ?? "unknown"}`,
     content,
-    errorCode: result.exitCode === 0 && !result.timedOut ? undefined : classifyProcessError(result),
-    retryable: result.exitCode === 0 && !result.timedOut ? undefined : isRetryableProcessError(result),
-    recoverable: result.exitCode === 0 && !result.timedOut ? undefined : true,
-    recoverySuggestion: result.exitCode === 0 && !result.timedOut ? undefined : recoverySuggestionForToolFailure(action.type, classifyProcessError(result), content, result),
+    errorCode,
+    retryable: succeeded ? undefined : isRetryableProcessError(result),
+    recoverable: succeeded ? undefined : true,
+    recoverySuggestion: succeeded ? undefined : recoverySuggestionForToolFailure(action.type, errorCode, content, result),
     metadata: {
       cwd: displayPath(cwd, context.workspace),
       exitCode: result.exitCode,
       signal: result.signal,
       timedOut: result.timedOut,
+      timeoutMs,
       truncated: result.truncated
     }
   };
+}
+
+async function executeExec(action: Extract<ToolAction, { type: "exec" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!action.command.trim()) {
+    throw new Error("exec requires command");
+  }
+  const shellAction: Extract<ToolAction, { type: "shell.exec" }> = {
+    type: "shell.exec",
+    command: action.command,
+    cwd: action.cwd,
+    timeoutMs: action.timeoutMs,
+    maxOutputBytes: action.maxOutputBytes,
+    runInBackground: action.runInBackground,
+    description: action.description,
+    maxLogBytes: action.maxLogBytes
+  };
+  const result = await executeShell(shellAction, context);
+  return {
+    ...result,
+    action: action.type,
+    summary: result.summary.replace(/^command/, "exec command")
+  };
+}
+
+async function executeProcessStart(action: Extract<ToolAction, { type: "process.start" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!action.command.trim()) {
+    throw new Error("process.start requires command");
+  }
+  const hostValidationError = validateShellCommandForHost(action.command);
+  if (hostValidationError) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: hostValidationError,
+      content: [`$ ${action.command}`, `ERROR: ${hostValidationError}`].join("\n"),
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: process.platform === "win32"
+        ? "Rewrite the command using PowerShell syntax, or explicitly invoke an available shell such as bash/wsl/cmd when that is intentional."
+        : "Rewrite the command for the configured host shell."
+    };
+  }
+  const cwd = resolveShellCwd(action.cwd, context);
+  const record = await startBackgroundProcess({
+    command: action.command,
+    cwd,
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    description: action.description,
+    timeoutMs: action.timeoutMs,
+    maxLogBytes: action.maxLogBytes
+  });
+  return backgroundProcessToolResult(action.type, record, context);
+}
+
+async function executeProcessStatus(action: Extract<ToolAction, { type: "process.status" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!action.processId) {
+    const records = await listBackgroundProcesses({ sessionId: action.sessionId ?? context.sessionId, limit: 20 });
+    return {
+      action: action.type,
+      status: "success",
+      summary: `listed ${records.length} background process(es)`,
+      content: renderProcessList(records, context),
+      data: { processes: records }
+    };
+  }
+  const record = await getBackgroundProcess(action.processId, action.sessionId ?? context.sessionId);
+  return {
+    action: action.type,
+    status: record.status === "failed" ? "failed" : "success",
+    summary: `process ${record.processId} is ${record.status}`,
+    content: renderProcessRecord(record, context),
+    data: { process: record },
+    errorCode: record.status === "failed" ? "PROCESS_FAILED" : undefined,
+    recoverable: record.status === "failed" ? true : undefined,
+    recoverySuggestion: record.status === "failed" ? `Inspect the log with process.tail or file.read: ${record.logPath}` : undefined
+  };
+}
+
+async function executeProcessList(action: Extract<ToolAction, { type: "process.list" }>, context: LocalToolContext): Promise<ToolResult> {
+  const records = await listBackgroundProcesses({
+    sessionId: action.sessionId ?? context.sessionId,
+    status: action.status,
+    limit: action.limit
+  });
+  return {
+    action: action.type,
+    status: "success",
+    summary: `listed ${records.length} background process(es)`,
+    content: renderProcessList(records, context),
+    data: { processes: records }
+  };
+}
+
+async function executeProcessTail(action: Extract<ToolAction, { type: "process.tail" }>, context: LocalToolContext): Promise<ToolResult> {
+  const result = await readBackgroundProcessTail({
+    processId: action.processId,
+    sessionId: action.sessionId ?? context.sessionId,
+    lines: action.lines,
+    maxBytes: action.maxBytes
+  });
+  return {
+    action: action.type,
+    status: result.process.status === "failed" ? "failed" : "success",
+    summary: `tail ${result.process.processId}: ${result.process.status}, ${result.bytesTotal} byte(s)`,
+    content: [
+      renderProcessRecord(result.process, context),
+      "",
+      result.content || "(no log output yet)"
+    ].join("\n"),
+    data: {
+      process: result.process,
+      bytesTotal: result.bytesTotal,
+      bytesRead: result.bytesRead,
+      truncated: result.truncated
+    },
+    errorCode: result.process.status === "failed" ? "PROCESS_FAILED" : undefined,
+    recoverable: result.process.status === "failed" ? true : undefined
+  };
+}
+
+async function executeProcessGrep(action: Extract<ToolAction, { type: "process.grep" }>, context: LocalToolContext): Promise<ToolResult> {
+  const result = await grepBackgroundProcessLog({
+    processId: action.processId,
+    sessionId: action.sessionId ?? context.sessionId,
+    pattern: action.pattern,
+    maxMatches: action.maxMatches,
+    contextLines: action.contextLines
+  });
+  return {
+    action: action.type,
+    status: "success",
+    summary: `grep ${result.process.processId}: ${result.totalMatches} match(es)`,
+    content: [
+      renderProcessRecord(result.process, context),
+      "",
+      result.matches.length ? result.matches.join("\n") : "(no matches)"
+    ].join("\n"),
+    data: {
+      process: result.process,
+      matches: result.matches,
+      totalMatches: result.totalMatches,
+      truncated: result.truncated
+    }
+  };
+}
+
+async function executeProcessStop(action: Extract<ToolAction, { type: "process.stop" }>, context: LocalToolContext): Promise<ToolResult> {
+  const record = await stopBackgroundProcess(action.processId, action.sessionId ?? context.sessionId);
+  return {
+    action: action.type,
+    status: "success",
+    summary: `process ${record.processId} ${record.status}`,
+    content: renderProcessRecord(record, context),
+    data: { process: record }
+  };
+}
+
+function backgroundProcessToolResult(action: ToolAction["type"] | string, record: Awaited<ReturnType<typeof startBackgroundProcess>>, context: LocalToolContext): ToolResult {
+  return {
+    action,
+    status: record.status === "failed" ? "failed" : "success",
+    summary: record.status === "running"
+      ? `background process started: ${record.processId}`
+      : `background process ${record.processId} ${record.status}`,
+    content: [
+      renderProcessRecord(record, context),
+      "",
+      `Use process.tail with processId=${record.processId} to read recent output.`,
+      `Use process.grep to search the log, or process.stop to stop it.`
+    ].join("\n"),
+    outputRef: record.logPath,
+    data: { process: record },
+    errorCode: record.status === "failed" ? "PROCESS_START_FAILED" : undefined,
+    recoverable: record.status === "failed" ? true : undefined,
+    recoverySuggestion: record.status === "failed" ? "Inspect the log path and retry with a corrected command or cwd." : undefined
+  };
+}
+
+function renderProcessList(records: Awaited<ReturnType<typeof listBackgroundProcesses>>, context: LocalToolContext): string {
+  if (records.length === 0) {
+    return "No background processes found.";
+  }
+  return records.map((record) => [
+    `${record.processId} [${record.status}] pid=${record.pid ?? "-"}`,
+    `  command: ${record.command}`,
+    `  cwd: ${displayPath(record.cwd, context.workspace)}`,
+    `  log: ${record.logPath}`,
+    `  started: ${record.startedAt}${record.endedAt ? ` ended: ${record.endedAt}` : ""}`
+  ].join("\n")).join("\n");
+}
+
+function renderProcessRecord(record: Awaited<ReturnType<typeof getBackgroundProcess>>, context: LocalToolContext): string {
+  return [
+    `Process: ${record.processId}`,
+    `Status: ${record.status}`,
+    `PID: ${record.pid ?? "-"}`,
+    `Command: ${record.command}`,
+    `CWD: ${displayPath(record.cwd, context.workspace)}`,
+    `Log: ${record.logPath}`,
+    `Metadata: ${record.metadataPath}`,
+    `Started: ${record.startedAt}`,
+    record.endedAt ? `Ended: ${record.endedAt}` : undefined,
+    record.exitCode !== undefined ? `Exit code: ${record.exitCode}` : undefined,
+    record.signal ? `Signal: ${record.signal}` : undefined,
+    record.lastError ? `Error: ${record.lastError}` : undefined
+  ].filter(Boolean).join("\n");
 }
 
 type WebSearchHit = {
@@ -1141,6 +2504,13 @@ function escapeMarkdownLinkText(value: string): string {
   return value.replace(/[[\]]/g, "\\$&");
 }
 
+function shellQuote(value: string): string {
+  if (process.platform === "win32") {
+    return `"${value.replace(/"/g, '\\"')}"`;
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function classifyProcessError(result: Pick<ShellCommandResult, "exitCode" | "signal" | "timedOut" | "error">): string {
   if (result.timedOut) {
     return "TIMEOUT";
@@ -1275,7 +2645,7 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
     action: "web.fetch",
     status: response.ok ? "success" : "failed",
     summary: `fetched ${action.url} — ${response.status} ${contentType}, ${buffer.length} bytes${truncated ? " (truncated)" : ""}`,
-    content,
+    content: action.prompt ? webFetchPromptedContent(content, action.prompt, action.url) : content,
     ...(response.ok ? undefined : webFetchHttpFailureMetadata(response.status, response.statusText)),
     data: {
       url: action.url,
@@ -1283,14 +2653,40 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
       status: response.status,
       contentType,
       bytes: buffer.length,
+      prompt: action.prompt,
       truncated
     }
   };
 }
 
+function webFetchPromptedContent(content: string, prompt: string, url: string): string {
+  return [
+    `URL: ${url}`,
+    `Prompt: ${prompt}`,
+    "",
+    "Fetched content:",
+    content
+  ].join("\n");
+}
+
 async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!action.command.trim()) {
     throw new Error("code.test requires command");
+  }
+  const hostValidationError = validateShellCommandForHost(action.command);
+  if (hostValidationError) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: hostValidationError,
+      content: [`$ ${action.command}`, `ERROR: ${hostValidationError}`].join("\n"),
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: process.platform === "win32"
+        ? "Rewrite the test command using PowerShell syntax, or explicitly invoke an available shell such as bash/wsl/cmd when that is intentional."
+        : "Rewrite the test command for the configured host shell."
+    };
   }
   const cwd = resolveShellCwd(action.cwd, context);
   const timeoutMs = Math.max(5000, action.timeoutMs ?? 300_000);
@@ -1324,6 +2720,62 @@ async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }
     data: {
       cwd: displayPath(cwd, context.workspace),
       passed,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      truncated: result.truncated
+    }
+  };
+}
+
+async function executeCodeBuild(action: Extract<ToolAction, { type: "code.build" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!action.command.trim()) {
+    throw new Error("code.build requires command");
+  }
+  const hostValidationError = validateShellCommandForHost(action.command);
+  if (hostValidationError) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: hostValidationError,
+      content: [`$ ${action.command}`, `ERROR: ${hostValidationError}`].join("\n"),
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: process.platform === "win32"
+        ? "Rewrite the build command using PowerShell syntax, or explicitly invoke an available shell such as bash/wsl/cmd when that is intentional."
+        : "Rewrite the build command for the configured host shell."
+    };
+  }
+  const cwd = resolveShellCwd(action.cwd, context);
+  const timeoutMs = Math.max(5000, action.timeoutMs ?? 300_000);
+  const maxOutputBytes = Math.max(1024, action.maxOutputBytes ?? 500_000);
+  const result = await runShellCommand(action.command, { cwd, timeoutMs, maxOutputBytes });
+  const content = [`$ ${action.command}`, result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n").trim();
+  if (result.error) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `build command failed: ${result.error}`,
+      content: `$ ${action.command}\nERROR: ${result.error}`,
+      errors: [result.error],
+      errorCode: classifyProcessError(result),
+      retryable: isRetryableProcessError(result),
+      recoverable: true,
+      recoverySuggestion: recoverySuggestionForToolFailure(action.type, classifyProcessError(result), result.error, result),
+      metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
+    };
+  }
+  return {
+    action: action.type,
+    status: result.exitCode === 0 && !result.timedOut ? "success" : "failed",
+    summary: result.exitCode === 0 ? "build succeeded" : `build failed (exit ${result.exitCode})`,
+    content,
+    errorCode: result.exitCode === 0 && !result.timedOut ? undefined : classifyProcessError(result),
+    retryable: result.exitCode === 0 && !result.timedOut ? undefined : isRetryableProcessError(result),
+    recoverable: result.exitCode === 0 && !result.timedOut ? undefined : true,
+    recoverySuggestion: result.exitCode === 0 && !result.timedOut ? undefined : recoverySuggestionForToolFailure(action.type, classifyProcessError(result), content, result),
+    data: {
+      cwd: displayPath(cwd, context.workspace),
       exitCode: result.exitCode,
       timedOut: result.timedOut,
       truncated: result.truncated
@@ -1567,6 +3019,38 @@ async function executeGitBranch(action: Extract<ToolAction, { type: "git.branch"
   throw new Error(`git.branch ${action.action} requires name`);
 }
 
+async function executeGitShow(action: Extract<ToolAction, { type: "git.show" }>, context: LocalToolContext): Promise<ToolResult> {
+  const cwd = resolveShellCwd(action.cwd, context);
+  const revision = shellQuote(action.revision?.trim() || "HEAD");
+  const cmd = action.path
+    ? `git show --no-ext-diff -- ${shellQuote(action.path)}`
+    : `git show --no-ext-diff --stat --patch ${revision}`;
+  const result = await runShellCommand(cmd, { cwd, timeoutMs: 60_000, maxOutputBytes: Math.max(1024, action.maxOutputBytes ?? 300_000) });
+  if (result.error) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `git show failed: ${result.error}`,
+      content: `$ ${cmd}\nERROR: ${result.error}`,
+      errors: [result.error],
+      metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
+    };
+  }
+  return {
+    action: action.type,
+    status: result.exitCode === 0 ? "success" : "failed",
+    summary: `git show: ${result.stdout.length} bytes`,
+    content: result.stdout || "(no output)",
+    data: {
+      cwd: displayPath(cwd, context.workspace),
+      revision: action.revision ?? "HEAD",
+      path: action.path,
+      bytes: result.stdout.length,
+      truncated: result.truncated
+    }
+  };
+}
+
 async function executePackageInstall(action: Extract<ToolAction, { type: "package.install" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!action.command.trim()) {
     throw new Error("package.install requires command");
@@ -1600,43 +3084,63 @@ async function executePackageInstall(action: Extract<ToolAction, { type: "packag
   };
 }
 
-async function executeSolidityCompile(action: Extract<ToolAction, { type: "solidity.compile" }>, context: LocalToolContext): Promise<ToolResult> {
-  const cwd = resolveShellCwd(action.cwd, context);
-  let cmd: string;
-  if (action.framework === "foundry") {
-    cmd = "forge build --no-auto-detect 2>&1";
-  } else if (action.framework === "solc") {
-    cmd = "solc --bin --abi contracts/*.sol 2>&1 || true";
-  } else {
-    cmd = "npx hardhat compile 2>&1 || true";
+async function readPackageInfo(action: Extract<ToolAction, { type: "package.info" }>, context: LocalToolContext): Promise<ToolResult> {
+  const cwd = resolveReadablePath(action.cwd ?? ".", context);
+  const manifests = action.manifest ? [action.manifest] : ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
+  const found: Array<{ path: string; content: string }> = [];
+  for (const manifest of manifests) {
+    const resolved = resolve(cwd, manifest);
+    try {
+      assertReadableByDenyRules(resolved, context);
+      const info = await stat(resolved);
+      if (info.isFile()) {
+        found.push({ path: displayPath(resolved, context.workspace), content: await readFile(resolved, "utf8") });
+      }
+    } catch {
+      // Absence is expected when probing multiple manifest names.
+    }
   }
-
-  const result = await runShellCommand(cmd, { cwd, timeoutMs: 300_000, maxOutputBytes: 300_000 });
-
-  if (result.error) {
-    return {
-      action: "solidity.compile",
-      status: "failed",
-      summary: `compilation failed: ${result.error}`,
-      content: `$ ${cmd}\nERROR: ${result.error}`,
-      errors: [result.error],
-      metadata: { cwd: displayPath(cwd, context.workspace), framework: action.framework ?? "hardhat", error: result.error }
-    };
-  }
-
-  const hasErrors = result.stderr.toLowerCase().includes("error") || result.stdout.toLowerCase().includes("error ");
   return {
-    action: "solidity.compile",
-    status: !hasErrors && result.exitCode === 0 && !result.timedOut ? "success" : "failed",
-    summary: hasErrors ? "compilation produced errors" : result.exitCode === 0 ? "compilation succeeded" : `compilation finished (exit ${result.exitCode})`,
-    content: [`$ ${cmd}`, result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n").trim(),
+    action: action.type,
+    status: "success",
+    summary: `found ${found.length} package manifest(s)`,
+    content: found.map((item) => `--- ${item.path} ---\n${item.content}`).join("\n\n"),
+    data: found.map((item) => ({ path: item.path, bytes: Buffer.byteLength(item.content, "utf8") }))
+  };
+}
+
+async function detectProject(action: Extract<ToolAction, { type: "project.detect" }>, context: LocalToolContext): Promise<ToolResult> {
+  const root = resolveReadablePath(action.root ?? ".", context);
+  const probes = [
+    { file: "package.json", kind: "node" },
+    { file: "tsconfig.json", kind: "typescript" },
+    { file: "pyproject.toml", kind: "python" },
+    { file: "Cargo.toml", kind: "rust" },
+    { file: "go.mod", kind: "go" },
+    { file: "pom.xml", kind: "java-maven" },
+    { file: "build.gradle", kind: "java-gradle" }
+  ];
+  const matches: Array<{ file: string; kind: string }> = [];
+  for (const probe of probes) {
+    const fullPath = resolve(root, probe.file);
+    try {
+      assertReadableByDenyRules(fullPath, context);
+      const info = await stat(fullPath);
+      if (info.isFile()) {
+        matches.push({ file: displayPath(fullPath, context.workspace), kind: probe.kind });
+      }
+    } catch {
+      // Missing probe files are normal.
+    }
+  }
+  return {
+    action: action.type,
+    status: "success",
+    summary: matches.length ? `detected ${matches.map((item) => item.kind).join(", ")}` : "no known project manifests detected",
     data: {
-      cwd: displayPath(cwd, context.workspace),
-      framework: action.framework ?? "hardhat",
-      exitCode: result.exitCode,
-      hasErrors,
-      timedOut: result.timedOut,
-      truncated: result.truncated
+      root: displayPath(root, context.workspace),
+      kinds: [...new Set(matches.map((item) => item.kind))],
+      manifests: matches
     }
   };
 }
@@ -1698,6 +3202,35 @@ async function runShellCommand(
   });
 }
 
+function validateShellCommandForHost(command: string): string | undefined {
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+  if (explicitlyInvokesAlternateShell(command)) {
+    return undefined;
+  }
+  if (usesPowerShellIncompatiblePosix(command)) {
+    return "Command uses POSIX-only shell syntax but local commands run in PowerShell on Windows.";
+  }
+  return undefined;
+}
+
+function usesPowerShellIncompatiblePosix(command: string): boolean {
+  const trimmed = command.trim();
+  return [
+    /\bmkdir\s+-p\b/i,
+    /<<\s*['"]?EOF['"]?/i,
+    /\bcat\s+>\s+\S+\s+<</i,
+    /\bcd\s+\$\(pwd\)/i,
+    /\s&&\s/,
+    /(^|\s)&\s*sleep\b/i
+  ].some((pattern) => pattern.test(trimmed));
+}
+
+function explicitlyInvokesAlternateShell(command: string): boolean {
+  return /^(?:cmd(?:\.exe)?|bash|sh|wsl|pwsh|powershell(?:\.exe)?)\b/i.test(command.trim());
+}
+
 async function collectFiles(
   root: string,
   context: LocalToolContext,
@@ -1745,7 +3278,7 @@ function classifyFsError(error: NodeJS.ErrnoException | Error): string {
   const code = "code" in error ? error.code : undefined;
   if (code === "ENOENT") return "FS_NOT_FOUND";
   if (code === "EACCES" || code === "EPERM") return "PERMISSION_DENIED";
-  if (code === "ENOTDIR") return "INVALID_INPUT";
+  if (code === "ENOTDIR" || code === "EISDIR") return "INVALID_INPUT";
   return code ? `FS_${code}` : "TOOL_FAILED";
 }
 
@@ -1771,38 +3304,71 @@ async function readTextIfPossible(path: string): Promise<string | undefined> {
 }
 
 function normalizeActionName(action: string): ToolAction["type"] {
-  if (["read_file", "tool.file.read", "file.read"].includes(action)) {
+  if (["Read", "read_file", "tool.file.read", "file.read"].includes(action)) {
     return "file.read";
   }
-  if (["list_files", "tool.file.list", "file.list", "ls"].includes(action)) {
+  if (["LS", "list_files", "tool.file.list", "file.list", "ls"].includes(action)) {
     return "file.list";
   }
-  if (["glob", "tool.file.glob", "file.glob"].includes(action)) {
+  if (["Glob", "glob", "tool.file.glob", "file.glob"].includes(action)) {
     return "file.glob";
   }
-  if (["grep", "tool.file.grep", "file.grep"].includes(action)) {
+  if (["Grep", "grep", "tool.file.grep", "file.grep"].includes(action)) {
     return "file.grep";
   }
   if (["stat", "tool.file.stat", "file.stat"].includes(action)) {
     return "file.stat";
   }
-  if (["write_file", "tool.file.write", "file.write"].includes(action)) {
+  if (["Write", "write_file", "tool.file.write", "file.write"].includes(action)) {
     return "file.write";
   }
-  if (["edit_file", "tool.file.edit", "file.edit"].includes(action)) {
+  if (["Edit", "edit_file", "tool.file.edit", "file.edit"].includes(action)) {
     return "file.edit";
   }
-  if (["todo", "todo_write", "todo.write", "tool.todo.write"].includes(action)) {
+  if (["TodoWrite", "todo", "todo_write", "todo.write", "tool.todo.write"].includes(action)) {
     return "todo.write";
   }
-  if (["bash", "shell", "tool.shell.exec", "shell.exec"].includes(action)) {
+  if (["BlackboardWrite", "blackboard_write", "blackboard.write"].includes(action)) {
+    return "blackboard.write";
+  }
+  if (["BlackboardRead", "blackboard_read", "blackboard.read"].includes(action)) {
+    return "blackboard.read";
+  }
+  if (["BlackboardSearch", "blackboard_search", "blackboard.search"].includes(action)) {
+    return "blackboard.search";
+  }
+  if (["BlackboardList", "blackboard_list", "blackboard.list"].includes(action)) {
+    return "blackboard.list";
+  }
+  if (["Bash", "bash", "shell", "tool.shell.exec", "shell.exec"].includes(action)) {
     return "shell.exec";
   }
-  if (["web_search", "web.search"].includes(action)) {
+  if (["ProcessStart", "process_start", "process.start", "background.start"].includes(action)) {
+    return "process.start";
+  }
+  if (["ProcessStatus", "process_status", "process.status", "background.status"].includes(action)) {
+    return "process.status";
+  }
+  if (["ProcessList", "process_list", "process.list", "background.list"].includes(action)) {
+    return "process.list";
+  }
+  if (["ProcessTail", "process_tail", "process.tail", "background.tail"].includes(action)) {
+    return "process.tail";
+  }
+  if (["ProcessGrep", "process_grep", "process.grep", "background.grep"].includes(action)) {
+    return "process.grep";
+  }
+  if (["ProcessStop", "process_stop", "process.stop", "TaskStop", "KillShell", "background.stop"].includes(action)) {
+    return "process.stop";
+  }
+  if (["WebSearch", "web_search", "web.search"].includes(action)) {
     return "web.search";
   }
-  if (["web_fetch", "web.fetch", "fetch"].includes(action)) {
+  if (["WebFetch", "web_fetch", "web.fetch", "fetch"].includes(action)) {
     return "web.fetch";
+  }
+  if (["NotebookEdit", "notebook_edit", "notebook.edit"].includes(action)) {
+    return "notebook.edit";
   }
   if (["code_test", "code.test", "run_tests", "run.test", "test"].includes(action)) {
     return "code.test";
@@ -1825,17 +3391,82 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["package_install", "package.install", "install"].includes(action)) {
     return "package.install";
   }
-  if (["solidity_compile", "solidity.compile", "compile"].includes(action)) {
-    return "solidity.compile";
-  }
-  if (["agent_delegate", "agent.delegate", "delegate"].includes(action)) {
+  if (["Agent", "Task", "agent_delegate", "agent.delegate", "delegate"].includes(action)) {
     return "agent.delegate";
   }
   return action as ToolAction["type"];
 }
 
+function patchHunksInput(value: unknown): Array<{ oldText: string; newText: string }> {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        const record = isRecord(item) ? item : {};
+        return {
+          oldText: stringInput(record.oldText ?? record.old_text ?? record.oldString ?? record.old_string),
+          newText: stringInput(record.newText ?? record.new_text ?? record.newString ?? record.new_string)
+        };
+      })
+      .filter((hunk) => hunk.oldText);
+  }
+  if (isRecord(value)) {
+    return patchHunksInput([value]);
+  }
+  return [];
+}
+
+function jsonEditOperationInput(value: unknown): "set" | "delete" | "merge" {
+  return value === "delete" || value === "merge" ? value : "set";
+}
+
+function notebookCellTypeInput(value: unknown): "code" | "markdown" | undefined {
+  return value === "code" || value === "markdown" ? value : undefined;
+}
+
+function notebookEditModeInput(value: unknown): "replace" | "insert" | "delete" | undefined {
+  return value === "insert" || value === "delete" || value === "replace" ? value : undefined;
+}
+
+function blackboardEntryTypeInput(value: unknown): import("../protocol/types.js").BlackboardEntry["type"] {
+  const normalized = optionalBlackboardEntryTypeInput(value);
+  if (!normalized) {
+    throw new Error("Blackboard entry type must be one of plan, observation, evidence, result, critique, decision, artifact");
+  }
+  return normalized;
+}
+
+function optionalBlackboardEntryTypeInput(value: unknown): import("../protocol/types.js").BlackboardEntry["type"] | undefined {
+  if (
+    value === "plan" ||
+    value === "observation" ||
+    value === "evidence" ||
+    value === "result" ||
+    value === "critique" ||
+    value === "decision" ||
+    value === "artifact"
+  ) {
+    return value;
+  }
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  return undefined;
+}
+
+function blackboardVisibilityInput(value: unknown): import("../protocol/types.js").BlackboardEntry["visibility"] | undefined {
+  return value === "private" || value === "team" || value === "public" ? value : undefined;
+}
+
 function stringInput(value: unknown): string {
   return value === undefined || value === null ? "" : String(value);
+}
+
+function requiredStringInput(value: unknown, message: string): string {
+  const text = stringInput(value).trim();
+  if (!text) {
+    throw new Error(message);
+  }
+  return text;
 }
 
 function optionalStringInput(value: unknown): string | undefined {
@@ -1869,7 +3500,7 @@ function agentInvocationModeInput(value: unknown): "call_subagent" | "handoff" |
   return undefined;
 }
 
-function todoListInput(value: unknown): Array<{ content: string; status: "pending" | "in_progress" | "completed" }> {
+function todoListInput(value: unknown): Array<{ content: string; activeForm?: string; status: "pending" | "in_progress" | "completed" }> {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -1881,6 +3512,7 @@ function todoListInput(value: unknown): Array<{ content: string; status: "pendin
         rawStatus === "completed" || rawStatus === "in_progress" ? rawStatus : "pending";
       return {
         content: String(record.content ?? record.task ?? record.text ?? "").trim(),
+        activeForm: optionalStringInput(record.activeForm ?? record.active_form),
         status
       };
     })
@@ -1893,6 +3525,30 @@ function numberInput(value: unknown): number | undefined {
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function booleanInput(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (value === true || value === false) {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "n"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+}
+
+function processStatusInput(value: unknown): Extract<ToolAction, { type: "process.list" }>["status"] {
+  if (value === "running" || value === "completed" || value === "failed" || value === "stopped" || value === "unknown") {
+    return value;
+  }
+  return undefined;
 }
 
 function compileSearchRegex(pattern: string): RegExp {

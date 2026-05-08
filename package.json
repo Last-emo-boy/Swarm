@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "A local Agent Swarm Protocol CLI/TUI runtime.",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "bin": {
     "swarm": "./dist/index.js"
   },

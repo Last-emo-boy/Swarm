@@ -35,7 +35,7 @@ import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
 import type { PermissionMode } from "../config/settings.js";
 import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js";
 import type { BlackboardEntry, GeneratedPlan, RunAttempt, SwarmPolicy, SwarmSession, WorkItem, WorkspaceLease } from "../protocol/types.js";
-import type { WorkerRecord } from "../storage/worker-state-store.js";
+import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import { runLocalEvals } from "../evals/local-evals.js";
 import { getSymphonyStatus, type SymphonyStatus } from "../symphony/status.js";
@@ -46,7 +46,7 @@ import { workItemLabel } from "../symphony/work-item.js";
 import { loadWorkflow, normalizeWorkflowConfig, type WorkflowLoadResult } from "../symphony/workflow.js";
 import { runSymphonyPreflight } from "../symphony/preflight.js";
 import { createWorkSourceFromConfig } from "../symphony/work-source.js";
-import { mainPaneLabels, mainPaneOrder, nextMainPane, type MainPaneId } from "./main-panes.js";
+import { mainPaneLabels, mainPaneOrder, mainPaneShortcutDirection, nextMainPane, type MainPaneId } from "./main-panes.js";
 import {
   commandOutputPreview,
   formatToolOutputPreview,
@@ -70,7 +70,8 @@ import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay }
 import type { McpServerRecord } from "../extensions/mcp.js";
 import type { PluginRecord } from "../extensions/plugins.js";
 import type { SkillRecord, ActivatedSkill } from "../extensions/skills.js";
-import type { CapabilityDescriptor } from "../extensions/types.js";
+import type { CapabilityDescriptor, CapabilityProviderSnapshot } from "../extensions/types.js";
+import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -124,6 +125,8 @@ type RouteState = {
   fallbackMode?: string;
 };
 
+type CapabilityProviderSummaryRow = CapabilityProviderSnapshot;
+
 type RecentSessionRow = ReturnType<SwarmRuntime["sessionStore"]["listRecent"]>[number];
 type ApprovalStoreRecord = ReturnType<SwarmRuntime["approvalStore"]["list"]>[number];
 
@@ -141,6 +144,9 @@ const customFieldOrder: OnboardField[] = [
 const SLASH_OUTPUT_INLINE_BYTES = 18_000;
 const SLASH_OUTPUT_PREVIEW_BYTES = 6_000;
 const LOOP_ACTIVITY_TIMELINE_LIMIT = 6;
+const MESSAGE_OUTPUT_PREVIEW_LINES = 8;
+const MESSAGE_OUTPUT_PREVIEW_CHARS = 1_200;
+const ADVANCED_SURFACE_FLAGS = new Set(["all", "advanced", "full", "--all", "--advanced"]);
 
 function createChatSessionId(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -395,13 +401,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
     }
 
-    if (key.ctrl && character === "n") {
-      setMainPane((value) => nextMainPane(value, 1));
-      return;
-    }
-
-    if (key.ctrl && character === "p") {
-      setMainPane((value) => nextMainPane(value, -1));
+    const paneDirection = mainPaneShortcutDirection(character, key);
+    if (paneDirection) {
+      setMainPane((value) => nextMainPane(value, paneDirection));
       return;
     }
 
@@ -436,14 +438,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setMessages((previous) => [...previous, { role: "user", brief: objective }]);
     try {
       const result = await runtime.run(objective, { mode: runMode });
-      setLatestDetail(result.content);
+      const display = formatExecutionResultDisplay(result, runtime);
+      setLatestDetail(display.detail);
       setDetailScroll(0);
       setMessages((previous) => [
         ...previous,
         {
           role: "assistant",
-          brief: briefForExecutionResult(result),
-          detail: result.content
+          brief: display.brief,
+          detail: display.detail,
+          preview: display.preview
         }
       ]);
     } catch (error) {
@@ -465,14 +469,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setMessages((previous) => [...previous, { role: "system", brief: "Executing approved swarm plan." }]);
     try {
       const result = await runtime.execute(planned);
-      setLatestDetail(result.content);
+      const display = formatExecutionResultDisplay(result, runtime);
+      setLatestDetail(display.detail);
       setDetailScroll(0);
       setMessages((previous) => [
         ...previous,
         {
           role: "assistant",
-          brief: briefForExecutionResult(result),
-          detail: result.content
+          brief: display.brief,
+          detail: display.detail,
+          preview: display.preview
         }
       ]);
     } catch (error) {
@@ -491,7 +497,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   function pushError(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     setLatestDetail(message);
-    setMessages((previous) => [...previous, { role: "system", brief: message, detail: message }]);
+    setMessages((previous) => [...previous, { role: "system", brief: message, detail: message, preview: detailPreview(message) }]);
   }
 
   function handleDetailInput(key: { upArrow?: boolean; downArrow?: boolean; pageUp?: boolean; pageDown?: boolean }): void {
@@ -648,7 +654,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           role: "system",
           brief: result.brief,
           detail: result.detail,
-          preview: commandOutputPreview(result.detail, 6, 700)
+          preview: detailPreview(result.detail)
         }
       ]);
     } catch (error) {
@@ -658,8 +664,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   async function runSlashCommand(command: string, args: string[], parsed?: ReturnType<typeof parseSlashCommandLine>): Promise<{ brief: string; detail?: string }> {
     if (command === "help") {
-      const detail = renderSlashHelp();
-      return { brief: "Slash commands grouped by Core, Kernel, Symphony, Agents, Tools, and Config. Ctrl+O for details.", detail };
+      const includeAdvanced = hasAdvancedSurfaceFlag(args);
+      const detail = renderSlashHelp({ includeAdvanced });
+      return {
+        brief: includeAdvanced
+          ? "All slash commands. Ctrl+O for details."
+          : "Main commands only. Use /help all for advanced diagnostics, Symphony, agents, tools, and extension controls.",
+        detail
+      };
     }
 
     if (command === "onboard") {
@@ -886,11 +898,23 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const detail = formatWorkSnapshot(snapshot);
         return { brief: `${snapshot.session.session_id}: ${snapshot.session.status}, attempts=${snapshot.attempts.length}, changed=${snapshot.changed_files.length}. Ctrl+O for details.`, detail };
       }
-      const rows = runtime?.sessionStore.listRecent(10) ?? [];
+      const rows = runtime?.listRecentSessionsForWorkspace(10) ?? [];
       const detail = rows.length
         ? rows.map((row) => `${row.session_id} [${row.status}] ${row.updated_at} ${row.objective}`).join("\n")
         : "No sessions yet.";
       return { brief: `${rows.length} recent sessions. Ctrl+O for details.`, detail };
+    }
+
+    if (command === "memory") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const sessionId = args[0] ?? lastSessionId ?? runtime.listRecentSessionsForWorkspace(1)[0]?.session_id;
+      if (!sessionId) throw new Error("Usage: /memory [session_id]");
+      const snapshot = runtime.getWorkSnapshot(sessionId);
+      const detail = formatSessionMemory(runtime, snapshot);
+      const summary = snapshot.context_summary
+        ? `entries=${snapshot.context_summary.entries}, compactions=${snapshot.context_summary.compactions}`
+        : "no saved memory";
+      return { brief: `Memory for ${sessionId}: ${summary}. Ctrl+O for details.`, detail };
     }
 
     if (command === "resume" || command === "continue") {
@@ -912,9 +936,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             prompt: buildResumePrompt(runtime, sessionId, instruction)
           });
       void runPromise.then((result) => {
-        setLatestDetail(result.content);
+        const display = formatExecutionResultDisplay(result, runtime);
+        setLatestDetail(display.detail);
         setLastSessionId(result.session_id);
-        setMessages((previous) => [...previous, { role: "assistant", brief: briefForExecutionResult(result), detail: result.content }]);
+        setMessages((previous) => [...previous, {
+          role: "assistant",
+          brief: display.brief,
+          detail: display.detail,
+          preview: display.preview
+        }]);
       }).catch((error: unknown) => {
         pushError(error);
       }).finally(() => setBusy(false));
@@ -1002,14 +1032,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const sessionId = args[0] ?? lastSessionId;
       const rows = sessionId
         ? runtime.runAttemptStore.list(sessionId, 120)
-        : runtime.runAttemptStore.listRecent(50);
+        : runtime.listRecentAttemptsForWorkspace(50);
       const detail = rows.length
         ? rows.map(formatRunAttempt).join("\n\n")
         : sessionId
           ? `No run attempts recorded for ${sessionId}.`
           : "No run attempts recorded.";
       return {
-        brief: `${rows.length} attempts${sessionId ? ` for ${sessionId}` : " across recent sessions"}. Ctrl+O for details.`,
+        brief: `${rows.length} attempts${sessionId ? ` for ${sessionId}` : " in this workspace"}. Ctrl+O for details.`,
         detail
       };
     }
@@ -1019,14 +1049,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const target = args[0] ?? lastSessionId;
       const rows = target
         ? leaseRowsForTarget(runtime, target)
-        : runtime.workspaceLeaseStore.listRecent(50);
+        : runtime.listRecentLeasesForWorkspace(50);
       const detail = rows.length
         ? rows.map(formatWorkspaceLease).join("\n\n")
         : target
           ? `No workspace leases recorded for ${target}.`
           : "No workspace leases recorded.";
       return {
-        brief: `${rows.length} workspace leases${target ? ` for ${target}` : " across recent sessions"}. Ctrl+O for details.`,
+        brief: `${rows.length} workspace leases${target ? ` for ${target}` : " in this workspace"}. Ctrl+O for details.`,
         detail
       };
     }
@@ -1035,7 +1065,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!runtime) throw new Error("Runtime is not ready.");
       const id = args[0];
       if (!id) throw new Error("Usage: /span <trace_id|span_id>");
-      const sessions = runtime.sessionStore.listRecent(50);
+      const sessions = runtime.listRecentSessionsForWorkspace(50);
       const trace = sessions.flatMap((session) => runtime.traceStore.list(session.session_id))
         .filter((env) => env.trace?.trace_id === id || env.trace?.span_id === id || env.id === id);
       const audit = runtime.auditStore.listByTrace(id);
@@ -1054,9 +1084,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (command === "approvals") {
       if (!runtime) throw new Error("Runtime is not ready.");
       const sessionId = args[0] ?? lastSessionId;
-      const rows = runtime.approvalStore.list(sessionId, 80);
+      const rows = sessionId ? runtime.approvalStore.list(sessionId, 80) : runtime.listRecentApprovalsForWorkspace(80);
       const detail = rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
-      return { brief: `${rows.length} approvals${sessionId ? ` for ${sessionId}` : ""}. Ctrl+O for details.`, detail };
+      return { brief: `${rows.length} approvals${sessionId ? ` for ${sessionId}` : " in this workspace"}. Ctrl+O for details.`, detail };
     }
 
     if (command === "approval") {
@@ -1151,14 +1181,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "capabilities") {
       if (!runtime) throw new Error("Runtime is not ready.");
-      const filter = parseCapabilityCommandFilter(args);
+      const includeAdvanced = hasAdvancedSurfaceFlag(args);
+      const surfaceArgs = stripAdvancedSurfaceFlags(args);
+      const filter = parseCapabilityCommandFilter(surfaceArgs);
       const [capabilities, providers] = await Promise.all([
         runtime.listCapabilities(filter),
         runtime.listCapabilityProviders()
       ]);
-      const detail = formatCapabilities(capabilities, providers);
+      const detail = includeAdvanced || hasCapabilityCommandFilter(filter)
+        ? formatCapabilities(capabilities, providers)
+        : formatCapabilitySummary(capabilities, providers);
       return {
-        brief: `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`,
+        brief: includeAdvanced || hasCapabilityCommandFilter(filter)
+          ? `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`
+          : `${capabilities.length} capabilities across ${providers.length} providers. Use /capabilities all for the full catalog.`,
         detail
       };
     }
@@ -1185,15 +1221,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "plugins") {
       if (!runtime) throw new Error("Runtime is not ready.");
-      const pluginId = args[0];
+      const includeAdvanced = hasAdvancedSurfaceFlag(args);
+      const surfaceArgs = stripAdvancedSurfaceFlags(args);
+      const pluginId = surfaceArgs[0];
       const plugins = runtime.listPlugins();
       const selected = pluginId ? plugins.filter((plugin) => plugin.id === pluginId) : plugins;
       if (pluginId && selected.length === 0) {
         throw new Error(`Unknown plugin: ${pluginId}`);
       }
       return {
-        brief: `${selected.length} plugin${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`,
-        detail: formatPlugins(selected)
+        brief: includeAdvanced || pluginId
+          ? `${selected.length} plugin${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`
+          : `${plugins.length} plugins discovered. Use /plugins all for the full catalog.`,
+        detail: includeAdvanced || pluginId ? formatPlugins(selected) : formatPluginsSummary(plugins)
       };
     }
 
@@ -1251,8 +1291,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const skills = runtime.listSkills();
       const active = skills.filter((skill) => !skill.shadowedBy).length;
       return {
-        brief: `${active} active skills, ${skills.length - active} shadowed. Ctrl+O for details.`,
-        detail: formatSkills(skills)
+        brief: hasAdvancedSurfaceFlag(args)
+          ? `${active} active skills, ${skills.length - active} shadowed. Ctrl+O for details.`
+          : `${active} active skills, ${skills.length - active} shadowed. Use /skills all for the full catalog.`,
+        detail: hasAdvancedSurfaceFlag(args) ? formatSkills(skills) : formatSkillsSummary(skills)
       };
     }
 
@@ -1269,15 +1311,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "mcp") {
       if (!runtime) throw new Error("Runtime is not ready.");
-      const serverId = args[0];
+      const includeAdvanced = hasAdvancedSurfaceFlag(args);
+      const surfaceArgs = stripAdvancedSurfaceFlags(args);
+      const serverId = surfaceArgs[0];
       const servers = runtime.listMcpServers();
       const selected = serverId ? servers.filter((server) => server.id === serverId) : servers;
       if (serverId && selected.length === 0) {
         throw new Error(`Unknown MCP server: ${serverId}`);
       }
       return {
-        brief: `${selected.length} MCP server${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`,
-        detail: formatMcpServers(selected)
+        brief: includeAdvanced || serverId
+          ? `${selected.length} MCP server${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`
+          : `${servers.length} MCP servers configured. Use /mcp all for the full catalog.`,
+        detail: includeAdvanced || serverId ? formatMcpServers(selected) : formatMcpServersSummary(servers)
       };
     }
 
@@ -1367,11 +1413,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "workers") {
       if (!runtime) throw new Error("Runtime is not ready.");
-      const rows = runtime.workerStateStore.listRecent(30);
+      const rows = runtime.listRecentWorkersForWorkspace(30);
       const detail = rows.length
         ? rows.map(formatWorkerBrief).join("\n")
         : "No persisted workers yet.";
-      return { brief: `${rows.length} workers. Ctrl+O for details.`, detail };
+      return { brief: `${rows.length} workers in this workspace. Ctrl+O for details.`, detail };
     }
 
     if (command === "worker") {
@@ -1402,11 +1448,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "handoffs") {
       if (!runtime) throw new Error("Runtime is not ready.");
-      const rows = runtime.listHandoffs(30);
+      const rows = runtime.listHandoffsForWorkspace(30);
       const detail = rows.length
         ? rows.map(formatHandoff).join("\n\n")
         : "No handoff sessions yet.";
-      return { brief: `${rows.length} handoffs. Ctrl+O for details.`, detail };
+      return { brief: `${rows.length} handoffs in this workspace. Ctrl+O for details.`, detail };
     }
 
     if (command === "handoff") {
@@ -1451,9 +1497,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       setBusy(true);
       try {
         const result = await runtime.improveSelf();
-        setLatestDetail(result.content);
+        const display = formatExecutionResultDisplay(result, runtime);
+        setLatestDetail(display.detail);
         setLastSessionId(result.session_id);
-        return { brief: briefForExecutionResult(result), detail: result.content };
+        return { brief: display.brief, detail: display.detail };
       } finally {
         setBusy(false);
       }
@@ -1509,7 +1556,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         symphonyDaemons,
         events
       });
-      const sessionCount = runtime?.sessionStore.listRecent(100).length ?? 0;
+      const sessionCount = runtime?.listRecentSessionsForWorkspace(100).length ?? 0;
       return {
         brief: `Kernel: ${busy ? "running" : "idle"}, sessions=${sessionCount}, workers=${workers.size}, symphony=${activeDaemons}. Ctrl+O for details.`,
         detail
@@ -1654,9 +1701,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setLoopActivityTimeline([]);
     try {
       const result = await runtime.run(objective, { mode: runMode });
+      const display = formatExecutionResultDisplay(result, runtime);
       return {
-        brief: `${briefForExecutionResult(result)} via /${command.contribution.id}.`,
-        detail: result.content
+        brief: `${display.brief} via /${command.contribution.id}.`,
+        detail: display.detail
       };
     } finally {
       setBusy(false);
@@ -1767,6 +1815,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     .filter((event): event is Extract<RuntimeEvent, { type: "agent" }> => event.type === "agent")
     .slice(-8);
   const activeSymphonyDaemons = symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length;
+  const latestSnapshot = runtime && lastSessionId ? safeWorkSnapshot(runtime, lastSessionId) : undefined;
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="single" paddingX={1}>
@@ -1778,21 +1827,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             : pendingPlan
               ? " awaiting approval"
               : " idle"}
-          {`  mode:${runMode}`}
+          {`  ${runMode}`}
           {lastRoute ? `->${lastRoute.mode}${typeof lastRoute.confidence === "number" ? `:${Math.round(lastRoute.confidence * 100)}%` : ""}` : ""}
-          {activeSymphonyDaemons ? `  symphony:${activeSymphonyDaemons}` : ""}
-          {`  pane:${mainPaneLabels[mainPane]}`}
-          {"  /kernel status"}
+          {activeSymphonyDaemons ? `  background:${activeSymphonyDaemons}` : ""}
+          {`  view:${mainPaneLabels[mainPane]}`}
           {"  Ctrl+O details"}
-          {"  Ctrl+T tasks"}
-          {"  Ctrl+N/P panes"}
+          {"  /help all"}
         </Text>
       </Box>
 
       <Box flexDirection="row" marginTop={1} height={chatHeight}>
         <Box flexDirection="column" width="68%" paddingRight={1}>
           <Box borderStyle="round" flexDirection="column" paddingX={1} height={chatHeight}>
-            {busy ? (
+            {busy && mainPane === "overview" ? (
               <>
                 <Text color="yellow" bold>Tasks</Text>
                 <Text color={loopActivity ? loopActivityColor(loopActivity.phase) : "cyan"} wrap="truncate">
@@ -1834,7 +1881,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
                 )}
               </>
             ) : (
-              <IdleKernelView
+            <IdleKernelView
                 pane={mainPane}
                 messages={messages.slice(-4)}
                 toolOutputs={toolResults.slice(-4)}
@@ -1842,10 +1889,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
                 attempts={idlePaneSnapshot.attempts}
                 leases={idlePaneSnapshot.leases}
                 approvals={idlePaneSnapshot.approvals}
+                workers={mergeWorkerRecords(workers, idlePaneSnapshot.workers, 6)}
                 blackboard={idlePaneSnapshot.blackboard}
                 symphonyDaemons={symphonyDaemons.slice(0, 4)}
                 lastSessionId={lastSessionId}
                 lastRoute={lastRoute}
+                lastSnapshot={latestSnapshot}
               />
             )}
           </Box>
@@ -1853,20 +1902,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
         <Box flexDirection="column" width="32%">
           <Box borderStyle="round" flexDirection="column" paddingX={1} height={Math.floor(chatHeight / 2)}>
-            <Text color="yellow">Agents</Text>
-            {agents.map((event) => (
-              <Text key={`${event.card.agent_id}-${event.card.status}`}>
-                {event.card.agent_id} [{event.card.status}] {event.card.load.running_tasks}/{event.card.load.max_tasks}
-              </Text>
-            ))}
+            <Text color="yellow">Activity</Text>
+            <ActivityPanel workers={mergeWorkerRecords(workers, idlePaneSnapshot.workers, 8)} agents={agents} />
           </Box>
           <Box borderStyle="round" flexDirection="column" paddingX={1} marginTop={1} height={Math.ceil(chatHeight / 2) - 1}>
-            <Text color="yellow">Trace</Text>
-            {recentEvents.map((event, index) => (
+            <Text color="yellow">{busy ? "Trace" : "Summary"}</Text>
+            {busy ? recentEvents.map((event, index) => (
               <Text key={index} color={event.type === "error" ? "red" : undefined}>
                 {formatRuntimeEventBrief(event)}
               </Text>
-            ))}
+            )) : latestSnapshot ? (
+              compactWorkSnapshotLines(latestSnapshot).slice(0, 5).map((line) => (
+                <Text key={line} color="gray" wrap="truncate">
+                  {line}
+                </Text>
+              ))
+            ) : (
+              <Text color="gray">(none)</Text>
+            )}
           </Box>
         </Box>
       </Box>
@@ -1932,6 +1985,10 @@ function truncateSlashOutput(value: string, maxBytes: number, path: string, tota
     "",
     tail.trimStart()
   ].join("\n");
+}
+
+function detailPreview(detail: string | undefined): string | undefined {
+  return commandOutputPreview(detail, MESSAGE_OUTPUT_PREVIEW_LINES, MESSAGE_OUTPUT_PREVIEW_CHARS);
 }
 
 function createOnboardState(enabled: boolean): OnboardState {
@@ -2011,10 +2068,12 @@ function IdleKernelView(input: {
   attempts: RunAttempt[];
   leases: WorkspaceLease[];
   approvals: ApprovalStoreRecord[];
+  workers: WorkerRecord[];
   blackboard: BlackboardEntry[];
   symphonyDaemons: SymphonyDaemonRecord[];
   lastSessionId?: string;
   lastRoute?: RouteState;
+  lastSnapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>;
 }): React.ReactElement {
   const activeDaemons = input.symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping");
   return (
@@ -2023,19 +2082,20 @@ function IdleKernelView(input: {
       <Text color="gray">
         {`Ctrl+N/P switch  ${mainPaneOrder.map((pane) => pane === input.pane ? `[${mainPaneLabels[pane]}]` : mainPaneLabels[pane]).join(" ")}`}
       </Text>
-      {input.pane === "overview" && <IdleOverviewPane input={input} activeDaemons={activeDaemons} />}
+      {input.pane === "overview" && <IdleOverviewPane input={input} activeDaemons={activeDaemons} lastSnapshot={input.lastSnapshot} />}
       {input.pane === "output" && <IdleOutputPane outputs={input.toolOutputs} />}
       {input.pane === "sessions" && <IdleSessionsPane sessions={input.sessions} leases={input.leases} lastSessionId={input.lastSessionId} />}
       {input.pane === "attempts" && <IdleAttemptsPane attempts={input.attempts} />}
-      {input.pane === "agents" && <IdleAgentsPane approvals={input.approvals} daemons={activeDaemons} />}
+      {input.pane === "agents" && <IdleActivityPane workers={input.workers} approvals={input.approvals} daemons={activeDaemons} />}
       {input.pane === "blackboard" && <IdleBlackboardPane blackboard={input.blackboard} messages={input.messages} />}
     </>
   );
 }
 
-function IdleOverviewPane({ input, activeDaemons }: {
+function IdleOverviewPane({ input, activeDaemons, lastSnapshot }: {
   input: Parameters<typeof IdleKernelView>[0];
   activeDaemons: SymphonyDaemonRecord[];
+  lastSnapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>;
 }): React.ReactElement {
   return (
     <>
@@ -2069,6 +2129,21 @@ function IdleOverviewPane({ input, activeDaemons }: {
         </>
       )}
 
+      {input.lastSessionId && (
+        <>
+          <Box marginTop={1}>
+            <Text color="yellow">Latest Session</Text>
+          </Box>
+          {lastSnapshot
+            ? compactWorkSnapshotLines(lastSnapshot).map((line) => (
+                <Text key={line} wrap="truncate" color="gray">
+                  {line}
+                </Text>
+              ))
+            : <Text color="gray">No snapshot available.</Text>}
+        </>
+      )}
+
       <Box marginTop={1}>
         <Text color="yellow">Recent Messages</Text>
       </Box>
@@ -2077,11 +2152,18 @@ function IdleOverviewPane({ input, activeDaemons }: {
           <Text wrap="truncate" color={roleColor(message.role)}>
             {message.role}: {message.brief}
           </Text>
-          {message.preview && (
-            <Text color="gray" wrap="truncate">{indentPreview(commandOutputPreview(message.preview, 2, 300) ?? message.preview, "  ")}</Text>
-          )}
+          {message.preview && <MessagePreview value={message.preview} maxLines={2} maxChars={320} />}
         </Box>
       )) : <Text color="gray">(none)</Text>}
+
+      {lastPreviewMessage(input.messages) && (
+        <>
+          <Box marginTop={1}>
+            <Text color="yellow">Latest Result</Text>
+          </Box>
+          <MessagePreview value={lastPreviewMessage(input.messages)?.preview} maxLines={6} maxChars={900} />
+        </>
+      )}
 
       {input.toolOutputs.length > 0 && (
         <>
@@ -2102,6 +2184,15 @@ function IdleOverviewPane({ input, activeDaemons }: {
       )}
     </>
   );
+}
+
+function MessagePreview({ value, maxLines, maxChars }: { value: string | undefined; maxLines: number; maxChars: number }): React.ReactElement | null {
+  const preview = commandOutputPreview(value, maxLines, maxChars) ?? value;
+  return preview ? <Text color="gray" wrap="truncate">{indentPreview(preview, "  ")}</Text> : null;
+}
+
+function lastPreviewMessage(messages: ChatMessage[]): ChatMessage | undefined {
+  return [...messages].reverse().find((message) => Boolean(message.preview));
 }
 
 function IdleOutputPane({ outputs }: { outputs: ToolResultState[] }): React.ReactElement {
@@ -2174,12 +2265,20 @@ function IdleAttemptsPane({ attempts }: { attempts: RunAttempt[] }): React.React
   );
 }
 
-function IdleAgentsPane({ approvals, daemons }: {
+function IdleActivityPane({ workers, approvals, daemons }: {
+  workers: WorkerRecord[];
   approvals: ApprovalStoreRecord[];
   daemons: SymphonyDaemonRecord[];
 }): React.ReactElement {
   return (
     <>
+      <Box marginTop={1}>
+        <Text color="yellow">Active Work</Text>
+      </Box>
+      {workers.length ? workers.slice(0, 8).map((worker) => (
+        <WorkerLine key={worker.worker_id} worker={worker} />
+      )) : <Text color="gray">(none)</Text>}
+
       <Box marginTop={1}>
         <Text color="yellow">Approvals</Text>
       </Box>
@@ -2190,7 +2289,7 @@ function IdleAgentsPane({ approvals, daemons }: {
       )) : <Text color="gray">(none)</Text>}
 
       <Box marginTop={1}>
-        <Text color="yellow">Symphony Daemons</Text>
+        <Text color="yellow">Background Work</Text>
       </Box>
       {daemons.length ? daemons.slice(0, 6).map((daemon) => (
         <Text key={daemon.daemon_id} wrap="truncate" color="cyan">
@@ -2198,6 +2297,60 @@ function IdleAgentsPane({ approvals, daemons }: {
         </Text>
       )) : <Text color="gray">(none)</Text>}
     </>
+  );
+}
+
+function ActivityPanel({ workers, agents }: {
+  workers: WorkerRecord[];
+  agents: Array<Extract<RuntimeEvent, { type: "agent" }>>;
+}): React.ReactElement {
+  if (workers.length) {
+    return (
+      <>
+        {workers.slice(0, 8).map((worker) => (
+          <WorkerLine key={worker.worker_id} worker={worker} compact />
+        ))}
+      </>
+    );
+  }
+  if (agents.length) {
+    return (
+      <>
+        {agents.map((event) => (
+          <Text key={`${event.card.agent_id}-${event.card.status}`} wrap="truncate">
+            {event.card.name || event.card.agent_id} [{event.card.status}] running={event.card.load.running_tasks}/{event.card.load.max_tasks}
+          </Text>
+        ))}
+      </>
+    );
+  }
+  return <Text color="gray">No active background work.</Text>;
+}
+
+function WorkerLine({ worker, compact = false }: { worker: WorkerRecord; compact?: boolean }): React.ReactElement {
+  const agent = worker.agent_spec_id
+    ? `${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}`
+    : worker.capability;
+  const displayLabel = workerDisplayLabel(worker);
+  const result = worker.last_result ? ` - ${firstLine(worker.last_result, compact ? 44 : 90)}` : "";
+  if (compact) {
+    return (
+      <Text wrap="truncate" color={workerStatusColor(worker.status)}>
+        {statusIcon(worker.status)} {displayLabel} [{worker.status}]{result}
+      </Text>
+    );
+  }
+  return (
+    <Box flexDirection="column">
+      <Text wrap="truncate" color={workerStatusColor(worker.status)}>
+        {statusIcon(worker.status)} {displayLabel} [{worker.status}]
+      </Text>
+      <Text wrap="truncate" color="gray">
+        {worker.worker_id} {agent}{worker.file_scope.length ? ` scope=${worker.file_scope.slice(0, 3).join(",")}` : ""}
+      </Text>
+      {!compact && <Text wrap="truncate">{worker.objective}</Text>}
+      {result && <Text wrap="truncate" color="gray">{result}</Text>}
+    </Box>
   );
 }
 
@@ -2336,8 +2489,35 @@ function briefForOutput(
   return `${first} ... ${lines.length} lines, ${bytes} bytes. Changed files: ${changed}. Checks: ${tests}.${artifact} Ctrl+O for details.`;
 }
 
-function briefForExecutionResult(result: Pick<ExecutionResult, "content" | "outcome" | "artifact_path" | "status">): string {
-  const brief = briefForOutput(result.content, result.outcome, result.artifact_path);
+type ExecutionResultDisplay = {
+  brief: string;
+  detail: string;
+  preview: string;
+};
+
+function formatExecutionResultDisplay(result: ExecutionResult, runtime?: SwarmRuntime): ExecutionResultDisplay {
+  const snapshot = runtime ? safeWorkSnapshot(runtime, result.session_id) : undefined;
+  const resultCard = formatResultCard(result, snapshot);
+  return {
+    brief: briefForExecutionResult(result, snapshot),
+    detail: [resultCard, "", "Full Output", result.content].join("\n"),
+    preview: resultCard
+  };
+}
+
+function briefForExecutionResult(
+  result: Pick<ExecutionResult, "content" | "outcome" | "artifact_path" | "status">,
+  snapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>
+): string {
+  const brief = briefForOutput(
+    result.outcome?.final_summary ?? result.content,
+    {
+      changed_files: snapshot?.changed_files ?? result.outcome?.changed_files ?? [],
+      tests_run: snapshot?.checks ?? result.outcome?.tests_run ?? [],
+      intermediate_artifacts: result.outcome?.intermediate_artifacts ?? []
+    },
+    result.artifact_path
+  );
   if (result.status === "failed") {
     return `Failed: ${brief}`;
   }
@@ -2345,6 +2525,54 @@ function briefForExecutionResult(result: Pick<ExecutionResult, "content" | "outc
     return `Stopped: ${brief}`;
   }
   return brief;
+}
+
+function formatResultCard(result: Pick<ExecutionResult, "session_id" | "content" | "outcome" | "artifact_path" | "status">, snapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>): string {
+  const status = result.status ?? snapshot?.session.status ?? "completed";
+  const summary = firstLine(result.outcome?.final_summary ?? snapshot?.final_outcome?.final_summary ?? result.content, 220) || "(no summary)";
+  const changedFiles = snapshot?.changed_files ?? result.outcome?.changed_files ?? [];
+  const checks = snapshot?.checks ?? result.outcome?.tests_run ?? [];
+  const review = snapshot?.review ? `${snapshot.review.verdict} ${snapshot.review.score} - ${snapshot.review.summary}` : "(not recorded)";
+  const memory = snapshot?.context_summary
+    ? `${snapshot.context_summary.entries} entries, ${snapshot.context_summary.compactions} compactions. Resume refreshes ${changedFiles.length ? "changed files" : "relevant files"} before trusting memory.`
+    : "No saved session memory yet.";
+  const lines = [
+    "Result Card",
+    `${result.session_id} [${status}]`,
+    `Summary: ${summary}`,
+    "",
+    `Changes (${changedFiles.length})`,
+    ...formatResultList(changedFiles, "(none)"),
+    "",
+    `Checks (${checks.length})`,
+    ...formatResultList(checks, "(none)"),
+    "",
+    `Review: ${review}`,
+    "",
+    "Memory Freshness",
+    memory,
+    result.artifact_path ? `Artifact: ${result.artifact_path}` : undefined
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+function formatResultCardFromSnapshot(snapshot: ReturnType<SwarmRuntime["getWorkSnapshot"]>): string {
+  const result: Pick<ExecutionResult, "session_id" | "content" | "outcome" | "status"> = {
+    session_id: snapshot.session.session_id,
+    content: snapshot.final_outcome?.final_summary ?? snapshot.session.objective,
+    status: snapshot.session.status === "failed" ? "failed" : snapshot.session.status === "cancelled" ? "stopped" : "completed",
+    outcome: snapshot.final_outcome
+  };
+  return formatResultCard(result, snapshot);
+}
+
+function formatResultList(items: string[], empty: string): string[] {
+  if (!items.length) {
+    return [`  ${empty}`];
+  }
+  const rows = items.slice(0, 8).map((item) => `  - ${firstLine(item, 180)}`);
+  const remaining = items.length - rows.length;
+  return remaining > 0 ? [...rows, `  ... ${remaining} more`] : rows;
 }
 
 function formatLoopActivityLine(activity: LoopActivityState): string {
@@ -2389,14 +2617,14 @@ async function formatDoctorReport(runtime: SwarmRuntime | undefined, workflowPat
   if (!runtime) {
     lines.push("FAIL runtime is not ready.");
   } else {
-    const sessions = runtime.sessionStore.listRecent(20);
-    const attempts = runtime.runAttemptStore.listRecent(20);
-    const leases = runtime.workspaceLeaseStore.listRecent(20);
-    const approvals = runtime.approvalStore.list(undefined, 20);
+    const sessions = runtime.listRecentSessionsForWorkspace(20);
+    const attempts = runtime.listRecentAttemptsForWorkspace(20);
+    const leases = runtime.listRecentLeasesForWorkspace(20);
+    const approvals = runtime.listRecentApprovalsForWorkspace(20);
     const pendingApprovals = approvals.filter((approval) => approval.status === "pending");
-    const workers = runtime.workerStateStore.listRecent(20);
-    const handoffs = runtime.listHandoffs(20);
-    const blackboard = runtime.blackboardStore.listRecent(20);
+    const workers = runtime.listRecentWorkersForWorkspace(20);
+    const handoffs = runtime.listHandoffsForWorkspace(20);
+    const blackboard = runtime.listRecentBlackboardForWorkspace(20);
     lines.push(
       `OK sessions=${sessions.length} attempts=${attempts.length} leases=${leases.length} workers=${workers.length} handoffs=${handoffs.length}`,
       `${pendingApprovals.length ? "WARN" : "OK"} pending_approvals=${pendingApprovals.length} approvals=${approvals.length}`,
@@ -2463,13 +2691,13 @@ function formatKernelStatusView(input: {
   symphonyDaemons: SymphonyDaemonRecord[];
   events: RuntimeEvent[];
 }): string {
-  const sessions = input.runtime?.sessionStore.listRecent(8) ?? [];
-  const attempts = input.runtime?.runAttemptStore.listRecent(12) ?? [];
-  const leases = input.runtime?.workspaceLeaseStore.listRecent(8) ?? [];
-  const persistedWorkers = input.runtime?.workerStateStore.listRecent(8) ?? [];
-  const approvals = input.runtime?.approvalStore.list(undefined, 8) ?? [];
-  const persistedHandoffs = input.runtime?.listHandoffs(8) ?? [];
-  const recentBlackboard = input.runtime?.blackboardStore.listRecent(8) ?? [];
+  const sessions = input.runtime?.listRecentSessionsForWorkspace(8) ?? [];
+  const attempts = input.runtime?.listRecentAttemptsForWorkspace(12) ?? [];
+  const leases = input.runtime?.listRecentLeasesForWorkspace(8) ?? [];
+  const persistedWorkers = input.runtime?.listRecentWorkersForWorkspace(8) ?? [];
+  const approvals = input.runtime?.listRecentApprovalsForWorkspace(8) ?? [];
+  const persistedHandoffs = input.runtime?.listHandoffsForWorkspace(8) ?? [];
+  const recentBlackboard = input.runtime?.listRecentBlackboardForWorkspace(8) ?? [];
   const lastSnapshot = input.runtime && input.lastSessionId
     ? safeWorkSnapshot(input.runtime, input.lastSessionId)
     : undefined;
@@ -2587,15 +2815,22 @@ function leaseRowsForTarget(runtime: SwarmRuntime, target: string): WorkspaceLea
 function compactWorkSnapshotLines(snapshot: ReturnType<SwarmRuntime["getWorkSnapshot"]>): string[] {
   return [
     `${snapshot.session.session_id} [${snapshot.session.status}] source=${snapshot.session.source?.source ?? "unknown"}`,
+    `objective=${snapshot.session.objective}`,
     `workspace=${snapshot.workspace?.workspace_path ?? "-"} boundary=${snapshot.workspace?.write_boundary ?? "-"}`,
     `attempts=${snapshot.attempts.length} tasks=${snapshot.graph.tasks.length} workers=${snapshot.workers.length} changes=${snapshot.changed_files.length} checks=${snapshot.checks.length}`,
     snapshot.review ? `review=${snapshot.review.verdict} score=${snapshot.review.score} ${snapshot.review.summary}` : "review=(none)",
+    snapshot.context_summary
+      ? `memory=${snapshot.context_summary.entries} entries compactions=${snapshot.context_summary.compactions}${snapshot.context_summary.latest_compaction ? ` latest=${snapshot.context_summary.latest_compaction.compaction_id}` : ""}`
+      : "memory=(none)",
+    snapshot.final_outcome?.final_summary ? `result=${snapshot.final_outcome.final_summary}` : undefined,
     `usage=${JSON.stringify(snapshot.usage_summary)}`
-  ];
+  ].filter(Boolean) as string[];
 }
 
 function formatWorkSnapshot(snapshot: ReturnType<SwarmRuntime["getWorkSnapshot"]>): string {
   return [
+    formatResultCardFromSnapshot(snapshot),
+    "",
     `${snapshot.session.session_id} [${snapshot.session.status}]`,
     `source=${snapshot.session.source?.source ?? "unknown"}${snapshot.session.parent_session_id ? ` parent=${snapshot.session.parent_session_id}` : ""}`,
     snapshot.session.objective,
@@ -2632,23 +2867,59 @@ function formatWorkSnapshot(snapshot: ReturnType<SwarmRuntime["getWorkSnapshot"]
     "Usage",
     JSON.stringify(snapshot.usage_summary, null, 2),
     "",
+    "Context Memory",
+    snapshot.context_summary ? JSON.stringify(snapshot.context_summary, null, 2) : "(none)",
+    "",
     `Final: ${snapshot.final_outcome?.final_summary ?? "(none)"}`
+  ].join("\n");
+}
+
+function formatSessionMemory(runtime: SwarmRuntime, snapshot: ReturnType<SwarmRuntime["getWorkSnapshot"]>): string {
+  const sessionId = snapshot.session.session_id;
+  const memory = runtime.sessionContextStore.renderForSession(sessionId);
+  const freshness = runtime.renderWorkspaceFreshnessContract({
+    sessionId,
+    fileScope: snapshot.changed_files,
+    reason: "showing remembered context for resume"
+  });
+  return [
+    "Session Memory",
+    `${sessionId} [${snapshot.session.status}]`,
+    `Objective: ${snapshot.session.objective}`,
+    snapshot.context_summary
+      ? `Summary: entries=${snapshot.context_summary.entries} compactions=${snapshot.context_summary.compactions}${snapshot.context_summary.latest_compaction ? ` latest=${snapshot.context_summary.latest_compaction.compaction_id}` : ""}`
+      : "Summary: (none)",
+    "",
+    "Freshness",
+    freshness,
+    "",
+    "Remembered Context",
+    memory || "(none)"
   ].join("\n");
 }
 
 function buildResumePrompt(runtime: SwarmRuntime, sessionId: string, instruction: string): string {
   const snapshot = runtime.getWorkSnapshot(sessionId);
   const replay = runtime.replaySession(sessionId);
+  const memory = runtime.sessionContextStore.renderForSession(sessionId);
+  const freshness = runtime.renderWorkspaceFreshnessContract({
+    sessionId,
+    fileScope: snapshot.changed_files,
+    reason: "resuming a previous WorkSession"
+  });
   return [
     `Continue the previous local Swarm WorkSession ${sessionId}.`,
     "",
     `Original objective: ${snapshot.session.objective}`,
     instruction ? `Newest user instruction: ${instruction}` : "Newest user instruction: continue from the previous session state.",
     "",
-    "Use this Work Kernel snapshot as context. Do not repeat completed work unless needed. Inspect the workspace before editing.",
+    freshness,
+    "",
+    "Use this Work Kernel snapshot and compacted session memory as context. Do not repeat completed work unless needed.",
+    memory ? ["", "Compacted session memory", memory].join("\n") : undefined,
     "",
     replay.slice(0, 12_000)
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function parseResumeTarget(
@@ -2658,7 +2929,7 @@ function parseResumeTarget(
   args: string[],
   command: "resume" | "continue"
 ): { sessionId?: string; instruction: string } {
-  const latestSessionId = lastSessionId ?? runtime.sessionStore.listRecent(1)[0]?.session_id;
+  const latestSessionId = lastSessionId ?? runtime.listRecentSessionsForWorkspace(1)[0]?.session_id;
   if (command === "continue") {
     return {
       sessionId: latestSessionId,
@@ -2899,16 +3170,15 @@ function formatHandoff(handoff: HandoffSessionRecord): string {
   ].filter(Boolean).join("\n");
 }
 
-function formatCapabilities(
-  capabilities: CapabilityDescriptor[],
-  providers: Array<{ providerId: string; title: string; capabilities: number; diagnostics: Array<{ severity: string; message: string; code?: string }> }>
-): string {
-  const providerLines = providers.map((provider) => {
-    const diagnostics = provider.diagnostics.length
-      ? ` diagnostics=${provider.diagnostics.map((item) => item.code ?? item.severity).join(",")}`
-      : "";
-    return `${provider.providerId}: ${provider.capabilities} capabilities${diagnostics}`;
-  });
+function formatCapabilities(capabilities: CapabilityDescriptor[], providers: CapabilityProviderSummaryRow[]): string {
+  const providerLines = [...providers]
+    .sort((left, right) => right.capabilities - left.capabilities || left.providerId.localeCompare(right.providerId))
+    .map((provider) => {
+      const diagnostics = provider.diagnostics.length
+        ? ` diagnostics=${provider.diagnostics.map((item) => item.code ?? item.severity).join(",")}`
+        : "";
+      return `${provider.providerId}: ${provider.capabilities} capabilities${diagnostics}`;
+    });
   const grouped = new Map<string, CapabilityDescriptor[]>();
   for (const capability of capabilities) {
     grouped.set(capability.kind, [...(grouped.get(capability.kind) ?? []), capability]);
@@ -2932,6 +3202,72 @@ function formatCapabilities(
   ].join("\n");
 }
 
+function formatCapabilitySummary(capabilities: CapabilityDescriptor[], providers: CapabilityProviderSummaryRow[]): string {
+  const summary = summarizeCapabilityCatalog(capabilities, providers);
+  if (summary.totals.capabilities === 0) {
+    return [
+      "Capability summary",
+      "No capabilities discovered.",
+      "Use /capabilities all after loading skills, plugins, or MCP servers."
+    ].join("\n");
+  }
+
+  return [
+    "Capability summary",
+    `${summary.totals.capabilities} capabilities across ${summary.totals.providers} providers.`,
+    `Ready=${summary.totals.ready} model-visible=${summary.totals.modelVisible} hidden=${summary.totals.hidden}.`,
+    "",
+    "By kind",
+    ...summary.byKind.map((item) => `  ${item.kind}: ${item.count}`),
+    "",
+    "Top surfaces",
+    ...(summary.topCapabilities.length
+      ? summary.topCapabilities.map((item) => `  ${item.id} - ${item.title} [${item.kind}/${item.providerId}]`)
+      : ["  (none)"]),
+    "",
+    "Provider health",
+    ...(summary.providers.length
+      ? summary.providers.map((provider) => {
+          const diagnostics = provider.diagnostics.length
+            ? ` diagnostics=${provider.diagnostics.map((item) => item.code ?? item.severity).join(",")}`
+            : "";
+          return `  ${provider.providerId}: ${provider.capabilities} capabilities${diagnostics}`;
+        })
+      : ["  (none)"]),
+    ...(summary.diagnostics.length
+      ? ["", "Diagnostics", ...summary.diagnostics.map((item) => `  ${item.providerId}: ${item.code ?? "diagnostic"} ${item.message}`)]
+      : []),
+    "",
+    "Use /capabilities all for the full catalog."
+  ].join("\n");
+}
+
+function formatSkillsSummary(skills: SkillRecord[]): string {
+  const summary = summarizeSkillCatalog(skills);
+  if (summary.totals.skills === 0) {
+    return [
+      "Skill summary",
+      "No skills discovered.",
+      "Use /skills all after adding project or user skills."
+    ].join("\n");
+  }
+
+  return [
+    "Skill summary",
+    `${summary.totals.active} active skills, ${summary.totals.shadowed} shadowed.`,
+    "",
+    "Active skills",
+    ...(summary.topSkills.length
+      ? summary.topSkills.map((skill) => `  ${skill.name} [${skill.scope}/${skill.trust}] - ${firstLine(skill.description, 96)}`)
+      : ["  (none)"]),
+    ...(summary.diagnostics.length
+      ? ["", "Diagnostics", ...summary.diagnostics.map((item) => `  ${item.name}: ${item.code ?? "diagnostic"} ${item.message}`)]
+      : []),
+    "",
+    "Use /skills all for the full catalog."
+  ].join("\n");
+}
+
 function formatSkills(skills: SkillRecord[]): string {
   if (skills.length === 0) {
     return "No skills discovered.";
@@ -2945,6 +3281,35 @@ function formatSkills(skills: SkillRecord[]): string {
     skill.shadowedBy ? `shadowed_by=${skill.shadowedBy}` : undefined,
     ...(skill.diagnostics ?? []).map((item) => `${item.severity}: ${item.code ?? "diagnostic"} ${item.message}`)
   ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function formatPluginsSummary(plugins: PluginRecord[]): string {
+  const summary = summarizePluginCatalog(plugins);
+  if (summary.totals.plugins === 0) {
+    return [
+      "Plugin summary",
+      "No plugins discovered.",
+      "Use /plugins all after installing a project or user plugin."
+    ].join("\n");
+  }
+
+  return [
+    "Plugin summary",
+    `${summary.totals.plugins} plugins discovered, ${summary.totals.trusted} trusted, ${summary.totals.contributions} contributions.`,
+    "",
+    "Top plugins",
+    ...(summary.topPlugins.length
+      ? summary.topPlugins.map((plugin) => `  ${plugin.id} [${plugin.scope}/${plugin.trust}] - ${firstLine(plugin.description, 96)} (${plugin.contributions} contributions)`)
+      : ["  (none)"]),
+    ...(summary.slashContributions.length
+      ? ["", "Slash contributions", ...summary.slashContributions.map((item) => `  ${item.pluginId}:${item.id} ${firstLine(item.description, 96)}`)]
+      : []),
+    ...(summary.diagnostics.length
+      ? ["", "Diagnostics", ...summary.diagnostics.map((item) => `  ${item.pluginId}: ${item.code ?? "diagnostic"} ${item.message}`)]
+      : []),
+    "",
+    "Use /plugins all for the full catalog."
+  ].join("\n");
 }
 
 function formatPlugins(plugins: PluginRecord[]): string {
@@ -2969,6 +3334,37 @@ function formatPlugins(plugins: PluginRecord[]): string {
   ].filter(Boolean).join("\n")).join("\n\n");
 }
 
+function formatMcpServersSummary(servers: McpServerRecord[]): string {
+  const summary = summarizeMcpCatalog(servers);
+  if (summary.totals.servers === 0) {
+    return [
+      "MCP summary",
+      "No MCP servers configured.",
+      "Use /mcp all after enabling MCP or adding a server."
+    ].join("\n");
+  }
+
+  return [
+    "MCP summary",
+    `${summary.totals.servers} servers configured.`,
+    `  connected: ${summary.totals.connected}`,
+    `  pending: ${summary.totals.pending}`,
+    `  failed: ${summary.totals.failed}`,
+    `  disabled: ${summary.totals.disabled}`,
+    "",
+    "Top servers",
+    ...(summary.topServers.length
+      ? summary.topServers.map((server) => `  ${server.id} [${server.status}/${server.transport}/${server.trust}] tools=${server.tools} resources=${server.resources} prompts=${server.prompts}`)
+      : ["  (none)"]),
+    ...(summary.errors.length ? ["", "Recent errors", ...summary.errors.map((item) => `  ${item.serverId}: ${item.message}`)] : []),
+    ...(summary.diagnostics.length
+      ? ["", "Diagnostics", ...summary.diagnostics.map((item) => `  ${item.serverId}: ${item.code ?? "diagnostic"} ${item.message}`)]
+      : []),
+    "",
+    "Use /mcp all for the full catalog."
+  ].join("\n");
+}
+
 function formatActivatedSkill(skill: ActivatedSkill): string {
   return [
     `${skill.name} [${skill.scope}/${skill.trust}]`,
@@ -2979,6 +3375,18 @@ function formatActivatedSkill(skill: ActivatedSkill): string {
     "",
     skill.content
   ].filter(Boolean).join("\n");
+}
+
+function hasAdvancedSurfaceFlag(args: string[]): boolean {
+  return args.some((arg) => ADVANCED_SURFACE_FLAGS.has(arg.toLowerCase()));
+}
+
+function stripAdvancedSurfaceFlags(args: string[]): string[] {
+  return args.filter((arg) => !ADVANCED_SURFACE_FLAGS.has(arg.toLowerCase()));
+}
+
+function hasCapabilityCommandFilter(filter: { kind?: string; providerId?: string; query?: string }): boolean {
+  return Boolean(filter.kind || filter.providerId || filter.query);
 }
 
 function findPluginSlashCommand(plugins: PluginRecord[], command: string): { plugin: PluginRecord; contribution: PluginRecord["contributions"][number] } | undefined {
@@ -3290,6 +3698,7 @@ function slashToolErrorCode(error: unknown, message: string): string {
     const code = String((error as { code?: unknown }).code ?? "");
     if (code === "ENOENT") return "FS_NOT_FOUND";
     if (code === "EACCES" || code === "EPERM") return "PERMISSION_DENIED";
+    if (code === "ENOTDIR" || code === "EISDIR") return "INVALID_INPUT";
   }
   if (/permission|denied|approval/i.test(message)) return "PERMISSION_DENIED";
   if (/requires|invalid|unsupported/i.test(message)) return "INVALID_INPUT";
@@ -3377,6 +3786,33 @@ function maskField(field: OnboardField, value: string): string {
     return "*".repeat(Math.min(12, value.length));
   }
   return value;
+}
+
+function mergeWorkerRecords(live: Map<string, WorkerRecord>, persisted: WorkerRecord[], limit: number): WorkerRecord[] {
+  const records = [...live.values(), ...persisted].reduce((next, worker) => {
+    const existing = next.get(worker.worker_id);
+    if (!existing || existing.updated_at < worker.updated_at) {
+      next.set(worker.worker_id, worker);
+    }
+    return next;
+  }, new Map<string, WorkerRecord>());
+  return Array.from(records.values())
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+    .slice(0, limit);
+}
+
+function workerStatusColor(status: WorkerRecord["status"]): string {
+  switch (status) {
+    case "running": return "cyan";
+    case "completed": return "green";
+    case "failed": return "red";
+    case "stopped": return "yellow";
+  }
+}
+
+function firstLine(value: string, maxLength: number): string {
+  const line = value.split(/\r?\n/).find((item) => item.trim())?.trim() ?? "";
+  return line.length > maxLength ? `${line.slice(0, Math.max(0, maxLength - 1))}…` : line;
 }
 
 function statusIcon(status: string): string {

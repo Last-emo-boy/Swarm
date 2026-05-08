@@ -391,5 +391,16 @@ export type WorkSnapshot = {
   review?: ReviewResult;
   verification?: unknown;
   usage_summary: Record<string, number>;
+  context_summary?: {
+    entries: number;
+    compactions: number;
+    latest_compaction?: {
+      compaction_id: string;
+      pre_tokens: number;
+      post_tokens: number;
+      strategy: string;
+      created_at: string;
+    };
+  };
   final_outcome?: WorkSessionOutcome;
 };

@@ -1,6 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { defaultSwarmSettings } from "../config/settings.js";
+import type { GeneratedPlan } from "../protocol/types.js";
 import {
   decodeInputChunk,
   decodeInputStream,
@@ -13,7 +17,7 @@ import {
   killInputToLineEnd,
   killInputWordBackward
 } from "../tui/input-editing.js";
-import { nextMainPane } from "../tui/main-panes.js";
+import { mainPaneShortcutDirection, nextMainPane } from "../tui/main-panes.js";
 import {
   acceptSlashCommandCandidate,
   commandCandidatesForInput,
@@ -23,13 +27,19 @@ import {
   parseSlashCommandLine,
   rawSlashArgsAfter
 } from "../tui/slash-commands.js";
-import { formatHeadlessProgress, formatRuntimeEventBrief } from "../runtime/event-formatters.js";
-import { finalActivityMessage, finalActivityPhase, formatToolFailureContent, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
+import { formatHeadlessProgress, formatRuntimeEventBrief, formatWorkerBrief } from "../runtime/event-formatters.js";
+import { workerDisplayLabel } from "../storage/worker-state-store.js";
+import { finalActivityMessage, finalActivityPhase, formatToolFailureContent, hasUnresolvedToolFailure, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "../runtime/execution-status.js";
+import { TaskScheduler } from "../runtime/scheduler.js";
+import { normalizeGeneratedPlanForRuntime } from "../runtime/plan-generator.js";
 import { inputReducer } from "../tui/input-state.js";
 import {
   applyChatInputKey,
+  CHAT_INPUT_COMPLETION_LIMIT,
+  CHAT_INPUT_COMPLETION_VISIBLE_ROWS,
   chatInputCompletionCandidates,
+  chatInputCompletionRows,
   createChatInputControllerState
 } from "../tui/chat-input-controller.js";
 import {
@@ -42,8 +52,27 @@ import { INPUT_RENDER_ROWS, inputViewport, renderInputLineParts } from "../tui/i
 import { editOnboardFieldInput } from "../tui/onboard-input.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
 import { assertToolAllowedByPermissions, resolveReadablePath, resolveWritablePath, toolRequiresApproval } from "../tools/permissions.js";
-import { aggregateLintResults, webFetchHttpFailureMetadata } from "../tools/local-tools.js";
+import { aggregateLintResults, normalizeToolAction, webFetchHttpFailureMetadata } from "../tools/local-tools.js";
+import { BuiltinLocalToolProvider } from "../extensions/builtin-tools.js";
+import { createEnvelope } from "../protocol/envelope.js";
+import { SwarmDatabase } from "../storage/database.js";
+import { TraceStore } from "../storage/trace-store.js";
+import { BlackboardStore } from "../storage/blackboard-store.js";
+import { ArtifactStore } from "../storage/artifact-store.js";
+import { TaskStateStore } from "../storage/task-state-store.js";
+import { SessionStore } from "../storage/session-store.js";
+import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
+import { SessionContextStore } from "../storage/session-context-store.js";
+import { RuntimeEvents } from "../runtime/events.js";
+import { AgentRegistry } from "../runtime/registry.js";
+import { EnvelopeRouter } from "../runtime/router.js";
+import { SwarmRuntime } from "../runtime/runtime.js";
+import { applyStructuredRoutingPolicy } from "../runtime/execution-router.js";
+import { renderHostEnvironmentPrompt } from "../runtime/host-context.js";
+import { TOOL_RESULT_REPLACEMENT_TAG } from "../runtime/tool-result-budget.js";
+import { builtinAgents } from "../runtime/builtin-agents.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
+import type { AgentCard } from "../protocol/types.js";
 
 export type EvalCaseResult = {
   name: string;
@@ -77,10 +106,23 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/runtime/execution-router.ts", "Full swarm is preferred", "execution router asks the LLM to treat explicit swarm requests as strong routing evidence"),
     checkContains(root, "src/runtime/execution-router.ts", "full_swarm_decision_owner", "execution router leaves full-swarm selection to the LLM"),
     checkContains(root, "src/runtime/execution-router.ts", "execution mode is a starting point", "execution router documents dynamic escalation out of a fixed mode"),
+    checkContains(root, "src/runtime/execution-router.ts", "workspace-modifying explicit swarm requests should start in coding_loop", "execution router prompts safe swarm escalation for mutating tasks"),
+    checkContains(root, "src/runtime/execution-router.ts", "Using coding_loop preserves the read/edit/verify loop", "execution router policy demotes unsafe mutating full-swarm routes"),
     checkNotContains(root, "src/runtime/execution-router.ts", "detectSwarmPreferenceSignals", "execution router avoids hardcoded swarm preference detection"),
     checkNotContains(root, "src/runtime/execution-router.ts", "hasSubstantialJustification", "execution router avoids deterministic full-swarm justification thresholds"),
     checkNotContains(root, "src/runtime/execution-router.ts", "explicitlyRequestsSwarm", "execution router avoids explicit swarm keyword gate"),
     checkNotContains(root, "src/runtime/execution-router.ts", "clampAutoRoute", "execution router avoids hardcoded route clamp"),
+    checkContains(root, "src/runtime/orchestrator.ts", "routeableTaskCapability", "full swarm rejects empty task capabilities before envelope routing"),
+    checkContains(root, "src/runtime/plan-generator.ts", "firstNonEmptyCapability", "planner normalization skips empty required_capabilities entries"),
+    checkContains(root, "src/runtime/plan-generator.ts", "Do not use Agent or agent.delegate in full-swarm plans", "full swarm planner prompt avoids nested delegation tasks"),
+    checkContains(root, "src/runtime/plan-generator.ts", "Do not use placeholder content in Write", "planner prompt rejects placeholder file writes"),
+    checkContains(root, "src/runtime/plan-generator.ts", "Bash commands must use the host shell syntax", "planner prompt requires host-specific shell syntax"),
+    checkContains(root, "src/runtime/plan-generator.ts", "validateGeneratedToolInputs", "planner normalization validates generated tool inputs"),
+    checkContains(root, "src/runtime/plan-generator.ts", "usesPowerShellIncompatiblePosix", "planner normalization rejects POSIX-only PowerShell commands"),
+    checkContains(root, "src/runtime/host-context.ts", "Host environment for local tools", "host environment prompt exists"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "renderHostEnvironmentPrompt(input.workspace)", "coding loop injects host environment"),
+    checkContains(root, "src/runtime/runtime.ts", "renderHostEnvironmentPrompt(this.workspace)", "chat mode injects host environment"),
+    checkContains(root, "src/agents/child-entry.ts", "workerLoopSystemPrompt(workspace)", "worker loop injects host environment"),
     checkContains(root, "src/runtime/coding-agent-loop.ts", "workerStore", "worker lifecycle is wired into coding loop"),
     checkContains(root, "src/runtime/coding-agent-loop.ts", "invokeAgent", "agent delegates route through main Swarm"),
     checkContains(root, "src/runtime/coding-agent-loop.ts", "available_agent_specs", "coding loop exposes agent specs to main Swarm"),
@@ -114,8 +156,33 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/runtime/event-formatters.ts", "formatHeadlessProgress", "formatter exposes headless progress"),
     checkContains(root, "src/index.ts", "formatHeadlessProgress", "headless run uses shared progress formatter"),
     checkContains(root, "src/runtime/event-formatters.ts", "agent_spawn_decision", "headless run can surface agent spawn decisions"),
+    checkFile(root, "src/runtime/headless-artifacts.ts", "headless artifact exporter exists"),
+    checkContains(root, "src/index.ts", "--trajectory", "headless run can write ATIF trajectory artifacts"),
+    checkContains(root, "src/index.ts", "loadSwarmVersion", "CLI can report its package version for installed-agent setup"),
+    checkContains(root, "src/index.ts", "command === \"--version\"", "CLI accepts --version for installed-agent setup"),
+    checkContains(root, "src/runtime/headless-artifacts.ts", "swarm.telemetry.v1", "headless run emits structured telemetry"),
+    checkContains(root, "src/runtime/headless-artifacts.ts", "ATIF-v1.7", "headless trajectory uses Harbor-compatible ATIF schema"),
+    checkFile(root, "bench/harbor/swarm_agent.py", "Harbor Swarm CLI agent wrapper exists"),
+    checkContains(root, "src/providers/openai-provider.ts", "nonEmptyEnv(\"SWARM_WORKER_MODEL\") ?? envModel", "headless model env can configure worker model without persisted settings"),
+    checkContains(root, "src/providers/openai-provider.ts", "nonEmptyEnv(\"SWARM_AGGREGATOR_MODEL\") ?? envModel", "headless model env can configure aggregator model without persisted settings"),
+    checkContains(root, "bench/harbor/swarm_agent.py", "\"SWARM_MODEL\"", "Harbor wrapper forwards model selection into isolated Swarm homes"),
+    checkContains(root, "bench/harbor/swarm_agent.py", "SWARM_RUN_MODE", "Harbor wrapper can select a non-default run mode"),
+    checkContains(root, "bench/harbor/swarm_agent.py", "SWARM_PACKAGE", "Harbor wrapper can install packaged Swarm CLI inside the sandbox"),
+    checkContains(root, "bench/harbor/swarm_agent.py", "environment.upload_file", "Harbor wrapper uploads local Swarm package artifacts"),
+    checkContains(root, "bench/harbor/swarm_agent.py", "agent_dir = environment.env_paths.agent_dir.as_posix()", "Harbor wrapper writes run artifacts through the sandbox agent mount"),
+    checkContains(root, "bench/harbor/swarm_agent.py", "environment.env_paths.agent_dir", "Harbor wrapper writes artifacts into the Harbor agent mount"),
+    checkContains(root, "package.json", "\"files\"", "npm package manifest explicitly includes build artifacts for Harbor installation"),
+    checkContains(root, "package.json", "\"dist\"", "npm package manifest includes compiled CLI output"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "formatWhyReport", "TUI why uses grouped formatter"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "formatWorkerBrief", "TUI workers uses compact worker formatter"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "<ActivityPanel workers={mergeWorkerRecords", "right-side Activity panel summarizes worker records"),
+    checkContains(root, "src/tui/idle-pane-snapshot.ts", "runtime.listRecentWorkersForWorkspace", "TUI idle snapshot includes recent worker records"),
+    checkContains(root, "src/storage/worker-state-store.ts", "display_name", "worker records persist a human-readable agent name"),
+    checkContains(root, "src/storage/worker-state-store.ts", "role_title", "worker records persist a generated role title"),
+    checkContains(root, "src/runtime/agent-specs.ts", "persona_brief?: string", "agent spawn decisions support an ephemeral persona brief"),
+    checkContains(root, "src/runtime/runtime.ts", "display_name, role_title, persona_brief", "agent spawn prompt asks the LLM for generated worker identity fields"),
+    checkContains(root, "src/runtime/runtime.ts", "stripEphemeralAgentPersona", "runtime strips ephemeral persona from durable worker records"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "sessionObjective", "worker loops can persist a durable session objective separate from the prompt"),
     checkFile(root, "src/tui/ChatInputArea.tsx", "TUI chat input component is isolated"),
     checkFile(root, "src/tui/chat-input-controller.ts", "TUI chat input controller is testable outside Ink"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "ChatInputArea", "TUI shell imports the isolated chat input component"),
@@ -132,7 +199,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/input-rendering.ts", "INPUT_RENDER_ROWS", "TUI input renders a compact multi-line prompt viewport"),
     checkContains(root, "src/tui/main-panes.ts", "mainPaneOrder", "TUI centralizes main pane order"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "mainPane", "TUI tracks the active main pane"),
-    checkContains(root, "src/tui/SwarmChatApp.tsx", "Ctrl+N/P panes", "TUI documents main pane switching in the header"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "/help all", "TUI header keeps advanced controls behind help all"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "busy && mainPane === \"overview\"", "TUI pane switching remains visible while work is running"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "lastRoute", "TUI tracks the latest actual execution route"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "routeStateFromControllerEvent", "TUI derives route state from controller events"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "latest route=", "TUI overview surfaces the selected local loop or swarm route"),
@@ -147,8 +215,49 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/index.ts", "--yolo", "CLI supports temporary yolo mode"),
     checkContains(root, "src/providers/openai-provider.ts", "webSearchWithResponses", "provider-native OpenAI web search exists"),
     checkContains(root, "src/providers/openai-provider.ts", "web_search_20250305", "provider-native Anthropic web search exists"),
+    checkContains(root, "src/providers/openai-provider.ts", "max_output_tokens", "OpenAI Responses requests set max output tokens"),
+    checkContains(root, "src/providers/openai-provider.ts", "maxOutputTokens", "Gemini requests set max output tokens"),
+    checkContains(root, "src/providers/openai-provider.ts", "input.maxOutputTokens", "provider supports request-scoped max output tokens"),
+    checkContains(root, "src/providers/openai-provider.ts", "WEB_SEARCH_MAX_OUTPUT_TOKENS", "provider-native web search uses a bounded output budget"),
+    checkContains(root, "src/runtime/execution-router.ts", "ROUTER_MAX_OUTPUT_TOKENS", "execution router uses a small output budget"),
+    checkContains(root, "src/runtime/plan-generator.ts", "PLAN_GENERATOR_MAX_OUTPUT_TOKENS", "planner uses a bounded output budget"),
+    checkContains(root, "src/runtime/runtime.ts", "CONTROL_PLANE_MAX_OUTPUT_TOKENS", "runtime control-plane calls use small output budgets"),
+    checkContains(root, "src/agents/child-entry.ts", "CHILD_WORKER_LOOP_MAX_OUTPUT_TOKENS", "child worker loop uses a bounded output budget"),
+    checkContains(root, "src/providers/openai-provider.ts", "SWARM_MAX_OUTPUT_TOKENS", "model output token cap can be overridden from env"),
+    checkContains(root, "src/config/settings.ts", "maxOutputTokens", "model output token cap is part of settings"),
+    checkContains(root, "src/providers/openai-provider.ts", "cache_control", "Anthropic prompt caching uses cache_control markers"),
+    checkContains(root, "src/providers/openai-provider.ts", "prompt_cache_key", "OpenAI prompt caching uses prompt_cache_key"),
+    checkContains(root, "src/providers/openai-provider.ts", "cachedContent", "Gemini prompt caching can use cachedContent"),
+    checkContains(root, "src/providers/openai-provider.ts", "cachedInputTokens", "Provider usage records cached input tokens"),
+    checkContains(root, "src/runtime/runtime.ts", "cached_input", "Runtime usage records cached token counters"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "cache: true", "Coding loop marks stable prompt blocks cacheable"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "compactToolResultHistory(toolResults)", "coding loop compacts historical tool results before replaying context"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "failed tool result is feedback", "coding loop instructs the LLM to continue after recoverable tool failures"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "hasUnresolvedToolFailure", "coding loop treats only unrecovered tool failures as final failures"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "TOOL_RESULT_PERSIST_THRESHOLD_BYTES = 8_000", "coding loop persists large tool outputs instead of replaying them inline"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "TOOL_RESULT_PERSIST_PREVIEW_BYTES = 2_000", "coding loop keeps only a short preview for persisted tool output"),
+    checkFile(root, "src/runtime/tool-result-budget.ts", "shared tool result budget module exists"),
+    checkFile(root, "src/storage/tool-content-replacement-store.ts", "tool content replacement store exists"),
+    checkContains(root, "src/storage/database.ts", "tool_content_replacements", "database persists exact tool result replacement decisions"),
+    checkContains(root, "src/runtime/tool-result-budget.ts", "ContentReplacementState", "tool result budget tracks replacement state"),
+    checkContains(root, "src/runtime/tool-result-budget.ts", "seenIds", "tool result budget freezes seen tool-result decisions"),
+    checkContains(root, "src/runtime/tool-result-budget.ts", "TOOL_RESULT_REPLACEMENT_TAG", "tool result replacements use a deterministic persisted-output tag"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "applyToolResultBudget(compactToolResultHistory(toolResults)", "coding loop applies aggregate tool result budget before model replay"),
+    checkContains(root, "src/runtime/coding-agent-loop.ts", "codingLoopCacheKey", "coding loop derives stable cache keys from cacheable prompt bytes"),
+    checkContains(root, "src/agents/child-entry.ts", "CHILD_TOOL_RESULT_TOTAL_BUDGET_BYTES", "child worker loop uses aggregate tool result budget"),
+    checkContains(root, "src/agents/child-entry.ts", "LONG_OUTPUT_THRESHOLD_BYTES = 8_000", "child worker loop persists long outputs with the same threshold as main loop"),
+    checkContains(root, "src/providers/openai-provider.ts", "PromptCacheDiagnostics", "provider reports prompt cache diagnostics"),
+    checkContains(root, "src/providers/openai-provider.ts", "promptCachePolicies", "provider latches prompt cache policy per cache scope"),
+    checkContains(root, "src/providers/openai-provider.ts", "trackPromptCacheDiagnostics", "provider tracks prompt cache break diagnostics"),
+    checkContains(root, "src/runtime/runtime.ts", "prompt_cache_diagnostic", "runtime persists prompt cache diagnostic events"),
+    checkContains(root, "src/storage/session-context-store.ts", "Files and paths seen", "session context compaction preserves important file signals"),
+    checkContains(root, "src/runtime/runtime.ts", "compactWorkerResultForParent", "runtime compacts worker results before returning them to the parent loop"),
+    checkContains(root, "src/runtime/runtime.ts", "result_ref", "parent loop receives a worker result artifact reference"),
     checkContains(root, "src/tools/local-tools.ts", "serverWebSearch", "web search can use provider-native search"),
     checkContains(root, "src/tools/local-tools.ts", "allowed_domains", "web search supports domain filters"),
+    checkContains(root, "src/tools/local-tools.ts", "validateShellCommandForHost", "shell tools validate commands against the host shell"),
+    checkContains(root, "src/tools/local-tools.ts", "Command uses POSIX-only shell syntax", "shell tools reject POSIX-only commands on PowerShell hosts"),
+    checkContains(root, "src/tools/local-tools.ts", "explicitly invoke an available shell", "shell tool recovery explains explicit alternate shell usage"),
     checkContains(root, "src/tools/types.ts", "recoverySuggestion", "tool results can carry deterministic recovery guidance"),
     checkContains(root, "src/runtime/events.ts", "recoverySuggestion", "tool result events carry recovery guidance"),
     checkContains(root, "src/runtime/runtime.ts", "recovery_suggestion: event.recoverySuggestion", "runtime persists tool recovery guidance into Work Kernel attempts"),
@@ -311,10 +420,14 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "README.md", "/work-items [workflow_path]", "README documents local work item TUI inspection"),
     checkContains(root, "src/tui/slash-commands.ts", "/attempts [session_id]", "TUI documents Work Kernel attempt inspection"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "runtime.runAttemptStore.list(sessionId, 120)", "TUI reads session attempts from Work Kernel"),
+    checkContains(root, "src/runtime/runtime.ts", "listRecentAttemptsForWorkspace", "Runtime exposes workspace-scoped attempt recency"),
+    checkContains(root, "src/tui/idle-pane-snapshot.ts", "runtime.listRecentAttemptsForWorkspace", "TUI idle snapshot scopes recent attempts to the current workspace"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "runtime.listRecentAttemptsForWorkspace(50)", "TUI attempts command defaults to current workspace attempts"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "formatRunAttempt", "TUI renders attempt failure, workspace, and recovery details"),
     checkContains(root, "README.md", "/attempts [session_id]", "README documents Work Kernel attempt inspection"),
     checkContains(root, "src/tui/slash-commands.ts", "/leases [session_id|lease_id]", "TUI documents workspace lease inspection"),
-    checkContains(root, "src/tui/SwarmChatApp.tsx", "workspaceLeaseStore.listRecent", "TUI reads recent workspace leases from Work Kernel"),
+    checkContains(root, "src/runtime/runtime.ts", "listRecentLeasesForWorkspace", "Runtime exposes workspace-scoped lease recency"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "runtime.listRecentLeasesForWorkspace(50)", "TUI leases command defaults to current workspace leases"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "formatWorkspaceLease", "TUI renders workspace lease write boundaries"),
     checkContains(root, "README.md", "/leases [session_id\\|lease_id]", "README documents workspace lease inspection"),
     checkContains(root, "src/tui/slash-commands.ts", "/doctor [workflow_path]", "TUI documents local doctor diagnostics"),
@@ -332,6 +445,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/ChatInputArea.tsx", "<InputLine value={controllerState.current.input.value}", "TUI chat input renders the current editable draft"),
     checkContains(root, "src/tui/ChatInputArea.tsx", "controllerStateRef", "TUI chat input can use parent-owned controller state"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "controllerStateRef={chatInputState}", "TUI shell preserves chat input state across approval overlays"),
+    checkNotContains(root, "src/tui/SwarmChatApp.tsx", "/kernel status", "TUI header does not expose Kernel status as a default path"),
+    checkNotContains(root, "src/tui/SwarmChatApp.tsx", "Ctrl+T tasks", "TUI header keeps task internals out of the default path"),
     checkNotContains(root, "src/tui/ChatInputArea.tsx", "useStdin", "TUI chat input avoids raw stdin double-consumption"),
     checkNotContains(root, "src/tui/ChatInputArea.tsx", "renderRawInputLine", "TUI chat input avoids manual ANSI line repaint"),
     checkNotContains(root, "src/tui/SwarmChatApp.tsx", "inputHistory", "TUI shell does not own per-keystroke input history state"),
@@ -343,7 +458,31 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "README.md", "When idle, the TUI main pane acts as the Kernel operator surface", "README documents idle TUI as the Kernel operator surface"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Recent Attempts", "TUI kernel status view surfaces Work Kernel attempts"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Symphony", "TUI kernel status view surfaces Symphony state"),
-    checkContains(root, "src/tui/SwarmChatApp.tsx", "Slash commands grouped by Core, Kernel, Symphony, Agents, Tools, and Config", "TUI help groups slash commands"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "Main commands only. Use /help all for advanced diagnostics, Symphony, agents, tools, and extension controls.", "TUI help groups slash commands"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "formatCapabilitySummary", "TUI capabilities default to a summary surface"),
+    checkFile(root, "src/extensions/catalog-summary.ts", "Shared extension catalog summary helpers exist"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "summarizeCapabilityCatalog", "TUI capability summary uses the shared catalog summary model"),
+    checkContains(root, "src/server/gateway.ts", "summary: summarizeCapabilityCatalog", "Gateway capability catalog returns the shared summary model"),
+    checkContains(root, "src/server/gateway.ts", "summary: summarizeSkillCatalog", "Gateway skills catalog returns the shared summary model"),
+    checkContains(root, "src/server/gateway.ts", "summary: summarizePluginCatalog", "Gateway plugins catalog returns the shared summary model"),
+    checkContains(root, "src/server/gateway.ts", "summary: summarizeMcpCatalog", "Gateway MCP catalog returns the shared summary model"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "Use /capabilities all for the full catalog.", "TUI capability summary points to explicit advanced expansion"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "formatSkillsSummary", "TUI skills default to a summary surface"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "formatPluginsSummary", "TUI plugins default to a summary surface"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "formatMcpServersSummary", "TUI MCP status defaults to a summary surface"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "Latest Session", "TUI overview surfaces the latest WorkSession summary"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "objective=", "TUI overview shows the current objective in the compact snapshot"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "memory=", "TUI overview surfaces compacted session memory state"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "result=", "TUI overview surfaces the latest result summary"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "formatExecutionResultDisplay", "TUI final outputs use a shared result display formatter"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "Result Card", "TUI final outputs default to a result card"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "Memory Freshness", "TUI result cards explain resume memory freshness"),
+    checkContains(root, "README.md", "Normal runs now finish with a result card", "README documents result-oriented final UX"),
+    checkContains(root, "src/tui/main-panes.ts", "agents: \"Activity\"", "TUI renames the default worker pane to Activity"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "No active background work.", "TUI right rail hides worker internals when idle"),
+    checkContains(root, "README.md", "Activity pane summarizes workers", "README documents activity-first worker UX"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "{busy ? \"Trace\" : \"Summary\"}", "TUI right rail shows summary when idle and trace while busy"),
+    checkContains(root, "README.md", "Capability and extension surfaces also start with summaries", "README documents summary-first capability surfaces"),
     checkContains(root, "src/tui/slash-commands.ts", "slashCommands", "TUI centralizes slash command metadata"),
     checkContains(root, "src/tui/ChatInputArea.tsx", "CommandCandidates", "TUI renders slash command candidates"),
     checkContains(root, "src/tui/slash-commands.ts", "completeSlashCommand", "TUI exposes Tab slash command completion logic"),
@@ -356,6 +495,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/tui/ChatInputArea.tsx", "Up/Down select  Tab accepts  Esc closes", "TUI candidate list documents selection keys"),
     checkContains(root, "src/tui/slash-commands.ts", "commandOutputPreview", "TUI exposes inline command output preview logic"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "commandOutputPreview", "TUI renders inline command output previews"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "Latest Result", "TUI overview exposes the latest run or command output without opening details"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "preview: display.preview", "TUI stores result-card previews on normal execution chat messages"),
     checkContains(root, "src/tui/slash-commands.ts", "formatToolOutputPreview", "TUI exposes recent output preview formatting"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "formatToolOutputPreview", "TUI output command lists recent output previews"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "toolOutputs={toolResults.slice(-4)}", "TUI passes recent command output into the idle Kernel pane"),
@@ -398,12 +539,18 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/runtime/runtime.ts", "mode: \"tui_chat\"", "TUI chat WorkSessions are marked with tui_chat source metadata"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "nextRuntime.ensureTuiChatSession(chatSessionId.current)", "TUI runtime creation anchors the chat state in Work Kernel"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "runtime?.ensureTuiChatSession(chatSessionId.current)", "TUI slash tools ensure their chat WorkSession exists"),
+    checkContains(root, "src/tui/slash-commands.ts", "/memory [session_id]", "TUI exposes session memory inspection command"),
+    checkContains(root, "src/tui/SwarmChatApp.tsx", "formatSessionMemory", "TUI renders remembered session context with freshness"),
+    checkContains(root, "README.md", "`/memory [session_id]` shows the remembered context", "README documents session memory continuity UX"),
     checkContains(root, "src/tui/slash-commands.ts", "/resume [session_id] [message]", "TUI documents natural coding-loop resume"),
     checkContains(root, "src/tui/slash-commands.ts", "/continue [message]", "TUI documents natural continue command"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "parseResumeTarget", "TUI resume distinguishes session ids from free-form instructions"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "firstIsExistingSession", "TUI resume only consumes the first token as a session when it exists"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "buildResumePrompt", "TUI can resume ordinary coding-loop sessions through Work Kernel snapshots"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "runtime.executeWorkSession", "TUI resume can continue existing WorkSessions without plan_json"),
+    checkNotContains(root, "src/tui/idle-pane-snapshot.ts", "runAttemptStore.listRecent", "TUI idle panes do not show global recent attempts"),
+    checkNotContains(root, "src/tui/idle-pane-snapshot.ts", "workspaceLeaseStore.listRecent", "TUI idle panes do not show global recent leases"),
+    checkNotContains(root, "src/tui/idle-pane-snapshot.ts", "blackboardStore.listRecent", "TUI idle panes do not show global recent blackboard entries"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "briefForExecutionResult", "TUI final chat summaries distinguish execution status"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Failed: ${brief}", "TUI final chat summaries label failed runs"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "Stopped: ${brief}", "TUI final chat summaries label stopped runs"),
@@ -444,6 +591,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkNotContains(root, "docs/WORK_KERNEL.md", "External adapters can come later", "Work Kernel doc keeps adapters out of core plan"),
     checkNotContains(root, "docs/WORK_KERNEL.md", "Gateway HTML", "Work Kernel doc avoids browser debug UI framing"),
     checkTuiSlashCandidateBehavior(),
+    checkTuiSlashCompletionSizingBehavior(),
     checkTuiSlashTabCompletionBehavior(),
     checkTuiSlashAcceptBehavior(),
     checkTuiSlashArgumentParserBehavior(),
@@ -462,15 +610,38 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkTuiOnboardInputEditingBehavior(),
     checkTuiEventBufferBehavior(),
     checkTuiApprovalInputBehavior(),
+    checkWorkerDisplayNameBehavior(),
+    checkEphemeralWorkerPersonaPersistenceBehavior(root),
+    checkAgentContinuationFreshnessBehavior(root),
     checkCodingLoopActivityFormattingBehavior(),
     checkToolRecoveryFormattingBehavior(),
     checkToolFailureContentBehavior(),
+    checkShellTimeoutReturnsToolFailureBehavior(root),
+    checkBackgroundProcessLifecycleSurfaceBehavior(root),
+    checkAgentDelegateInputValidationBehavior(),
+    checkBuiltinToolSurfaceBehavior(),
+    checkBlackboardToolSurfaceBehavior(root),
+    checkBlackboardRouterBehavior(),
+    checkSwarmProtocolRouterBehavior(root),
+    checkToolResultBudgetReplayBehavior(),
+    checkSessionContextCompactionBehavior(),
+    checkWorkspaceScopedSessionBehavior(),
+    checkWorkspaceScopedRecentKernelBehavior(),
+    checkFileToolInputValidationBehavior(root),
     checkLintFailureAggregationBehavior(),
     checkWebFetchHttpFailureMetadataBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
     checkCodingLoopPersistenceStatusBehavior(),
     checkDelegatedWorkerStatusBehavior(),
+    checkHostEnvironmentPromptBehavior(),
+    checkWorkspaceModifyingFullSwarmRoutePolicy(),
+    checkPlannerRejectsBadToolcallsFromLogs(),
+    checkLocalShellToolHostValidationCoverage(root),
+    checkFullSwarmPlannerNestedDelegateBehavior(),
+    checkFullSwarmBlackboardToolRouteability(),
+    checkFullSwarmSchedulerParallelBehavior(),
     checkTuiMainPaneCycleBehavior(),
+    checkTuiGlobalControlKeyBehavior(),
     checkTuiIdleSnapshotSignatureBehavior(),
     checkPermissionDenyPrecedenceBehavior(),
     checkNoForbiddenProductName(root)
@@ -517,6 +688,11 @@ function checkNoForbiddenProductName(root: string): EvalCaseResult {
     : { name: "no foreign product config namespace", status: "fail", message: offenders.join(", ") };
 }
 
+function fileContains(root: string, path: string, needle: string): boolean {
+  const fullPath = resolve(root, path);
+  return existsSync(fullPath) && readFileSync(fullPath, "utf8").includes(needle);
+}
+
 function checkNoHtmlProductSurface(root: string, path: string, name: string): EvalCaseResult {
   const fullPath = resolve(root, path);
   if (!existsSync(fullPath)) {
@@ -542,6 +718,20 @@ function checkTuiSlashCandidateBehavior(): EvalCaseResult {
   return missing.length === 0
     ? { name: "TUI slash candidate behavior works", status: "pass", message: `/sym candidates include ${required.join(", ")}` }
     : { name: "TUI slash candidate behavior works", status: "fail", message: `/sym candidates missing ${missing.join(", ")}` };
+}
+
+function checkTuiSlashCompletionSizingBehavior(): EvalCaseResult {
+  let state = createChatInputControllerState();
+  state = applyChatInputKey(state, "/", {}).state;
+  const candidates = chatInputCompletionCandidates(state);
+  const rows = chatInputCompletionRows(state);
+  const ok = candidates.length === CHAT_INPUT_COMPLETION_LIMIT
+    && rows === CHAT_INPUT_COMPLETION_VISIBLE_ROWS + 4
+    && candidates.some((candidate) => candidate.name === "kernel")
+    && candidates.some((candidate) => candidate.name === "doctor");
+  return ok
+    ? { name: "TUI slash completion sizing exposes more command choices", status: "pass", message: `${candidates.length} candidates with ${CHAT_INPUT_COMPLETION_VISIBLE_ROWS} visible rows` }
+    : { name: "TUI slash completion sizing exposes more command choices", status: "fail", message: `candidates=${candidates.map((candidate) => candidate.name).join(",")} rows=${rows}` };
 }
 
 function checkTuiSlashTabCompletionBehavior(): EvalCaseResult {
@@ -986,6 +1176,105 @@ function fmtApprovalDecision(decision: ReturnType<typeof approvalInputDecision>)
   return decision.handled ? `${decision.approved}/${decision.rememberForSession}` : "ignored";
 }
 
+function checkWorkerDisplayNameBehavior(): EvalCaseResult {
+  const now = new Date().toISOString();
+  const worker = {
+    worker_id: "worker_eval_123",
+    display_name: "Ada",
+    role_title: "Diff Investigator",
+    parent_session_id: "session_eval",
+    agent_spec_id: "reviewer",
+    invocation_mode: "call_subagent" as const,
+    capability: "code.review",
+    objective: "Review the diff.",
+    status: "running" as const,
+    file_scope: ["src/runtime/runtime.ts"],
+    tool_budget: { max_turns: 1, max_tool_calls: 1 },
+    last_result: "Found one blocking issue.\nDetails omitted.",
+    created_at: now,
+    updated_at: now
+  };
+  const brief = formatWorkerBrief(worker);
+  const started = formatRuntimeEventBrief({
+    type: "agent_run_started",
+    worker,
+    task_packet: {
+      objective: worker.objective,
+      agent_spec_id: "reviewer",
+      invocation_mode: "call_subagent",
+      persona_snapshot: "reviewer",
+      role_title: "Diff Investigator",
+      file_scope: worker.file_scope,
+      allowed_tools: [],
+      write_policy: "read_only",
+      budget: worker.tool_budget,
+      expected_output: "brief",
+      return_conditions: []
+    }
+  });
+  const ok = workerDisplayLabel(worker) === "Ada / Diff Investigator"
+    && brief.includes("Ada / Diff Investigator")
+    && brief.includes("worker_eval_123")
+    && brief.includes("Found one blocking issue.")
+    && started.includes("Ada / Diff Investigator");
+  return ok
+    ? { name: "worker agent display names surface in TUI/headless formatters", status: "pass", message: "worker brief and agent-run events include the human-readable name plus worker id" }
+    : { name: "worker agent display names surface in TUI/headless formatters", status: "fail", message: `brief=${brief} started=${started}` };
+}
+
+function checkEphemeralWorkerPersonaPersistenceBehavior(root: string): EvalCaseResult {
+  const runtimePath = resolve(root, "src/runtime/runtime.ts");
+  if (!existsSync(runtimePath)) {
+    return { name: "worker persona brief stays out of durable recall", status: "fail", message: "src/runtime/runtime.ts missing" };
+  }
+  const content = readFileSync(runtimePath, "utf8");
+  const requiredDurableWrites = [
+    "const durableTaskPacket = stripEphemeralAgentPersona(taskPacket);",
+    "task_packet: durableTaskPacket",
+    "decision: durableDecision",
+    "sessionObjective: request.task",
+    "task_packet: stripEphemeralAgentPersona(event.task_packet)",
+    "resource: { worker_id: event.worker.worker_id, task_packet: stripEphemeralAgentPersona(event.task_packet) }"
+  ];
+  const missing = requiredDurableWrites.filter((needle) => !content.includes(needle));
+  const workerContextStart = content.indexOf('if (event.type === "agent_run_started")');
+  const workerContextEnd = content.indexOf('if (event.type === "agent_run_completed")', workerContextStart);
+  const workerContextBlock = workerContextStart >= 0 && workerContextEnd > workerContextStart
+    ? content.slice(workerContextStart, workerContextEnd)
+    : "";
+  const durableRecallHasPersona = workerContextBlock.includes("persona_brief");
+  const ok = missing.length === 0 && !durableRecallHasPersona;
+  return ok
+    ? { name: "worker persona brief stays out of durable recall", status: "pass", message: "worker task packets are stripped before durable stores and session context omits persona_brief" }
+    : { name: "worker persona brief stays out of durable recall", status: "fail", message: `missing=${missing.join(",") || "none"} durableRecallHasPersona=${durableRecallHasPersona}` };
+}
+
+function checkAgentContinuationFreshnessBehavior(root: string): EvalCaseResult {
+  const runtime = readFileSync(resolve(root, "src/runtime/runtime.ts"), "utf8");
+  const tui = readFileSync(resolve(root, "src/tui/SwarmChatApp.tsx"), "utf8");
+  const runtimeChecks = [
+    "renderWorkspaceFreshnessContract",
+    "Treat previous task packets, compacted memory, and worker results as historical clues, not current facts.",
+    "Before editing or giving a code-state conclusion, refresh the current workspace",
+    "If refreshed facts differ from memory, follow the current workspace state",
+    "const workspaceFreshness = this.renderWorkspaceFreshnessContract",
+    "taskPacket.relevant_context = [",
+    "Historical memory and prior worker results are hints only."
+  ];
+  const tuiChecks = [
+    "runtime.renderWorkspaceFreshnessContract",
+    "reason: \"resuming a previous WorkSession\"",
+    "fileScope: snapshot.changed_files"
+  ];
+  const missing = [
+    ...runtimeChecks.filter((needle) => !runtime.includes(needle)).map((needle) => `runtime:${needle}`),
+    ...tuiChecks.filter((needle) => !tui.includes(needle)).map((needle) => `tui:${needle}`)
+  ];
+  return missing.length === 0
+    ? { name: "agent continuation refreshes stale workspace memory", status: "pass", message: "resume, worker continuation, and spawned agents receive a freshness contract before relying on old memory" }
+    : { name: "agent continuation refreshes stale workspace memory", status: "fail", message: `missing=${missing.join("; ")}` };
+}
+
 function checkCodingLoopActivityFormattingBehavior(): EvalCaseResult {
   const event = {
     type: "loop_activity" as const,
@@ -1070,6 +1359,809 @@ function checkToolFailureContentBehavior(): EvalCaseResult {
     : { name: "tool exception failures include expandable detail content", status: "fail", message: content };
 }
 
+function checkShellTimeoutReturnsToolFailureBehavior(root: string): EvalCaseResult {
+  const content = readFileSync(resolve(root, "src/tools/local-tools.ts"), "utf8");
+  const execNoThrowLikeCc = content.includes("const result = await runShellCommand(action.command, { cwd, timeoutMs, maxOutputBytes });")
+    && content.includes('status: succeeded ? "success" : "failed"')
+    && content.includes("command timed out after ${timeoutMs}ms")
+    && content.includes("timeoutMs,");
+  const hasTimeoutAliases = content.includes("inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout")
+    && content.includes('if (action === "exec")')
+    && content.includes('if (action === "code.test")')
+    && content.includes('if (action === "code.build")')
+    && content.includes('if (action === "package.install")');
+  const ok = execNoThrowLikeCc && hasTimeoutAliases;
+  return ok
+    ? { name: "shell exec timeout returns a recoverable tool failure", status: "pass", message: "shell/exec/test/build/install timeout aliases normalize and shell command failures resolve as ToolResult failures" }
+    : { name: "shell exec timeout returns a recoverable tool failure", status: "fail", message: `execNoThrowLikeCc=${execNoThrowLikeCc} hasTimeoutAliases=${hasTimeoutAliases}` };
+}
+
+function checkBackgroundProcessLifecycleSurfaceBehavior(root: string): EvalCaseResult {
+  const localTools = readFileSync(resolve(root, "src/tools/local-tools.ts"), "utf8");
+  const backgroundModule = readFileSync(resolve(root, "src/tools/background-processes.ts"), "utf8");
+  const codingLoop = readFileSync(resolve(root, "src/runtime/coding-agent-loop.ts"), "utf8");
+  const builtinTools = readFileSync(resolve(root, "src/extensions/builtin-tools.ts"), "utf8");
+  const normalizedStart = normalizeToolAction({ action: "ProcessStart", command: "npm run dev", cwd: ".", description: "dev server" });
+  const normalizedTail = normalizeToolAction({ action: "ProcessTail", processId: "proc_1", lines: 20 });
+  const normalizedBashBackground = normalizeToolAction({ action: "Bash", command: "npm run dev", run_in_background: true });
+  const hasProcessActions = [
+    "process.start",
+    "process.status",
+    "process.list",
+    "process.tail",
+    "process.grep",
+    "process.stop"
+  ].every((name) => localTools.includes(`type: "${name}"`) || localTools.includes(`"${name}"`));
+  const hasPersistentLogs = backgroundModule.includes("processes")
+    && backgroundModule.includes(".log")
+    && backgroundModule.includes(".json")
+    && backgroundModule.includes("readBackgroundProcessTail")
+    && backgroundModule.includes("grepBackgroundProcessLog")
+    && backgroundModule.includes("stopBackgroundProcess");
+  const hasModelSurface = ["ProcessStart", "ProcessTail", "ProcessGrep", "ProcessStop"].every((name) => codingLoop.includes(`"${name}"`) && builtinTools.includes(`name: "${name}"`));
+  const ok = normalizedStart.type === "process.start"
+    && normalizedTail.type === "process.tail"
+    && normalizedBashBackground.type === "shell.exec"
+    && normalizedBashBackground.runInBackground === true
+    && hasProcessActions
+    && hasPersistentLogs
+    && hasModelSurface;
+  return ok
+    ? { name: "background process lifecycle tools are exposed", status: "pass", message: "process.start/status/list/tail/grep/stop normalize, persist logs, and appear in model-visible tool schemas" }
+    : { name: "background process lifecycle tools are exposed", status: "fail", message: `start=${JSON.stringify(normalizedStart)} tail=${JSON.stringify(normalizedTail)} bash=${JSON.stringify(normalizedBashBackground)} processActions=${hasProcessActions} logs=${hasPersistentLogs} modelSurface=${hasModelSurface}` };
+}
+
+function checkAgentDelegateInputValidationBehavior(): EvalCaseResult {
+  const missingCapability = catchesMessage(
+    () => normalizeToolAction({ action: "agent.delegate", task: "Inspect routing behavior" }),
+    "agent.delegate requires capability"
+  );
+  const missingTask = catchesMessage(
+    () => normalizeToolAction({ action: "agent.delegate", capability: "code.research" }),
+    "agent.delegate requires task"
+  );
+  const valid = normalizeToolAction({
+    action: "agent.delegate",
+    capability: "code.research",
+    task: "Inspect routing behavior"
+  });
+  const visibleAgent = normalizeToolAction({
+    action: "Agent",
+    prompt: "Inspect routing behavior"
+  });
+  const visibleTask = normalizeToolAction({
+    action: "Task",
+    prompt: "Inspect routing behavior",
+    subagent_type: "reviewer"
+  });
+  const ok = missingCapability
+    && missingTask
+    && valid.type === "agent.delegate"
+    && valid.capability === "code.research"
+    && valid.task === "Inspect routing behavior"
+    && visibleAgent.type === "agent.delegate"
+    && visibleAgent.capability === "code.research"
+    && visibleAgent.task === "Inspect routing behavior"
+    && visibleTask.type === "agent.delegate"
+    && visibleTask.capability === "reviewer"
+    && visibleTask.preferred_agent_spec_id === "reviewer";
+  return ok
+    ? { name: "agent.delegate validates required inputs before execution", status: "pass", message: "compat agent.delegate stays strict while visible Agent/Task inputs normalize to delegation" }
+    : { name: "agent.delegate validates required inputs before execution", status: "fail", message: `missingCapability=${missingCapability} missingTask=${missingTask} valid=${JSON.stringify(valid)} visibleAgent=${JSON.stringify(visibleAgent)} visibleTask=${JSON.stringify(visibleTask)}` };
+}
+
+function checkBuiltinToolSurfaceBehavior(): EvalCaseResult {
+  const capabilities = new BuiltinLocalToolProvider().listCapabilities();
+  const names = new Set(capabilities.map((capability) => capability.name));
+  const modelVisibleNames = capabilities.filter((capability) => capability.modelVisible).map((capability) => capability.name).sort();
+  const modelVisible = new Set(modelVisibleNames);
+  const required = ["Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit", "TodoWrite", "BlackboardWrite", "BlackboardSearch", "BlackboardRead", "BlackboardList", "Bash", "ProcessStart", "ProcessStatus", "ProcessList", "ProcessTail", "ProcessGrep", "ProcessStop", "WebSearch", "WebFetch", "Agent"].sort();
+  const missing = required.filter((name) => !modelVisible.has(name));
+  const extraVisible = modelVisibleNames.filter((name) => !required.includes(name));
+  const forbidden = [`solid${"ity"}.compile`, `Solid${"ity"}Compile`];
+  const presentForbidden = forbidden.filter((name) => names.has(name) || modelVisible.has(name));
+  const legacyListHidden = names.has("LS") && !modelVisible.has("LS");
+  const normalizedRead = normalizeToolAction({ action: "Read", file_path: "src/index.ts" });
+  const normalizedEdit = normalizeToolAction({ action: "Edit", file_path: "a.txt", old_string: "x", new_string: "y", replace_all: true });
+  const normalizedBash = normalizeToolAction({ action: "Bash", command: "npm run check", timeout: 1000 });
+  const normalizedExec = normalizeToolAction({ action: "exec", command: "npm run check", timeout: 2000 });
+  const normalizedTest = normalizeToolAction({ action: "code.test", command: "npm test", timeout: 3000 });
+  const ok = missing.length === 0
+    && extraVisible.length === 0
+    && presentForbidden.length === 0
+    && legacyListHidden
+    && normalizedRead.type === "file.read"
+    && normalizedRead.path === "src/index.ts"
+    && normalizedEdit.type === "file.edit"
+    && normalizedEdit.replaceAll === true
+    && normalizedBash.type === "shell.exec"
+    && normalizedBash.timeoutMs === 1000
+    && normalizedExec.type === "exec"
+    && normalizedExec.timeoutMs === 2000
+    && normalizedTest.type === "code.test"
+    && normalizedTest.timeoutMs === 3000;
+  return ok
+    ? { name: "built-in tool surface exposes generic coding tools", status: "pass", message: "model-visible tools are the generic coding set, LS is compat-hidden, and domain-specific compile tooling is absent" }
+    : { name: "built-in tool surface exposes generic coding tools", status: "fail", message: `missing=${missing.join(",") || "-"} extra=${extraVisible.join(",") || "-"} forbidden=${presentForbidden.join(",") || "-"} legacyListHidden=${legacyListHidden} read=${JSON.stringify(normalizedRead)} edit=${JSON.stringify(normalizedEdit)} bash=${JSON.stringify(normalizedBash)} exec=${JSON.stringify(normalizedExec)} test=${JSON.stringify(normalizedTest)}` };
+}
+
+function checkBlackboardToolSurfaceBehavior(root: string): EvalCaseResult {
+  const write = normalizeToolAction({ action: "BlackboardWrite", key: "agent.finding", type: "evidence", value: { ok: true }, tags: ["agent"] });
+  const search = normalizeToolAction({ action: "BlackboardSearch", query: "finding", tag: "agent", limit: 5 });
+  const read = normalizeToolAction({ action: "BlackboardRead", key: "agent.finding" });
+  const list = normalizeToolAction({ action: "BlackboardList", type: "evidence", key_prefix: "agent.", limit: 10 });
+  const noRawEnvelopeTool = !fileContains(root, "src/extensions/builtin-tools.ts", "EnvelopeWrite")
+    && !fileContains(root, "src/extensions/builtin-tools.ts", "sendEnvelope")
+    && !fileContains(root, "src/runtime/coding-agent-loop.ts", "EnvelopeWrite");
+  const childAllowsRuntimeTraffic = fileContains(root, "src/runtime/runtime.ts", "envelope.type === \"task.progress\"")
+    && fileContains(root, "src/runtime/runtime.ts", "envelope.type === \"blackboard.write\"")
+    && fileContains(root, "src/runtime/runtime.ts", "envelope.type === \"blackboard.read\"");
+  const ok = write.type === "blackboard.write"
+    && write.entryType === "evidence"
+    && search.type === "blackboard.search"
+    && search.query === "finding"
+    && read.type === "blackboard.read"
+    && read.key === "agent.finding"
+    && list.type === "blackboard.list"
+    && list.entryType === "evidence"
+    && noRawEnvelopeTool
+    && childAllowsRuntimeTraffic;
+  return ok
+    ? { name: "blackboard semantic tools expose shared state without raw envelopes", status: "pass", message: "BlackboardWrite/Search/Read/List normalize to semantic actions and child runtime traffic includes progress plus blackboard envelopes" }
+    : { name: "blackboard semantic tools expose shared state without raw envelopes", status: "fail", message: `write=${JSON.stringify(write)} search=${JSON.stringify(search)} read=${JSON.stringify(read)} list=${JSON.stringify(list)} noRawEnvelopeTool=${noRawEnvelopeTool} childAllowsRuntimeTraffic=${childAllowsRuntimeTraffic}` };
+}
+
+function checkBlackboardRouterBehavior(): EvalCaseResult {
+  const dir = mkdtempSync(resolve(tmpdir(), "swarm-eval-"));
+  const database = new SwarmDatabase(resolve(dir, "swarm.db"));
+  try {
+    const events = new RuntimeEvents();
+    const router = new EnvelopeRouter(
+      new AgentRegistry(events),
+      new TraceStore(database),
+      events,
+      new BlackboardStore(database)
+    );
+    const written: unknown[] = [];
+    const incoming: Array<{ type: string; intent: string; payload: unknown }> = [];
+    events.onEvent((event) => {
+      if (event.type === "blackboard") {
+        written.push(event.entry);
+      }
+    });
+    router.on("incoming", (envelope) => {
+      incoming.push({ type: envelope.type, intent: envelope.intent, payload: envelope.payload });
+    });
+    const writeEnvelope = createEnvelope({
+      swarm_id: "swarm_eval",
+      session_id: "session_eval",
+      task_id: "task_eval",
+      from: { agent_id: "agent_eval", role: "researcher" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.write",
+      intent: "blackboard.write",
+      payload: {
+        key: "eval.blackboard",
+        type: "evidence",
+        value: { result: "ok" },
+        tags: ["eval"]
+      },
+      correlation_id: "corr_write"
+    });
+    void router.dispatch(writeEnvelope);
+    const readEnvelope = createEnvelope({
+      swarm_id: "swarm_eval",
+      session_id: "session_eval",
+      task_id: "task_eval",
+      from: { agent_id: "agent_eval", role: "researcher" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.read",
+      intent: "blackboard.read",
+      payload: { key: "eval.blackboard" },
+      correlation_id: "corr_read"
+    });
+    void router.dispatch(readEnvelope);
+    const readAck = incoming.find((envelope) => envelope.intent === "blackboard.read.ack");
+    const readPayload = isRecord(readAck?.payload) ? readAck.payload : {};
+    const entries = Array.isArray(readPayload.entries) ? readPayload.entries : [];
+    const firstEntry = isRecord(entries[0]) ? entries[0] : {};
+    const ok = written.length === 1 && firstEntry.key === "eval.blackboard";
+    return ok
+      ? { name: "router handles blackboard write/read envelopes", status: "pass", message: "router writes blackboard entries and returns read ack entries" }
+      : { name: "router handles blackboard write/read envelopes", status: "fail", message: `written=${written.length} incoming=${JSON.stringify(incoming)}` };
+  } finally {
+    database.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function checkSwarmProtocolRouterBehavior(root: string): EvalCaseResult {
+  const dir = mkdtempSync(resolve(tmpdir(), "swarm-protocol-eval-"));
+  const database = new SwarmDatabase(resolve(dir, "swarm.db"));
+  try {
+    const events = new RuntimeEvents();
+    const registry = new AgentRegistry(events);
+    const sent: unknown[] = [];
+    registry.register(evalAgentCard("agent_a", "researcher", ["code.audit"]), { send: (message: unknown) => { sent.push(message); return true; } } as never);
+    registry.register(evalAgentCard("agent_b", "reviewer", ["code.audit"]), { send: (message: unknown) => { sent.push(message); return true; } } as never);
+    const router = new EnvelopeRouter(
+      registry,
+      new TraceStore(database),
+      events,
+      new BlackboardStore(database),
+      new ArtifactStore(database),
+      new TaskStateStore(database)
+    );
+    const incoming: Array<{ type: string; intent: string; payload: unknown }> = [];
+    router.on("incoming", (envelope) => {
+      incoming.push({ type: envelope.type, intent: envelope.intent, payload: envelope.payload });
+    });
+
+    const writeEnvelope = createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.write",
+      intent: "blackboard.write",
+      payload: { key: "protocol.entry", type: "evidence", value: { status: "draft" } }
+    });
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "router", role: "router" },
+      type: "swarm.init",
+      intent: "swarm.init",
+      payload: { objective: "protocol eval" }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      from: { agent_id: "dynamic_agent", role: "researcher" },
+      to: { agent_id: "router", role: "router" },
+      type: "agent.register",
+      intent: "agent.register",
+      payload: evalAgentCard("dynamic_agent", "researcher", ["docs.summarize"])
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      from: { agent_id: "dynamic_agent", role: "researcher" },
+      to: { agent_id: "router", role: "router" },
+      type: "agent.update_status",
+      intent: "agent.update_status",
+      payload: { agent_id: "dynamic_agent", status: "busy" }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_created_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "router", role: "router" },
+      type: "task.create",
+      intent: "task.create",
+      payload: {
+        task_id: "task_created_eval",
+        title: "Protocol task",
+        description: "Persist a task created through an envelope.",
+        objective: "Persist task",
+        type: "analysis",
+        status: "created",
+        required_capabilities: ["code.audit"],
+        inputs: {},
+        expected_output: { format: "markdown" }
+      }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_created_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "router", role: "router" },
+      type: "task.cancel",
+      intent: "task.cancel",
+      payload: {
+        task_id: "task_created_eval",
+        title: "Protocol task",
+        description: "Persist a task created through an envelope.",
+        objective: "Persist task",
+        type: "analysis",
+        required_capabilities: ["code.audit"],
+        inputs: {},
+        expected_output: { format: "markdown" }
+      }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "router", role: "router" },
+      type: "artifact.create",
+      intent: "artifact.create",
+      payload: { artifact_id: "artifact_eval", path: "reports/eval.md", type: "markdown", summary: "draft" }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "router", role: "router" },
+      type: "artifact.update",
+      intent: "artifact.update",
+      payload: { artifact_id: "artifact_eval", path: "reports/final.md", type: "markdown", summary: "final" }
+    }));
+    void router.dispatch(writeEnvelope);
+    const writeAck = incoming.find((envelope) => envelope.intent === "blackboard.write.ack");
+    const writePayload = isRecord(writeAck?.payload) ? writeAck.payload : {};
+    const entry = isRecord(writePayload.entry) ? writePayload.entry : {};
+
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.update",
+      intent: "blackboard.update",
+      payload: { entry_id: entry.entry_id, value: { status: "updated" }, expected_version: 1 }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.lock",
+      intent: "blackboard.lock",
+      payload: { key: "protocol.entry", ttl_ms: 1000 }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { agent_id: "blackboard", role: "blackboard" },
+      type: "blackboard.unlock",
+      intent: "blackboard.unlock",
+      payload: { key: "protocol.entry" }
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "planner", role: "coordinator" },
+      to: { capability: "code.audit" },
+      type: "bid.request",
+      intent: "bid.request",
+      payload: { task_id: "task_protocol_eval", required_capabilities: ["code.audit"] },
+      routing: { mode: "broadcast", require_ack: true },
+      correlation_id: "bid_eval"
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "agent_a", role: "researcher" },
+      to: { agent_id: "planner", role: "coordinator" },
+      type: "bid.submit",
+      intent: "bid.submit",
+      payload: { confidence: 0.9, estimated_time_ms: 1000, reason: "available" },
+      correlation_id: "bid_eval"
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "agent_a", role: "researcher" },
+      to: { agent_id: "planner", role: "coordinator" },
+      type: "consensus.vote",
+      intent: "consensus.vote",
+      payload: { vote: "approve", mode: "majority_vote" },
+      correlation_id: "consensus_eval"
+    }));
+    void router.dispatch(createEnvelope({
+      swarm_id: "swarm_protocol_eval",
+      session_id: "session_protocol_eval",
+      task_id: "task_protocol_eval",
+      from: { agent_id: "agent_b", role: "reviewer" },
+      to: { agent_id: "planner", role: "coordinator" },
+      type: "consensus.vote",
+      intent: "consensus.vote",
+      payload: { vote: "approve", mode: "majority_vote" },
+      correlation_id: "consensus_eval"
+    }));
+
+    const childSendsProgress = fileContains(root, "src/agents/child-entry.ts", "type: \"task.progress\"")
+      && fileContains(root, "src/agents/child-entry.ts", "sendProgress(envelope");
+    const ok = sent.length === 2
+      && incoming.some((envelope) => envelope.intent === "swarm.init.ack")
+      && incoming.some((envelope) => envelope.intent === "agent.register.ack")
+      && incoming.some((envelope) => envelope.intent === "agent.update_status.ack")
+      && incoming.some((envelope) => envelope.intent === "task.create.ack")
+      && incoming.some((envelope) => envelope.intent === "task.cancel.ack")
+      && incoming.some((envelope) => envelope.intent === "artifact.create.ack")
+      && incoming.some((envelope) => envelope.intent === "artifact.update.ack")
+      && incoming.some((envelope) => envelope.intent === "router.dispatch.ack")
+      && incoming.some((envelope) => envelope.intent === "blackboard.update.ack")
+      && incoming.some((envelope) => envelope.intent === "blackboard.lock.ack")
+      && incoming.some((envelope) => envelope.intent === "blackboard.unlock.ack")
+      && incoming.some((envelope) => envelope.intent === "bid.submit.ack")
+      && incoming.some((envelope) => envelope.type === "consensus.result")
+      && childSendsProgress;
+    return ok
+      ? { name: "Swarm.md protocol router paths execute", status: "pass", message: "lifecycle, agent registration/status, task create/cancel, artifacts, broadcast routing, dispatch ack, blackboard update/lock/unlock, bid submit, consensus vote/result, and child task.progress are covered" }
+      : { name: "Swarm.md protocol router paths execute", status: "fail", message: `sent=${sent.length} incoming=${JSON.stringify(incoming)} childSendsProgress=${childSendsProgress}` };
+  } finally {
+    database.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function evalAgentCard(agent_id: string, role: AgentCard["role"], capabilities: string[]): AgentCard {
+  return {
+    agent_id,
+    name: agent_id,
+    role,
+    capabilities,
+    status: "idle",
+    load: { running_tasks: 0, max_tasks: 2 },
+    reliability: { success_rate: 0.9, avg_latency_ms: 1000 }
+  };
+}
+
+function checkToolResultBudgetReplayBehavior(): EvalCaseResult {
+  const dir = mkdtempSync(resolve(tmpdir(), "swarm-tool-budget-eval-"));
+  try {
+    const script = `
+      import { SwarmDatabase } from ${JSON.stringify(new URL("../storage/database.js", import.meta.url).href)};
+      import { ToolContentReplacementStore } from ${JSON.stringify(new URL("../storage/tool-content-replacement-store.js", import.meta.url).href)};
+      import { applyToolResultBudget, createContentReplacementState, TOOL_RESULT_REPLACEMENT_TAG } from ${JSON.stringify(new URL("../runtime/tool-result-budget.js", import.meta.url).href)};
+      const database = new SwarmDatabase(${JSON.stringify(resolve(dir, "swarm.db"))});
+      try {
+        const store = new ToolContentReplacementStore(database);
+        const state = createContentReplacementState({ sessionId: "tool_budget_session", scopeKind: "session", scopeId: "tool_budget_session" });
+        const largeContent = "HEAD\\n" + "x".repeat(12000) + "\\nTAIL";
+        const first = await applyToolResultBudget([
+          { id: "tool_large", action: "file.read", status: "success", summary: "large read", content: largeContent },
+          { id: "tool_small", action: "git.status", status: "success", summary: "small status", content: "clean" }
+        ], {
+          sessionId: "tool_budget_session",
+          taskIdPrefix: "eval",
+          state,
+          store,
+          maxFreshBytes: 8000,
+          maxTotalBytes: 9000,
+          previewBytes: 400
+        });
+        const records = store.listForScope("session", "tool_budget_session");
+        const replayState = createContentReplacementState({ sessionId: "tool_budget_session", scopeKind: "session", scopeId: "tool_budget_session", records });
+        const replay = await applyToolResultBudget([
+          { id: "tool_large", action: "file.read", status: "success", summary: "large read", content: largeContent }
+        ], {
+          sessionId: "tool_budget_session",
+          taskIdPrefix: "eval",
+          state: replayState,
+          store,
+          maxFreshBytes: 8000,
+          maxTotalBytes: 9000,
+          previewBytes: 400
+        });
+        const ok = first[0]?.content?.includes(TOOL_RESULT_REPLACEMENT_TAG)
+          && first[0]?.content === records[0]?.replacement_content
+          && replay[0]?.content === first[0]?.content
+          && first[1]?.content === "clean"
+          && records.length === 1
+          && records[0]?.tool_result_id === "tool_large";
+        console.log(JSON.stringify({ ok, first, records, replay }));
+        process.exit(ok ? 0 : 1);
+      } finally {
+        database.close();
+      }
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000
+    });
+    const ok = result.status === 0 && result.stdout.includes(TOOL_RESULT_REPLACEMENT_TAG);
+    return ok
+      ? { name: "tool result budget replacements replay exactly after resume", status: "pass", message: "large tool output is persisted once, replaced deterministically, and reconstructed from replacement records" }
+      : { name: "tool result budget replacements replay exactly after resume", status: "fail", message: `exit=${result.status} stdout=${result.stdout.slice(0, 700)} stderr=${result.stderr.slice(0, 700)}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function checkSessionContextCompactionBehavior(): EvalCaseResult {
+  const dir = mkdtempSync(resolve(tmpdir(), "swarm-context-eval-"));
+  const database = new SwarmDatabase(resolve(dir, "swarm.db"));
+  try {
+    const store = new SessionContextStore(database);
+    for (let index = 0; index < 18; index += 1) {
+      store.append({
+        session_id: "session_context_eval",
+        kind: index === 0 ? "objective" : "tool_result",
+        role: index === 0 ? "user" : "tool",
+        content: `event ${index} ${"x".repeat(280)}`,
+        metadata: { index }
+      });
+    }
+    const rendered = store.renderForSession("session_context_eval", {
+      maxTokens: 500,
+      keepRecentEntries: 4,
+      summaryMaxTokens: 300
+    });
+    const compaction = store.latestCompaction("session_context_eval");
+    const entries = store.list("session_context_eval");
+    const ok = entries.length === 18
+      && compaction !== undefined
+      && compaction.kept_entries.length === 4
+      && compaction.strategy === "extractive_summary_keep_recent_tail"
+      && rendered.includes("Compacted session memory")
+      && rendered.includes("Recent session tail")
+      && rendered.includes("event 17");
+    return ok
+      ? { name: "session context compacts older turns while preserving recent tail", status: "pass", message: "SessionContextStore records events, creates extractive compaction, and renders summary plus recent entries" }
+      : { name: "session context compacts older turns while preserving recent tail", status: "fail", message: `entries=${entries.length} compaction=${JSON.stringify(compaction)} rendered=${rendered.slice(0, 500)}` };
+  } finally {
+    database.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function checkWorkspaceScopedSessionBehavior(): EvalCaseResult {
+  const dir = mkdtempSync(resolve(tmpdir(), "swarm-session-scope-eval-"));
+  const workspaceA = resolve(dir, "workspace-a");
+  const workspaceB = resolve(dir, "workspace-b");
+  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace: workspaceA });
+  try {
+    const sessions = new SessionStore(runtime.database);
+    const leases = new WorkspaceLeaseStore(runtime.database);
+    const policy = defaultSwarmSettings().runtime ? {
+      max_agents: 1,
+      max_parallel_tasks: 1,
+      timeout_ms: 1000,
+      retry: { max_attempts: 1, backoff_ms: 1 },
+      require_review: false,
+      consensus: "coordinator_decision" as const,
+      safety: { require_human_approval_for: [], forbidden_capabilities: [], sandbox_required: false },
+      memory: { allow_read: true, allow_write: true, retention: "session" as const }
+    } : undefined;
+    if (!policy) {
+      throw new Error("default settings unavailable");
+    }
+    const makeSession = (sessionId: string, workspace: string, updatedAt: string) => {
+      const lease = leases.createForLocalSession({ session_id: sessionId, workspace });
+      sessions.create({
+        swarm_id: `swarm_${sessionId}`,
+        session_id: sessionId,
+        user_request_id: `user_${sessionId}`,
+        workspace_lease_id: lease.lease_id,
+        objective: `objective ${sessionId}`,
+        status: "completed",
+        coordinator: { agent_id: "main_swarm", role: "controller" },
+        participants: [],
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        policy
+      });
+    };
+    makeSession("session_a_old", workspaceA, "2026-01-01T00:00:00.000Z");
+    makeSession("session_b_new", workspaceB, "2026-01-03T00:00:00.000Z");
+    makeSession("session_a_new", workspaceA, "2026-01-02T00:00:00.000Z");
+
+    const scoped = runtime.listRecentSessionsForWorkspace(5).map((session) => session.session_id);
+    const ok = scoped.length === 2
+      && scoped[0] === "session_a_new"
+      && scoped[1] === "session_a_old"
+      && !scoped.includes("session_b_new");
+    return ok
+      ? { name: "runtime scopes recent sessions to the current workspace directory", status: "pass", message: "Directory session filtering uses workspace leases instead of global recency" }
+      : { name: "runtime scopes recent sessions to the current workspace directory", status: "fail", message: `scoped=${JSON.stringify(scoped)}` };
+  } finally {
+    runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function checkWorkspaceScopedRecentKernelBehavior(): EvalCaseResult {
+  const dir = mkdtempSync(resolve(tmpdir(), "swarm-kernel-scope-eval-"));
+  const workspaceA = resolve(dir, "workspace-a");
+  const workspaceB = resolve(dir, "workspace-b");
+  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace: workspaceA });
+  try {
+    const sessions = new SessionStore(runtime.database);
+    const leases = new WorkspaceLeaseStore(runtime.database);
+    const policy = defaultSwarmSettings().runtime ? {
+      max_agents: 1,
+      max_parallel_tasks: 1,
+      timeout_ms: 1000,
+      retry: { max_attempts: 1, backoff_ms: 1 },
+      require_review: false,
+      consensus: "coordinator_decision" as const,
+      safety: { require_human_approval_for: [], forbidden_capabilities: [], sandbox_required: false },
+      memory: { allow_read: true, allow_write: true, retention: "session" as const }
+    } : undefined;
+    if (!policy) {
+      throw new Error("default settings unavailable");
+    }
+    const makeSession = (sessionId: string, workspace: string, updatedAt: string) => {
+      const lease = leases.createForLocalSession({ session_id: sessionId, workspace });
+      sessions.create({
+        swarm_id: `swarm_${sessionId}`,
+        session_id: sessionId,
+        user_request_id: `user_${sessionId}`,
+        workspace_lease_id: lease.lease_id,
+        objective: `objective ${sessionId}`,
+        status: "completed",
+        coordinator: { agent_id: "main_swarm", role: "controller" },
+        participants: [],
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        policy
+      });
+    };
+    makeSession("session_a", workspaceA, "2026-01-02T00:00:00.000Z");
+    makeSession("session_b", workspaceB, "2026-01-03T00:00:00.000Z");
+
+    runtime.runAttemptStore.upsert({
+      attempt_id: "attempt_a",
+      session_id: "session_a",
+      kind: "tool_call",
+      status: "completed",
+      attempt: 1,
+      title: "workspace A",
+      workspace_path: workspaceA
+    });
+    runtime.runAttemptStore.upsert({
+      attempt_id: "attempt_b",
+      session_id: "session_b",
+      kind: "tool_call",
+      status: "failed",
+      attempt: 1,
+      title: "workspace B",
+      workspace_path: workspaceB
+    });
+    runtime.blackboardStore.write({
+      swarm_id: "swarm_session_a",
+      session_id: "session_a",
+      key: "a.entry",
+      value: "A",
+      type: "evidence",
+      created_by: { agent_id: "eval" }
+    });
+    runtime.blackboardStore.write({
+      swarm_id: "swarm_session_b",
+      session_id: "session_b",
+      key: "b.entry",
+      value: "B",
+      type: "evidence",
+      created_by: { agent_id: "eval" }
+    });
+    runtime.approvalStore.upsert({
+      id: "approval_a",
+      session_id: "session_a",
+      action: "file.read",
+      summary: "A",
+      detail: "A",
+      risk: "write",
+      risk_class: "r1",
+      target: "a",
+      why_now: "eval",
+      predicted_impact: "none",
+      rollback_plan: "none"
+    }, "pending");
+    runtime.approvalStore.upsert({
+      id: "approval_b",
+      session_id: "session_b",
+      action: "file.read",
+      summary: "B",
+      detail: "B",
+      risk: "write",
+      risk_class: "r1",
+      target: "b",
+      why_now: "eval",
+      predicted_impact: "none",
+      rollback_plan: "none"
+    }, "pending");
+    runtime.workerStateStore.create({
+      worker_id: "worker_a",
+      parent_session_id: "session_a",
+      capability: "code",
+      objective: "A",
+      tool_budget: { max_turns: 1, max_tool_calls: 1 }
+    });
+    runtime.workerStateStore.create({
+      worker_id: "worker_b",
+      parent_session_id: "session_b",
+      capability: "code",
+      objective: "B",
+      tool_budget: { max_turns: 1, max_tool_calls: 1 }
+    });
+    runtime.handoffStore.create({
+      handoff_id: "handoff_a",
+      worker_id: "worker_a",
+      parent_session_id: "session_a",
+      source_agent: "main",
+      target_agent_spec_id: "researcher",
+      reason: "eval",
+      task_packet: {
+        objective: "A",
+        agent_spec_id: "researcher",
+        invocation_mode: "handoff",
+        persona_snapshot: "researcher",
+        relevant_context: "",
+        file_scope: [],
+        allowed_tools: [],
+        write_policy: "read_only",
+        budget: { max_turns: 1, max_tool_calls: 1 },
+        expected_output: "brief",
+        return_conditions: []
+      }
+    });
+    runtime.handoffStore.create({
+      handoff_id: "handoff_b",
+      worker_id: "worker_b",
+      parent_session_id: "session_b",
+      source_agent: "main",
+      target_agent_spec_id: "researcher",
+      reason: "eval",
+      task_packet: {
+        objective: "B",
+        agent_spec_id: "researcher",
+        invocation_mode: "handoff",
+        persona_snapshot: "researcher",
+        relevant_context: "",
+        file_scope: [],
+        allowed_tools: [],
+        write_policy: "read_only",
+        budget: { max_turns: 1, max_tool_calls: 1 },
+        expected_output: "brief",
+        return_conditions: []
+      }
+    });
+
+    const attempts = runtime.listRecentAttemptsForWorkspace(10).map((attempt) => attempt.attempt_id);
+    const leasesScoped = runtime.listRecentLeasesForWorkspace(10).map((lease) => lease.session_id);
+    const blackboard = runtime.listRecentBlackboardForWorkspace(10).map((entry) => entry.session_id);
+    const approvals = runtime.listRecentApprovalsForWorkspace(10).map((approval) => approval.approval_id);
+    const workers = runtime.listRecentWorkersForWorkspace(10).map((worker) => worker.worker_id);
+    const handoffs = runtime.listHandoffsForWorkspace(10).map((handoff) => handoff.handoff_id);
+    const ok = attempts.join(",") === "attempt_a"
+      && leasesScoped.join(",") === "session_a"
+      && blackboard.join(",") === "session_a"
+      && approvals.join(",") === "approval_a"
+      && workers.join(",") === "worker_a"
+      && handoffs.join(",") === "handoff_a";
+    return ok
+      ? { name: "runtime scopes recent Kernel records to the current workspace directory", status: "pass", message: "attempts, leases, blackboard, approvals, workers, and handoffs filter through workspace leases" }
+      : { name: "runtime scopes recent Kernel records to the current workspace directory", status: "fail", message: `attempts=${attempts} leases=${leasesScoped} blackboard=${blackboard} approvals=${approvals} workers=${workers} handoffs=${handoffs}` };
+  } finally {
+    runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function checkFileToolInputValidationBehavior(root: string): EvalCaseResult {
+  const missingWritePath = catchesMessage(
+    () => normalizeToolAction({ action: "file.write", content: "content" }),
+    "file.write requires path"
+  );
+  const missingEditPath = catchesMessage(
+    () => normalizeToolAction({ action: "file.edit", oldText: "a", newText: "b" }),
+    "file.edit requires path"
+  );
+  const hasDirectoryGuard = fileContains(root, "src/tools/local-tools.ts", "target is a ${targetType}, not a file")
+    && fileContains(root, "src/tools/local-tools.ts", "select a concrete file, then retry file.read")
+    && fileContains(root, "src/tools/local-tools.ts", "retry ${action} with a full file path including a filename")
+    && fileContains(root, "src/tools/local-tools.ts", "code === \"ENOTDIR\" || code === \"EISDIR\"");
+  const ok = missingWritePath && missingEditPath && hasDirectoryGuard;
+  return ok
+    ? { name: "file tools validate path inputs before raw fs errors", status: "pass", message: "file.read/file.write/file.edit reject invalid paths and directory targets as INVALID_INPUT" }
+    : { name: "file tools validate path inputs before raw fs errors", status: "fail", message: `missingWritePath=${missingWritePath} missingEditPath=${missingEditPath} hasDirectoryGuard=${hasDirectoryGuard}` };
+}
+
 function checkLintFailureAggregationBehavior(): EvalCaseResult {
   const result = aggregateLintResults([
     {
@@ -1131,14 +2223,31 @@ function checkWebFetchHttpFailureMetadataBehavior(): EvalCaseResult {
 }
 
 function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
-  const status = summarizeCodingLoopFinalStatus({
+  const recovered = summarizeCodingLoopFinalStatus({
+    stopRequested: false,
+    modelStatus: "completed",
+    content: "All done after rerun.",
+    toolResults: [
+      { status: "failed", summary: "npm test exited 1" },
+      { status: "success", summary: "npm test passed" }
+    ],
+    unresolvedFailure: hasUnresolvedToolFailure({
+      toolResults: [
+        { status: "failed", summary: "npm test exited 1" },
+        { status: "success", summary: "npm test passed" }
+      ],
+      finalText: "All done after rerun."
+    })
+  });
+  const unresolved = summarizeCodingLoopFinalStatus({
     stopRequested: false,
     modelStatus: "completed",
     content: "All done.",
-    toolResults: [
-      { status: "success", summary: "read files" },
-      { status: "failed", summary: "npm test exited 1" }
-    ]
+    toolResults: [{ status: "failed", summary: "npm test exited 1" }],
+    unresolvedFailure: hasUnresolvedToolFailure({
+      toolResults: [{ status: "failed", summary: "npm test exited 1" }],
+      finalText: "All done."
+    })
   });
   const stopped = summarizeCodingLoopFinalStatus({
     stopRequested: true,
@@ -1153,10 +2262,13 @@ function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
     toolResults: [{ status: "success", summary: "read files" }],
     budgetExhausted: true
   });
-  const ok = status.status === "failed"
-    && status.summary.includes("Failed tool: npm test exited 1")
-    && finalActivityMessage(status).startsWith("Failed:")
-    && finalActivityPhase(status) === "failed"
+  const ok = recovered.status === "completed"
+    && finalActivityMessage(recovered).startsWith("Completed:")
+    && finalActivityPhase(recovered) === "completed"
+    && unresolved.status === "failed"
+    && unresolved.summary.includes("Failed tool: npm test exited 1")
+    && finalActivityMessage(unresolved).startsWith("Failed:")
+    && finalActivityPhase(unresolved) === "failed"
     && stopped.status === "stopped"
     && finalActivityMessage(stopped, "user interrupt") === "Stopped: user interrupt"
     && finalActivityPhase(stopped) === "stopped"
@@ -1165,8 +2277,8 @@ function checkCodingLoopFailedToolFinalStatusBehavior(): EvalCaseResult {
     && finalActivityMessage(exhausted).startsWith("Failed:")
     && finalActivityPhase(exhausted) === "failed";
   return ok
-    ? { name: "coding loop final status reflects failed tools", status: "pass", message: "failed tool results and exhausted budgets prevent completed status from masking unfinished local execution" }
-    : { name: "coding loop final status reflects failed tools", status: "fail", message: `status=${status.status}/${status.summary} stopped=${stopped.status} exhausted=${exhausted.status}/${exhausted.summary}` };
+    ? { name: "coding loop final status reflects recoverable tool failures", status: "pass", message: "failed tool results can recover after later success while unresolved failures and exhausted budgets still fail" }
+    : { name: "coding loop final status reflects recoverable tool failures", status: "fail", message: `recovered=${recovered.status}/${recovered.summary} unresolved=${unresolved.status}/${unresolved.summary} stopped=${stopped.status} exhausted=${exhausted.status}/${exhausted.summary}` };
 }
 
 function checkCodingLoopPersistenceStatusBehavior(): EvalCaseResult {
@@ -1204,6 +2316,287 @@ function checkDelegatedWorkerStatusBehavior(): EvalCaseResult {
       };
 }
 
+function checkHostEnvironmentPromptBehavior(): EvalCaseResult {
+  const workspace = process.platform === "win32" ? "E:\\Playground\\Swarm" : "/tmp/swarm-workspace";
+  const prompt = renderHostEnvironmentPrompt(workspace);
+  const baseOk = prompt.includes("Host environment for local tools")
+    && prompt.includes("platform:")
+    && prompt.includes(`workspace: ${workspace}`)
+    && prompt.includes("shell invocation:");
+  const platformOk = process.platform === "win32"
+    ? prompt.includes("PowerShell") && prompt.includes("POSIX-only") && prompt.includes("powershell.exe -NoProfile -Command")
+    : prompt.includes("POSIX-compatible shell") && prompt.includes("-lc <command>");
+  const ok = baseOk && platformOk;
+  return ok
+    ? { name: "host environment prompt includes local shell facts", status: "pass", message: "prompt exposes workspace, platform, shell invocation, and platform-specific command guidance" }
+    : { name: "host environment prompt includes local shell facts", status: "fail", message: prompt };
+}
+
+function checkWorkspaceModifyingFullSwarmRoutePolicy(): EvalCaseResult {
+  const route = applyStructuredRoutingPolicy({
+    mode: "full_swarm",
+    confidence: 0.95,
+    reason: "User asked for Agent Swarm with frontend, backend, and architecture roles.",
+    requires_workspace: true,
+    expected_side_effects: "modify_workspace",
+    needs_parallelism: true,
+    parallelism_reason: "Independent frontend, backend, and architecture workstreams.",
+    swarm_value: "Multiple roles can work in parallel.",
+    risk: "medium",
+    fallback_mode: "coding_loop"
+  });
+  const ok = route.mode === "coding_loop"
+    && route.fallback_mode === "coding_loop"
+    && route.confidence <= 0.8
+    && route.reason.includes("can still spawn internal Agent workers");
+  return ok
+    ? { name: "workspace-modifying full swarm routes use coding loop", status: "pass", message: "mutating full_swarm routes are demoted to coding_loop while preserving Agent delegation" }
+    : { name: "workspace-modifying full swarm routes use coding loop", status: "fail", message: JSON.stringify(route) };
+}
+
+function checkPlannerRejectsBadToolcallsFromLogs(): EvalCaseResult {
+  const placeholderWrite: GeneratedPlan = {
+    objective: "Build a simple database app",
+    summary: "Bad model output copied from the observed failed log pattern.",
+    intent: "create_project",
+    tasks: [
+      {
+        task_id: "task_placeholder_write",
+        title: "Write backend",
+        description: "Write backend file.",
+        objective: "Write backend file.",
+        type: "tool_call",
+        status: "pending",
+        required_capabilities: ["Write"],
+        inputs: {
+          action: "Write",
+          path: "src/engine.ts",
+          content: "待代理根据设计文档自主生成完整的 TypeScript 源码"
+        },
+        expected_output: { format: "text" }
+      }
+    ]
+  };
+  const posixShell: GeneratedPlan = {
+    ...placeholderWrite,
+    tasks: [
+      {
+        ...placeholderWrite.tasks[0],
+        task_id: "task_bad_shell",
+        required_capabilities: ["Bash"],
+        inputs: {
+          action: "Bash",
+          command: "mkdir -p simple-db && cat > src/server.js << 'EOF'\nconsole.log('bad')\nEOF",
+          timeout: 30000
+        }
+      }
+    ]
+  };
+  const placeholderRejected = catchesMessage(
+    () => normalizeGeneratedPlanForRuntime(placeholderWrite, "Build a simple database app"),
+    "placeholder Write.content"
+  );
+  const shellRejected = process.platform === "win32"
+    ? catchesMessage(
+        () => normalizeGeneratedPlanForRuntime(posixShell, "Build a simple database app"),
+        "POSIX-only Bash command"
+      )
+    : true;
+  const ok = placeholderRejected && shellRejected;
+  return ok
+    ? { name: "planner rejects bad toolcalls seen in latest logs", status: "pass", message: "placeholder Write content and Windows POSIX-only Bash plans fail normalization before execution" }
+    : { name: "planner rejects bad toolcalls seen in latest logs", status: "fail", message: `placeholderRejected=${placeholderRejected} shellRejected=${shellRejected}` };
+}
+
+function checkLocalShellToolHostValidationCoverage(root: string): EvalCaseResult {
+  const content = readFileSync(resolve(root, "src/tools/local-tools.ts"), "utf8");
+  const hasSharedValidator = content.includes("function validateShellCommandForHost");
+  const shellUsesValidator = /async function executeShell[\s\S]*?validateShellCommandForHost\(action\.command\)/.test(content);
+  const testUsesValidator = /async function executeCodeTest[\s\S]*?validateShellCommandForHost\(action\.command\)/.test(content);
+  const buildUsesValidator = /async function executeCodeBuild[\s\S]*?validateShellCommandForHost\(action\.command\)/.test(content);
+  const catchesLogPatterns = content.includes("\\bmkdir\\s+-p\\b")
+    && content.includes("<<\\s*['\"]?EOF")
+    && content.includes("\\bcd\\s+\\$\\(pwd\\)");
+  const ok = hasSharedValidator && shellUsesValidator && testUsesValidator && buildUsesValidator && catchesLogPatterns;
+  return ok
+    ? { name: "local shell tools reject host-incompatible command syntax", status: "pass", message: "shell.exec, code.test, and code.build share Windows POSIX-only command validation before spawning PowerShell" }
+    : {
+        name: "local shell tools reject host-incompatible command syntax",
+        status: "fail",
+        message: `shared=${hasSharedValidator} shell=${shellUsesValidator} test=${testUsesValidator} build=${buildUsesValidator} patterns=${catchesLogPatterns}`
+      };
+}
+
+function checkFullSwarmPlannerNestedDelegateBehavior(): EvalCaseResult {
+  const invalid: GeneratedPlan = {
+    objective: "Inspect delegated plan",
+    summary: "Bad model output using nested delegation.",
+    tasks: [
+      {
+        task_id: "task_delegate",
+        title: "Delegated plan task",
+        description: "A planner should express this as a normal routed task, not nested delegation.",
+        objective: "Inspect delegated plan",
+        type: "tool_call",
+        status: "pending",
+        required_capabilities: ["agent.delegate"],
+        inputs: {
+          action: "agent.delegate",
+          task: "Inspect delegated plan"
+        },
+        expected_output: { format: "markdown" }
+      }
+    ]
+  };
+  const valid: GeneratedPlan = {
+    ...invalid,
+    tasks: [{
+      ...invalid.tasks[0],
+      inputs: {
+        ...invalid.tasks[0].inputs,
+        capability: "design.reason"
+      }
+    }]
+  };
+  let invalidRejected = false;
+  try {
+    normalizeGeneratedPlanForRuntime(invalid, "Inspect delegated plan");
+  } catch (error) {
+    invalidRejected = error instanceof Error && error.message.includes("agent.delegate without inputs.capability");
+  }
+  const normalized = normalizeGeneratedPlanForRuntime(valid, "Inspect delegated plan");
+  const task = normalized.tasks[0];
+  const ok = invalidRejected
+    && task?.required_capabilities[0] === "design.reason"
+    && task.type === "analysis"
+    && task.inputs.action === undefined
+    && task.inputs.capability === undefined;
+  return ok
+    ? { name: "full swarm planner rejects invalid nested delegation tasks", status: "pass", message: "agent.delegate planner tasks require an explicit routed capability and are flattened to direct swarm tasks" }
+    : {
+        name: "full swarm planner rejects invalid nested delegation tasks",
+        status: "fail",
+        message: `invalidRejected=${invalidRejected} normalized=${JSON.stringify(task)}`
+      };
+}
+
+function checkFullSwarmBlackboardToolRouteability(): EvalCaseResult {
+  const plan: GeneratedPlan = {
+    objective: "Share agent findings through blackboard",
+    summary: "Use semantic blackboard tools from a full swarm plan.",
+    tasks: [
+      {
+        task_id: "task_write_blackboard",
+        title: "Write shared finding",
+        description: "Persist a finding for other agents.",
+        objective: "Write a blackboard entry.",
+        type: "tool_call",
+        status: "pending",
+        required_capabilities: ["blackboard.write"],
+        inputs: {
+          action: "blackboard.write",
+          key: "eval.routeability",
+          type: "evidence",
+          value: { ok: true }
+        },
+        expected_output: { format: "json" }
+      },
+      {
+        task_id: "task_read_blackboard",
+        title: "Read shared finding",
+        description: "Read a finding written by another agent.",
+        objective: "Read a blackboard entry.",
+        type: "tool_call",
+        status: "pending",
+        required_capabilities: ["BlackboardRead"],
+        inputs: {
+          action: "BlackboardRead",
+          key: "eval.routeability"
+        },
+        expected_output: { format: "json" },
+        dependencies: ["task_write_blackboard"]
+      }
+    ]
+  };
+  const normalized = normalizeGeneratedPlanForRuntime(plan, "Share agent findings through blackboard");
+  const capabilities = normalized.tasks.map((task) => task.required_capabilities[0]);
+  const actions = normalized.tasks.map((task) => task.inputs.action);
+  const toolAgent = builtinAgents.find((agent) => agent.role === "tool");
+  const toolCapabilities = new Set(toolAgent?.capabilities ?? []);
+  const write = normalizeToolAction(normalized.tasks[0]?.inputs ?? {});
+  const read = normalizeToolAction(normalized.tasks[1]?.inputs ?? {});
+  const scheduler = new TaskScheduler(3);
+  const writeSafe = scheduler.isTaskConcurrencySafe(normalized.tasks[0]);
+  const readSafe = scheduler.isTaskConcurrencySafe(normalized.tasks[1]);
+  const ok = capabilities.join(",") === "blackboard.write,BlackboardRead"
+    && actions.join(",") === "blackboard.write,BlackboardRead"
+    && write.type === "blackboard.write"
+    && read.type === "blackboard.read"
+    && toolCapabilities.has("blackboard.write")
+    && toolCapabilities.has("BlackboardRead")
+    && !writeSafe
+    && readSafe;
+  return ok
+    ? { name: "full swarm blackboard tools are routeable", status: "pass", message: "planner normalization, scheduler safety, and tool-agent capabilities recognize semantic blackboard tools" }
+    : {
+        name: "full swarm blackboard tools are routeable",
+        status: "fail",
+        message: `capabilities=${capabilities.join(",")} actions=${actions.join(",")} write=${JSON.stringify(write)} read=${JSON.stringify(read)} toolHasWrite=${toolCapabilities.has("blackboard.write")} toolHasRead=${toolCapabilities.has("BlackboardRead")} safe=${writeSafe}/${readSafe}`
+      };
+}
+
+function checkFullSwarmSchedulerParallelBehavior(): EvalCaseResult {
+  const scheduler = new TaskScheduler(3);
+  const readA = evalTask("read_a", "tool_call", ["", "tool.file.read"], { action: "file.read", path: "a.ts" });
+  const readB = evalTask("read_b", "tool_call", ["tool.file.grep"], { action: "file.grep", root: ".", pattern: "foo" });
+  const analysis = evalTask("analysis", "analysis", ["analysis.synthesize"], {});
+  const write = evalTask("write", "tool_call", ["tool.file.edit"], { action: "file.edit", path: "a.ts", oldText: "a", newText: "b" });
+  const missingCapability = evalTask("missing_capability", "tool_call", ["", "  "], { action: "file.read", path: "missing.ts" });
+  const readyReadOnly = scheduler.selectReadyTasks(new Map([
+    [readA.task_id, readA],
+    [readB.task_id, readB],
+    [analysis.task_id, analysis]
+  ]), new Set());
+  const readyWithMutation = scheduler.selectReadyTasks(new Map([
+    [readA.task_id, readA],
+    [write.task_id, write],
+    [readB.task_id, readB]
+  ]), new Set());
+  const readyWithMissingCapability = scheduler.selectReadyTasks(new Map([
+    [readA.task_id, readA],
+    [missingCapability.task_id, missingCapability],
+    [readB.task_id, readB]
+  ]), new Set());
+  const ok = readyReadOnly.map((task) => task.task_id).join(",") === "read_a,read_b,analysis"
+    && readyWithMutation.length === 1
+    && readyWithMutation[0]?.task_id === "write"
+    && readyWithMissingCapability.length === 1
+    && readyWithMissingCapability[0]?.task_id === "missing_capability";
+  return ok
+    ? { name: "full swarm scheduler batches independent read-only tasks", status: "pass", message: "read-only/tool analysis tasks can dispatch together while mutating or unrouteable tasks serialize" }
+    : { name: "full swarm scheduler batches independent read-only tasks", status: "fail", message: `readonly=${readyReadOnly.map((task) => task.task_id).join(",")} mutation=${readyWithMutation.map((task) => task.task_id).join(",")} missing=${readyWithMissingCapability.map((task) => task.task_id).join(",")}` };
+}
+
+function evalTask(
+  task_id: string,
+  type: "tool_call" | "analysis",
+  required_capabilities: string[],
+  inputs: Record<string, unknown>
+): import("../protocol/types.js").SwarmTask {
+  return {
+    task_id,
+    title: task_id,
+    description: task_id,
+    objective: task_id,
+    type,
+    status: "pending",
+    required_capabilities,
+    inputs,
+    expected_output: { format: "markdown" },
+    dependencies: []
+  };
+}
+
 function checkTuiDeleteBehavior(): EvalCaseResult {
   const rawDelete = editInput("abc", 1, "\x1b[3~", {});
   const inkDelete = editInput("abc", 1, "[3~", {});
@@ -1220,10 +2613,39 @@ function checkTuiMainPaneCycleBehavior(): EvalCaseResult {
   const forward = nextMainPane("overview", 1);
   const backward = nextMainPane("overview", -1);
   const wraps = nextMainPane("blackboard", 1);
-  const ok = forward === "output" && backward === "blackboard" && wraps === "overview";
+  const ctrlN = mainPaneShortcutDirection("n", { ctrl: true });
+  const ctrlP = mainPaneShortcutDirection("p", { ctrl: true });
+  const rawCtrlN = mainPaneShortcutDirection("\x0e", {});
+  const rawCtrlP = mainPaneShortcutDirection("\x10", {});
+  const ok = forward === "output"
+    && backward === "blackboard"
+    && wraps === "overview"
+    && ctrlN === 1
+    && ctrlP === -1
+    && rawCtrlN === 1
+    && rawCtrlP === -1;
   return ok
-    ? { name: "TUI main pane cycle behavior works", status: "pass", message: "Ctrl+N/P pane order wraps predictably" }
-    : { name: "TUI main pane cycle behavior works", status: "fail", message: `forward=${forward} backward=${backward} wraps=${wraps}` };
+    ? { name: "TUI main pane cycle behavior works", status: "pass", message: "Ctrl+N/P pane order wraps predictably for Ink names and raw control bytes" }
+    : { name: "TUI main pane cycle behavior works", status: "fail", message: `forward=${forward} backward=${backward} wraps=${wraps} shortcuts=${ctrlN}/${ctrlP}/${rawCtrlN}/${rawCtrlP}` };
+}
+
+function checkTuiGlobalControlKeyBehavior(): EvalCaseResult {
+  const state = createChatInputControllerState();
+  const typed = applyChatInputKey(state, "abc", {}).state;
+  const ctrlN = applyChatInputKey(typed, "n", { ctrl: true }).state;
+  const plainN = applyChatInputKey(typed, "n", {}).state;
+  const rawCtrlP = applyChatInputKey(typed, "\x10", {}).state;
+  const ctrlO = applyChatInputKey(typed, "o", { ctrl: true }).state;
+  const ctrlT = applyChatInputKey(typed, "t", { ctrl: true }).state;
+  const ok = typed.input.value === "abc"
+    && plainN.input.value === "abcn"
+    && ctrlN === typed
+    && rawCtrlP === typed
+    && ctrlO === typed
+    && ctrlT === typed;
+  return ok
+    ? { name: "TUI chat input leaves global control keys to the shell", status: "pass", message: "Ctrl+N/P/O/T do not mutate the prompt controller state" }
+    : { name: "TUI chat input leaves global control keys to the shell", status: "fail", message: `typed=${typed.input.value} ctrlN=${ctrlN.input.value} rawP=${rawCtrlP.input.value} ctrlO=${ctrlO.input.value} ctrlT=${ctrlT.input.value}` };
 }
 
 function checkTuiIdleSnapshotSignatureBehavior(): EvalCaseResult {
@@ -1345,6 +2767,19 @@ function throws(fn: () => unknown): boolean {
   } catch {
     return true;
   }
+}
+
+function catchesMessage(fn: () => unknown, message: string): boolean {
+  try {
+    fn();
+    return false;
+  } catch (error) {
+    return error instanceof Error && error.message.includes(message);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("/local-evals.js")) {

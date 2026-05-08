@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { resolve as resolvePath } from "node:path";
+import { buildHeadlessRunArtifacts, loadSwarmVersion, writeJsonArtifact, type CapturedRuntimeEvent } from "./runtime/headless-artifacts.js";
+
 process.removeAllListeners("warning");
 const [, , rawCommand, ...rawArgs] = process.argv;
 let command: string | undefined = rawCommand;
@@ -30,6 +33,8 @@ if (!command) {
   await launchChat();
 } else if (command === "help" || command === "--help" || command === "-h") {
   printHelp();
+} else if (command === "version" || command === "--version" || command === "-V") {
+  console.log(loadSwarmVersion());
 } else if (command === "chat") {
   await launchChat();
 } else if (command === "run") {
@@ -449,13 +454,24 @@ async function runHeadless(values: string[]): Promise<void> {
   }
   const { options, objective } = parsed;
   if (!objective) {
-    console.error("Usage: swarm run [--mode auto|chat|coding_loop|full_swarm] [--workspace <path>] <objective>");
+    console.error("Usage: swarm run [--mode auto|chat|coding_loop|full_swarm] [--workspace <path>] [--json] [--report <path>] [--telemetry <path>] [--trajectory <path>] <objective>");
     process.exitCode = 1;
     return;
   }
 
   const { SwarmRuntime } = await import("./runtime/runtime.js");
   const { formatHeadlessProgress } = await import("./runtime/event-formatters.js");
+  const mode = parseRunMode(options.mode);
+  const jsonOutput = parseBooleanOption(options.json);
+  const reportPath = normalizeOptionalPath(options.report);
+  const telemetryPath = normalizeOptionalPath(options.telemetry);
+  const trajectoryPath = normalizeOptionalPath(options.trajectory);
+  const absoluteReportPath = reportPath ? resolvePath(reportPath) : undefined;
+  const absoluteTelemetryPath = telemetryPath ? resolvePath(telemetryPath) : undefined;
+  const absoluteTrajectoryPath = trajectoryPath ? resolvePath(trajectoryPath) : undefined;
+  const capturedEvents: CapturedRuntimeEvent[] = [];
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
   const runtime = new SwarmRuntime({
     workspace: options.workspace,
     approvalHandler: async (request) => {
@@ -468,25 +484,63 @@ async function runHeadless(values: string[]): Promise<void> {
     }
   });
   const unsubscribe = runtime.events.onEvent((event) => {
+    capturedEvents.push({ at: new Date().toISOString(), event });
     const progress = formatHeadlessProgress(event);
     if (progress) {
       console.error(progress);
     }
   });
 
+  let result: Awaited<ReturnType<typeof runtime.run>> | undefined;
+  let runError: Error | undefined;
   try {
-    const result = await runtime.run(objective, { mode: parseRunMode(options.mode) });
-    console.log(result.content);
-    if (result.outcome) {
-      console.log("");
-      console.log("Outcome:");
-      console.log(`  changed_files: ${result.outcome.changed_files.length ? result.outcome.changed_files.join(", ") : "none"}`);
-      console.log(`  checks: ${result.outcome.tests_run.length ? result.outcome.tests_run.join(", ") : "none"}`);
-      if (result.outcome.intermediate_artifacts.length) {
-        console.log(`  artifacts: ${result.outcome.intermediate_artifacts.join(", ")}`);
-      }
-    }
+    result = await runtime.run(objective, { mode });
+  } catch (error) {
+    runError = error instanceof Error ? error : new Error(String(error));
+    process.exitCode = 1;
   } finally {
+    const endedAtMs = Date.now();
+    const endedAt = new Date(endedAtMs).toISOString();
+    const artifacts = buildHeadlessRunArtifacts({
+      objective,
+      workspace: runtime.workspaceRoot(),
+      mode,
+      startedAt,
+      endedAt,
+      durationMs: endedAtMs - startedAtMs,
+      capturedEvents,
+      result,
+      error: runError,
+      reportPath: absoluteReportPath,
+      telemetryPath: absoluteTelemetryPath,
+      trajectoryPath: absoluteTrajectoryPath
+    });
+    if (absoluteReportPath) {
+      writeJsonArtifact(absoluteReportPath, artifacts.report);
+    }
+    if (absoluteTelemetryPath) {
+      writeJsonArtifact(absoluteTelemetryPath, artifacts.telemetry);
+    }
+    if (absoluteTrajectoryPath) {
+      writeJsonArtifact(absoluteTrajectoryPath, artifacts.trajectory);
+    }
+
+    if (jsonOutput) {
+      console.log(JSON.stringify(artifacts.report, null, 2));
+    } else if (result) {
+      console.log(result.content);
+      if (result.outcome) {
+        console.log("");
+        console.log("Outcome:");
+        console.log(`  changed_files: ${result.outcome.changed_files.length ? result.outcome.changed_files.join(", ") : "none"}`);
+        console.log(`  checks: ${result.outcome.tests_run.length ? result.outcome.tests_run.join(", ") : "none"}`);
+        if (result.outcome.intermediate_artifacts.length) {
+          console.log(`  artifacts: ${result.outcome.intermediate_artifacts.join(", ")}`);
+        }
+      }
+    } else if (runError) {
+      console.error(runError.message);
+    }
     unsubscribe();
     runtime.dispose();
   }
@@ -495,18 +549,30 @@ async function runHeadless(values: string[]): Promise<void> {
 function parseRunArgs(values: string[]): { options: Record<string, string>; objective: string } {
   const options: Record<string, string> = {};
   const objectiveParts: string[] = [];
+  const valueFlags = new Set(["mode", "workspace", "report", "telemetry", "trajectory", "timeout-ms"]);
+  const booleanFlags = new Set(["json", "yolo", "debug", "verbose", "debug-trace", "help"]);
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
-    if (value === "--mode" || value === "--workspace") {
-      const next = values[index + 1];
-      if (!next || next.startsWith("--")) {
-        throw new Error(`${value} requires a value.`);
-      }
-      options[value.slice(2)] = next;
-      index += 1;
-      continue;
-    }
     if (value.startsWith("--")) {
+      const key = value.slice(2);
+      if (valueFlags.has(key)) {
+        const next = values[index + 1];
+        if (!next || next.startsWith("--")) {
+          throw new Error(`${value} requires a value.`);
+        }
+        options[key] = next;
+        index += 1;
+      } else if (booleanFlags.has(key)) {
+        options[key] = "true";
+      } else {
+        const next = values[index + 1];
+        if (next && !next.startsWith("--")) {
+          options[key] = next;
+          index += 1;
+        } else {
+          options[key] = "true";
+        }
+      }
       continue;
     }
     objectiveParts.push(value);
@@ -540,6 +606,14 @@ function parsePositiveIntegerOption(options: Record<string, string>, key: string
     throw new Error(`Invalid --${key}: ${value}. Expected a positive integer.`);
   }
   return parsed;
+}
+
+function parseBooleanOption(value: string | undefined): boolean {
+  return value === "true" || value === "1" || value === "yes" || value === "on";
+}
+
+function normalizeOptionalPath(value: string | undefined): string | undefined {
+  return value && value !== "true" ? value : undefined;
 }
 
 function printSymphonyStatus(status: Awaited<ReturnType<typeof import("./symphony/status.js").getSymphonyStatus>>): void {
@@ -645,10 +719,11 @@ function printHelp(): void {
 
 Usage:
   ${binary} [--debug] [--debug-trace]
+  ${binary} --version
   ${binary} --yolo
   ${binary} yolo
   ${binary} chat [--debug]
-  ${binary} run [--mode auto|chat|coding_loop|full_swarm] <objective>
+  ${binary} run [--mode auto|chat|coding_loop|full_swarm] [--json] [--report <path>] [--telemetry <path>] [--trajectory <path>] <objective>
   ${binary} onboard
   ${binary} init
   ${binary} serve [--host 127.0.0.1] [--port 38171]
@@ -669,6 +744,7 @@ Usage:
 
 Commands:
   chat       Open the interactive swarm TUI (also the default)
+  version    Print the Swarm CLI version
   run        Run one objective non-interactively. Defaults to the local coding loop in auto mode.
   yolo       Open chat with temporary yolo permissions for this process
   onboard    Configure provider, model, and plaintext API key
@@ -684,6 +760,12 @@ Debug:
   --debug, --verbose, -v    Write one JSONL log per chat session to ~/.swarm/logs/
   --debug-trace             Same but with trace-level detail (envelope payloads, etc.)
                             Logs roll to .part-N when a file exceeds 1MB
+
+Headless run artifacts:
+  swarm run --json ...              Print a machine-readable run report to stdout
+  swarm run --report FILE ...       Write the run report JSON to FILE
+  swarm run --telemetry FILE ...    Write structured telemetry JSON to FILE
+  swarm run --trajectory FILE ...   Write an ATIF-v1.7 trajectory JSON to FILE
 
 Environment:
   SWARM_HOME             Override the user-level ~/.swarm directory

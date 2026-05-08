@@ -167,6 +167,20 @@ export class BlackboardStore {
     return allEntries.filter((entry) => entry.task_id && taskIds.includes(entry.task_id));
   }
 
+  read(sessionId: string, input: { entryId?: string; key?: string; limit?: number }): BlackboardEntry[] {
+    if (input.entryId) {
+      const entry = this.getByEntryId(sessionId, input.entryId);
+      return entry ? [entry] : [];
+    }
+    if (input.key) {
+      const entries = this.list(sessionId).filter((entry) => entry.key === input.key);
+      const limit = input.limit && input.limit > 0 ? input.limit : entries.length;
+      return entries.slice(Math.max(0, entries.length - limit));
+    }
+    const limit = input.limit && input.limit > 0 ? input.limit : 50;
+    return this.list(sessionId).slice(-limit);
+  }
+
   query(sessionId: string, input: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string; agentId?: string }): BlackboardEntry[] {
     return this.list(sessionId).filter((entry) => {
       if (input.type && entry.type !== input.type) return false;

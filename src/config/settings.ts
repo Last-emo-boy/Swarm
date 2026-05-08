@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+export const MODEL_MAX_OUTPUT_TOKENS_DEFAULT = 32_000;
+export const MODEL_MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000;
+
 export type ExtensionSettings = {
   capabilities: {
     disabled: string[];
@@ -55,6 +58,7 @@ export type SwarmSettings = {
     provider?: string;
     apiKeyEnv: string;
     openaiBaseUrl?: string;
+    maxOutputTokens: number | null;
   };
   providers: Record<string, ProviderDefinition>;
   enabledProviders: string[];
@@ -183,7 +187,8 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
       planner: "",
       worker: "",
       aggregator: "",
-      apiKeyEnv: ""
+      apiKeyEnv: "",
+      maxOutputTokens: null
     },
     providers: defaultProviderRegistry(),
     enabledProviders: [],
@@ -209,10 +214,12 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
         "WebFetch(*)",
         "CodeTest(*)",
         "CodeLint(*)",
+        "CodeBuild(*)",
         "GitBranch(*)",
+        "GitShow(*)",
         "PackageInstall(*)",
-        "SolidityCompile(*)",
-        "Delegate(*)"
+        "Exec(*)",
+        "Agent(*)"
       ],
       deny: [
         "Read(.env)",
@@ -836,7 +843,11 @@ function normalizeSwarmSettings(settings: SwarmSettings): SwarmSettings {
       defaultProvider,
       planner: normalizeModelRef(settings.models.planner, defaultProvider),
       worker: normalizeModelRef(settings.models.worker, defaultProvider),
-      aggregator: normalizeModelRef(settings.models.aggregator, defaultProvider)
+      aggregator: normalizeModelRef(settings.models.aggregator, defaultProvider),
+      maxOutputTokens: nullablePositiveInteger(
+        settings.models.maxOutputTokens,
+        MODEL_MAX_OUTPUT_TOKENS_UPPER_LIMIT
+      )
     },
     permissions,
     providers: normalizeProviderRegistry(settings.providers),
@@ -912,6 +923,17 @@ function normalizeMcpToolRiskOverrides(value: unknown): McpServerSettings["toolR
 function positiveInteger(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function nullablePositiveInteger(value: unknown, upperLimit: number): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.min(Math.floor(parsed), upperLimit);
 }
 
 function normalizePermissions(permissions: SwarmSettings["permissions"]): SwarmSettings["permissions"] {

@@ -56,14 +56,17 @@ export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings
     return true;
   }
 
-  if (isShellLikeAction(action) || action.type === "package.install" || action.type === "solidity.compile") {
+  if (isShellLikeAction(action) || action.type === "package.install" || action.type === "exec") {
     return !skipsApproval(mode);
   }
-  if (action.type === "file.write" || action.type === "file.edit") {
+  if (isWriteLikeAction(action) || action.type === "notebook.edit" || action.type === "json.edit") {
     return mode === "ask";
   }
   if (action.type === "agent.delegate") {
     return !skipsApproval(mode);
+  }
+  if (action.type === "blackboard.write") {
+    return mode === "ask";
   }
   if (action.type === "git.branch" && action.action !== "list") {
     return !skipsApproval(mode);
@@ -95,11 +98,18 @@ export function createToolApprovalRequest(action: ToolAction): ToolApprovalReque
     predicted_impact: predictedImpact(action, riskClass),
     rollback_plan: rollbackPlan(action, riskClass)
   };
-  if (action.type === "shell.exec" || action.type === "code.test") {
+  if (action.type === "process.stop") {
+    return {
+      ...base,
+      summary: `Stop background process: ${action.processId}`,
+      detail: [`Process ID: ${action.processId}`, `Session ID: ${action.sessionId ?? "(current)"}`].join("\n")
+    };
+  }
+  if (action.type === "shell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.build" || action.type === "process.start") {
     const command = action.command;
     return {
       ...base,
-      summary: `Run ${action.type === "code.test" ? "test" : "shell"} command: ${command}`,
+      summary: `Run ${action.type === "process.start" ? "background" : action.type === "code.test" ? "test" : action.type === "code.build" ? "build" : action.type === "exec" ? "exec" : "shell"} command: ${command}`,
       detail: [`Command: ${command}`, `CWD: ${action.cwd || "."}`, `Timeout: ${action.timeoutMs ?? 120000} ms`].join("\n")
     };
   }
@@ -112,7 +122,7 @@ export function createToolApprovalRequest(action: ToolAction): ToolApprovalReque
 }
 
 export function riskClassForAction(action: ToolAction): RiskClass {
-  if (action.type === "shell.exec" && isDestructiveCommand(action.command)) {
+  if ((action.type === "shell.exec" || action.type === "exec" || action.type === "code.build" || action.type === "process.start") && isDestructiveCommand(action.command)) {
     return "r4";
   }
   if (action.type === "package.install" || action.type === "web.fetch") {
@@ -121,10 +131,10 @@ export function riskClassForAction(action: ToolAction): RiskClass {
   if (action.type === "git.branch" && action.action !== "list") {
     return "r2";
   }
-  if (action.type === "shell.exec") {
+  if (action.type === "shell.exec" || action.type === "exec" || action.type === "process.start" || action.type === "process.stop") {
     return "r2";
   }
-  if (action.type === "file.write" || action.type === "file.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "agent.delegate") {
+  if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "agent.delegate") {
     return "r1";
   }
   return "r0";
@@ -231,17 +241,41 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "shell.exec") {
     return "Bash";
   }
+  if (action.type === "exec") {
+    return "Exec";
+  }
+  if (action.type === "process.start" || action.type === "process.stop") {
+    return "Bash";
+  }
+  if (action.type === "process.status" || action.type === "process.list" || action.type === "process.tail" || action.type === "process.grep") {
+    return "Read";
+  }
   if (action.type === "code.test") {
     return "CodeTest";
   }
   if (action.type === "code.lint") {
     return "CodeLint";
   }
+  if (action.type === "code.build") {
+    return "CodeBuild";
+  }
   if (action.type === "file.write") {
     return "Write";
   }
   if (action.type === "file.edit") {
     return "Edit";
+  }
+  if (action.type === "file.mkdir") {
+    return "Write";
+  }
+  if (action.type === "file.move" || action.type === "file.copy" || action.type === "file.delete" || action.type === "file.patch" || action.type === "json.edit" || action.type === "notebook.edit") {
+    return "Edit";
+  }
+  if (action.type === "file.resolve") {
+    return "Read";
+  }
+  if (action.type === "json.read" || action.type === "package.info" || action.type === "project.detect") {
+    return "Read";
   }
   if (action.type === "web.search") {
     return "WebSearch";
@@ -273,14 +307,20 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "git.branch") {
     return "GitBranch";
   }
+  if (action.type === "git.show") {
+    return "GitShow";
+  }
   if (action.type === "package.install") {
     return "PackageInstall";
   }
-  if (action.type === "solidity.compile") {
-    return "SolidityCompile";
-  }
   if (action.type === "agent.delegate") {
-    return "Delegate";
+    return "Agent";
+  }
+  if (action.type === "blackboard.write") {
+    return "BlackboardWrite";
+  }
+  if (action.type === "blackboard.read" || action.type === "blackboard.search" || action.type === "blackboard.list") {
+    return "BlackboardRead";
   }
   return "Read";
 }
@@ -292,6 +332,9 @@ function renderActionDetail(action: ToolAction): string {
   if (action.type === "file.edit") {
     return [`Path: ${action.path}`, `Operation: ${action.operation}`].join("\n");
   }
+  if (action.type === "notebook.edit") {
+    return [`Path: ${action.notebookPath}`, `Mode: ${action.editMode ?? "replace"}`].join("\n");
+  }
   return JSON.stringify(action, null, 2);
 }
 
@@ -301,6 +344,27 @@ function approvalSummary(action: ToolAction): string {
   }
   if (action.type === "file.edit") {
     return `Edit file: ${action.path}`;
+  }
+  if (action.type === "notebook.edit") {
+    return `Edit notebook: ${action.notebookPath}`;
+  }
+  if (action.type === "file.mkdir") {
+    return `Create directory: ${action.path}`;
+  }
+  if (action.type === "file.move") {
+    return `Move path: ${action.source} -> ${action.destination}`;
+  }
+  if (action.type === "file.copy") {
+    return `Copy path: ${action.source} -> ${action.destination}`;
+  }
+  if (action.type === "file.delete") {
+    return `Delete path: ${action.path}`;
+  }
+  if (action.type === "file.patch") {
+    return `Patch file: ${action.path}`;
+  }
+  if (action.type === "json.edit") {
+    return `Edit JSON: ${action.path} ${action.operation} ${action.pointer}`;
   }
   if (action.type === "web.fetch") {
     return `Fetch URL: ${action.url}`;
@@ -317,11 +381,35 @@ function approvalSummary(action: ToolAction): string {
   if (action.type === "package.install") {
     return `Install packages: ${action.command}`;
   }
-  if (action.type === "solidity.compile") {
-    return `Compile Solidity project with ${action.framework ?? "hardhat"}`;
+  if (action.type === "exec" || action.type === "code.build") {
+    return `Run command: ${action.command}`;
+  }
+  if (action.type === "process.start") {
+    return `Start background process: ${action.command}`;
+  }
+  if (action.type === "process.stop") {
+    return `Stop background process: ${action.processId}`;
+  }
+  if (action.type === "process.status" || action.type === "process.tail" || action.type === "process.grep") {
+    return `${action.type}: ${action.processId}`;
+  }
+  if (action.type === "process.list") {
+    return "List background processes";
   }
   if (action.type === "agent.delegate") {
-    return `Delegate task to ${action.capability}: ${action.task}`;
+    return `Launch agent for ${action.capability}: ${action.task}`;
+  }
+  if (action.type === "blackboard.write") {
+    return `Write blackboard entry: ${action.key}`;
+  }
+  if (action.type === "blackboard.read") {
+    return `Read blackboard entry: ${action.entryId ?? action.key}`;
+  }
+  if (action.type === "blackboard.search") {
+    return `Search blackboard: ${action.query ?? action.keyPrefix ?? action.tag ?? "entries"}`;
+  }
+  if (action.type === "blackboard.list") {
+    return "List blackboard entries";
   }
   return `${action.type}: ${permissionRuleContentForAction(action) ?? ""}`.trim();
 }
@@ -345,11 +433,35 @@ function approvalTarget(action: ToolAction): string {
   if (action.type === "git.branch") {
     return [action.action ?? "list", action.name].filter(Boolean).join(" ");
   }
+  if (action.type === "file.move" || action.type === "file.copy") {
+    return `${action.source} -> ${action.destination}`;
+  }
   if (action.type === "package.install") {
     return action.command;
   }
+  if (action.type === "process.start") {
+    return action.command;
+  }
+  if (action.type === "process.status" || action.type === "process.tail" || action.type === "process.grep" || action.type === "process.stop") {
+    return action.processId ?? "background process";
+  }
+  if (action.type === "process.list") {
+    return action.sessionId ?? "background processes";
+  }
   if (action.type === "agent.delegate") {
     return action.capability;
+  }
+  if (action.type === "blackboard.write") {
+    return action.key;
+  }
+  if (action.type === "blackboard.read") {
+    return action.entryId ?? action.key ?? "blackboard";
+  }
+  if (action.type === "blackboard.search") {
+    return action.query ?? action.keyPrefix ?? action.tag ?? "blackboard";
+  }
+  if (action.type === "blackboard.list") {
+    return action.keyPrefix ?? action.tag ?? "blackboard";
   }
   return permissionRuleContentForAction(action) ?? action.type;
 }
@@ -361,8 +473,14 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   if (action.type === "file.edit") {
     return `Edits workspace file ${action.path}.`;
   }
-  if (action.type === "shell.exec" || action.type === "code.test" || action.type === "code.lint") {
+  if (action.type === "notebook.edit") {
+    return `Edits notebook file ${action.notebookPath}.`;
+  }
+  if (action.type === "shell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start") {
     return `Runs a local command in ${"cwd" in action ? action.cwd ?? "." : "."}; effects depend on the command.`;
+  }
+  if (action.type === "process.stop") {
+    return `Stops background process ${action.processId}.`;
   }
   if (action.type === "web.fetch") {
     return `Fetches network content from ${action.url}.`;
@@ -373,11 +491,14 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   if (action.type === "agent.delegate") {
     return "Spawns an internal specialist with its own tool budget.";
   }
+  if (action.type === "blackboard.write") {
+    return "Writes shared Swarm session state visible to other agents.";
+  }
   return riskClass === "r0" ? "Read-only or low-risk operation." : "Changes local state or uses an external resource.";
 }
 
 function rollbackPlan(action: ToolAction, riskClass: RiskClass): string {
-  if (action.type === "file.write" || action.type === "file.edit") {
+  if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit") {
     return "Use the recorded diff/audit entry to revert the file manually or with a follow-up edit.";
   }
   if (action.type === "package.install") {
@@ -402,14 +523,24 @@ function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
   if (action.type === "agent.delegate") {
     return "delegate";
   }
-  if (isShellLikeAction(action) || action.type === "solidity.compile" || action.type === "git.branch") {
+  if (isShellLikeAction(action) || action.type === "exec" || action.type === "git.branch") {
     return "shell";
   }
   return "write";
 }
 
 function isShellLikeAction(action: ToolAction): boolean {
-  return action.type === "shell.exec" || action.type === "code.test" || action.type === "code.lint";
+  return action.type === "shell.exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start" || action.type === "process.stop";
+}
+
+function isWriteLikeAction(action: ToolAction): boolean {
+  return action.type === "file.write" ||
+    action.type === "file.edit" ||
+    action.type === "file.mkdir" ||
+    action.type === "file.move" ||
+    action.type === "file.copy" ||
+    action.type === "file.delete" ||
+    action.type === "file.patch";
 }
 
 function isDestructiveCommand(command: string): boolean {
@@ -457,11 +588,26 @@ function permissionRuleContentsForAction(action: ToolAction): Array<{ value: str
   if (action.type === "git.branch") {
     return [{ value: [action.action ?? "list", action.name].filter(Boolean).join(" "), pathLike: false }];
   }
-  if (action.type === "solidity.compile") {
-    return [{ value: action.framework ?? "hardhat", pathLike: false }];
+  if (action.type === "process.status" || action.type === "process.tail" || action.type === "process.grep" || action.type === "process.stop") {
+    return [{ value: action.processId ?? "background process", pathLike: false }];
+  }
+  if (action.type === "process.list") {
+    return [{ value: action.sessionId ?? "background processes", pathLike: false }];
   }
   if (action.type === "agent.delegate") {
     return [{ value: action.capability, pathLike: false }];
+  }
+  if (action.type === "blackboard.write") {
+    return [{ value: action.key, pathLike: false }];
+  }
+  if (action.type === "blackboard.read") {
+    return [{ value: action.entryId ?? action.key ?? "blackboard", pathLike: false }];
+  }
+  if (action.type === "blackboard.search") {
+    return [{ value: action.query ?? action.keyPrefix ?? action.tag ?? "blackboard", pathLike: false }];
+  }
+  if (action.type === "blackboard.list") {
+    return [{ value: action.keyPrefix ?? action.tag ?? "blackboard", pathLike: false }];
   }
   return [];
 }

@@ -265,7 +265,7 @@ export class Orchestrator {
   }
 
   private async runTask(session: SwarmSession, task: SwarmTask, attempt = 0): Promise<void> {
-    const capability = task.required_capabilities[0];
+    const capability = routeableTaskCapability(task);
     const runAttempt = this.nextTaskAttempt(session, task);
     this.persistTaskState(session, task, "assigned", runAttempt);
     this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "assigned" });
@@ -397,7 +397,7 @@ export class Orchestrator {
     }
 
     if (recovery === "retry_different_agent") {
-      const alternates = task.required_capabilities.filter((c) => c !== capability);
+      const alternates = task.required_capabilities.map((item) => item.trim()).filter((item) => item && item !== capability);
       if (alternates.length > 0 && attempt < session.policy.retry.max_attempts) {
         this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
         this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
@@ -636,8 +636,8 @@ export class Orchestrator {
     const testsRun = new Set<string>();
 
     for (const entry of this.blackboard.list(sessionId)) {
-      if ((entry.tags ?? []).some((tag) => ["code.test", "code.lint", "git.diff", "git.status", "solidity.compile"].includes(tag))) {
-        testsRun.add((entry.tags ?? []).find((tag) => ["code.test", "code.lint", "git.diff", "git.status", "solidity.compile"].includes(tag)) ?? "verification");
+      if ((entry.tags ?? []).some((tag) => ["code.test", "code.lint", "git.diff", "git.status"].includes(tag))) {
+        testsRun.add((entry.tags ?? []).find((tag) => ["code.test", "code.lint", "git.diff", "git.status"].includes(tag)) ?? "verification");
       }
       const value = entry.value;
       if (isRecord(value)) {
@@ -694,13 +694,17 @@ export class Orchestrator {
   }
 
   private static readonly TOOL_CAPABILITIES = new Set([
+    "LS", "Read", "Glob", "Grep", "Write", "Edit", "NotebookEdit",
+    "TodoWrite", "Bash", "exec", "WebSearch", "WebFetch", "Agent", "Task",
+    "BlackboardWrite", "BlackboardSearch", "BlackboardRead", "BlackboardList",
     "tool.file.list", "tool.file.read", "tool.file.glob", "tool.file.grep",
     "tool.file.stat", "tool.file.write", "tool.file.edit", "tool.shell.exec",
     "todo.write",
+    "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list",
     "web.search", "web.fetch",
     "code.test", "code.lint",
     "git.status", "git.diff", "git.log", "git.branch",
-    "package.install", "solidity.compile", "agent.delegate"
+    "package.install", "agent.delegate"
   ]);
 
   private tryNormalizeToolAction(inputs: Record<string, unknown>, capability: string): ToolAction | undefined {
@@ -709,6 +713,18 @@ export class Orchestrator {
     }
     return normalizeToolAction(inputs, capability);
   }
+}
+
+function routeableTaskCapability(task: SwarmTask): string {
+  const capability = task.required_capabilities.map((item) => item.trim()).find(Boolean);
+  if (capability) {
+    task.required_capabilities = [
+      capability,
+      ...task.required_capabilities.map((item) => item.trim()).filter((item) => item && item !== capability)
+    ];
+    return capability;
+  }
+  throw new Error(`Task ${task.task_id} has no routeable capability.`);
 }
 
 function createSession(objective: string, settings: SwarmSettings): SwarmSession {
@@ -868,8 +884,7 @@ function isReadOnlyToolAction(action: ToolAction): boolean {
     "code.lint",
     "git.status",
     "git.diff",
-    "git.log",
-    "solidity.compile"
+    "git.log"
   ].includes(action.type);
 }
 

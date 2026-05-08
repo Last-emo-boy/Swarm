@@ -73,6 +73,7 @@ Useful TUI controls:
 | `/status` | Alias for the current kernel status view |
 | `/work-items [workflow_path]` | Inspect local Symphony active and terminal work items |
 | `/session [session_id]` | Inspect a persisted Work Kernel session snapshot |
+| `/memory [session_id]` | Show remembered session context and the freshness checks used before resume |
 | `/resume [session_id] [message]` | Resume an existing session; if the first token is not a known session, resume the latest session with the whole message |
 | `/continue [message]` | Continue the latest local coding-loop session |
 | `/attempts [session_id]` | Inspect Work Kernel run attempts, failures, workspace, and recovery hints |
@@ -88,10 +89,15 @@ Useful TUI controls:
 | `/symphony-stop [daemon_id|all] [--cancel-running]` | Stop local TUI-managed Symphony daemon loops |
 | `/symphony-cleanup [workflow_path] [--execute]` | Dry-run or execute terminal workspace cleanup |
 
+By default `/help` and slash completion only surface the main path. Use `/help all` to show the full advanced catalog.
+Capability and extension surfaces also start with summaries; use `/capabilities all`, `/skills all`, `/plugins all`, or `/mcp all` for the full advanced catalog.
+
 When idle, the TUI main pane acts as the Kernel operator surface without showing
 every record at once. Ctrl+N/Ctrl+P switches between focused panes: Overview,
-Output, Sessions, Attempts, Agents, and Blackboard. Overview keeps the prompt
-surface quiet; the other panes expose the fuller local state when needed. The
+Output, Sessions, Attempts, Activity, and Blackboard. Overview keeps the prompt
+surface quiet; the Activity pane summarizes workers, approvals, and background
+work without making agent internals the default view. The other panes expose
+the fuller local state when needed. The
 header and Kernel overview show the latest actual route selected by auto mode,
 such as `coding_loop` or `full_swarm`, with confidence and the router reason.
 
@@ -99,6 +105,15 @@ The TUI creates a local Work Kernel session for the current chat state. Slash
 tool approvals and tool results are recorded against that session, so `/session`,
 `/attempts`, `/approvals`, `/audit`, and `/usage` can inspect TUI-local work
 instead of showing detached tool events.
+
+Normal runs now finish with a result card before the raw assistant output. The
+card shows the session id, completion status, changed files, checks, review
+summary, and memory freshness note, so the default path answers "what changed
+and how was it verified" without opening trace or audit details. `/session
+<session_id>` starts with the same result card before the deeper Kernel records.
+`/memory [session_id]` shows the remembered context plus the same freshness
+contract Swarm injects before resume, making stale session memory visible instead
+of silently trusted.
 
 While work is running, the TUI keeps a stable current-action row plus a short
 activity timeline. This makes long local coding-loop runs easier to follow:
@@ -223,6 +238,9 @@ Swarm's extension capability plane is designed to unify built-in tools, MCP
 servers, Agent Skills, slash commands, agent specs, and future plugins behind
 the same Gateway, TUI, permission, audit, and Work Kernel records. See
 `docs/EXTENSION_CAPABILITY_PLANE.md`.
+Gateway catalog endpoints return the raw records plus a shared `summary` object
+for capabilities, skills, plugins, and MCP servers so integrations can show the
+same summary-first surface as the TUI.
 
 Tool approval is driven by `~/.swarm/settings.json` permission rules. High-risk
 actions such as shell, package install, delegate, write/edit, web fetch, and
@@ -303,6 +321,11 @@ All state lives under `~/.swarm/` (override with `SWARM_HOME`):
 | `SWARM_MODEL` | Override planner model |
 | `SWARM_WORKER_MODEL` | Override worker model |
 | `SWARM_AGGREGATOR_MODEL` | Override aggregator model |
+| `SWARM_MAX_OUTPUT_TOKENS` | Override per-response output token cap, clamped to 128000 |
+| `SWARM_DISABLE_PROMPT_CACHING` | Disable provider prompt-cache hints and cache-control markers |
+| `SWARM_PROMPT_CACHE_TTL` | Set Anthropic cache TTL hint; use `1h` for one-hour cache blocks |
+| `SWARM_PROMPT_CACHE_RETENTION` | Set OpenAI prompt cache retention; use `24h` when supported |
+| `SWARM_GEMINI_CACHE_TTL_SECONDS` | TTL for Gemini explicit cachedContent entries |
 | `SWARM_TASK_TIMEOUT_MS` | Per-task timeout in ms |
 | `OPENAI_API_KEY` | Environment key source for the openai provider |
 

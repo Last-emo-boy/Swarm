@@ -16,7 +16,10 @@ export class TaskScheduler {
   }
 
   isTaskConcurrencySafe(task: SwarmTask): boolean {
-    const capability = task.required_capabilities[0];
+    const capability = firstNonEmptyCapability(task.required_capabilities);
+    if (!capability) {
+      return false;
+    }
     let action: ToolAction | undefined;
     try {
       action = tryNormalizeToolAction(task.inputs, capability);
@@ -31,13 +34,17 @@ export class TaskScheduler {
 }
 
 const TOOL_CAPABILITIES = new Set([
+  "LS", "Read", "Glob", "Grep", "Write", "Edit", "NotebookEdit",
+  "TodoWrite", "Bash", "exec", "WebSearch", "WebFetch", "Agent", "Task",
+  "BlackboardWrite", "BlackboardSearch", "BlackboardRead", "BlackboardList",
   "tool.file.list", "tool.file.read", "tool.file.glob", "tool.file.grep",
   "tool.file.stat", "tool.file.write", "tool.file.edit", "tool.shell.exec",
   "todo.write",
+  "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list",
   "web.search", "web.fetch",
   "code.test", "code.lint",
   "git.status", "git.diff", "git.log", "git.branch",
-  "package.install", "solidity.compile", "agent.delegate"
+  "package.install", "agent.delegate"
 ]);
 
 function tryNormalizeToolAction(inputs: Record<string, unknown>, capability: string): ToolAction | undefined {
@@ -64,6 +71,12 @@ function isReadOnlyToolAction(action: ToolAction): boolean {
     "git.status",
     "git.diff",
     "git.log",
-    "solidity.compile"
+    "blackboard.read",
+    "blackboard.search",
+    "blackboard.list"
   ].includes(action.type);
+}
+
+function firstNonEmptyCapability(value: string[]): string | undefined {
+  return value.map((item) => item.trim()).find(Boolean);
 }

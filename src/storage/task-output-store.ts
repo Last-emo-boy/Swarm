@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { getSwarmPaths } from "../config/settings.js";
@@ -16,8 +17,23 @@ export async function writeTaskOutput(input: {
 }): Promise<TaskOutputRef> {
   const dir = resolve(getSwarmPaths().sessionsDir, sanitizePathPart(input.sessionId));
   await mkdir(dir, { recursive: true });
-  const path = join(dir, `${sanitizePathPart(input.taskId)}.${input.attempt}.output`);
-  await writeFile(path, input.content, "utf8");
+  let path = join(dir, `${sanitizePathPart(input.taskId)}.${input.attempt}.output`);
+  try {
+    await writeFile(path, input.content, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (!isFileExistsError(error)) {
+      throw error;
+    }
+    const existing = await readFile(path, "utf8").catch(() => undefined);
+    if (existing !== input.content) {
+      path = join(dir, `${sanitizePathPart(input.taskId)}.${input.attempt}.${shortHash(input.content)}.output`);
+      await writeFile(path, input.content, { encoding: "utf8", flag: "wx" }).catch(async (writeError: unknown) => {
+        if (!isFileExistsError(writeError)) {
+          throw writeError;
+        }
+      });
+    }
+  }
   const info = await stat(path);
   return {
     path,
@@ -46,4 +62,12 @@ function countLines(content: string): number {
 function isInsidePath(path: string, root: string): boolean {
   const relative = path.slice(root.length);
   return path === root || relative.startsWith("\\") || relative.startsWith("/");
+}
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "EEXIST";
 }

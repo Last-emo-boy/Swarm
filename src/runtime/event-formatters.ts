@@ -1,5 +1,5 @@
 import type { RuntimeEvent } from "./events.js";
-import type { WorkerRecord } from "../storage/worker-state-store.js";
+import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 
 type RouteLike = {
   mode?: unknown;
@@ -24,6 +24,8 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
       return `${statusIcon(event.status)} attempt ${event.attempt}: ${event.title || event.task_id}`;
     case "tool_result":
       return `tool: ${event.action} [${event.status ?? "unknown"}] ${truncate(event.summary, 90)}${event.recoverySuggestion ? ` recovery=${truncate(event.recoverySuggestion, 70)}` : ""}`;
+    case "provider_usage":
+      return `usage: ${event.usage.providerId}/${event.usage.model} ${event.usage.purpose}`;
     case "progress":
       return `progress: ${event.completed}/${event.total}`;
     case "envelope":
@@ -49,9 +51,9 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
     case "agent_spawn_decision":
       return `spawn: ${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} (${percent(event.decision.confidence)})`;
     case "agent_run_started":
-      return `agent-run: ${event.worker.worker_id} started ${event.worker.agent_spec_id ?? event.worker.capability}`;
+      return `agent-run: ${workerDisplayLabel(event.worker)} started ${event.worker.agent_spec_id ?? event.worker.capability}`;
     case "agent_run_completed":
-      return `agent-run: ${event.worker.worker_id} completed ${truncate(event.result, 70)}`;
+      return `agent-run: ${workerDisplayLabel(event.worker)} completed ${truncate(event.result, 70)}`;
     case "handoff_started":
       return `handoff: ${event.handoff.handoff_id} started -> ${event.handoff.target_agent_spec_id}`;
     case "handoff_message":
@@ -101,10 +103,10 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
     return `agent: spawn ${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} (${percent(event.decision.confidence)}) ${event.decision.reason}`;
   }
   if (event.type === "agent_run_started") {
-    return `agent: start ${event.worker.worker_id} ${event.worker.agent_spec_id ?? event.worker.capability}`;
+    return `agent: start ${workerDisplayLabel(event.worker)} ${event.worker.agent_spec_id ?? event.worker.capability}`;
   }
   if (event.type === "agent_run_completed") {
-    return `agent: done ${event.worker.worker_id} ${firstLine(event.result)}`;
+    return `agent: done ${workerDisplayLabel(event.worker)} ${firstLine(event.result)}`;
   }
   if (event.type === "worker") {
     return `worker: ${formatWorkerBrief(event.worker)}${event.message ? ` - ${event.message}` : ""}`;
@@ -145,12 +147,14 @@ export function formatWorkerBrief(worker: WorkerRecord): string {
     ? `${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}`
     : worker.capability;
   const scope = worker.file_scope.length ? ` scope=${worker.file_scope.join(",")}` : "";
-  return `${worker.worker_id} [${worker.status}] ${agent}${scope}`;
+  const result = worker.last_result ? ` - ${truncate(firstLine(worker.last_result), 80)}` : "";
+  return `${workerDisplayLabel(worker)} [${worker.status}] ${agent} (${worker.worker_id})${scope}${result}`;
 }
 
 export function formatWorkerDetail(worker: WorkerRecord): string {
   return [
-    `${worker.worker_id} [${worker.status}]`,
+    `${workerDisplayLabel(worker)} [${worker.status}]`,
+    `worker_id=${worker.worker_id}`,
     worker.agent_spec_id ? `agent=${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}` : undefined,
     worker.handoff_id ? `handoff=${worker.handoff_id}` : undefined,
     `capability=${worker.capability}`,
@@ -197,6 +201,9 @@ function formatSpawnDecisionDetail(event: Extract<RuntimeEvent, { type: "agent_s
   return [
     `${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} confidence=${percent(event.decision.confidence)}`,
     `reason=${event.decision.reason}`,
+    event.decision.display_name || event.decision.role_title
+      ? `identity=${[event.decision.display_name, event.decision.role_title].filter(Boolean).join(" / ")}`
+      : undefined,
     `objective=${event.task_packet.objective}`,
     event.task_packet.file_scope.length ? `scope=${event.task_packet.file_scope.join(", ")}` : undefined,
     `tools=${event.task_packet.allowed_tools.join(", ")}`

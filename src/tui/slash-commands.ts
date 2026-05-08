@@ -6,6 +6,7 @@ export type SlashCommandSpec = {
   usage: string;
   description: string;
   aliases?: string[];
+  completionPriority?: number;
 };
 
 export type ParsedSlashCommand = {
@@ -36,8 +37,8 @@ export type CommandOutputPreviewRecord = {
 export const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Agents", "Symphony", "Config"];
 
 export const slashCommands: SlashCommandSpec[] = [
-  { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help." },
-  { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight." },
+  { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 10 },
+  { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight.", completionPriority: 20 },
   { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode." },
   { name: "why", group: "Core", usage: "/why", description: "Explain recent route, delegation, review, and verification decisions." },
   { name: "self-review", group: "Core", usage: "/self-review", description: "Inspect recent local Swarm failures and recommendations." },
@@ -46,25 +47,26 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "prd", group: "Core", usage: "/prd", description: "Show the local PRD." },
   { name: "interrupt", group: "Core", usage: "/interrupt <message>", description: "Interrupt active work and ask Swarm to reassess." },
   { name: "onboard", group: "Core", usage: "/onboard", description: "Open provider/model onboarding." },
-  { name: "read", group: "Tools", usage: "/read <path> [start:end]", description: "Read a file from the workspace." },
-  { name: "grep", group: "Tools", usage: "/grep <pattern> [root]", description: "Search workspace text." },
+  { name: "read", group: "Tools", usage: "/read <path> [start:end]", description: "Read a file from the workspace.", completionPriority: 80 },
+  { name: "grep", group: "Tools", usage: "/grep <pattern> [root]", description: "Search workspace text.", completionPriority: 90 },
   { name: "glob", group: "Tools", usage: "/glob <pattern> [root]", description: "Find files by glob." },
-  { name: "shell", group: "Tools", usage: "/shell <command>", description: "Run a shell command with policy approval when required." },
+  { name: "shell", group: "Tools", usage: "/shell <command>", description: "Run a shell command with policy approval when required.", completionPriority: 100 },
   { name: "web", group: "Tools", usage: "/web <query> [allow:domain] [block:domain]", description: "Search the web through the configured provider/search path." },
   { name: "diff", group: "Tools", usage: "/diff", description: "Show the current git diff." },
-  { name: "output", group: "Tools", usage: "/output [task_id]", description: "Show recent tool output or the full output for one task." },
-  { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Show the unified Swarm, Work Kernel, and Symphony status view.", aliases: ["status"] },
-  { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"] },
+  { name: "output", group: "Tools", usage: "/output [task_id]", description: "Show recent tool output or the full output for one task.", completionPriority: 50 },
+  { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Show the unified Swarm, Work Kernel, and Symphony status view.", aliases: ["status"], completionPriority: 30 },
+  { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"], completionPriority: 40 },
   { name: "changes", group: "Kernel", usage: "/changes [session_id]", description: "Show recorded workspace changes." },
   { name: "blackboard", group: "Kernel", usage: "/blackboard [session_id] [tag:<tag>|type:<type>|key:<prefix>|agent:<id>|task:<id>]", description: "Query blackboard facts." },
-  { name: "session", group: "Kernel", usage: "/session [session_id|new]", description: "Inspect sessions or start a fresh TUI chat state." },
-  { name: "resume", group: "Kernel", usage: "/resume [session_id] [message]", description: "Resume the recent local coding-loop session or a stored planned session.", aliases: ["continue"] },
-  { name: "continue", group: "Kernel", usage: "/continue [message]", description: "Continue the most recent local coding-loop session.", aliases: ["resume"] },
+  { name: "session", group: "Kernel", usage: "/session [session_id|new]", description: "Inspect sessions or start a fresh TUI chat state.", completionPriority: 60 },
+  { name: "memory", group: "Kernel", usage: "/memory [session_id]", description: "Show remembered session context and resume freshness.", completionPriority: 65 },
+  { name: "resume", group: "Kernel", usage: "/resume [session_id] [message]", description: "Resume the recent local coding-loop session or a stored planned session.", aliases: ["continue"], completionPriority: 70 },
+  { name: "continue", group: "Kernel", usage: "/continue [message]", description: "Continue the most recent local coding-loop session.", aliases: ["resume"], completionPriority: 75 },
   { name: "replay", group: "Kernel", usage: "/replay <session_id>", description: "Replay a persisted session snapshot." },
   { name: "fork", group: "Kernel", usage: "/fork <session_id> [message]", description: "Create a new session from a previous session." },
   { name: "trace", group: "Kernel", usage: "/trace <session_id>", description: "Show persisted envelopes for a session." },
   { name: "span", group: "Kernel", usage: "/span <trace_id|span_id>", description: "Find trace envelopes and audit rows by trace/span id." },
-  { name: "attempts", group: "Kernel", usage: "/attempts [session_id]", description: "Inspect run attempts and failure/recovery metadata." },
+  { name: "attempts", group: "Kernel", usage: "/attempts [session_id]", description: "Inspect run attempts and failure/recovery metadata.", completionPriority: 55 },
   { name: "leases", group: "Kernel", usage: "/leases [session_id|lease_id]", description: "Inspect workspace leases and write boundaries." },
   { name: "tasks", group: "Kernel", usage: "/tasks [session_id]", description: "List persisted task graph tasks." },
   { name: "graph", group: "Kernel", usage: "/graph [session_id]", description: "Inspect the task graph." },
@@ -97,26 +99,42 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "refresh-models", group: "Config", usage: "/refresh-models [provider]", description: "Refresh provider model discovery." },
   { name: "permissions", group: "Config", usage: "/permissions", description: "Inspect permission settings." },
   { name: "permission-mode", group: "Config", usage: "/permission-mode [ask|auto-edit|full-auto|yolo]", description: "Show or change the permission mode." },
-  { name: "capabilities", group: "Config", usage: "/capabilities [kind|provider|query]", description: "List registered local, slash, agent, skill, MCP, and plugin capabilities." },
+  { name: "capabilities", group: "Config", usage: "/capabilities [kind|provider|query|all]", description: "Summarize registered local, slash, agent, skill, MCP, and plugin capabilities." },
   { name: "capability-enable", group: "Config", usage: "/capability-enable <capability_id>", description: "Remove a capability id from the disabled capability list." },
   { name: "capability-disable", group: "Config", usage: "/capability-disable <capability_id>", description: "Add a capability id to the disabled capability list." },
   { name: "capability-show", group: "Config", usage: "/capability-show <capability_id>", description: "Allow a capability to be visible to the model again." },
   { name: "capability-hide", group: "Config", usage: "/capability-hide <capability_id>", description: "Hide a capability from the model without disabling user visibility." },
-  { name: "plugins", group: "Config", usage: "/plugins [plugin_id]", description: "List discovered extension plugins and manifest diagnostics." },
+  { name: "plugins", group: "Config", usage: "/plugins [plugin_id|all]", description: "Summarize discovered extension plugins and manifest diagnostics." },
   { name: "plugin-install", group: "Config", usage: "/plugin-install <root_path>", description: "Add a local plugin root to settings.extensions.plugins.roots." },
   { name: "plugin-update", group: "Config", usage: "/plugin-update", description: "Reload settings and refresh plugin capabilities." },
   { name: "plugin-remove-root", group: "Config", usage: "/plugin-remove-root <root_path>", description: "Remove a local plugin root from settings.extensions.plugins.roots." },
   { name: "plugin-enable", group: "Config", usage: "/plugin-enable <plugin_id>", description: "Remove a plugin id from the disabled plugin list." },
   { name: "plugin-disable", group: "Config", usage: "/plugin-disable <plugin_id>", description: "Add a plugin id to the disabled plugin list." },
-  { name: "skills", group: "Config", usage: "/skills", description: "List discovered agent skills and diagnostics." },
+  { name: "skills", group: "Config", usage: "/skills [all]", description: "Summarize discovered agent skills and diagnostics." },
   { name: "skill", group: "Config", usage: "/skill <name>", description: "Activate one trusted skill for the current session." },
-  { name: "mcp", group: "Config", usage: "/mcp [server_id]", description: "Inspect configured MCP server states." },
+  { name: "mcp", group: "Config", usage: "/mcp [server_id|all]", description: "Summarize configured MCP server states." },
   { name: "mcp-refresh", group: "Config", usage: "/mcp-refresh <server_id>", description: "Reconnect one configured MCP stdio server and refresh its tool catalog." },
   { name: "mcp-resources", group: "Config", usage: "/mcp-resources <server_id>", description: "List exposed MCP resources for one server." },
   { name: "mcp-read", group: "Config", usage: "/mcp-read <server_id> <uri>", description: "Read one MCP resource." },
   { name: "mcp-prompts", group: "Config", usage: "/mcp-prompts <server_id>", description: "List exposed MCP prompts for one server." },
   { name: "mcp-prompt", group: "Config", usage: "/mcp-prompt <server_id> <name> [key=value...]", description: "Render one MCP prompt." }
 ];
+
+const BASIC_SLASH_COMMAND_NAMES = new Set([
+  "help",
+  "doctor",
+  "mode",
+  "why",
+  "interrupt",
+  "onboard",
+  "kernel",
+  "status",
+  "session",
+  "memory",
+  "resume",
+  "continue",
+  "attempts"
+]);
 
 export function parseSlashCommandLine(commandLine: string): ParsedSlashCommand | undefined {
   const slashIndex = commandLine.search(/\S/);
@@ -146,25 +164,39 @@ export function rawSlashArgsAfter(parsed: ParsedSlashCommand, consumedArgs: numb
   return nextArg ? parsed.source.slice(nextArg.start).trim() : "";
 }
 
-export function renderSlashHelp(): string {
+export function renderSlashHelp(options: { includeAdvanced?: boolean } = {}): string {
+  const includeAdvanced = options.includeAdvanced ?? false;
   return slashCommandGroups
     .map((group) => {
-      const commands = slashCommands.filter((command) => command.group === group);
+      const commands = slashCommands.filter((command) =>
+        command.group === group && (includeAdvanced || BASIC_SLASH_COMMAND_NAMES.has(command.name))
+      );
+      if (!commands.length) {
+        return "";
+      }
       return [
         group,
         ...commands.map((command) => `  ${command.usage} - ${command.description}`)
       ].join("\n");
     })
+    .filter(Boolean)
     .join("\n\n");
 }
 
-export function commandCandidatesForInput(value: string, cursor: number): SlashCommandSpec[] {
+export function commandCandidatesForInput(
+  value: string,
+  cursor: number,
+  options: { includeAdvanced?: boolean } = {}
+): SlashCommandSpec[] {
   const token = slashCommandToken(value, cursor);
   if (!token) {
     return [];
   }
   const query = token.name.toLowerCase();
-  return slashCommands
+  const commands = options.includeAdvanced || query.length >= 2
+    ? slashCommands
+    : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name));
+  return commands
     .map((command) => ({ command, score: slashCommandScore(command, query) }))
     .filter((item) => item.score < 100)
     .sort((a, b) => a.score - b.score || a.command.name.localeCompare(b.command.name))
@@ -227,7 +259,7 @@ function slashCommandToken(value: string, cursor: number): { start: number; end:
 
 function slashCommandScore(command: SlashCommandSpec, query: string): number {
   if (!query) {
-    return command.group === "Core" ? 10 : command.group === "Kernel" ? 20 : 30;
+    return command.completionPriority ?? (command.group === "Core" ? 200 : command.group === "Kernel" ? 300 : 400);
   }
   const haystack = [command.name, ...(command.aliases ?? [])].map((item) => item.toLowerCase());
   if (haystack.includes(query)) {

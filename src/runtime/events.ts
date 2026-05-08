@@ -4,6 +4,7 @@ import type { FileLockEvent, ToolApprovalRequest, WorkspaceChangeMetadata } from
 import type { WorkerRecord, WorkerStatus } from "../storage/worker-state-store.js";
 import type { AgentSpawnDecision, AgentTaskPacket } from "./agent-specs.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
+import type { ProviderUsageReport } from "../providers/openai-provider.js";
 
 export type SessionOutcome = WorkSessionOutcome;
 
@@ -41,6 +42,7 @@ export type RuntimeEvent =
   | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped" }
   | { type: "error"; message: string }
   | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass } }
+  | { type: "provider_usage"; usage: ProviderUsageReport }
   | { type: "progress"; completed: number; total: number };
 
 export type ToolResultSummary = {

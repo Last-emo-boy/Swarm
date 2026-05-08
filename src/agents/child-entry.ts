@@ -2,19 +2,33 @@ import { resolve } from "node:path";
 import process from "node:process";
 import type { AgentCard, AgentResultPayload, BlackboardEntry, ReviewResult, SwarmEnvelope } from "../protocol/types.js";
 import { createEnvelope } from "../protocol/envelope.js";
-import { OpenAIProvider } from "../providers/openai-provider.js";
+import { OpenAIProvider, type PromptBlock, type ProviderUsageReport } from "../providers/openai-provider.js";
 import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
-import type { AgentDelegateAction, ToolAction, ToolResult, WebSearchAction } from "../tools/types.js";
+import type { AgentDelegateAction, BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, ToolAction, ToolResult, WebSearchAction } from "../tools/types.js";
 import { getDebugLogger, type DebugLogger } from "../runtime/debug-logger.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
+import { renderHostEnvironmentPrompt } from "../runtime/host-context.js";
+import { applyToolResultBudget, createContentReplacementState } from "../runtime/tool-result-budget.js";
 
 const spec = parseAgentSpec();
-const provider = new OpenAIProvider();
+const provider = new OpenAIProvider({ onUsage: (usage) => sendProviderUsage(usage) });
 const workspace = resolve(process.env.SWARM_WORKSPACE ?? process.cwd());
 const debug: DebugLogger | null = getDebugLogger(getSwarmPaths().logsDir);
 
+const CHILD_CONTROL_MAX_OUTPUT_TOKENS = 1_200;
+const CHILD_WORKER_LOOP_MAX_OUTPUT_TOKENS = 6_000;
+const CHILD_REVIEW_MAX_OUTPUT_TOKENS = 3_000;
+const CHILD_AGGREGATION_MAX_OUTPUT_TOKENS = 4_000;
+
 debug?.info("child-entry", `${spec.agent_id} started. role=${spec.role} pid=${process.pid} capabilities=${spec.capabilities.join(", ")}`);
+
+function sendProviderUsage(usage: ProviderUsageReport): void {
+  process.send?.({
+    type: "provider_usage",
+    usage
+  });
+}
 
 process.on("message", (message: unknown) => {
   const env = message as SwarmEnvelope;
@@ -61,12 +75,121 @@ async function handleEnvelope(envelope: SwarmEnvelope): Promise<void> {
     return;
   }
 
+  if (envelope.type === "bid.request") {
+    handleBidRequest(envelope);
+    return;
+  }
+
+  if (envelope.type === "bid.award") {
+    sendReply(envelope, "ack", "bid.award.ack", { accepted: true, task_id: envelope.task_id });
+    return;
+  }
+
+  if (envelope.type === "consensus.request") {
+    await handleConsensusRequest(envelope);
+    return;
+  }
+
   if (envelope.type === "task.assign") {
     await handleWorkerTask(envelope);
     return;
   }
 
   debug?.debug("child-entry", `ignored ${envelope.type} intent=${envelope.intent}`);
+}
+
+function handleBidRequest(envelope: SwarmEnvelope): void {
+  const payload = isRecord(envelope.payload) ? envelope.payload : {};
+  const required = Array.isArray(payload.required_capabilities)
+    ? payload.required_capabilities.map(String)
+    : typeof payload.capability === "string"
+      ? [payload.capability]
+      : [];
+  const matching = required.length === 0
+    ? spec.capabilities
+    : spec.capabilities.filter((capability) => required.includes(capability));
+  const load = spec.load?.running_tasks ?? 0;
+  const successRate = spec.reliability?.success_rate ?? 0.5;
+  const confidence = Math.max(0.1, Math.min(0.99, (matching.length ? 0.7 : 0.35) + successRate * 0.2 - load * 0.05));
+  process.send?.(createEnvelope({
+    swarm_id: envelope.swarm_id,
+    session_id: envelope.session_id,
+    task_id: stringField(payload.task_id ?? payload.taskId) ?? envelope.task_id,
+    from: { agent_id: spec.agent_id, role: spec.role },
+    to: envelope.from,
+    type: "bid.submit",
+    intent: "bid.submit",
+    payload: {
+      task_id: stringField(payload.task_id ?? payload.taskId) ?? envelope.task_id,
+      confidence,
+      estimated_time_ms: estimateBidTimeMs(load),
+      estimated_cost: estimateBidCost(load, matching.length),
+      reason: matching.length
+        ? `Matches capabilities: ${matching.join(", ")}.`
+        : "No exact capability match, but agent can provide adjacent support.",
+      agent: {
+        agent_id: spec.agent_id,
+        role: spec.role,
+        capabilities: spec.capabilities
+      }
+    },
+    correlation_id: envelope.correlation_id ?? envelope.id,
+    reply_to: envelope.id
+  }));
+}
+
+async function handleConsensusRequest(envelope: SwarmEnvelope): Promise<void> {
+  const payload = isRecord(envelope.payload) ? envelope.payload : {};
+  const question = typeof payload.question === "string"
+    ? payload.question
+    : typeof payload.proposal === "string"
+      ? payload.proposal
+      : JSON.stringify(payload);
+  let vote = "approve";
+  let reason = "No blocking issue found in the consensus payload.";
+  let confidence = 0.6;
+  if (spec.role === "reviewer" || spec.role === "critic") {
+    const modelText = await provider.generateText({
+      model: provider.workerModel,
+      system: [{
+        text: [
+          "You are a Swarm consensus voter.",
+          "Return exactly one JSON object with keys: vote, confidence, reason.",
+          "vote must be approve, reject, or abstain.",
+          "Reject only for a concrete protocol, safety, or correctness blocker grounded in the supplied payload."
+        ].join(" "),
+        cache: true
+      }],
+      user: JSON.stringify({ question, payload, agent: spec }, null, 2),
+      usage: {
+        sessionId: envelope.session_id,
+        taskId: envelope.task_id,
+        purpose: "child_consensus"
+      },
+      maxOutputTokens: CHILD_CONTROL_MAX_OUTPUT_TOKENS
+    });
+    const parsed = parseJsonObject(modelText);
+    vote = parsed.vote === "reject" || parsed.vote === "abstain" ? parsed.vote : "approve";
+    confidence = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : confidence;
+    reason = typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : reason;
+  }
+  process.send?.(createEnvelope({
+    swarm_id: envelope.swarm_id,
+    session_id: envelope.session_id,
+    task_id: envelope.task_id,
+    from: { agent_id: spec.agent_id, role: spec.role },
+    to: envelope.from,
+    type: "consensus.vote",
+    intent: "consensus.vote",
+    payload: {
+      vote,
+      confidence,
+      reason,
+      mode: typeof payload.mode === "string" ? payload.mode : undefined
+    },
+    correlation_id: envelope.correlation_id ?? envelope.id,
+    reply_to: envelope.id
+  }));
 }
 
 async function handleWorkerTask(envelope: SwarmEnvelope): Promise<void> {
@@ -108,9 +231,24 @@ type WorkerToolCall = {
   reason?: string;
 };
 
+type WorkerToolResult = {
+  id: string;
+  action: string;
+  reason?: string;
+  status?: string;
+  summary: string;
+  content?: string;
+  outputRef?: string;
+  data?: unknown;
+  errors?: unknown;
+  errorCode?: string;
+  retryable?: boolean;
+  recoverable?: boolean;
+};
+
 type WorkerLoopResult = ReturnType<typeof parseWorkerResult> & {
   loop_turns: number;
-  tool_results: unknown[];
+  tool_results: WorkerToolResult[];
 };
 
 async function runWorkerLoop(
@@ -120,19 +258,32 @@ async function runWorkerLoop(
     context?: BlackboardEntry[];
   }
 ): Promise<WorkerLoopResult> {
-  const toolResults: unknown[] = [];
+  const toolResults: WorkerToolResult[] = [];
+  const replacementState = createContentReplacementState({
+    sessionId: envelope.session_id,
+    scopeKind: "child",
+    scopeId: spec.agent_id
+  });
   let executedToolCalls = 0;
   let lastParsed = parseWorkerResult("{}");
 
   for (let turn = 1; turn <= MAX_WORKER_LOOP_TURNS; turn += 1) {
+    const budgetedToolResults = await applyToolResultBudget(toolResults, {
+      sessionId: envelope.session_id,
+      taskIdPrefix: `${envelope.task_id ?? "child_worker"}_turn_${turn}`,
+      state: replacementState,
+      maxFreshBytes: CHILD_TOOL_RESULT_FRESH_BUDGET_BYTES,
+      maxTotalBytes: CHILD_TOOL_RESULT_TOTAL_BUDGET_BYTES,
+      previewBytes: CHILD_TOOL_RESULT_PREVIEW_BYTES
+    });
     const content = await provider.generateText({
       model: provider.workerModel,
-      system: workerLoopSystemPrompt(),
+      system: workerLoopSystemPrompt(workspace),
       user: JSON.stringify(
         {
           task: payload.task,
           context: payload.context ?? [],
-          tool_results: toolResults,
+          tool_results: budgetedToolResults,
           loop: {
             turn,
             remaining_turns: MAX_WORKER_LOOP_TURNS - turn,
@@ -141,7 +292,14 @@ async function runWorkerLoop(
         },
         null,
         2
-      )
+      ),
+      cache: { key: `swarm:child-worker:${envelope.session_id ?? envelope.task_id ?? "unknown"}`, ttlSeconds: 3600 },
+      usage: {
+        sessionId: envelope.session_id,
+        taskId: envelope.task_id,
+        purpose: "child_worker_loop"
+      },
+      maxOutputTokens: CHILD_WORKER_LOOP_MAX_OUTPUT_TOKENS
     });
 
     const parsed = parseWorkerResult(content);
@@ -158,6 +316,11 @@ async function runWorkerLoop(
       executedToolCalls += 1;
       const result = await executeWorkerToolCall(call, envelope);
       toolResults.push(result);
+      sendProgress(envelope, {
+        message: `Worker tool ${String(result.action ?? call.action ?? "unknown")} ${String(result.status ?? "completed")}`,
+        tool_calls_completed: executedToolCalls,
+        remaining_tool_calls: MAX_WORKER_TOOL_CALLS - executedToolCalls
+      });
     }
   }
 
@@ -171,22 +334,26 @@ async function runWorkerLoop(
   };
 }
 
-function workerLoopSystemPrompt(): string {
-  return [
-    "You are a worker agent in a local Swarm coding CLI runtime.",
-    "Complete only the assigned task using the supplied task, inputs, blackboard entries, and tool_results.",
-    "Return exactly one JSON object. Do not use Markdown fences or prose outside JSON.",
-    "The JSON object must contain keys: status, summary, details, files_touched, next_actions, tool_calls.",
-    "status must be completed or failed. details must be Markdown for the user.",
-    "tool_calls must be an array. Use it only when you need more evidence before completing.",
-    "Allowed worker-loop tools: file.read, file.list, file.glob, file.grep, file.stat, git.status, git.diff, git.log, web.search, web.fetch, todo.write.",
-    "Do not request file.write, file.edit, shell.exec, package.install, code.test, code.lint, solidity.compile, git.branch, or agent.delegate inside this loop.",
-    "For todo.write, inputs.todos is an array of objects with content and status pending, in_progress, or completed.",
-    "When you have enough evidence, return tool_calls: [] and a completed or failed result."
-  ].join(" ");
+function workerLoopSystemPrompt(workspace = process.cwd()): PromptBlock[] {
+  return [{
+    text: [
+      "You are a worker agent in a local Swarm coding CLI runtime.",
+      "Complete only the assigned task using the supplied task, inputs, blackboard entries, and tool_results.",
+      "Return exactly one JSON object. Do not use Markdown fences or prose outside JSON.",
+      "The JSON object must contain keys: status, summary, details, files_touched, next_actions, tool_calls.",
+      "status must be completed or failed. details must be Markdown for the user.",
+      "tool_calls must be an array. Use it only when you need more evidence before completing.",
+      "Allowed worker-loop tools: file.read, file.list, file.glob, file.grep, file.stat, git.status, git.diff, git.log, web.search, web.fetch, todo.write, BlackboardWrite, BlackboardSearch, BlackboardRead, BlackboardList.",
+      renderHostEnvironmentPrompt(workspace),
+      "Do not request Write, Edit, Bash, exec, package.install, code.test, code.lint, git.branch, Agent, or agent.delegate inside this loop.",
+      "For todo.write, inputs.todos is an array of objects with content and status pending, in_progress, or completed.",
+      "When you have enough evidence, return tool_calls: [] and a completed or failed result."
+    ].join(" "),
+    cache: true
+  }];
 }
 
-async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelope): Promise<Record<string, unknown>> {
+async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelope): Promise<WorkerToolResult> {
   const id = call.id ?? `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   try {
     const inputs = { ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action };
@@ -210,6 +377,8 @@ async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelo
       taskId: envelope.task_id,
       attempt: envelope.attempt,
       serverWebSearch: (searchAction: WebSearchAction) => provider.webSearch(searchAction),
+      blackboard: childBlackboardTools(envelope),
+      agent: { agent_id: spec.agent_id, role: spec.role },
       delegate: (delegateAction: AgentDelegateAction) => delegateToAgent(delegateAction, envelope)
     };
     const result = await runLocalTool(action, toolContext);
@@ -232,7 +401,11 @@ async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelo
     const reason = error instanceof Error ? error.message : String(error);
     return {
       id,
-      action: call.action ?? call.inputs?.action ?? "unknown",
+      action: typeof call.action === "string"
+        ? call.action
+        : typeof call.inputs?.action === "string"
+          ? call.inputs.action
+          : "unknown",
       status: "failed",
       summary: reason,
       errors: [reason],
@@ -255,7 +428,11 @@ function isWorkerLoopToolAllowed(action: ToolAction): boolean {
     "git.log",
     "web.search",
     "web.fetch",
-    "todo.write"
+    "todo.write",
+    "blackboard.write",
+    "blackboard.search",
+    "blackboard.read",
+    "blackboard.list"
   ].includes(action.type);
 }
 
@@ -264,8 +441,8 @@ async function handleReview(envelope: SwarmEnvelope): Promise<void> {
   const payload = envelope.payload as { target_task_id?: string; context?: BlackboardEntry[] };
   const modelText = await provider.generateText({
     model: provider.workerModel,
-    system:
-      [
+    system: [{
+      text: [
         "You are a reviewer agent. Assess whether the swarm output satisfies the objective.",
         "This product is a coding CLI. For implementation/refactor/create-project requests, success means the workspace was actually changed and then verified, not merely described.",
         "For pure analysis or audit requests, a grounded final response is acceptable without file changes.",
@@ -273,7 +450,15 @@ async function handleReview(envelope: SwarmEnvelope): Promise<void> {
         "verdict must be approve, needs_revision, or reject.",
         "Every issue should include severity, message, suggested_fix, and task_id when it maps to a known task_id from the blackboard plan."
       ].join(" "),
-    user: JSON.stringify(payload, null, 2)
+      cache: true
+    }],
+    user: JSON.stringify(payload, null, 2),
+    usage: {
+      sessionId: envelope.session_id,
+      taskId: envelope.task_id,
+      purpose: "child_review"
+    },
+    maxOutputTokens: CHILD_REVIEW_MAX_OUTPUT_TOKENS
   });
 
   const parsed = parseJsonObject(modelText);
@@ -300,16 +485,24 @@ async function handleAggregationTask(envelope: SwarmEnvelope): Promise<void> {
 
   const content = await provider.generateText({
     model: provider.aggregatorModel,
-    system:
-      [
-        "You are an aggregator agent for a local coding CLI, similar to Codex CLI or Claude Code.",
+    system: [{
+      text: [
+        "You are an aggregator agent for a local coding CLI.",
         "Produce the final user-visible answer from blackboard entries and the supplied outcome summary.",
         "Default to a concise implementation summary: what changed, what was verified, and any remaining risk.",
         "Do not claim a final report file was written unless an explicit final artifact path is present.",
         "If no workspace files changed, say so plainly and frame the result as analysis or planning.",
         "Keep claims grounded in the supplied entries. Return Markdown."
       ].join(" "),
-    user: JSON.stringify(payload, null, 2)
+      cache: true
+    }],
+    user: JSON.stringify(payload, null, 2),
+    usage: {
+      sessionId: envelope.session_id,
+      taskId: envelope.task_id,
+      purpose: "child_aggregation"
+    },
+    maxOutputTokens: CHILD_AGGREGATION_MAX_OUTPUT_TOKENS
   });
 
   debug?.debug("aggregator", `completed: ${firstLine(content)}`);
@@ -341,6 +534,8 @@ async function handleToolTask(envelope: SwarmEnvelope): Promise<void> {
       taskId: envelope.task_id,
       attempt: envelope.attempt,
       serverWebSearch: (searchAction: WebSearchAction) => provider.webSearch(searchAction),
+      blackboard: childBlackboardTools(envelope),
+      agent: { agent_id: spec.agent_id, role: spec.role },
       delegate: (delegateAction: AgentDelegateAction) => delegateToAgent(delegateAction, envelope)
     };
     const stopTimer = debug?.time("tool", `${action.type} ${envelope.task_id ?? "?"}`);
@@ -525,6 +720,182 @@ async function delegateToAgent(
   };
 }
 
+function childBlackboardTools(parentEnvelope: SwarmEnvelope): {
+  write: (action: BlackboardWriteAction, context: BlackboardToolContext) => Promise<BlackboardEntry>;
+  read: (action: BlackboardReadAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]>;
+  search: (action: BlackboardSearchAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]>;
+  list: (action: BlackboardListAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]>;
+} {
+  return {
+    write: (action, context) => childBlackboardWrite(action, parentEnvelope, context),
+    read: (action, context) => childBlackboardRead(action, parentEnvelope, context),
+    search: (action, context) => childBlackboardSearch(action, parentEnvelope, context),
+    list: (action, context) => childBlackboardList(action, parentEnvelope, context)
+  };
+}
+
+async function childBlackboardWrite(
+  action: BlackboardWriteAction,
+  parentEnvelope: SwarmEnvelope,
+  context: BlackboardToolContext
+): Promise<BlackboardEntry> {
+  const correlationId = `bb_write_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId ?? parentEnvelope.session_id;
+  const envelope = createEnvelope({
+    swarm_id: parentEnvelope.swarm_id,
+    session_id: sessionId,
+    task_id: action.taskId ?? context.taskId ?? parentEnvelope.task_id,
+    attempt: context.attempt ?? parentEnvelope.attempt,
+    from: { agent_id: spec.agent_id, role: spec.role },
+    to: { agent_id: "blackboard", role: "blackboard" },
+    type: "blackboard.write",
+    intent: "blackboard.write",
+    payload: {
+      key: action.key,
+      type: action.entryType,
+      value: action.value,
+      visibility: action.visibility,
+      tags: action.tags,
+      task_id: action.taskId ?? context.taskId ?? parentEnvelope.task_id
+    },
+    correlation_id: correlationId
+  });
+  const responsePromise = waitForReply(correlationId, 30_000);
+  process.send?.(envelope);
+  const response = await responsePromise;
+  if (!response) {
+    throw new Error("BlackboardWrite timed out waiting for runtime ack");
+  }
+  if (response.type === "error") {
+    throw new Error(errorMessageFromEnvelope(response));
+  }
+  const payload = response.payload as { entry?: BlackboardEntry };
+  if (!payload.entry) {
+    throw new Error("BlackboardWrite ack did not include an entry");
+  }
+  return payload.entry;
+}
+
+async function childBlackboardRead(
+  action: BlackboardReadAction,
+  parentEnvelope: SwarmEnvelope,
+  context: BlackboardToolContext
+): Promise<BlackboardEntry[]> {
+  return childBlackboardReadEnvelope({
+    parentEnvelope,
+    context,
+    intent: "blackboard.read",
+    payload: {
+      entry_id: action.entryId,
+      key: action.key,
+      session_id: action.sessionId,
+      limit: action.limit
+    }
+  });
+}
+
+async function childBlackboardSearch(
+  action: BlackboardSearchAction,
+  parentEnvelope: SwarmEnvelope,
+  context: BlackboardToolContext
+): Promise<BlackboardEntry[]> {
+  const entries = await childBlackboardReadEnvelope({
+    parentEnvelope,
+    context,
+    intent: "blackboard.search",
+    payload: {
+      session_id: action.sessionId,
+      type: action.entryType,
+      tag: action.tag,
+      key_prefix: action.keyPrefix,
+      task_id: action.taskId,
+      agent_id: action.agentId,
+      limit: action.limit
+    }
+  });
+  return filterBlackboardEntries(entries, action.query);
+}
+
+async function childBlackboardList(
+  action: BlackboardListAction,
+  parentEnvelope: SwarmEnvelope,
+  context: BlackboardToolContext
+): Promise<BlackboardEntry[]> {
+  return childBlackboardReadEnvelope({
+    parentEnvelope,
+    context,
+    intent: "blackboard.list",
+    payload: {
+      session_id: action.sessionId,
+      type: action.entryType,
+      tag: action.tag,
+      key_prefix: action.keyPrefix,
+      task_id: action.taskId,
+      agent_id: action.agentId,
+      limit: action.limit
+    }
+  });
+}
+
+async function childBlackboardReadEnvelope(input: {
+  parentEnvelope: SwarmEnvelope;
+  context: BlackboardToolContext;
+  intent: string;
+  payload: Record<string, unknown>;
+}): Promise<BlackboardEntry[]> {
+  const correlationId = `bb_read_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = typeof input.payload.session_id === "string" && input.payload.session_id
+    ? input.payload.session_id
+    : input.context.blackboardSessionId ?? input.context.sessionId ?? input.parentEnvelope.session_id;
+  const envelope = createEnvelope({
+    swarm_id: input.parentEnvelope.swarm_id,
+    session_id: sessionId,
+    task_id: input.context.taskId ?? input.parentEnvelope.task_id,
+    attempt: input.context.attempt ?? input.parentEnvelope.attempt,
+    from: { agent_id: spec.agent_id, role: spec.role },
+    to: { agent_id: "blackboard", role: "blackboard" },
+    type: "blackboard.read",
+    intent: input.intent,
+    payload: input.payload,
+    correlation_id: correlationId
+  });
+  const responsePromise = waitForReply(correlationId, 30_000);
+  process.send?.(envelope);
+  const response = await responsePromise;
+  if (!response) {
+    throw new Error(`${input.intent} timed out waiting for runtime ack`);
+  }
+  if (response.type === "error") {
+    throw new Error(errorMessageFromEnvelope(response));
+  }
+  const payload = response.payload as { entries?: BlackboardEntry[] };
+  return payload.entries ?? [];
+}
+
+function filterBlackboardEntries(entries: BlackboardEntry[], query: string | undefined): BlackboardEntry[] {
+  const needle = query?.trim().toLowerCase();
+  if (!needle) {
+    return entries;
+  }
+  return entries.filter((entry) => {
+    const haystack = [
+      entry.key,
+      entry.type,
+      entry.tags?.join(" "),
+      JSON.stringify(entry.value)
+    ].filter(Boolean).join("\n").toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
+function errorMessageFromEnvelope(envelope: SwarmEnvelope): string {
+  const payload = envelope.payload;
+  if (isRecord(payload) && typeof payload.message === "string") {
+    return payload.message;
+  }
+  return `${envelope.type}: ${envelope.intent}`;
+}
+
 function routeableDelegateCapability(capability: string | undefined): string | undefined {
   const normalized = (capability ?? "").trim();
   if (!normalized) {
@@ -565,8 +936,11 @@ const CHILD_DELEGATE_CAPABILITY_ALIASES: Record<string, string> = {
   "test.review": "review.code"
 };
 
-const LONG_OUTPUT_THRESHOLD_BYTES = 32_000;
-const LONG_OUTPUT_PREVIEW_BYTES = 18_000;
+const LONG_OUTPUT_THRESHOLD_BYTES = 8_000;
+const LONG_OUTPUT_PREVIEW_BYTES = 2_000;
+const CHILD_TOOL_RESULT_TOTAL_BUDGET_BYTES = 24_000;
+const CHILD_TOOL_RESULT_FRESH_BUDGET_BYTES = 8_000;
+const CHILD_TOOL_RESULT_PREVIEW_BYTES = 2_000;
 
 async function prepareToolOutput(
   envelope: SwarmEnvelope,
@@ -575,7 +949,8 @@ async function prepareToolOutput(
 ): Promise<{ content?: string; outputRef?: string; data?: unknown }> {
   const data = result.data ?? result.metadata;
   const bytes = Buffer.byteLength(detail, "utf8");
-  if (bytes <= LONG_OUTPUT_THRESHOLD_BYTES) {
+  const shouldPersist = result.status === "failed";
+  if (!shouldPersist && bytes <= LONG_OUTPUT_THRESHOLD_BYTES) {
     return { content: detail, outputRef: result.outputRef, data };
   }
 
@@ -586,7 +961,9 @@ async function prepareToolOutput(
     content: detail
   });
   return {
-    content: truncateMiddle(detail, LONG_OUTPUT_PREVIEW_BYTES, ref.bytes, ref.lines, ref.path),
+    content: bytes <= LONG_OUTPUT_THRESHOLD_BYTES
+      ? detail
+      : truncateMiddle(detail, LONG_OUTPUT_PREVIEW_BYTES, ref.bytes, ref.lines, ref.path),
     outputRef: ref.path,
     data: attachOutputRefData(data, ref)
   };
@@ -718,12 +1095,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function estimateBidTimeMs(load: number): number {
+  return 15_000 + Math.max(0, load) * 10_000;
+}
+
+function estimateBidCost(load: number, matchingCapabilities: number): number {
+  return Math.max(1, 1_000 + load * 250 - matchingCapabilities * 100);
+}
+
 function classifyToolError(error: unknown): string {
   if (typeof error === "object" && error !== null && "code" in error) {
     const code = String((error as { code?: unknown }).code ?? "");
     if (code === "ENOENT") return "FS_NOT_FOUND";
     if (code === "EACCES" || code === "EPERM") return "PERMISSION_DENIED";
-    if (code === "ENOTDIR") return "INVALID_INPUT";
+    if (code === "ENOTDIR" || code === "EISDIR") return "INVALID_INPUT";
     if (code) return `FS_${code}`;
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -746,7 +1135,7 @@ function waitForReply(correlationId: string, timeoutMs: number): Promise<SwarmEn
 
     function handler(message: unknown) {
       const env = message as SwarmEnvelope;
-      if (env.correlation_id === correlationId && (env.type === "task.result" || env.type === "task.fail" || env.type === "error")) {
+      if (env.correlation_id === correlationId && (env.type === "task.result" || env.type === "task.fail" || env.type === "error" || env.type === "ack")) {
         clearTimeout(timer);
         process.off("message", handler);
         resolvePromise(env);
@@ -772,6 +1161,24 @@ function sendReply<T>(
       to: incoming.from,
       type,
       intent,
+      payload,
+      correlation_id: incoming.correlation_id ?? incoming.id,
+      reply_to: incoming.id,
+      attempt: incoming.attempt
+    })
+  );
+}
+
+function sendProgress(incoming: SwarmEnvelope, payload: Record<string, unknown>): void {
+  process.send?.(
+    createEnvelope({
+      swarm_id: incoming.swarm_id,
+      session_id: incoming.session_id,
+      task_id: incoming.task_id,
+      from: { agent_id: spec.agent_id, role: spec.role },
+      to: { agent_id: "runtime", role: "runtime" },
+      type: "task.progress",
+      intent: "task.progress",
       payload,
       correlation_id: incoming.correlation_id ?? incoming.id,
       reply_to: incoming.id,

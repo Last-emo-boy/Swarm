@@ -25,6 +25,8 @@ export type AgentTaskPacket = {
   agent_spec_id: string;
   invocation_mode: AgentInvocationMode;
   persona_snapshot: string;
+  role_title?: string;
+  persona_brief?: string;
   relevant_context?: string;
   file_scope: string[];
   allowed_tools: string[];
@@ -51,6 +53,9 @@ export type AgentSpawnDecision = {
   invocation_mode: AgentInvocationMode;
   reason: string;
   confidence: number;
+  display_name?: string;
+  role_title?: string;
+  persona_brief?: string;
 };
 
 export const builtinAgentSpecs: AgentSpec[] = [
@@ -61,7 +66,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Read-only project explorer for code, logs, docs, and evidence gathering.",
     when_to_use: "Use for codebase reconnaissance, finding relevant files, summarizing logs, and gathering evidence before implementation.",
     capabilities: ["code.research", "file.search", "log.analysis", "docs.summarize"],
-    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "git.status", "git.diff", "git.log", "web.search", "web.fetch", "todo.write"],
+    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "process.status", "process.list", "process.tail", "process.grep", "git.status", "git.diff", "git.log", "web.search", "web.fetch", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "read_only",
     default_budget: { max_turns: 6, max_tool_calls: 24 },
     output_contract: "Return summary, evidence with paths, open questions, risks, and recommended next actions. Do not modify files.",
@@ -74,7 +79,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Scoped implementation worker for concrete code changes.",
     when_to_use: "Use when the main Swarm has a specific implementation spec with files or modules to change.",
     capabilities: ["code.edit", "code.implement", "project.create", "bug.fix"],
-    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "file.write", "file.edit", "shell.exec", "code.test", "code.lint", "git.status", "git.diff", "git.log", "todo.write"],
+    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "file.write", "file.edit", "shell.exec", "process.start", "process.status", "process.list", "process.tail", "process.grep", "process.stop", "code.test", "code.lint", "git.status", "git.diff", "git.log", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "scoped_write",
     default_budget: { max_turns: 8, max_tool_calls: 32 },
     output_contract: "Return summary, changed_files, tests_run, risks, and remaining work. Prefer durable fixes over symptoms.",
@@ -87,7 +92,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Independent reviewer for diffs, behavior, tests, and regression risk.",
     when_to_use: "Use after code changes, before final answer, or when a worker result needs quality review.",
     capabilities: ["code.review", "diff.review", "test.review"],
-    tools: ["file.read", "file.glob", "file.grep", "file.stat", "git.status", "git.diff", "git.log", "code.test", "code.lint", "todo.write"],
+    tools: ["file.read", "file.glob", "file.grep", "file.stat", "process.status", "process.list", "process.tail", "process.grep", "git.status", "git.diff", "git.log", "code.test", "code.lint", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "read_only",
     default_budget: { max_turns: 5, max_tool_calls: 20 },
     output_contract: "Return verdict, findings by severity, evidence, required fixes, and test gaps.",
@@ -100,7 +105,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Adversarial risk finder for plans, architecture, and assumptions.",
     when_to_use: "Use for complex plans, security-sensitive changes, and self-iteration risk analysis.",
     capabilities: ["risk.analysis", "architecture.critique", "security.review"],
-    tools: ["file.read", "file.glob", "file.grep", "file.stat", "git.status", "git.diff", "git.log", "todo.write"],
+    tools: ["file.read", "file.glob", "file.grep", "file.stat", "process.status", "process.list", "process.tail", "process.grep", "git.status", "git.diff", "git.log", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "read_only",
     default_budget: { max_turns: 5, max_tool_calls: 18 },
     output_contract: "Return risks, counterexamples, weak assumptions, and concrete mitigations.",
@@ -113,7 +118,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Fresh-eyes verification worker for commands, tests, and behavior checks.",
     when_to_use: "Use after implementation or self-improvement to prove changes work independently.",
     capabilities: ["verify", "test.run", "lint.run"],
-    tools: ["file.read", "file.glob", "file.grep", "file.stat", "git.status", "git.diff", "git.log", "code.test", "code.lint", "shell.exec", "todo.write"],
+    tools: ["file.read", "file.glob", "file.grep", "file.stat", "process.status", "process.list", "process.tail", "process.grep", "process.stop", "git.status", "git.diff", "git.log", "code.test", "code.lint", "shell.exec", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "read_only",
     default_budget: { max_turns: 5, max_tool_calls: 18 },
     output_contract: "Return commands run, pass/fail status, evidence, and unresolved verification gaps.",
@@ -126,7 +131,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "System design and module-boundary specialist.",
     when_to_use: "Use for broad design, refactors, protocols, and decomposition before coding.",
     capabilities: ["architecture.design", "refactor.plan", "protocol.design"],
-    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "git.status", "git.diff", "todo.write"],
+    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "process.status", "process.list", "process.tail", "process.grep", "git.status", "git.diff", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "read_only",
     default_budget: { max_turns: 6, max_tool_calls: 20 },
     output_contract: "Return design options, chosen approach, interfaces, migration steps, and risks.",
@@ -139,7 +144,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Swarm self-iteration specialist that reads logs/evals and improves Swarm.",
     when_to_use: "Use when the task is to inspect Swarm behavior, diagnose failure modes, or improve this repository.",
     capabilities: ["self.review", "self.improve", "eval.design", "prompt.improve"],
-    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "file.write", "file.edit", "shell.exec", "code.test", "code.lint", "git.status", "git.diff", "git.log", "todo.write"],
+    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "file.write", "file.edit", "shell.exec", "process.start", "process.status", "process.list", "process.tail", "process.grep", "process.stop", "code.test", "code.lint", "git.status", "git.diff", "git.log", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "workspace_write",
     default_budget: { max_turns: 10, max_tool_calls: 40 },
     output_contract: "Return diagnosed failure mode, changed files, checks run, and remaining risks.",
@@ -152,7 +157,7 @@ export const builtinAgentSpecs: AgentSpec[] = [
     description: "Long-context specialist for a focused task segment handed off by the main Swarm.",
     when_to_use: "Use for deep, focused work where preserving a specialized context across multiple tool turns is valuable.",
     capabilities: ["handoff.deep_work", "focused.execution"],
-    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "file.write", "file.edit", "shell.exec", "code.test", "code.lint", "git.status", "git.diff", "git.log", "todo.write"],
+    tools: ["file.read", "file.list", "file.glob", "file.grep", "file.stat", "file.write", "file.edit", "shell.exec", "process.start", "process.status", "process.list", "process.tail", "process.grep", "process.stop", "code.test", "code.lint", "git.status", "git.diff", "git.log", "todo.write", "blackboard.write", "blackboard.search", "blackboard.read", "blackboard.list"],
     write_policy: "scoped_write",
     default_budget: { max_turns: 10, max_tool_calls: 36 },
     output_contract: "Return handoff_result, changed_files, checks_run, handoff_back_reason, and unresolved questions.",
