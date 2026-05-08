@@ -7,3 +7,6 @@ npm-debug.log*
 .env.local
 .DS_Store
 Thumbs.db
+
+Swarm.md
+Symphony.md
