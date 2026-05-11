@@ -1,0 +1,34 @@
+{
+  "version": "2.0",
+  "project_name": "Swarm",
+  "status": "idle",
+  "current_milestone": "Work Kernel 对齐与可观察性",
+  "current_task_id": null,
+  "milestones": [
+    {
+      "title": "Work Kernel 对齐与可观察性",
+      "phase": 1,
+      "status": "Not started",
+      "requirements": [
+        "Worker-loop contract",
+        "Approval store and live approval decision routing",
+        "Checkpoint/resume with gateway event streams",
+        "Sandbox policy enforcement",
+        "Capability/MCP/plugin/skill reports",
+        "Run management",
+        "Doctor diagnostics",
+        "Benchmark CLI",
+        "Custom commands"
+      ]
+    }
+  ],
+  "artifacts": [],
+  "last_updated": "2026-05-11T21:10:00Z",
+  "accumulated_context": {
+    "key_decisions": ["Single-phase iteration following minimum-phase principle"],
+    "blockers": [],
+    "deferred": ["Distributed ASP hardening", "Richer WorkSource write operations"]
+  },
+  "transition_history": [],
+  "milestone_history": []
+}
