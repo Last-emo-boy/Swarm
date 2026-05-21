@@ -92,6 +92,7 @@ import {
   formatResumeWorkerContract,
   renderResumePreflight as renderResumePreflightReport
 } from "./resume-report.js";
+import { buildReadRootPreflightReport } from "./permission-report.js";
 import { disposeGlobalLspManager } from "../lsp/manager.js";
 
 type McpResourceReadResult = {
@@ -459,12 +460,25 @@ export class SwarmRuntime {
   async run(objective: string, options: RunOptions = {}): Promise<ExecutionResult> {
     const restoreAdditionalReadDirectories = this.applyRuntimeAdditionalReadDirectories(options.additionalReadDirectories);
     try {
+      this.emitReadRootPreflight(objective, options.sandboxMode);
       this.systemLoop.wake("before_user_run");
       const result = await this.controller.run(objective, options);
       this.systemLoop.wake("after_user_run");
       return result;
     } finally {
       restoreAdditionalReadDirectories();
+    }
+  }
+
+  private emitReadRootPreflight(objective: string, sandboxMode?: RunOptions["sandboxMode"]): void {
+    const report = buildReadRootPreflightReport({
+      objective,
+      permissions: this.settings.permissions,
+      sandboxMode,
+      workspace: this.workspace
+    });
+    if (report) {
+      this.events.emitEvent({ type: "log", level: "warn", message: report.brief });
     }
   }
 

@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { PermissionMode, SwarmSettings } from "../config/settings.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
 import { displayPath } from "../tools/permissions.js";
@@ -13,6 +15,13 @@ export type PermissionReportInput = {
 export type PermissionReport = {
   brief: string;
   detail: string;
+};
+
+export type ReadRootPreflightInput = {
+  objective: string;
+  permissions: SwarmSettings["permissions"];
+  sandboxMode?: RunSandboxMode;
+  workspace?: string;
 };
 
 export function buildPermissionReport(input: PermissionReportInput): PermissionReport {
@@ -65,6 +74,44 @@ export function buildPermissionReport(input: PermissionReportInput): PermissionR
     "Recent approvals",
     `- summary: pending=${pending} approved=${approved} denied=${denied}`,
     ...(recentApprovals.length ? recentApprovals.slice(0, 5).map(formatApprovalLine) : ["- none recorded for this workspace"])
+  ].join("\n");
+  return { brief, detail };
+}
+
+export function buildReadRootPreflightReport(input: ReadRootPreflightInput): PermissionReport | undefined {
+  const workspace = resolve(input.workspace ?? process.cwd());
+  const additionalDirectories = input.permissions.additionalDirectories
+    .map(expandPath)
+    .filter((directory) => directory.trim())
+    .map((directory) => resolve(directory));
+  const readRoots = [workspace, ...additionalDirectories];
+  const candidates = explicitAbsolutePaths(input.objective)
+    .map((path) => resolve(path))
+    .filter((path) => !readRoots.some((root) => isInsidePath(path, root)));
+  const missing = unique(candidates).map((path) => {
+    const suggestedRoot = suggestedAdditionalReadRoot(path, workspace);
+    return {
+      path,
+      display: displayPath(path, workspace),
+      suggestedRoot,
+      suggestedDisplay: displayPath(suggestedRoot, workspace)
+    };
+  });
+  if (missing.length === 0) {
+    return undefined;
+  }
+  const first = missing[0]!;
+  const brief = `Read-root preflight: ${first.display} is outside current read roots; use /add-dir ${first.suggestedDisplay} before tool reads.`;
+  const detail = [
+    "Read-root preflight",
+    `sandbox=${input.sandboxMode ?? "workspace-write"}`,
+    `workspace=${workspace}`,
+    `read_roots=${readRoots.map((root) => displayPath(root, workspace)).join(", ")}`,
+    "",
+    "Suspected missing read roots",
+    ...missing.map((item) => `- path=${item.display} suggested=/add-dir ${item.suggestedDisplay} or swarm run --add-dir ${item.suggestedDisplay} ...`),
+    "",
+    "No permissions were changed automatically."
   ].join("\n");
   return { brief, detail };
 }
@@ -136,4 +183,46 @@ function truncate(value: string, maxChars: number): string {
     return value;
   }
   return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function explicitAbsolutePaths(text: string): string[] {
+  const matches = [
+    ...text.matchAll(/\b[A-Za-z]:[\\/][^\s"'`<>|]+/g),
+    ...text.matchAll(/(?:^|[\s"'`])\/[^\s"'`<>|]+/g)
+  ];
+  return matches
+    .map((match) => sanitizePathCandidate(match[0]))
+    .filter((path) => path && isAbsolute(path) && !path.includes("://"));
+}
+
+function sanitizePathCandidate(value: string): string {
+  return value
+    .trim()
+    .replace(/^[("'`]+/, "")
+    .replace(/[),.;:'"`\]]+$/, "");
+}
+
+function suggestedAdditionalReadRoot(path: string, workspace: string): string {
+  const target = resolve(path);
+  const workspaceParent = dirname(resolve(workspace));
+  return isInsidePath(target, workspaceParent) ? workspaceParent : dirname(target);
+}
+
+function isInsidePath(path: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(path));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function expandPath(path: string): string {
+  if (path === "~") {
+    return homedir();
+  }
+  if (path.startsWith("~/") || path.startsWith("~\\")) {
+    return resolve(homedir(), path.slice(2));
+  }
+  return path;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }

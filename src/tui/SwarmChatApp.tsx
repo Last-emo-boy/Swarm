@@ -25,7 +25,7 @@ import { SwarmRuntime } from "../runtime/runtime.js";
 import { resetDebugLogger } from "../runtime/debug-logger.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 import { formatRuntimeEventBrief, formatWhyReport, formatWorkerBrief, formatWorkerDetail } from "../runtime/event-formatters.js";
-import { buildPermissionReport } from "../runtime/permission-report.js";
+import { buildPermissionReport, buildReadRootPreflightReport } from "../runtime/permission-report.js";
 import { buildWorkRecordFromRuntimeEvent } from "../runtime/work-protocol.js";
 import type { RunMode, RunSandboxMode } from "../runtime/execution-router.js";
 import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
@@ -756,6 +756,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setLoopActivityTimeline([]);
     setLatestResultCard(undefined);
     appendChatMessage({ role: "user", brief: objective });
+    appendReadRootPreflightMessage(objective);
     try {
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode });
       const display = formatExecutionResultDisplay(result, runtime);
@@ -829,6 +830,35 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setLatestDetailSource("command");
     setDetailScroll(0);
     setDetailOpen(open);
+  }
+
+  function recordEventDetail(detail: string): void {
+    setLatestDetail(detail);
+    setLatestDetailSource("event");
+    setDetailScroll(0);
+    setDetailOpen(false);
+  }
+
+  function appendReadRootPreflightMessage(objective: string): void {
+    const report = buildReadRootPreflightReport({
+      objective,
+      permissions: settingsSnapshot.permissions,
+      sandboxMode: runSandboxMode,
+      workspace: runtime?.workspaceRoot() ?? process.cwd()
+    });
+    if (!report) {
+      return;
+    }
+    recordEventDetail(report.detail);
+    appendChatMessage({
+      role: "system",
+      kind: "progress",
+      status: "warning",
+      brief: report.brief,
+      detail: report.detail,
+      preview: detailPreview(report.detail),
+      title: "Read-root preflight"
+    });
   }
 
   function openTaskDetail(): void {

@@ -1,9 +1,10 @@
 import { strict as assert } from "node:assert";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { defaultSwarmSettings, type PermissionMode } from "../config/settings.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
-import { buildPermissionReport } from "./permission-report.js";
+import { buildPermissionReport, buildReadRootPreflightReport } from "./permission-report.js";
 
 const workspace = process.cwd();
 
@@ -62,6 +63,47 @@ test("permission report includes recent approval counts and r4 approval rows", (
   assert.match(report.detail, /\[pending\/r4\] shell.exec target=repo rule=Bash\(git reset --hard HEAD\)/);
   assert.match(report.detail, /\[approved\/r2\] shell.exec target=repo/);
   assert.match(report.detail, /\[denied\/r4\] shell.exec target=repo/);
+});
+
+test("read-root preflight warns for explicit sibling workspace paths", () => {
+  const settings = settingsForMode("yolo");
+  settings.permissions.additionalDirectories = [];
+  const target = join(dirname(workspace), "cc", "README.md");
+  const report = buildReadRootPreflightReport({
+    objective: `read ${target} and compare the TUI`,
+    permissions: settings.permissions,
+    sandboxMode: "workspace-write",
+    workspace
+  });
+
+  assert(report);
+  assert.match(report.brief, /Read-root preflight/);
+  assert.match(report.brief, /\/add-dir /);
+  assert.match(report.detail, /Suspected missing read roots/);
+  assert.match(report.detail, /swarm run --add-dir /);
+  assert.match(report.detail, /No permissions were changed automatically/);
+});
+
+test("read-root preflight stays quiet for workspace and configured roots", () => {
+  const settings = settingsForMode("auto-edit");
+  const siblingRoot = join(dirname(workspace), "cc");
+  settings.permissions.additionalDirectories = [siblingRoot];
+
+  assert.equal(buildReadRootPreflightReport({
+    objective: `inspect ${join(workspace, "src", "index.ts")}`,
+    permissions: settings.permissions,
+    workspace
+  }), undefined);
+  assert.equal(buildReadRootPreflightReport({
+    objective: `inspect ${join(siblingRoot, "README.md")}`,
+    permissions: settings.permissions,
+    workspace
+  }), undefined);
+  assert.equal(buildReadRootPreflightReport({
+    objective: "explain the current project without reading another root",
+    permissions: settings.permissions,
+    workspace
+  }), undefined);
 });
 
 function settingsForMode(mode: PermissionMode) {
