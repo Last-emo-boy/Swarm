@@ -11,6 +11,7 @@ import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { SymphonyStatus } from "../symphony/status.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
+import type { LspStatusReport } from "../lsp/manager.js";
 
 test("kernel status formatter covers sessions, attempts, leases, approvals, handoffs, Symphony, daemons, and snapshot lines", () => {
   const state = buildTuiState();
@@ -69,10 +70,32 @@ test("kernel status formatter covers sessions, attempts, leases, approvals, hand
   assert.match(detail, /sessions=2 running=1 retrying=1 capacity=1\/3/);
   assert.match(detail, /daemons=daemon-1:running:ticks=4/);
   assert.match(detail, /symphony-session \[running\] SYM-1/);
+  assert.match(detail, /lsp=unknown severity=info/);
   assert.match(detail, /Blackboard/);
   assert.match(detail, /decision\/operator \[decision\] tags=p3,tui/);
   assert.match(detail, /Recent Events/);
   assert.match(detail, /approval: pending/);
+});
+
+test("kernel status formatter derives LSP service health from live status report", () => {
+  const state = buildTuiState();
+  const detail = formatKernelStatusView({
+    runtime: kernelRuntimeFixture() as never,
+    busy: false,
+    runMode: "auto",
+    taskCompleted: state.taskCompleted,
+    taskTotal: state.taskTotal,
+    taskStates: state.taskStates,
+    toolResults: [],
+    workers: new Map(),
+    handoffs: new Map(),
+    symphonyStatus: symphonyStatusFixture(),
+    symphonyDaemons: [],
+    lspStatusReport: lspStatusReportFixture("unavailable"),
+    events: []
+  });
+
+  assert.match(detail, /lsp=unavailable severity=warning/);
 });
 
 test("work snapshot formatters expose operator kernel contract detail without Ink rendering", () => {
@@ -615,6 +638,24 @@ function symphonyDaemonFixture(): SymphonyDaemonRecord {
     started_at: "2026-05-12T00:13:00.000Z",
     updated_at: "2026-05-12T00:14:00.000Z",
     history: []
+  };
+}
+
+function lspStatusReportFixture(status: "ready" | "unavailable" | "failed" | "exited"): LspStatusReport {
+  return {
+    workspace: "E:/tmp/workspace",
+    generatedAt: "2026-05-12T00:15:00.000Z",
+    providers: [{
+      providerId: "python",
+      root: "E:/tmp/workspace",
+      status,
+      languageIds: ["python"],
+      logPath: "E:/tmp/lsp/python.log",
+      metadataPath: "E:/tmp/lsp/python.json",
+      detected: true,
+      available: status !== "unavailable",
+      reason: status === "unavailable" ? "Install pyright-langserver or set SWARM_LSP_PYTHON_COMMAND." : undefined
+    }]
   };
 }
 

@@ -136,6 +136,7 @@ import { renderCustomCommandObjective, type CustomCommandRecord } from "../exten
 import type { CapabilityDescriptor, CapabilityProviderSnapshot } from "../extensions/types.js";
 import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
 import { getGlobalLspManager, type LspStatusReport } from "../lsp/manager.js";
+import { lspHealthStatusFromReport } from "./lsp-status.js";
 import {
   buildFooterPills,
   createFooterNavigationState,
@@ -319,6 +320,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [workers, setWorkers] = useState<Map<string, WorkerRecord>>(new Map());
   const [handoffs, setHandoffs] = useState<Map<string, HandoffSessionRecord>>(new Map());
   const [symphonyDaemons, setSymphonyDaemons] = useState<SymphonyDaemonRecord[]>([]);
+  const [lspStatusReport, setLspStatusReport] = useState<LspStatusReport | undefined>();
   const [lastSessionId, setLastSessionId] = useState<string | undefined>();
   const [lastRoute, setLastRoute] = useState<RouteState | undefined>();
   const [latestResultCard, setLatestResultCard] = useState<RuntimeResultCard | undefined>();
@@ -336,6 +338,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [transcriptSearch, setTranscriptSearch] = useState<TranscriptSearchState>(() => createTranscriptSearchState());
   const [messageCursor, setMessageCursor] = useState<MessageCursorState>(() => createMessageCursorState());
   const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
+  const lspStatusReportSignatureRef = useRef<string | undefined>();
   const chatInputState = useRef<ChatInputControllerState>(createChatInputControllerState());
   const lastActionLogEventSignatureRef = useRef<string | undefined>(undefined);
   const previousActionLogLengthRef = useRef(actionLogRows.length);
@@ -352,6 +355,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       ...pluginSlashCommandCandidates(runtime.listPlugins())
     ]
     : [];
+  const lspHealthStatus = lspHealthStatusFromReport(lspStatusReport);
   runtimeRef.current = runtime;
 
   function refreshSettingsSurface(targetRuntime = runtime): ReturnType<typeof loadSwarmSettings> {
@@ -485,6 +489,39 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }, [runtime]);
 
   useEffect(() => {
+    if (!runtime) {
+      lspStatusReportSignatureRef.current = undefined;
+      setLspStatusReport(undefined);
+      return;
+    }
+    const activeRuntime = runtime;
+    let cancelled = false;
+    async function refreshLspStatus(): Promise<void> {
+      try {
+        const report = await getGlobalLspManager(activeRuntime.workspaceRoot()).status();
+        if (cancelled) {
+          return;
+        }
+        updateLspStatusReport(report);
+      } catch {
+        if (!cancelled) {
+          lspStatusReportSignatureRef.current = undefined;
+          setLspStatusReport(undefined);
+        }
+      }
+    }
+    void refreshLspStatus();
+    const timer = setInterval(() => {
+      void refreshLspStatus();
+    }, 5_000);
+    timer.unref?.();
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [runtime]);
+
+  useEffect(() => {
     if (!shouldAnimate) {
       return;
     }
@@ -518,6 +555,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (signature !== idlePaneSnapshotSignatureRef.current) {
       idlePaneSnapshotSignatureRef.current = signature;
       setIdlePaneSnapshot(next);
+    }
+  }
+
+  function updateLspStatusReport(report: LspStatusReport): void {
+    const signature = lspStatusReportSignature(report);
+    if (signature !== lspStatusReportSignatureRef.current) {
+      lspStatusReportSignatureRef.current = signature;
+      setLspStatusReport(report);
     }
   }
 
@@ -1145,6 +1190,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   async function renderLspStatusDetail(): Promise<string> {
     const workspace = runtime?.workspaceRoot() ?? process.cwd();
     const report = await getGlobalLspManager(workspace).status();
+    updateLspStatusReport(report);
     return formatLspStatusReport(report);
   }
 
@@ -2327,6 +2373,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         handoffs,
         symphonyStatus: status,
         symphonyDaemons,
+        lspStatusReport,
         cacheStatus: runtime?.getPromptCacheStatus(),
         events
       });
@@ -2829,7 +2876,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     gatewayStatus: "local",
     symphonyRunning: symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length,
     symphonyRetrying: 0,
-    lspStatus: "ready"
+    lspStatus: lspHealthStatus
   });
   const selectedFooterItem = selectedFooterPill(footerNavigation, footerItems)?.id;
   if (screenMode.primarySurface === "conversation") {
@@ -4035,6 +4082,7 @@ export function formatKernelStatusView(input: {
   handoffs: Map<string, HandoffSessionRecord>;
   symphonyStatus?: SymphonyStatus;
   symphonyDaemons: SymphonyDaemonRecord[];
+  lspStatusReport?: LspStatusReport;
   cacheStatus?: PromptCacheRuntimeStatus;
   events: RuntimeEvent[];
 }): string {
@@ -4049,6 +4097,7 @@ export function formatKernelStatusView(input: {
     ? safeWorkSnapshot(input.runtime, input.lastSessionId)
     : undefined;
   const symphony = input.symphonyStatus;
+  const lspHealthStatus = lspHealthStatusFromReport(input.lspStatusReport);
   const activeDaemons = input.symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping");
   return [
     "Swarm Kernel",
@@ -4107,7 +4156,7 @@ export function formatKernelStatusView(input: {
       cache: input.cacheStatus,
       gatewayStatus: "local",
       symphonyStatus: symphonyStatusForServiceSection(symphony),
-      lspStatus: "ready"
+      lspStatus: lspHealthStatus
     }),
     "",
     "Blackboard",
@@ -4174,6 +4223,22 @@ function formatLspStatusReport(report: LspStatusReport): string {
       `log=${provider.logPath}`
     ].filter(Boolean).join("\n")).join("\n\n")
   ].join("\n");
+}
+
+function lspStatusReportSignature(report: LspStatusReport): string {
+  return report.providers
+    .map((provider) => [
+      provider.providerId,
+      provider.status,
+      provider.detected ? "detected" : "undetected",
+      provider.available ? "available" : "unavailable",
+      provider.pid ?? "-",
+      provider.exitCode ?? "-",
+      provider.signal ?? "-",
+      provider.lastError ?? "",
+      provider.reason ?? ""
+    ].join(":"))
+    .join("|");
 }
 
 function routeStateFromControllerEvent(event: ControllerEvent): RouteState | undefined {

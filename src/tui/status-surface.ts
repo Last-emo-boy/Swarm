@@ -72,7 +72,7 @@ export function formatServiceStatusSection(input: {
     promptCacheNotice(input.cache),
     serviceNotice({ service: "gateway", status: input.gatewayStatus ?? "local" }),
     serviceNotice({ service: "symphony", status: input.symphonyStatus ?? "unknown" }),
-    serviceNotice({ service: "lsp", status: input.lspStatus ?? "ready" })
+    serviceNotice({ service: "lsp", status: input.lspStatus ?? "unknown" })
   ];
   return [
     "Service Health",

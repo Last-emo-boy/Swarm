@@ -124,7 +124,7 @@ export function buildFooterPills(input: {
     {
       id: "lsp",
       label: "lsp",
-      value: compactValue(input.lspStatus ?? "ready", 14),
+      value: compactValue(input.lspStatus ?? "unknown", 14),
       tone: serviceFooterTone(input.lspStatus),
       detailHint: "Language server"
     }
