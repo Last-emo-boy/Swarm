@@ -1,5 +1,9 @@
 export type ResumeCommand = "resume" | "continue";
 export type ResumeExecutionRoute = "stored_plan" | "coding_loop";
+export type ResumeCommandResult = {
+  brief: string;
+  detail: string;
+};
 
 export function decideResumeExecution(input: {
   command: ResumeCommand;
@@ -16,5 +20,17 @@ export function decideResumeExecution(input: {
   return {
     route: input.hasStoredPlan ? "stored_plan" : "coding_loop",
     instruction
+  };
+}
+
+export function buildResumeCommandResult(input: {
+  command: ResumeCommand;
+  sessionId: string;
+  route: ResumeExecutionRoute;
+  detail: string;
+}): ResumeCommandResult {
+  return {
+    brief: `${input.command === "continue" ? "Continue" : "Resume"} started for ${input.sessionId}${input.route === "stored_plan" ? " from stored plan" : " through local coding loop"}. Ctrl+O for preflight.`,
+    detail: input.detail
   };
 }

@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { resolve } from "node:path";
 import test from "node:test";
 import { defaultSwarmSettings, type PermissionMode, type SwarmSettings } from "../config/settings.js";
 import type { ToolAction } from "./types.js";
@@ -187,6 +188,27 @@ test("workspace-relative paths with repeated workspace prefix resolve inside cur
   assert.equal(
     resolveShellCwd(".swarm/local-tests/case-a", context),
     resolveShellCwd(".", context)
+  );
+});
+
+test("read root denial explains configured roots and add-dir recovery", () => {
+  const settings = defaultSwarmSettings();
+  settings.permissions.additionalDirectories = [];
+  const context = { workspace, settings };
+  const target = resolve(workspace, "..", "sibling-workspace", "README.md");
+
+  assert.throws(
+    () => resolveReadablePath(target, context),
+    (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /Read denied outside startup workspace and configured additionalDirectories/);
+      assert.match(message, /workspace=/);
+      assert.match(message, /read_roots=/);
+      assert.match(message, /additionalDirectories=\(none\)/);
+      assert.match(message, /\/add-dir /);
+      assert.match(message, /swarm run --add-dir /);
+      return true;
+    }
   );
 });
 

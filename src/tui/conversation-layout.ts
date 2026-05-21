@@ -1,5 +1,6 @@
 import { renderMarkdownLines, type MarkdownLine } from "./markdown-rendering.js";
 import { displayWidth, sliceByDisplayWidth } from "./display-width.js";
+import { transcriptEventToken, type TuiTone } from "./theme.js";
 
 export type ConversationMessage = {
   role: "user" | "assistant" | "system";
@@ -20,6 +21,7 @@ export type ConversationLine = {
   bold?: boolean;
   dim?: boolean;
   selected?: boolean;
+  tone?: TuiTone;
 };
 
 export type ConversationFirstLayout = {
@@ -40,6 +42,11 @@ export type ConversationViewportState = {
 };
 
 export type DetailOpenTarget = "latest" | "selected-action" | "none";
+export type InlineInspectorTarget = {
+  enabled: boolean;
+  source: "ai" | "command" | "task" | "event";
+  title: string;
+};
 
 export type TuiScreenMode = {
   compactStatus: boolean;
@@ -400,7 +407,8 @@ function renderConversationEventMessage(message: ConversationMessage, index: num
     text: renderConversationEventLine(message, line, lineIndex),
     kind: line.kind,
     bold: line.bold,
-    dim: line.dim ?? (message.status === "running" || message.kind === "thinking")
+    dim: line.dim ?? (message.status === "running" || message.kind === "thinking"),
+    tone: transcriptEventToken(message.kind, message.status).tone
   }));
 }
 
@@ -589,22 +597,7 @@ function firstNonEmptyLine(value: string | undefined): string {
 }
 
 function conversationEventPrefix(message: ConversationMessage): string {
-  switch (message.kind) {
-    case "command":
-      return "❯ ";
-    case "tool_use":
-      return "⏵ ";
-    case "tool_result":
-      return statusPrefix(message.status);
-    case "thinking":
-      return "∴ ";
-    case "approval":
-      return "? ";
-    case "progress":
-      return "· ";
-    default:
-      return "";
-  }
+  return transcriptEventToken(message.kind, message.status).prefix;
 }
 
 function isUnseenCountableAssistantMessage(message: ConversationMessage): boolean {
@@ -612,19 +605,6 @@ function isUnseenCountableAssistantMessage(message: ConversationMessage): boolea
     return false;
   }
   return message.kind === undefined || message.kind === "message";
-}
-
-function statusPrefix(status: ConversationMessage["status"]): string {
-  if (status === "error") {
-    return "✗ ";
-  }
-  if (status === "warning") {
-    return "! ";
-  }
-  if (status === "success") {
-    return "✓ ";
-  }
-  return "· ";
 }
 
 function indentConversationLine(line: MarkdownLine): string {
@@ -746,6 +726,33 @@ export function detailOpenTargetForPane(input: {
   return input.hasLatestDetail ? "latest" : "none";
 }
 
+export function inlineInspectorTargetForPane(input: {
+  pane: string;
+  selectedAction: boolean;
+  latestDetailSource: "none" | "ai" | "command" | "task" | "event";
+  latestDetail: boolean;
+}): InlineInspectorTarget {
+  if (input.latestDetailSource !== "none" && input.latestDetail) {
+    return {
+      enabled: true,
+      source: input.latestDetailSource,
+      title: detailTitleForSource(input.latestDetailSource, true)
+    };
+  }
+  if (input.pane === "log" && input.selectedAction) {
+    return {
+      enabled: true,
+      source: "event",
+      title: "Trace Detail"
+    };
+  }
+  return {
+    enabled: false,
+    source: "event",
+    title: "Inspector"
+  };
+}
+
 export function tuiScreenMode(input: {
   pane: string;
   columns: number;
@@ -759,4 +766,23 @@ export function tuiScreenMode(input: {
     showInspector: input.columns >= 128 && input.pane !== "chat" && !input.hasApproval && !input.hasPendingPlan,
     primarySurface: input.pane === "chat" ? "conversation" : input.pane === "log" ? "trace" : "operator"
   };
+}
+
+export function detailTitleForSource(
+  source: "none" | "ai" | "command" | "task" | "event" | undefined,
+  inline = false
+): string {
+  if (source === "command") {
+    return inline ? "Latest Output" : "Command Output";
+  }
+  if (source === "task") {
+    return "Task Detail";
+  }
+  if (source === "event") {
+    return inline ? "Trace Detail" : "Event Detail";
+  }
+  if (source === "ai") {
+    return "Assistant Detail";
+  }
+  return "Inspector";
 }

@@ -126,20 +126,39 @@ function toToolResult(action: string, result: LspOperationResult<unknown>, conte
 }
 
 function unsupportedLanguage(action: string, language: string, root: string, context: LocalToolContext): ToolResult {
+  const fallback = lspFallbackSuggestion(action, language, root, context);
   return {
     action,
     status: "failed",
     summary: `LSP unsupported language: ${language}`,
-    content: `No semantic provider is registered for ${language}.`,
+    content: [
+      `No semantic provider is registered for ${language}.`,
+      `root=${displayPath(root, context.workspace)}`,
+      `fallback=${fallback}`
+    ].join("\n"),
     errorCode: "unsupported_language",
     recoverable: true,
-    recoverySuggestion: "Fall back to file.grep/file.read, or add a provider for this language.",
+    recoverySuggestion: fallback,
     metadata: {
       lsp_status: "unsupported_language",
       language,
       root: displayPath(root, context.workspace)
     }
   };
+}
+
+function lspFallbackSuggestion(action: string, language: string, root: string, context: LocalToolContext): string {
+  const readableRoot = displayPath(root, context.workspace);
+  if (action === "lsp.workspace_symbols") {
+    return `Use file.grep with root=${readableRoot} and a symbol/name query, or install/configure an LSP provider for ${language}.`;
+  }
+  if (action === "lsp.document_symbols") {
+    return `Use file.read on the target file and file.grep within ${readableRoot}, or install/configure an LSP provider for ${language}.`;
+  }
+  if (action === "lsp.definition" || action === "lsp.references" || action === "lsp.hover") {
+    return `Use file.grep for the symbol name under ${readableRoot}, then file.read matching files, or add an LSP provider for ${language}.`;
+  }
+  return `Fall back to file.grep/file.read under ${readableRoot}, or add an LSP provider for ${language}.`;
 }
 
 async function withTimeout(promise: Promise<ToolResult>, timeoutMs: number, action: string, context: LocalToolContext): Promise<ToolResult> {

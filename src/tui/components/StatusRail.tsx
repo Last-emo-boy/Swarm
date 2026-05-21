@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { compactValue, policyBadge, routeBadge, sandboxBadge, statusBadge, statusTone, toneColor } from "../theme.js";
+import { compactValue, policyBadge, policyTone, routeBadge, sandboxBadge, sandboxTone, statusBadge, statusTone, toneColor } from "../theme.js";
 
 export type StatusRailProps = {
   appName: string;
@@ -70,13 +70,13 @@ export function StatusRail(props: StatusRailProps): React.ReactElement {
         {summary.showPermission ? (
           <>
             <Text color="gray"> perm:</Text>
-            <Text color={props.permissionMode === "yolo" ? "red" : "yellow"}>{policyBadge(props.permissionMode)}</Text>
+            <Text color={toneColor(policyTone(props.permissionMode))}>{policyBadge(props.permissionMode)}</Text>
           </>
         ) : null}
         {summary.showSandbox ? (
           <>
             <Text color="gray"> sandbox:</Text>
-            <Text color={props.sandboxMode === "read-only" ? "yellow" : "green"}>{sandboxBadge(props.sandboxMode)}</Text>
+            <Text color={toneColor(sandboxTone(props.sandboxMode))}>{sandboxBadge(props.sandboxMode)}</Text>
           </>
         ) : null}
         {summary.showModel ? (

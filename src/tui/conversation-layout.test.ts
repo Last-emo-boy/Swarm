@@ -18,7 +18,9 @@ import {
   conversationViewportAfterAppend,
   conversationViewportAfterScroll,
   detailOpenTargetForPane,
+  detailTitleForSource,
   fullscreenConversationRows,
+  inlineInspectorTargetForPane,
   nextConversationScrollOffset,
   normalizeConversationScrollOffset,
   resetConversationViewport,
@@ -70,9 +72,9 @@ test("conversation-first layout renders command and tool transcript rows", () =>
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
     "❯ /shell npm test",
-    "⏵ Run shell command: npm test",
-    "✓ shell.exec: command exited 0",
-    "∴ Swarm is thinking"
+    "⏵ tool Run shell command: npm test",
+    "✓ result shell.exec: command exited 0",
+    "∴ think Swarm is thinking"
   ]);
   assert.equal(layout.transcript[1]?.dim, true);
   assert.equal(layout.transcript[3]?.dim, true);
@@ -683,6 +685,45 @@ test("detail open target keeps chat and trace shortcuts separate", () => {
   assert.equal(detailOpenTargetForPane({ pane: "chat", actionCount: 10, hasLatestDetail: true }), "latest");
   assert.equal(detailOpenTargetForPane({ pane: "log", actionCount: 10, hasLatestDetail: true }), "selected-action");
   assert.equal(detailOpenTargetForPane({ pane: "chat", actionCount: 10, hasLatestDetail: false }), "none");
+});
+
+test("inline inspector avoids command-output chrome unless real command detail is selected", () => {
+  assert.deepEqual(inlineInspectorTargetForPane({
+    pane: "overview",
+    selectedAction: true,
+    latestDetailSource: "none",
+    latestDetail: false
+  }), {
+    enabled: false,
+    source: "event",
+    title: "Inspector"
+  });
+
+  assert.deepEqual(inlineInspectorTargetForPane({
+    pane: "log",
+    selectedAction: true,
+    latestDetailSource: "none",
+    latestDetail: false
+  }), {
+    enabled: true,
+    source: "event",
+    title: "Trace Detail"
+  });
+
+  assert.deepEqual(inlineInspectorTargetForPane({
+    pane: "overview",
+    selectedAction: false,
+    latestDetailSource: "command",
+    latestDetail: true
+  }), {
+    enabled: true,
+    source: "command",
+    title: "Latest Output"
+  });
+
+  assert.equal(detailTitleForSource("command"), "Command Output");
+  assert.equal(detailTitleForSource("command", true), "Latest Output");
+  assert.equal(detailTitleForSource("event", true), "Trace Detail");
 });
 
 test("chat status rail hides operator metadata unless it is actionable", () => {

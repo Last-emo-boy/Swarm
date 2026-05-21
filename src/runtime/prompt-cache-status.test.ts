@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatPromptCacheBrief, formatPromptCacheDetail, promptCacheStatusFromUsage } from "./prompt-cache-status.js";
+import {
+  formatPromptCacheBrief,
+  formatPromptCacheDetail,
+  formatPromptCacheInline,
+  promptCacheStatusFromUsage,
+  resultCardCacheStatus
+} from "./prompt-cache-status.js";
 import { SwarmRuntime } from "./runtime.js";
 
 test("runtime prompt cache status preserves diagnostic fields for debug cache", () => {
@@ -78,6 +84,8 @@ test("runtime prompt cache status preserves diagnostic fields for debug cache", 
     assert.equal(status.hitRate, 0.64);
     assert.deepEqual(status.changed, ["requestPrefixHash4096"]);
     assert.equal(status.minimumCacheableTokens, 1024);
+    assert.equal(status.outcome, "miss");
+    assert.match(status.reason ?? "", /stable prefix changed/);
   } finally {
     runtime.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -132,9 +140,65 @@ test("prompt cache helper derives shared brief and detail formatting from usage"
 
   assert.equal(status.hitRate, 0.5);
   assert.equal(status.diagnostics, "cache_miss");
+  assert.equal(status.outcome, "miss");
+  assert.match(status.recommendation ?? "", /provider cache support/);
   assert.match(formatPromptCacheBrief(status), /Prompt cache: cache_miss \(hit 50%, write 25%\)\./);
   const detail = formatPromptCacheDetail(status);
   assert.match(detail, /status=cache_miss/);
   assert.match(detail, /cached_input_tokens=100/);
+  assert.match(detail, /outcome=miss/);
+  assert.match(detail, /recommendation=/);
+  const inline = formatPromptCacheInline(resultCardCacheStatus(status));
+  assert(inline);
+  assert.match(inline, /cache:cache_miss hit 50%, write 25% miss cache_miss/);
   assert.match(detail, /JSON/);
+});
+
+test("prompt cache helper explains provider-threshold bypass", () => {
+  const status = promptCacheStatusFromUsage({
+    providerId: "gemini",
+    protocol: "google-gemini",
+    model: "gemini-pro",
+    purpose: "main_coding_loop",
+    sessionId: "session-cache",
+    taskId: "turn-4",
+    cacheMode: "prefix-structured",
+    promptCacheKey: "swarm:key",
+    promptCacheScope: "scope-small",
+    cacheablePrefixTokensEstimate: 256,
+    durationMs: 12,
+    cachedInputTokens: 0,
+    totalInputWithCacheTokens: 1200,
+    promptCacheDiagnostics: {
+      scope: "scope-small",
+      status: "expected_empty_cache",
+      changed: [],
+      current: {
+        systemHash: "system",
+        userHash: "user",
+        cacheablePrefixHash: "prefix",
+        cacheableSystemHash: "system-prefix",
+        cacheableUserHash: "user-prefix",
+        toolSchemaHash: "tools",
+        dynamicUserHash: "dynamic",
+        requestPrefixHash1024: "1024",
+        requestPrefixHash4096: "4096",
+        firstDynamicBlockIndex: 1,
+        cacheKey: "swarm:key",
+        model: "gemini-pro",
+        protocol: "google-gemini",
+        retention: "in_memory",
+        ttlSeconds: 3600,
+        anthropicTtl: "5m"
+      },
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 1200,
+      cacheHitRate: 0,
+      minimumCacheableTokens: 1024
+    }
+  });
+
+  assert.equal(status.outcome, "bypass");
+  assert.match(status.reason ?? "", /below provider threshold/);
+  assert.match(formatPromptCacheDetail(status), /cacheable prefix is below provider threshold/);
 });

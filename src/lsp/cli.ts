@@ -40,6 +40,7 @@ export async function runLspCommand(values: string[]): Promise<void> {
 
 export function formatLspStatusReport(report: LspStatusReport): string {
   const lines = [
+    "LSP",
     `workspace=${report.workspace}`,
     ...report.providers.map(formatProviderStatus)
   ];
@@ -52,6 +53,7 @@ function formatProviderStatus(status: LspProviderStatus): string {
     `status=${status.status}`,
     `detected=${status.detected}`,
     `available=${status.available}`,
+    `language_ids=${status.languageIds.join(",")}`,
     status.pid !== undefined ? `pid=${status.pid}` : undefined,
     status.command ? `command=${status.command}${status.args?.length ? ` ${status.args.join(" ")}` : ""}` : undefined,
     status.reason ? `reason=${status.reason}` : undefined,
@@ -87,6 +89,7 @@ function printLspHelp(): void {
   console.log("Usage: swarm lsp status [--provider typescript|python|rust|go] [--workspace <path>] [--json]");
   console.log("       swarm lsp restart [--provider typescript|python|rust|go] [--workspace <path>] [--json]");
   console.log("       swarm lsp logs [--provider typescript|python|rust|go] [--workspace <path>] [--tail N] [--lines N] [--json]");
+  console.log("       When unavailable, fall back to file.grep/file.read or add an LSP provider for the language.");
 }
 
 function parseOptions(values: string[]): { positionals: string[]; options: Record<string, string> } {

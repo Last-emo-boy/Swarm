@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { formatKernelStatusView } from "./SwarmChatApp.js";
+import { formatCompactIdleRows, formatKernelStatusView } from "./SwarmChatApp.js";
 import { compactWorkSnapshotLines, formatWorkSnapshot } from "./work-snapshot-display.js";
 import { applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiWorkState } from "./work-state.js";
 import type { RuntimeEvent } from "../runtime/events.js";
@@ -48,7 +48,7 @@ test("kernel status formatter covers sessions, attempts, leases, approvals, hand
 
   assert.match(detail, /Swarm Kernel/);
   assert.match(detail, /state=idle mode=auto last_session=session-1/);
-  assert.match(detail, /latest_route=coding_loop\/82% workspace=true parallel=false reason=operator-test/);
+  assert.match(detail, /latest_route=work\/82% workspace=true parallel=false reason=operator-test/);
   assert.match(detail, /Current Work/);
   assert.match(detail, /task-1 \[completed\].*policy=scoped_write.*scope=src\/allowed\.txt/);
   assert.match(detail, /Recent Sessions/);
@@ -95,6 +95,50 @@ test("work snapshot formatters expose operator kernel contract detail without In
   assert.match(detail, /Verification: 1/);
   assert.match(detail, /Review: approve 0.92 - good/);
   assert.match(detail, /Context Memory/);
+});
+
+test("compact idle rows prioritize attention states and shorten noisy ids", () => {
+  const rows = formatCompactIdleRows([
+    {
+      key: "healthy",
+      id: "session-healthy-completed-123456789",
+      title: "Healthy completed output with a very long summary that should stay compact inside a narrow idle pane",
+      status: "completed",
+      meta: ["saved", "updated=00:10"],
+      priority: 10
+    },
+    {
+      key: "running",
+      id: "worker-running-123456789",
+      title: "Apply compact row polish",
+      status: "running",
+      meta: ["coder", "scope=src/tui/SwarmChatApp.tsx"],
+      priority: 75
+    },
+    {
+      key: "blocked",
+      id: "attempt-blocked-123456789",
+      title: "Recover blocked worker",
+      status: "blocked",
+      meta: ["worker_run", "error=blocked"],
+      priority: 85
+    },
+    {
+      key: "failed",
+      id: "session-failed-123456789",
+      title: "Failed idle pane render",
+      status: "failed",
+      meta: ["gateway", "updated=00:09"],
+      priority: 95
+    }
+  ]);
+
+  assert.match(rows[0] ?? "", /\[ERR\] session-fai/);
+  assert.match(rows[1] ?? "", /\[WARN\] attempt-bl/);
+  assert.match(rows[2] ?? "", /\[RUN\] worker-run/);
+  assert.match(rows[3] ?? "", /\[OK\] session-hea/);
+  assert(rows.every((line) => !line.includes("123456789")));
+  assert(rows.every((line) => line.length < 150));
 });
 
 test("TUI work state preserves task policy and scope from work protocol records", () => {

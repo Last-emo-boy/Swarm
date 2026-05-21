@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { ToolApprovalRequest } from "../../tools/types.js";
-import { sectionLabel, statusBadge } from "../theme.js";
+import { approvalRiskToken, compactValue, sectionLabel, statusBadge, toneColor } from "../theme.js";
 
 export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.ReactElement {
   const request = props.request;
@@ -11,30 +11,39 @@ export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.
     ?? (request.risk === "shell" && request.risk_class === "r4"
       ? "Destructive shell command detected. Review the command literally before approving."
       : undefined);
-  const riskColor = request.risk === "shell" || request.risk_class === "r4" ? "red" : "yellow";
+  const riskToken = approvalRiskToken({ risk: request.risk, riskClass: request.risk_class });
   const reviewFocus = approvalReviewFocus(request);
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1} marginTop={1} width="100%">
-      <Text color="yellow" bold>{statusBadge("pending")} {sectionLabel("Approval Required")} <Text color="gray">for {request.action}</Text></Text>
-      <Text color={riskColor} wrap="truncate">
-        {request.summary} [{request.risk_class}/{request.risk}]
+    <Box flexDirection="column" borderStyle="single" borderColor={toneColor(riskToken.tone)} paddingX={1} marginTop={1} width="100%">
+      <Text color="yellow" bold wrap="truncate">
+        {statusBadge("pending")} {sectionLabel("Decision")} <Text color="gray">Y approve once | S allow target | N deny | Esc cancel</Text>
+      </Text>
+      <Text color={toneColor(riskToken.tone)} bold wrap="truncate">
+        {riskToken.badge} {riskToken.label} {request.action}
+      </Text>
+      <Text wrap="wrap">
+        <Text color="cyan">{sectionLabel("Target")} </Text>
+        <Text>{compactValue(request.target, 140)}</Text>
+      </Text>
+      <Text color={toneColor(riskToken.tone)} wrap="wrap">
+        {request.summary}
       </Text>
       {attentionNote ? <Text color="red" bold wrap="truncate">{attentionNote}</Text> : null}
-      <Text color="cyan" bold>{sectionLabel("Decision Menu")}</Text>
-      <Text color="gray" wrap="truncate">Y approve once | S allow same target this session | N deny | Esc cancel</Text>
-      <Text wrap="truncate">Target: {request.target}</Text>
-      <Text wrap="truncate">Review focus: {reviewFocus}</Text>
-      <Text wrap="truncate">Why now: {request.why_now}</Text>
+      <ApprovalDetail label="Review" value={reviewFocus} />
+      <ApprovalDetail label="Why" value={request.why_now} />
       {request.permission_reason ? (
-        <Text wrap="truncate">Permission: {request.permission_name ?? request.action} {request.permission_decision ?? "ask"} | {request.permission_reason}</Text>
+        <ApprovalDetail
+          label="Permission"
+          value={`${request.permission_name ?? request.action} ${request.permission_decision ?? "ask"} | ${request.permission_reason}`}
+        />
       ) : null}
       {request.permission_rule ? (
-        <Text color="gray" wrap="truncate">Rule: {request.permission_rule}</Text>
+        <ApprovalDetail label="Rule" value={request.permission_rule} muted />
       ) : null}
-      <Text wrap="truncate">Impact: {request.predicted_impact}</Text>
-      <Text wrap="truncate">Rollback: {request.rollback_plan}</Text>
+      <ApprovalDetail label="Impact" value={request.predicted_impact} tone={riskToken.tone === "danger" ? "red" : undefined} />
+      <ApprovalDetail label="Rollback" value={request.rollback_plan} />
       {detailLines.map((line, index) => (
-        <Text key={`${index}-${line}`} wrap="truncate">{line}</Text>
+        <Text key={`${index}-${line}`} color="gray" wrap="truncate">  {line}</Text>
       ))}
       {previewLines.length ? (
         <Box flexDirection="column">
@@ -45,6 +54,20 @@ export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.
         </Box>
       ) : null}
     </Box>
+  );
+}
+
+function ApprovalDetail(props: {
+  label: string;
+  value: string;
+  muted?: boolean;
+  tone?: "red" | "yellow" | "cyan" | "gray";
+}): React.ReactElement {
+  return (
+    <Text wrap="wrap">
+      <Text color="cyan">{sectionLabel(props.label)} </Text>
+      <Text color={props.tone ?? (props.muted ? "gray" : undefined)}>{props.value}</Text>
+    </Text>
   );
 }
 

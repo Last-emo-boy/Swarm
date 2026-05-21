@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { defaultSwarmSettings, type PermissionMode, type SwarmSettings } from "../config/settings.js";
 import type { LocalToolContext, ToolAction, ToolApprovalRequest } from "./types.js";
@@ -332,10 +332,29 @@ export function getReadRoots(context: LocalToolContext): string[] {
 function assertInsideReadRoots(path: string, context: LocalToolContext): void {
   const roots = getReadRoots(context);
   if (!roots.some((root) => isInsidePath(path, root))) {
-    throw new Error(
-      `Read denied outside startup workspace and configured additionalDirectories: ${displayPath(path, context.workspace)}`
-    );
+    throw new Error(formatReadRootDenial(path, context, roots));
   }
+}
+
+export function formatReadRootDenial(path: string, context: LocalToolContext, roots = getReadRoots(context)): string {
+  const target = resolve(path);
+  const additional = context.settings.permissions.additionalDirectories
+    .map((directory) => resolve(expandPath(directory)))
+    .filter((directory) => directory.trim());
+  const suggestedRoot = suggestedAdditionalReadRoot(target, context.workspace);
+  return [
+    `Read denied outside startup workspace and configured additionalDirectories: ${displayPath(target, context.workspace)}`,
+    `workspace=${resolve(context.workspace)}`,
+    `read_roots=${roots.map((root) => displayPath(root, context.workspace)).join(", ") || "(none)"}`,
+    `additionalDirectories=${additional.length ? additional.map((directory) => displayPath(directory, context.workspace)).join(", ") : "(none)"}`,
+    `suggestion=Add a read root before retrying: /add-dir ${suggestedRoot} or swarm run --add-dir ${suggestedRoot} ...`
+  ].join("\n");
+}
+
+function suggestedAdditionalReadRoot(path: string, workspace: string): string {
+  const parent = dirname(resolve(path));
+  const workspaceParent = dirname(resolve(workspace));
+  return isInsidePath(path, workspaceParent) ? workspaceParent : parent;
 }
 
 function isInsidePath(path: string, root: string): boolean {

@@ -9,6 +9,7 @@ import {
   type ConversationLine,
   type ConversationMessage
 } from "../conversation-layout.js";
+import { toneColor } from "../theme.js";
 
 export type ConversationRenderCacheStats = {
   hits: number;
@@ -374,7 +375,10 @@ function roleColor(role: ConversationMessage["role"]): "cyan" | "gray" | "white"
   return "cyan";
 }
 
-function lineColor(line: ConversationLine): "cyan" | "green" | "gray" | "white" {
+function lineColor(line: ConversationLine): "cyan" | "green" | "gray" | "white" | "yellow" | "red" | "magenta" {
+  if (line.tone) {
+    return toneColor(line.tone);
+  }
   if (line.kind === "heading") {
     return "cyan";
   }

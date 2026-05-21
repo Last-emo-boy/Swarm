@@ -69,7 +69,7 @@ import {
   renderSlashHelp,
   type SlashCommandSpec
 } from "./slash-commands.js";
-import { decideResumeExecution } from "./resume-control.js";
+import { buildResumeCommandResult, decideResumeExecution } from "./resume-control.js";
 import { ChatCommandCandidates, ChatInputArea, emptyChatCompletionState, type ChatCompletionState } from "./ChatInputArea.js";
 import { createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
 import {
@@ -93,7 +93,17 @@ import { ResultCard as ResultCardPanel } from "./components/ResultCard.js";
 import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
-import { progressBar, routeBadge, sandboxBadge, sectionLabel, statusBadge } from "./theme.js";
+import {
+  compactValue,
+  progressBar,
+  routeBadge,
+  sandboxBadge,
+  sectionLabel,
+  statusBadge,
+  statusTone,
+  toneColor,
+  type TuiTone
+} from "./theme.js";
 import { formatExecutionResultDisplay } from "./result-display.js";
 import {
   appendTranscriptMessage,
@@ -109,8 +119,10 @@ import {
   conversationRenderedLineCount,
   conversationViewportAfterAppend,
   conversationViewportAfterScroll,
+  detailTitleForSource,
   detailOpenTargetForPane,
   fullscreenConversationRows,
+  inlineInspectorTargetForPane,
   resetConversationViewport,
   tuiScreenMode,
   type ConversationViewportState,
@@ -157,7 +169,6 @@ type SlashCommandResult = {
   brief: string;
   detail?: string;
   detailSource?: "ai" | "command";
-  autoOpenDetail?: boolean;
 };
 
 type OnboardField = "provider" | "apiKey" | "planner" | "worker" | "aggregator" | "customName" | "customBaseURL" | "customModel";
@@ -203,10 +214,32 @@ type RouteState = {
   fallbackMode?: string;
 };
 
+const ROUTE_LABELS: Record<string, string> = {
+  chat: "ask",
+  ask: "ask",
+  coding: "work",
+  coding_loop: "work",
+  work: "work",
+  full_swarm: "team",
+  swarm: "team",
+  team: "team"
+};
+
 type CapabilityProviderSummaryRow = CapabilityProviderSnapshot;
 
 type RecentSessionRow = ReturnType<SwarmRuntime["sessionStore"]["listRecent"]>[number];
 type ApprovalStoreRecord = ReturnType<SwarmRuntime["approvalStore"]["list"]>[number];
+export type CompactIdleRowData = {
+  key: string;
+  id: string;
+  title: string;
+  status?: string;
+  badge?: string;
+  tone?: TuiTone;
+  meta?: Array<string | undefined>;
+  priority?: number;
+  order?: number;
+};
 type PluginSlashCommandRecord = {
   plugin: PluginRecord;
   contribution: PluginContributionRecord;
@@ -1221,7 +1254,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (result.detailSource === "ai") {
         recordAiDetail(result.detail ?? result.brief);
       } else if (result.detail) {
-        recordCommandDetail(result.detail, result.autoOpenDetail ?? parsed.command === "help");
+        recordCommandDetail(result.detail);
       } else {
         clearDetailState();
       }
@@ -1248,8 +1281,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           : includeAdvanced
           ? "All slash commands."
           : "Slash command catalog. Use /help main for the concise main path or /help all for advanced commands.",
-        detail,
-        autoOpenDetail: includeAdvanced || Boolean(namespace)
+        detail
       };
     }
 
@@ -1653,11 +1685,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }).catch((error: unknown) => {
         pushError(error);
       }).finally(() => setBusy(false));
-      return {
-        brief: `${command === "continue" ? "Continue" : "Resume"} started for ${sessionId}${execution.route === "stored_plan" ? " from stored plan" : " through local coding loop"}. Ctrl+O for preflight.`,
-        detail,
-        autoOpenDetail: true
-      };
+      return buildResumeCommandResult({
+        command,
+        sessionId,
+        route: execution.route,
+        detail
+      });
     }
 
     if (command === "replay") {
@@ -2769,10 +2802,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const bottomFooterHint = transcriptSearch.active
     ? `${transcriptSearchSummary(transcriptSearch) ?? "search"} | Enter jump | Esc close`
     : "Left/Right footer | [/] message | / search";
-  const inlineInspectorContent = latestDetailSource !== "none" && latestDetail
+  const inlineInspectorTarget = inlineInspectorTargetForPane({
+    pane: mainPane,
+    selectedAction: Boolean(selectedActionRow),
+    latestDetailSource,
+    latestDetail: Boolean(latestDetail)
+  });
+  const inlineInspectorContent = inlineInspectorTarget.enabled && latestDetailSource !== "none" && latestDetail
     ? latestDetail
     : renderActionRowDetail(selectedActionRow);
-  const inlineInspectorSource = latestDetailSource === "none" ? "event" : latestDetailSource;
   const footerItems = buildFooterPills({
     taskCompleted,
     taskTotal,
@@ -2939,15 +2977,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
               </>
             )}
           </Box>
-          {wideWorkbench && (
+          {wideWorkbench && inlineInspectorTarget.enabled && (
             <Box flexDirection="column" width={inspectorColumns} marginLeft={1} overflow="hidden">
               <DetailView
                 content={inlineInspectorContent}
                 scroll={detailScroll}
                 height={bodyRows}
                 sessionId={lastSessionId}
-                route={lastRoute?.mode}
-                source={inlineInspectorSource}
+                route={lastRoute ? routeDisplayLabel(lastRoute.mode) : undefined}
+                source={inlineInspectorTarget.source}
+                title={inlineInspectorTarget.title}
               />
             </Box>
           )}
@@ -3244,25 +3283,296 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
 
 function IdleOutputPane({ rows, outputs }: { rows: number; outputs: ToolResultState[] }): React.ReactElement {
   const outputLimit = rows >= 48 ? 5 : rows >= 36 ? 3 : 2;
+  const outputRows = orderCompactIdleRows(outputs.map((result, index) => compactIdleOutputRow(result, index))).slice(0, outputLimit);
   return (
     <>
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Command Output")}</Text>
       </Box>
-      {outputs.length ? outputs.slice(-outputLimit).map((result, index) => {
-        return (
-          <Box key={`${result.task_id}-${result.attempt ?? 0}-${index}`} flexDirection="column">
-            <Text wrap="truncate">
-              {statusIcon(result.status ?? "completed")} {result.action} {firstLine(result.summary, 92)}{result.outputRef ? " (saved)" : ""}
-            </Text>
-            {result.recoverySuggestion && <Text color="yellow" wrap="truncate">{indentPreview(firstLine(result.recoverySuggestion, 92), "  ")}</Text>}
-            {result.outputRef && <Text color="gray" wrap="truncate">{indentPreview(`full: ${result.outputRef}`, "  ")}</Text>}
-            {compactPreview(result.content)}
-          </Box>
-        );
-      }) : <Text color="gray">(none)</Text>}
+      {outputRows.length ? outputRows.map(({ row, source }) => (
+        <Box key={row.key} flexDirection="column">
+          <CompactIdleRow row={row} />
+          {source.recoverySuggestion && <Text color="yellow" wrap="truncate">{indentPreview(firstLine(source.recoverySuggestion, 92), "  ")}</Text>}
+          {source.outputRef && <Text color="gray" wrap="truncate">{indentPreview(`full: ${shortPath(source.outputRef)}`, "  ")}</Text>}
+          {compactPreview(source.content)}
+        </Box>
+      )) : <Text color="gray">(none)</Text>}
     </>
   );
+}
+
+type CompactIdleOutputRow = {
+  row: CompactIdleRowData;
+  source: ToolResultState;
+};
+
+function CompactIdleRow({ row }: { row: CompactIdleRowData }): React.ReactElement {
+  const parts = compactIdleRowParts(row);
+  const tone = row.tone ?? statusTone(row.status);
+  const color = toneColor(tone);
+  return (
+    <Text wrap="truncate">
+      <Text color={color}>{parts.badge}</Text>
+      <Text> {parts.id} {parts.title}</Text>
+      {parts.status ? <Text color={color}> [{parts.status}]</Text> : null}
+      {parts.meta.length ? <Text color="gray"> · {parts.meta.join(" · ")}</Text> : null}
+    </Text>
+  );
+}
+
+export function formatCompactIdleRow(row: CompactIdleRowData): string {
+  const parts = compactIdleRowParts(row);
+  return [
+    `${parts.badge} ${parts.id} ${parts.title}${parts.status ? ` [${parts.status}]` : ""}`,
+    parts.meta.length ? parts.meta.join(" · ") : undefined
+  ].filter(Boolean).join(" · ");
+}
+
+export function formatCompactIdleRows(rows: CompactIdleRowData[]): string[] {
+  return orderCompactIdleRows(rows).map(formatCompactIdleRow);
+}
+
+function compactIdleRowParts(row: CompactIdleRowData): {
+  badge: string;
+  id: string;
+  title: string;
+  status?: string;
+  meta: string[];
+} {
+  return {
+    badge: row.badge ?? statusBadge(row.status),
+    id: compactIdleText(row.id, 14) || "-",
+    title: compactIdleText(row.title, 56) || "(untitled)",
+    status: row.status ? compactIdleText(row.status, 18) : undefined,
+    meta: (row.meta ?? [])
+      .map((item) => compactIdleText(item ?? "", 28))
+      .filter((item) => item.length > 0)
+  };
+}
+
+function compactIdleText(value: string, maxLength: number): string {
+  return compactValue(firstLine(value, maxLength), maxLength);
+}
+
+function orderCompactIdleRows<T extends CompactIdleRowData | { row: CompactIdleRowData }>(rows: T[]): T[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const leftRow = compactIdleSortData(left.row);
+      const rightRow = compactIdleSortData(right.row);
+      const priority = (rightRow.priority ?? 0) - (leftRow.priority ?? 0);
+      if (priority !== 0) {
+        return priority;
+      }
+      return (leftRow.order ?? left.index) - (rightRow.order ?? right.index);
+    })
+    .map((item) => item.row);
+}
+
+function compactIdleSortData<T extends CompactIdleRowData | { row: CompactIdleRowData }>(item: T): CompactIdleRowData {
+  return (item as { row?: CompactIdleRowData }).row ?? (item as CompactIdleRowData);
+}
+
+function compactIdleOutputRow(result: ToolResultState, index: number): CompactIdleOutputRow {
+  const status = result.status ?? "completed";
+  return {
+    row: {
+      key: `${result.task_id}-${result.attempt ?? 0}-${index}`,
+      id: result.agentLabel ?? result.workerId ?? result.task_id,
+      title: result.summary || result.title || result.action,
+      status,
+      meta: [
+        result.action,
+        result.outputRef ? "saved" : undefined,
+        result.errorCode ? `error=${result.errorCode}` : undefined
+      ],
+      priority: compactIdlePriority(status, result.recoverySuggestion ? 8 : 0),
+      order: index
+    },
+    source: result
+  };
+}
+
+function compactIdleSessionRow(session: RecentSessionRow, lastSessionId: string | undefined, index: number): CompactIdleRowData {
+  const source = sessionSourceKind(session.source_json);
+  return {
+    key: session.session_id,
+    id: session.session_id,
+    title: session.objective,
+    status: session.status,
+    meta: [
+      source,
+      session.session_id === lastSessionId ? "last" : undefined,
+      `updated=${compactTimestamp(session.updated_at)}`
+    ],
+    priority: compactIdlePriority(session.status, session.session_id === lastSessionId ? 2 : 0),
+    order: index
+  };
+}
+
+function compactIdleLeaseRow(lease: WorkspaceLease, index: number): CompactIdleRowData {
+  return {
+    key: lease.lease_id,
+    id: lease.session_id,
+    title: shortPath(lease.workspace_path),
+    status: lease.write_boundary,
+    badge: lease.write_boundary === "read_only" ? "[RO]" : lease.write_boundary === "workspace" ? "[RW]" : "[FS]",
+    tone: lease.write_boundary === "read_only" ? "warning" : "muted",
+    meta: [
+      lease.scope.length ? compactScope(lease.scope) : undefined,
+      `created=${compactTimestamp(lease.created_at)}`
+    ],
+    priority: lease.write_boundary === "read_only" ? 45 : 10,
+    order: index
+  };
+}
+
+function compactIdleAttemptRow(attempt: RunAttempt, index: number): CompactIdleRowData {
+  const owner = attempt.task_id ?? attempt.runner_id ?? attempt.session_id;
+  return {
+    key: attempt.attempt_id,
+    id: owner,
+    title: attempt.title ?? attempt.session_id,
+    status: attempt.status,
+    meta: [
+      attempt.kind,
+      `#${attempt.attempt}`,
+      shortId(attempt.session_id),
+      attempt.error_code ? `error=${attempt.error_code}` : undefined
+    ],
+    priority: compactIdlePriority(attempt.status, attempt.recovery_suggestion ? 8 : 0),
+    order: index
+  };
+}
+
+function compactIdleWorkerRow(worker: WorkerRecord, index: number): CompactIdleRowData {
+  const agent = worker.agent_spec_id
+    ? `${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}`
+    : worker.capability;
+  return {
+    key: worker.worker_id,
+    id: workerDisplayLabel(worker),
+    title: worker.objective,
+    status: worker.status,
+    tone: worker.blocked_reason ? "warning" : undefined,
+    meta: [
+      agent,
+      worker.file_scope.length ? compactScope(worker.file_scope) : undefined,
+      worker.last_result ? "result" : undefined
+    ],
+    priority: compactIdlePriority(worker.status, worker.blocked_reason ? 18 : 0),
+    order: index
+  };
+}
+
+function compactIdleApprovalRow(approval: ApprovalStoreRecord, index: number): CompactIdleRowData {
+  return {
+    key: approval.approval_id,
+    id: approval.approval_id,
+    title: `${approval.action} ${approval.target}`,
+    status: approval.status,
+    meta: [
+      `${approval.risk_class}/${approval.risk}`,
+      approval.task_id ? `task=${shortId(approval.task_id)}` : undefined,
+      approval.session_id ? `session=${shortId(approval.session_id)}` : undefined
+    ],
+    priority: compactIdlePriority(approval.status, approval.status === "pending" ? 20 + riskClassPriority(approval.risk_class) : 0),
+    order: index
+  };
+}
+
+function compactIdleDaemonRow(daemon: SymphonyDaemonRecord, index: number): CompactIdleRowData {
+  return {
+    key: daemon.daemon_id,
+    id: daemon.daemon_id,
+    title: shortPath(daemon.workflow_path ?? daemon.daemon_id),
+    status: daemon.status,
+    tone: daemon.status === "stopping" ? "warning" : undefined,
+    meta: [
+      `ticks=${daemon.tick_count}`,
+      daemon.last_error ? `error=${firstLine(daemon.last_error, 24)}` : undefined
+    ],
+    priority: compactIdlePriority(daemon.status, daemon.last_error ? 12 : 0),
+    order: index
+  };
+}
+
+function compactIdleBlackboardRow(entry: BlackboardEntry, index: number): CompactIdleRowData {
+  return {
+    key: entry.entry_id,
+    id: entry.type,
+    title: entry.key,
+    status: entry.visibility,
+    badge: blackboardTypeBadge(entry.type),
+    tone: entry.type === "critique" ? "warning" : entry.type === "decision" ? "brand" : "muted",
+    meta: [
+      shortId(entry.session_id),
+      entry.task_id ? `task=${shortId(entry.task_id)}` : undefined,
+      (entry.tags ?? []).length ? `tags=${(entry.tags ?? []).slice(0, 2).join(",")}` : undefined,
+      `v${entry.version}`
+    ],
+    priority: blackboardTypePriority(entry.type),
+    order: index
+  };
+}
+
+function compactIdlePriority(status: string | undefined, bonus = 0): number {
+  const normalized = (status ?? "").toLowerCase();
+  let base = 35;
+  if (["failed", "failure", "error", "denied", "reject", "cancelled"].includes(normalized)) {
+    base = 95;
+  } else if (["blocked", "stopped", "needs_revision", "partial", "warn", "warning"].includes(normalized)) {
+    base = 85;
+  } else if (["pending", "queued", "assigned", "waiting", "received", "awaiting approval"].includes(normalized)) {
+    base = 80;
+  } else if (["running", "started", "processing", "applied", "thinking", "executing", "planning", "reviewing", "aggregating", "stopping"].includes(normalized)) {
+    base = 75;
+  } else if (["completed", "complete", "success", "approved", "pass", "done", "ok"].includes(normalized)) {
+    base = 10;
+  }
+  return base + bonus;
+}
+
+function riskClassPriority(riskClass: string): number {
+  const match = /^r(\d+)$/i.exec(riskClass);
+  return match ? Number(match[1]) : 0;
+}
+
+function compactScope(paths: string[]): string {
+  const visible = paths.slice(0, 2).map(shortPath).join(",");
+  return `scope=${visible}${paths.length > 2 ? `,+${paths.length - 2}` : ""}`;
+}
+
+function compactTimestamp(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const time = /T(\d{2}:\d{2})/.exec(value)?.[1];
+  return time ?? compactValue(value, 16);
+}
+
+function blackboardTypeBadge(type: BlackboardEntry["type"]): string {
+  return {
+    plan: "[PLN]",
+    observation: "[OBS]",
+    evidence: "[EVD]",
+    result: "[RES]",
+    critique: "[CRT]",
+    decision: "[DEC]",
+    artifact: "[ART]"
+  }[type];
+}
+
+function blackboardTypePriority(type: BlackboardEntry["type"]): number {
+  return {
+    critique: 70,
+    decision: 60,
+    evidence: 50,
+    observation: 40,
+    plan: 30,
+    result: 20,
+    artifact: 20
+  }[type];
 }
 
 function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
@@ -3273,25 +3583,23 @@ function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
 }): React.ReactElement {
   const sessionLimit = rows >= 48 ? 8 : rows >= 36 ? 5 : 3;
   const leaseLimit = rows >= 48 ? 3 : 1;
+  const sessionRows = orderCompactIdleRows(sessions.map((session, index) => compactIdleSessionRow(session, lastSessionId, index))).slice(0, sessionLimit);
+  const leaseRows = orderCompactIdleRows(leases.map((lease, index) => compactIdleLeaseRow(lease, index))).slice(0, leaseLimit);
   return (
     <>
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Recent Sessions")}</Text>
       </Box>
-      {lastSessionId && <Text color="gray">last={lastSessionId}</Text>}
-      {sessions.length ? sessions.slice(0, sessionLimit).map((session) => (
-        <Text key={session.session_id} wrap="truncate">
-          {statusIcon(session.status)} {shortId(session.session_id)} [{session.status}] {firstLine(session.objective, 72)}
-        </Text>
+      {lastSessionId && <Text color="gray">last={shortId(lastSessionId)}</Text>}
+      {sessionRows.length ? sessionRows.map((row) => (
+        <CompactIdleRow key={row.key} row={row} />
       )) : <Text color="gray">(none)</Text>}
 
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Workspace Leases")}</Text>
       </Box>
-      {leases.length ? leases.slice(0, leaseLimit).map((lease) => (
-        <Text key={lease.lease_id} wrap="truncate" color={lease.write_boundary === "read_only" ? "yellow" : undefined}>
-          {shortId(lease.session_id)} [{lease.write_boundary}] {shortPath(lease.workspace_path)}
-        </Text>
+      {leaseRows.length ? leaseRows.map((row) => (
+        <CompactIdleRow key={row.key} row={row} />
       )) : <Text color="gray">(none)</Text>}
     </>
   );
@@ -3299,19 +3607,22 @@ function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
 
 function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttempt[] }): React.ReactElement {
   const attemptLimit = rows >= 48 ? 8 : rows >= 36 ? 5 : 3;
+  const attemptRows = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
+  const attemptById = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]));
   return (
     <>
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Recent Attempts")}</Text>
       </Box>
-      {attempts.length ? attempts.slice(0, attemptLimit).map((attempt) => (
-        <Box key={attempt.attempt_id} flexDirection="column">
-          <Text wrap="truncate">
-            {statusIcon(attempt.status)} {attempt.kind} {shortId(attempt.task_id ?? attempt.runner_id ?? "-")} [{attempt.status}] {firstLine(attempt.title ?? attempt.session_id, 72)}
-          </Text>
-          {attempt.recovery_suggestion && <Text color="yellow" wrap="truncate">  Recovery: {attempt.recovery_suggestion}</Text>}
+      {attemptRows.length ? attemptRows.map((row) => {
+        const attempt = attemptById.get(row.key);
+        return (
+        <Box key={row.key} flexDirection="column">
+          <CompactIdleRow row={row} />
+          {attempt?.recovery_suggestion && <Text color="yellow" wrap="truncate">  Recovery: {firstLine(attempt.recovery_suggestion, 92)}</Text>}
         </Box>
-      )) : <Text color="gray">(none)</Text>}
+        );
+      }) : <Text color="gray">(none)</Text>}
     </>
   );
 }
@@ -3325,31 +3636,38 @@ function IdleActivityPane({ rows, workers, approvals, daemons }: {
   const workerLimit = rows >= 48 ? 6 : 3;
   const approvalLimit = rows >= 48 ? 4 : rows >= 36 ? 3 : 2;
   const daemonLimit = rows >= 48 ? 4 : rows >= 36 ? 3 : 2;
+  const workerRows = orderCompactIdleRows(workers.map((worker, index) => compactIdleWorkerRow(worker, index))).slice(0, workerLimit);
+  const workerById = new Map(workers.map((worker) => [worker.worker_id, worker]));
+  const approvalRows = orderCompactIdleRows(approvals.map((approval, index) => compactIdleApprovalRow(approval, index))).slice(0, approvalLimit);
+  const daemonRows = orderCompactIdleRows(daemons.map((daemon, index) => compactIdleDaemonRow(daemon, index))).slice(0, daemonLimit);
   return (
     <>
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Active Work")}</Text>
       </Box>
-      {workers.length ? workers.slice(0, workerLimit).map((worker) => (
-        <WorkerLine key={worker.worker_id} worker={worker} />
-      )) : <Text color="gray">(none)</Text>}
+      {workerRows.length ? workerRows.map((row) => {
+        const worker = workerById.get(row.key);
+        return (
+          <Box key={row.key} flexDirection="column">
+            <CompactIdleRow row={row} />
+            {worker?.last_result && <Text wrap="truncate" color="gray">{indentPreview(firstLine(worker.last_result, 90), "  ")}</Text>}
+            {worker?.blocked_reason && <Text wrap="truncate" color="yellow">{indentPreview(firstLine(worker.blocked_reason, 90), "  ")}</Text>}
+          </Box>
+        );
+      }) : <Text color="gray">(none)</Text>}
 
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Approvals")}</Text>
       </Box>
-      {approvals.length ? approvals.slice(0, approvalLimit).map((approval) => (
-        <Text key={approval.approval_id} wrap="truncate" color={approval.status === "pending" ? "yellow" : undefined}>
-          {shortId(approval.approval_id)} [{approval.status}] {approval.risk_class}/{approval.risk} {approval.action} {firstLine(approval.target, 52)}
-        </Text>
+      {approvalRows.length ? approvalRows.map((row) => (
+        <CompactIdleRow key={row.key} row={row} />
       )) : <Text color="gray">(none)</Text>}
 
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Background Work")}</Text>
       </Box>
-      {daemons.length ? daemons.slice(0, daemonLimit).map((daemon) => (
-        <Text key={daemon.daemon_id} wrap="truncate" color="cyan">
-          {shortId(daemon.daemon_id)} [{daemon.status}] ticks={daemon.tick_count}
-        </Text>
+      {daemonRows.length ? daemonRows.map((row) => (
+        <CompactIdleRow key={row.key} row={row} />
       )) : <Text color="gray">(none)</Text>}
     </>
   );
@@ -3460,15 +3778,14 @@ function IdleBlackboardPane({ rows, blackboard, messages }: {
 }): React.ReactElement {
   const blackboardLimit = rows >= 48 ? 6 : rows >= 36 ? 4 : 3;
   const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
+  const blackboardRows = orderCompactIdleRows(blackboard.map((entry, index) => compactIdleBlackboardRow(entry, index))).slice(0, blackboardLimit);
   return (
     <>
       <Box marginTop={1}>
         <Text color="cyan" bold>{sectionLabel("Blackboard")}</Text>
       </Box>
-      {blackboard.length ? blackboard.slice(0, blackboardLimit).map((entry) => (
-        <Text key={entry.entry_id} wrap="truncate" color="gray">
-          {firstLine(entry.key, 56)} [{entry.type}] {shortId(entry.session_id)}
-        </Text>
+      {blackboardRows.length ? blackboardRows.map((row) => (
+        <CompactIdleRow key={row.key} row={row} />
       )) : <Text color="gray">(none)</Text>}
 
       <Box marginTop={1}>
@@ -3507,23 +3824,23 @@ function compactResultCardLines(card: RuntimeResultCard): string[] {
   ];
 }
 
-function DetailView({ content, scroll, height, sessionId, route, source }: {
+function DetailView({ content, scroll, height, sessionId, route, source, title }: {
   content: string;
   scroll: number;
   height: number;
   sessionId?: string;
   route?: string;
   source?: "ai" | "command" | "task" | "event";
+  title?: string;
 }): React.ReactElement {
   const lines = content.split(/\r?\n/);
   const visible = lines.slice(scroll, scroll + height);
-  const title = source === "command" ? "Command Output" : source === "task" ? "Task Detail" : source === "event" ? "Event Detail" : "Inspector";
   return (
     <Box flexDirection="column" width="100%">
       <InspectorPane
-        title={title}
+        title={title ?? detailTitleForSource(source)}
         sessionId={sessionId}
-        route={route}
+        route={route ? routeDisplayLabel(route) : undefined}
         selected={`lines ${Math.min(scroll + 1, lines.length)}-${Math.min(scroll + height, lines.length)} / ${lines.length}`}
         tabs={source === "command" ? undefined : ["output", "files", "checks", "workers", "attempts", "debug"]}
         content={visible.join("\n") || " "}
@@ -3854,12 +4171,12 @@ function routeStateFromControllerEvent(event: ControllerEvent): RouteState | und
   const route = event.details?.route;
   if (typeof route !== "object" || route === null) {
     return {
-      mode: event.action.replace(/^run_/, ""),
+      mode: canonicalRouteMode(event.action.replace(/^run_/, "")),
       reason: event.reason
     };
   }
   const value = route as Record<string, unknown>;
-  const mode = typeof value.mode === "string" ? value.mode : event.action.replace(/^run_/, "");
+  const mode = canonicalRouteMode(typeof value.mode === "string" ? value.mode : event.action.replace(/^run_/, ""));
   return {
     mode,
     confidence: typeof value.confidence === "number" && Number.isFinite(value.confidence) ? value.confidence : undefined,
@@ -3872,12 +4189,26 @@ function routeStateFromControllerEvent(event: ControllerEvent): RouteState | und
 
 function formatRouteState(route: RouteState): string {
   return [
-    `${route.mode}${typeof route.confidence === "number" ? `/${Math.round(route.confidence * 100)}%` : ""}`,
+    `${routeDisplayLabel(route.mode)}${typeof route.confidence === "number" ? `/${Math.round(route.confidence * 100)}%` : ""}`,
     route.requiresWorkspace === undefined ? undefined : `workspace=${route.requiresWorkspace}`,
     route.needsParallelism === undefined ? undefined : `parallel=${route.needsParallelism}`,
     route.fallbackMode ? `fallback=${route.fallbackMode}` : undefined,
     `reason=${route.reason}`
   ].filter(Boolean).join(" ");
+}
+
+function canonicalRouteMode(mode: string): string {
+  if (mode === "coding" || mode === "fast") {
+    return "coding_loop";
+  }
+  if (mode === "swarm") {
+    return "full_swarm";
+  }
+  return mode;
+}
+
+function routeDisplayLabel(mode: string): string {
+  return ROUTE_LABELS[mode] ?? mode;
 }
 
 function safeWorkSnapshot(runtime: SwarmRuntime, sessionId: string): ReturnType<SwarmRuntime["getWorkSnapshot"]> | undefined {

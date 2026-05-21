@@ -99,6 +99,31 @@ test("LSP semantic gateway serves compact TypeScript tool results", async () => 
   }
 });
 
+test("LSP semantic gateway gives actionable fallback for unsupported languages", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-lsp-unsupported-"));
+  try {
+    await writeFile(join(workspace, "pyproject.toml"), "[project]\nname = \"fixture\"\n", "utf8");
+    await writeFile(join(workspace, "service.py"), "def handler():\n    return 1\n", "utf8");
+
+    const result = await runLocalTool({
+      type: "lsp.hover",
+      file: "service.py",
+      line: 1,
+      column: 5
+    }, toolContext(workspace));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.errorCode, "unsupported_language");
+    assert.match(result.summary, /python/);
+    assert.match(result.content ?? "", /fallback=/);
+    assert.match(result.recoverySuggestion ?? "", /file\.grep/);
+    assert.match(result.recoverySuggestion ?? "", /file\.read/);
+    assert.match(result.recoverySuggestion ?? "", /provider for python/);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 async function writeFixtureProject(workspace: string): Promise<void> {
   await mkdir(join(workspace, "src"), { recursive: true });
   await writeFile(join(workspace, "package.json"), JSON.stringify({ type: "module" }, null, 2), "utf8");

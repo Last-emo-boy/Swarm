@@ -8,6 +8,7 @@ import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout } from "./components/ConversationFullscreenLayout.js";
 import { chatInputCompletionCandidates, createChatInputControllerState, selectedChatInputCompletionIndex } from "./chat-input-controller.js";
 import { displayWidth } from "./display-width.js";
+import { formatCompactIdleRows } from "./SwarmChatApp.js";
 import type { ConversationMessage } from "./conversation-layout.js";
 import type { ResultCard } from "../runtime/result-card.js";
 
@@ -282,6 +283,41 @@ test("default conversation surface keeps activity and result in fixed bottom chr
   assert.match(completed, /\[OK\] Updated the TUI layout/);
   assert.match(completed, /2 changed · 1 checks · Ctrl\+O for details/);
   assert(completed.indexOf("Updated the TUI layout") > completed.indexOf("Done"));
+});
+
+test("compact idle rows keep attention-first scan order in narrow text", () => {
+  const rows = formatCompactIdleRows([
+    {
+      key: "output-ok",
+      id: "task-output-success-with-long-id",
+      title: "Finished collecting command output",
+      status: "success",
+      meta: ["saved", "full=E:/very/long/path/to/output.log"],
+      priority: 10
+    },
+    {
+      key: "approval",
+      id: "approval-risky-file-write-123456789",
+      title: "file.write E:/very/long/workspace/src/tui/SwarmChatApp.tsx",
+      status: "pending",
+      meta: ["r3/write", "session=session-visual-polish-123456789"],
+      priority: 83
+    },
+    {
+      key: "worker",
+      id: "worker-running-123456789",
+      title: "Apply compact idle row polish",
+      status: "running",
+      meta: ["coder", "scope=src/tui/SwarmChatApp.tsx"],
+      priority: 75
+    }
+  ]);
+
+  assert.match(rows[0] ?? "", /\[ASK\] approval-/);
+  assert.match(rows[1] ?? "", /\[RUN\] worker-/);
+  assert.match(rows[2] ?? "", /\[OK\] task-output/);
+  assert(rows.every((line) => displayWidth(line) <= 132));
+  assert(rows.every((line) => !line.includes("123456789")));
 });
 
 test("default conversation status hides turn-budget metadata", async () => {
