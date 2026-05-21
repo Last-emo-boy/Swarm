@@ -40,9 +40,13 @@ export type ChatInputControllerResult = {
   submit?: string;
 };
 
-const GLOBAL_CTRL_KEYS = new Set(["c", "o", "t", "n", "p"]);
+export type ChatInputCompletionOptions = {
+  extraCommands?: SlashCommandSpec[];
+};
+
+const GLOBAL_CTRL_KEYS = new Set(["c", "o", "t"]);
 export const CHAT_INPUT_COMPLETION_LIMIT = 8;
-export const CHAT_INPUT_COMPLETION_VISIBLE_ROWS = 6;
+export const CHAT_INPUT_COMPLETION_VISIBLE_ROWS = 3;
 
 export function createChatInputControllerState(): ChatInputControllerState {
   return {
@@ -53,29 +57,44 @@ export function createChatInputControllerState(): ChatInputControllerState {
   };
 }
 
-export function chatInputCompletionCandidates(state: ChatInputControllerState): SlashCommandSpec[] {
+export function chatInputCompletionCandidates(
+  state: ChatInputControllerState,
+  options: ChatInputCompletionOptions = {}
+): SlashCommandSpec[] {
   const key = slashCommandCompletionKey(state.input.value, state.input.cursor);
   return key && key !== state.input.dismissedCompletionKey
-    ? commandCandidatesForInput(state.input.value, state.input.cursor).slice(0, CHAT_INPUT_COMPLETION_LIMIT)
+    ? commandCandidatesForInput(state.input.value, state.input.cursor, { extraCommands: options.extraCommands }).slice(0, CHAT_INPUT_COMPLETION_LIMIT)
     : [];
 }
 
-export function chatInputCompletionRows(state: ChatInputControllerState): number {
-  const candidates = chatInputCompletionCandidates(state);
-  return candidates.length > 0 ? Math.min(candidates.length, CHAT_INPUT_COMPLETION_VISIBLE_ROWS) + 4 : 0;
+export function chatInputCompletionRows(
+  state: ChatInputControllerState,
+  options: ChatInputCompletionOptions = {}
+): number {
+  const candidates = chatInputCompletionCandidates(state, options);
+  const visible = Math.min(candidates.length, CHAT_INPUT_COMPLETION_VISIBLE_ROWS);
+  const hiddenRow = candidates.length > visible ? 1 : 0;
+  return candidates.length > 0 ? visible + hiddenRow + 4 : 0;
 }
 
-export function selectedChatInputCompletionIndex(state: ChatInputControllerState): number {
-  const candidates = chatInputCompletionCandidates(state);
+export function selectedChatInputCompletionIndex(
+  state: ChatInputControllerState,
+  options: ChatInputCompletionOptions = {}
+): number {
+  const candidates = chatInputCompletionCandidates(state, options);
   return Math.min(state.completionIndex, Math.max(0, candidates.length - 1));
 }
 
 export function applyChatInputKey(
   state: ChatInputControllerState,
   character: string | undefined,
-  key: ChatInputKey
+  key: ChatInputKey,
+  options: ChatInputCompletionOptions = {}
 ): ChatInputControllerResult {
   if (isGlobalControlKey(character, key)) {
+    return { state };
+  }
+  if (isRawPaneCycleControlCharacter(character)) {
     return { state };
   }
 
@@ -95,7 +114,7 @@ export function applyChatInputKey(
 
   const activeCompletionKey = slashCommandCompletionKey(state.input.value, state.input.cursor);
   const activeCandidates = activeCompletionKey && activeCompletionKey !== state.input.dismissedCompletionKey
-    ? commandCandidatesForInput(state.input.value, state.input.cursor)
+    ? commandCandidatesForInput(state.input.value, state.input.cursor, { extraCommands: options.extraCommands })
     : [];
   const autocompleteOpen = activeCandidates.length > 0;
   if (autocompleteOpen && activeCompletionKey) {
@@ -122,33 +141,33 @@ export function applyChatInputKey(
         activeCandidates[state.completionIndex] ?? activeCandidates[0]
       );
       return completed
-        ? { state: syncCompletion({ ...state, input: replaceInput(state.input, completed.value, completed.cursor), completionIndex: 0 }) }
+        ? { state: syncCompletion({ ...state, input: replaceInput(state.input, completed.value, completed.cursor), completionIndex: 0 }, options) }
         : { state };
     }
   }
 
   if (key.upArrow) {
-    return { state: syncCompletion(recallInputHistory(state, "previous")) };
+    return { state: syncCompletion(recallInputHistory(state, "previous"), options) };
   }
 
   if (key.downArrow) {
-    return { state: syncCompletion(recallInputHistory(state, "next")) };
+    return { state: syncCompletion(recallInputHistory(state, "next"), options) };
   }
 
   if (key.leftArrow) {
-    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: state.input.cursor - 1, clearDismissed: true }) }) };
+    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: state.input.cursor - 1, clearDismissed: true }) }, options) };
   }
 
   if (key.rightArrow) {
-    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: state.input.cursor + 1, clearDismissed: true }) }) };
+    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: state.input.cursor + 1, clearDismissed: true }) }, options) };
   }
 
   if (key.ctrl && character === "a") {
-    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: 0, clearDismissed: true }) }) };
+    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: 0, clearDismissed: true }) }, options) };
   }
 
   if (key.ctrl && character === "e") {
-    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: state.input.value.length, clearDismissed: true }) }) };
+    return { state: syncCompletion({ ...state, input: reduceInputState(state.input, { type: "cursor", cursor: state.input.value.length, clearDismissed: true }) }, options) };
   }
 
   if (key.ctrl && character === "u") {
@@ -159,7 +178,7 @@ export function applyChatInputKey(
         input: replaceInput(state.input, killed.state.value, killed.state.cursor),
         killBuffer: killed.killed || state.killBuffer,
         completionIndex: 0
-      })
+      }, options)
     };
   }
 
@@ -171,7 +190,7 @@ export function applyChatInputKey(
         input: replaceInput(state.input, killed.state.value, killed.state.cursor),
         killBuffer: killed.killed || state.killBuffer,
         completionIndex: 0
-      })
+      }, options)
     };
   }
 
@@ -183,25 +202,25 @@ export function applyChatInputKey(
         input: replaceInput(state.input, killed.state.value, killed.state.cursor),
         killBuffer: killed.killed || state.killBuffer,
         completionIndex: 0
-      })
+      }, options)
     };
   }
 
   if (key.ctrl && character === "y") {
     return state.killBuffer
-      ? { state: syncCompletion(insertText(state, state.killBuffer)) }
+      ? { state: syncCompletion(insertText(state, state.killBuffer), options) }
       : { state };
   }
 
   if (key.tab) {
-    const completed = completeSlashCommand(state.input.value, state.input.cursor);
+    const completed = completeSlashCommand(state.input.value, state.input.cursor, { extraCommands: options.extraCommands });
     return completed
-      ? { state: syncCompletion({ ...state, input: replaceInput(state.input, completed.value, completed.cursor), completionIndex: 0 }) }
+      ? { state: syncCompletion({ ...state, input: replaceInput(state.input, completed.value, completed.cursor), completionIndex: 0 }, options) }
       : { state };
   }
 
   if ((key.return && key.meta) || (key.ctrl && character === "j")) {
-    return { state: syncCompletion(insertText(state, "\n")) };
+    return { state: syncCompletion(insertText(state, "\n"), options) };
   }
 
   if (key.return) {
@@ -215,7 +234,7 @@ export function applyChatInputKey(
         input: replaceInput(state.input, "", 0),
         history: rememberInput(state.history, objective),
         completionIndex: 0
-      }),
+      }, options),
       submit: objective
     };
   }
@@ -223,19 +242,19 @@ export function applyChatInputKey(
   if (key.backspace || (key.delete && !character)) {
     const edited = editInput(state.input.value, state.input.cursor, character, { backspace: true });
     return edited.handled
-      ? { state: syncCompletion({ ...state, input: replaceInput(state.input, edited.state.value, edited.state.cursor) }) }
+      ? { state: syncCompletion({ ...state, input: replaceInput(state.input, edited.state.value, edited.state.cursor) }, options) }
       : { state };
   }
 
   if (key.delete) {
     const edited = editInput(state.input.value, state.input.cursor, character || "[3~", {});
     return edited.handled
-      ? { state: syncCompletion({ ...state, input: replaceInput(state.input, edited.state.value, edited.state.cursor) }) }
+      ? { state: syncCompletion({ ...state, input: replaceInput(state.input, edited.state.value, edited.state.cursor) }, options) }
       : { state };
   }
 
   if (character && !key.ctrl && !key.meta) {
-    return { state: syncCompletion(insertText(state, character)) };
+    return { state: syncCompletion(insertText(state, character), options) };
   }
 
   return { state };
@@ -253,10 +272,12 @@ function isGlobalControlKey(character: string | undefined, key: ChatInputKey): b
 
 function isRawGlobalControlCharacter(character: string | undefined): boolean {
   return character === "\x03" ||
-    character === "\x0e" ||
     character === "\x0f" ||
-    character === "\x10" ||
     character === "\x14";
+}
+
+function isRawPaneCycleControlCharacter(character: string | undefined): boolean {
+  return character === "\x0e" || character === "\x10";
 }
 
 function normalizeCtrlCharacter(character: string | undefined): string {
@@ -264,9 +285,7 @@ function normalizeCtrlCharacter(character: string | undefined): string {
     return "";
   }
   if (character === "\x03") return "c";
-  if (character === "\x0e") return "n";
   if (character === "\x0f") return "o";
-  if (character === "\x10") return "p";
   if (character === "\x14") return "t";
   return character.toLowerCase();
 }
@@ -328,8 +347,11 @@ function rememberInput(history: string[], value: string): string[] {
   return [...withoutDuplicateTail, value].slice(-100);
 }
 
-function syncCompletion(state: ChatInputControllerState): ChatInputControllerState {
-  const candidates = chatInputCompletionCandidates(state);
+function syncCompletion(
+  state: ChatInputControllerState,
+  options: ChatInputCompletionOptions = {}
+): ChatInputControllerState {
+  const candidates = chatInputCompletionCandidates(state, options);
   return {
     ...state,
     completionIndex: Math.min(state.completionIndex, Math.max(0, candidates.length - 1))

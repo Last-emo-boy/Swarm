@@ -1,0 +1,74 @@
+{
+  "id": "CAND-PROD-046-TASK-005",
+  "title": "Transcript search and message action cursor",
+  "status": "completed",
+  "type": "tui-navigation",
+  "priority": "P1",
+  "wave": 3,
+  "depends_on": [
+    "CAND-PROD-046-TASK-002"
+  ],
+  "objective": "Add fast transcript search and message cursor actions on top of the virtualized transcript, including indexed search text, next/previous navigation, and stable highlight positioning.",
+  "files": [
+    "src/tui/components/VirtualConversationList.tsx",
+    "src/tui/transcript-search.ts",
+    "src/tui/conversation-layout.ts",
+    "src/tui/SwarmChatApp.tsx",
+    "src/tui/transcript-search.test.ts",
+    "src/tui/conversation-render.test.ts"
+  ],
+  "read_first": [
+    "E:/Playground/cc/src/components/VirtualMessageList.tsx",
+    "src/tui/conversation-layout.ts",
+    "src/tui/conversation-transcript.ts",
+    "src/tui/SwarmChatApp.tsx"
+  ],
+  "actions": [
+    "Build a lowercased search-text cache keyed by message object or stable message id.",
+    "Support entering transcript search, updating the query, and navigating matches with next/previous actions.",
+    "Jump to virtualized matches even when the target message is not currently mounted.",
+    "Display match count and current match position in bottom chrome without crowding the prompt.",
+    "Add message action cursor behavior for selecting prior user prompts and expandable tool/result rows."
+  ],
+  "convergence": {
+    "criteria": [
+      "Search warm-up is explicit and avoids per-keystroke full transcript lowering.",
+      "Search can jump to matches outside the mounted virtual range.",
+      "Manual scroll exits active search preview without corrupting current highlights.",
+      "Match count and current match index are visible in a compact status area.",
+      "Tests cover empty query, no matches, wraparound, virtual offscreen match, and width changes."
+    ]
+  },
+  "verification": [
+    "node --import tsx --test src/tui/transcript-search.test.ts src/tui/conversation-render.test.ts",
+    "npm run check"
+  ],
+  "non_goals": [
+    "Do not implement fuzzy global file search in this task.",
+    "Do not add IDE-side search integration.",
+    "Do not make search depend on Gateway or LSP availability."
+  ],
+  "completed_at": "2026-05-21T19:49:00+08:00",
+  "findings": [
+    "Added a pure transcript search index that lowers searchable message text once per query path and returns stable message indexes for offscreen virtual matches.",
+    "SwarmChatApp now supports transcript search mode from empty input, next/previous navigation, Enter-to-jump, and compact footer search summary.",
+    "VirtualConversationList accepts selected/search message indexes and renders selected rows without polluting the render cache."
+  ],
+  "files_modified": [
+    "src/tui/transcript-search.ts",
+    "src/tui/transcript-search.test.ts",
+    "src/tui/components/VirtualConversationList.tsx",
+    "src/tui/components/ConversationFirstPane.tsx",
+    "src/tui/SwarmChatApp.tsx",
+    "src/tui/conversation-render.test.ts"
+  ],
+  "tests_passed": [
+    "node --import tsx --test src/tui/transcript-search.test.ts src/tui/message-folding.test.ts src/tui/conversation-layout.test.ts src/tui/conversation-render.test.ts src/tui/conversation-transcript.test.ts src/tui/result-display.test.ts",
+    "npm run check"
+  ],
+  "source_references": [
+    "E:/Playground/cc/src/components/VirtualMessageList.tsx:45",
+    "E:/Playground/cc/src/components/VirtualMessageList.tsx:58",
+    "E:/Playground/cc/src/components/VirtualMessageList.tsx:382"
+  ]
+}

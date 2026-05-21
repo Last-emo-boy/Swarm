@@ -1,0 +1,182 @@
+import { compactValue } from "./theme.js";
+
+export type FooterPillId = "tasks" | "approvals" | "cache" | "gateway" | "symphony" | "lsp";
+
+export type FooterPillTone = "neutral" | "running" | "pending" | "success" | "warning" | "danger" | "muted";
+
+export type FooterPill = {
+  id: FooterPillId;
+  label: string;
+  value: string;
+  tone: FooterPillTone;
+  detailHint?: string;
+};
+
+export type FooterNavigationState = {
+  selectedId?: FooterPillId;
+  openId?: FooterPillId;
+};
+
+export type FooterNavigationAction =
+  | { type: "next" }
+  | { type: "previous" }
+  | { type: "select"; id: FooterPillId }
+  | { type: "open"; id?: FooterPillId }
+  | { type: "close" }
+  | { type: "clear" };
+
+export function createFooterNavigationState(): FooterNavigationState {
+  return {};
+}
+
+export function footerNavigationReducer(
+  state: FooterNavigationState,
+  action: FooterNavigationAction,
+  items: readonly FooterPill[]
+): FooterNavigationState {
+  const ids = items.map((item) => item.id);
+  if (ids.length === 0) {
+    return {};
+  }
+  const selected = ids.includes(state.selectedId as FooterPillId) ? state.selectedId : ids[0];
+  switch (action.type) {
+    case "next":
+      return { selectedId: stepFooterSelection(ids, selected, 1), openId: state.openId };
+    case "previous":
+      return { selectedId: stepFooterSelection(ids, selected, -1), openId: state.openId };
+    case "select":
+      return ids.includes(action.id) ? { selectedId: action.id, openId: state.openId } : state;
+    case "open": {
+      const openId = action.id ?? selected;
+      return openId && ids.includes(openId) ? { selectedId: openId, openId } : state;
+    }
+    case "close":
+      return { selectedId: selected };
+    case "clear":
+      return {};
+  }
+}
+
+export function selectedFooterPill(
+  state: FooterNavigationState,
+  items: readonly FooterPill[]
+): FooterPill | undefined {
+  const selectedId = state.selectedId ?? items[0]?.id;
+  return items.find((item) => item.id === selectedId);
+}
+
+export function buildFooterPills(input: {
+  taskCompleted: number;
+  taskTotal: number;
+  pendingApprovals: number;
+  cacheStatus?: string;
+  cacheHitRate?: number;
+  gatewayStatus?: string;
+  symphonyRunning: number;
+  symphonyRetrying: number;
+  lspStatus?: string;
+}): FooterPill[] {
+  return [
+    {
+      id: "tasks",
+      label: "tasks",
+      value: `${Math.max(0, input.taskCompleted)}/${Math.max(0, input.taskTotal)}`,
+      tone: input.taskTotal > 0 && input.taskCompleted < input.taskTotal ? "running" : "muted",
+      detailHint: "Task state"
+    },
+    {
+      id: "approvals",
+      label: "approvals",
+      value: String(Math.max(0, input.pendingApprovals)),
+      tone: input.pendingApprovals > 0 ? "pending" : "muted",
+      detailHint: "Approval queue"
+    },
+    {
+      id: "cache",
+      label: "cache",
+      value: promptCacheFooterValue(input.cacheStatus, input.cacheHitRate),
+      tone: cacheFooterTone(input.cacheStatus),
+      detailHint: "Prompt cache"
+    },
+    {
+      id: "gateway",
+      label: "gateway",
+      value: compactValue(input.gatewayStatus ?? "local", 14),
+      tone: serviceFooterTone(input.gatewayStatus),
+      detailHint: "Gateway surface"
+    },
+    {
+      id: "symphony",
+      label: "symphony",
+      value: input.symphonyRetrying > 0
+        ? `${input.symphonyRunning} run/${input.symphonyRetrying} retry`
+        : `${input.symphonyRunning} run`,
+      tone: input.symphonyRetrying > 0 ? "warning" : input.symphonyRunning > 0 ? "running" : "muted",
+      detailHint: "Symphony scheduler"
+    },
+    {
+      id: "lsp",
+      label: "lsp",
+      value: compactValue(input.lspStatus ?? "ready", 14),
+      tone: serviceFooterTone(input.lspStatus),
+      detailHint: "Language server"
+    }
+  ];
+}
+
+export function footerRowBudget(input: {
+  footerItems: readonly FooterPill[];
+  panelOpen?: boolean;
+  terminalRows: number;
+}): { footerRows: number; panelRows: number } {
+  const footerRows = input.footerItems.length > 0 ? 1 : 0;
+  const panelRows = input.panelOpen
+    ? Math.max(3, Math.min(8, Math.floor(input.terminalRows * 0.25)))
+    : 0;
+  return { footerRows, panelRows };
+}
+
+function stepFooterSelection(ids: FooterPillId[], selected: FooterPillId | undefined, delta: number): FooterPillId {
+  const currentIndex = Math.max(0, selected ? ids.indexOf(selected) : 0);
+  const nextIndex = (currentIndex + delta + ids.length) % ids.length;
+  return ids[nextIndex] ?? ids[0]!;
+}
+
+function promptCacheFooterValue(status: string | undefined, hitRate: number | undefined): string {
+  const base = status?.trim() || "--";
+  if (typeof hitRate !== "number") {
+    return compactValue(base, 14);
+  }
+  return compactValue(`${base} ${Math.round(hitRate * 100)}%`, 14);
+}
+
+function cacheFooterTone(status: string | undefined): FooterPillTone {
+  const normalized = (status ?? "").toLowerCase();
+  if (["error", "failed", "unavailable", "disabled", "degraded"].includes(normalized)) {
+    return "warning";
+  }
+  if (["cache_hit", "hit", "warm", "stable", "ready", "ok"].includes(normalized)) {
+    return "success";
+  }
+  if (["cache_miss", "miss", "changed", "unknown"].includes(normalized)) {
+    return "muted";
+  }
+  return normalized ? "neutral" : "muted";
+}
+
+function serviceFooterTone(status: string | undefined): FooterPillTone {
+  const normalized = (status ?? "").toLowerCase();
+  if (["failed", "error", "unavailable", "blocked"].includes(normalized)) {
+    return "danger";
+  }
+  if (["degraded", "reconnecting", "retrying", "warning"].includes(normalized)) {
+    return "warning";
+  }
+  if (["running", "starting"].includes(normalized)) {
+    return "running";
+  }
+  if (["ready", "healthy", "ok", "local"].includes(normalized)) {
+    return "success";
+  }
+  return normalized ? "neutral" : "muted";
+}

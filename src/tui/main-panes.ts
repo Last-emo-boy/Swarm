@@ -1,8 +1,10 @@
-export type MainPaneId = "overview" | "output" | "sessions" | "attempts" | "agents" | "blackboard";
+export type MainPaneId = "chat" | "log" | "overview" | "output" | "sessions" | "attempts" | "agents" | "blackboard";
 
-export const mainPaneOrder: MainPaneId[] = ["overview", "output", "sessions", "attempts", "agents", "blackboard"];
+export const mainPaneOrder: MainPaneId[] = ["chat", "log", "overview", "output", "sessions", "attempts", "agents", "blackboard"];
 
 export const mainPaneLabels: Record<MainPaneId, string> = {
+  chat: "Chat",
+  log: "Trace",
   overview: "Overview",
   output: "Output",
   sessions: "Sessions",
@@ -11,35 +13,19 @@ export const mainPaneLabels: Record<MainPaneId, string> = {
   blackboard: "Blackboard"
 };
 
+export const mainPaneShortLabels: Record<MainPaneId, string> = {
+  chat: "Chat",
+  log: "Tr",
+  overview: "Ov",
+  output: "Out",
+  sessions: "Ses",
+  attempts: "Att",
+  agents: "Act",
+  blackboard: "Blk"
+};
+
 export function nextMainPane(current: MainPaneId, direction: 1 | -1): MainPaneId {
   const index = mainPaneOrder.indexOf(current);
   const next = (index + direction + mainPaneOrder.length) % mainPaneOrder.length;
-  return mainPaneOrder[next] ?? "overview";
-}
-
-export function mainPaneShortcutDirection(character: string | undefined, key: { ctrl?: boolean }): 1 | -1 | undefined {
-  if (!key.ctrl && character !== "\x0e" && character !== "\x10") {
-    return undefined;
-  }
-  const normalized = normalizeCtrlCharacter(character);
-  if (normalized === "n") {
-    return 1;
-  }
-  if (normalized === "p") {
-    return -1;
-  }
-  return undefined;
-}
-
-function normalizeCtrlCharacter(character: string | undefined): string {
-  if (!character) {
-    return "";
-  }
-  if (character === "\x0e") {
-    return "n";
-  }
-  if (character === "\x10") {
-    return "p";
-  }
-  return character.toLowerCase();
+  return mainPaneOrder[next] ?? "chat";
 }

@@ -1,0 +1,22 @@
+{
+  "id": "CAND-PROD-046",
+  "status": "planned",
+  "path": ".workflow/scratch/20260521-plan-cand-prod-046-tui-ink-renderer-iteration",
+  "plan_path": ".workflow/scratch/20260521-plan-cand-prod-046-tui-ink-renderer-iteration/plan.json",
+  "task_ids": [
+    "CAND-PROD-046-TASK-001",
+    "CAND-PROD-046-TASK-002",
+    "CAND-PROD-046-TASK-003",
+    "CAND-PROD-046-TASK-004",
+    "CAND-PROD-046-TASK-005",
+    "CAND-PROD-046-TASK-006",
+    "CAND-PROD-046-TASK-007",
+    "CAND-PROD-046-TASK-008"
+  ],
+  "task_count": 8,
+  "complexity": "large",
+  "waves": 4,
+  "decision": "tui-ink-renderer-backlog",
+  "state_registration": "skipped_by_instruction",
+  "created_at": "2026-05-21T00:00:00+08:00"
+}

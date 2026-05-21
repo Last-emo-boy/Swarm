@@ -1,0 +1,78 @@
+{
+  "id": "CAND-PROD-046-TASK-007",
+  "title": "Status noise reduction and service health overlays",
+  "status": "completed",
+  "type": "tui-status-surfaces",
+  "priority": "P1",
+  "wave": 3,
+  "depends_on": [
+    "CAND-PROD-046-TASK-004"
+  ],
+  "objective": "Move neutral and positive cache, Gateway, Symphony, Swarm, and LSP status out of the default transcript and into explicit `/status` or footer overlay surfaces while keeping warnings and pending user actions visible.",
+  "files": [
+    "src/tui/SwarmChatApp.tsx",
+    "src/tui/kernel-status.test.ts",
+    "src/tui/slash-commands.ts",
+    "src/tui/slash-commands.test.ts",
+    "src/runtime/prompt-cache-status.ts",
+    "src/server/gateway.ts",
+    "src/symphony/status-format.ts",
+    "src/tools/lsp-client.ts"
+  ],
+  "read_first": [
+    "E:/Playground/cc/src/components/StatusNotices.tsx",
+    "E:/Playground/cc/src/utils/statusNoticeDefinitions.tsx",
+    "src/tui/SwarmChatApp.tsx",
+    "src/tui/slash-commands.ts",
+    "src/tui/kernel-status.test.ts",
+    "src/runtime/prompt-cache-status.ts",
+    "src/symphony/status-format.ts",
+    "src/tools/lsp-client.ts"
+  ],
+  "actions": [
+    "Define severity rules for default-visible notices: warning, error, pending approval, reconnecting, degraded cache, unavailable LSP, and blocked Symphony/Gateway work.",
+    "Move healthy cache/Gateway/Symphony/LSP state into `/status` and footer overlays.",
+    "Add footer pill summaries that stay compact and open detailed overlay panels on demand.",
+    "Ensure cache-hit and cache-miss explanations remain available without occupying default transcript rows.",
+    "Keep service health wording consistent across TUI, slash commands, and result-card summaries."
+  ],
+  "convergence": {
+    "criteria": [
+      "Healthy service states do not appear as default transcript noise.",
+      "Warnings, failures, reconnecting states, and pending approvals remain visible.",
+      "`/status` provides cache, Gateway, Symphony, Swarm, and LSP detail in one inspectable surface.",
+      "Footer pills expose compact service summaries and open detailed overlays.",
+      "Tests cover healthy, degraded, reconnecting, and failed service states."
+    ]
+  },
+  "verification": [
+    "node --import tsx --test src/tui/kernel-status.test.ts src/tui/slash-commands.test.ts src/runtime/prompt-cache-status.test.ts",
+    "npm run check"
+  ],
+  "non_goals": [
+    "Do not redesign Gateway, Symphony, cache, or LSP runtime contracts.",
+    "Do not hide user-actionable failures behind `/status` only.",
+    "Do not add noisy positive confirmations to the main transcript."
+  ],
+  "completed_at": "2026-05-21T19:32:00+08:00",
+  "findings": [
+    "Added service health severity rules so healthy cache/Gateway/Symphony/LSP states remain hidden from default status noise while degraded, reconnecting, pending, unavailable, and failed states stay visible.",
+    "Extended `/status` kernel detail with a Service Health section covering cache, Gateway, Symphony, and LSP.",
+    "Footer pills now expose compact service summaries and open explicit detail surfaces for cache, Gateway, Symphony, LSP, tasks, and approvals."
+  ],
+  "files_modified": [
+    "src/tui/status-surface.ts",
+    "src/tui/footer-navigation.ts",
+    "src/tui/footer-navigation.test.ts",
+    "src/tui/components/StatusRail.tsx",
+    "src/tui/SwarmChatApp.tsx"
+  ],
+  "tests_passed": [
+    "node --import tsx --test src/tui/footer-navigation.test.ts src/tui/chat-input-controller.test.ts src/tui/input-rendering.test.ts src/tui/conversation-render.test.ts src/tui/conversation-layout.test.ts src/tui/kernel-status.test.ts src/tui/slash-commands.test.ts src/runtime/prompt-cache-status.test.ts",
+    "npm run check"
+  ],
+  "source_references": [
+    "E:/Playground/cc/src/components/StatusNotices.tsx:13",
+    "E:/Playground/cc/src/utils/statusNoticeDefinitions.tsx:191"
+  ]
+}

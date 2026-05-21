@@ -39,12 +39,17 @@ export const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel
 export const slashCommands: SlashCommandSpec[] = [
   { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 10 },
   { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight.", completionPriority: 20 },
-  { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode." },
+  { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode.", completionPriority: 40 },
+  { name: "view", group: "Core", usage: "/view [chat|trace|overview|output|sessions|attempts|agents|blackboard]", description: "Switch the TUI surface without exposing pane controls by default.", completionPriority: 45 },
   { name: "why", group: "Core", usage: "/why", description: "Explain recent route, delegation, review, and verification decisions." },
+  { name: "work", group: "Core", usage: "/work <sessions|attempts|output|files|checks|workers>", description: "Inspect work-session artifacts without opening the debug surface." },
+  { name: "debug", group: "Core", usage: "/debug <trace|blackboard|audit|usage|cache|events>", description: "Open advanced runtime diagnostics." },
+  { name: "ext", group: "Core", usage: "/ext <capabilities|skills|plugins|mcp>", description: "Inspect extension capabilities, skills, plugins, or MCP." },
   { name: "self-review", group: "Core", usage: "/self-review", description: "Inspect recent local Swarm failures and recommendations." },
   { name: "improve-self", group: "Core", usage: "/improve-self", description: "Ask Swarm to improve its own implementation." },
   { name: "evals", group: "Core", usage: "/evals", description: "Run local product regression evals." },
   { name: "prd", group: "Core", usage: "/prd", description: "Show the local PRD." },
+  { name: "reply", group: "Core", usage: "/reply <message>", description: "Send a live reply to the active run." },
   { name: "interrupt", group: "Core", usage: "/interrupt <message>", description: "Interrupt active work and ask Swarm to reassess." },
   { name: "onboard", group: "Core", usage: "/onboard", description: "Open provider/model onboarding." },
   { name: "read", group: "Tools", usage: "/read <path> [start:end]", description: "Read a file from the workspace.", completionPriority: 80 },
@@ -55,13 +60,15 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "diff", group: "Tools", usage: "/diff", description: "Show the current git diff." },
   { name: "output", group: "Tools", usage: "/output [task_id]", description: "Show recent tool output or the full output for one task.", completionPriority: 50 },
   { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Show the unified Swarm, Work Kernel, and Symphony status view.", aliases: ["status"], completionPriority: 30 },
-  { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"], completionPriority: 40 },
+  { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"], completionPriority: 80 },
   { name: "changes", group: "Kernel", usage: "/changes [session_id]", description: "Show recorded workspace changes." },
   { name: "blackboard", group: "Kernel", usage: "/blackboard [session_id] [tag:<tag>|type:<type>|key:<prefix>|agent:<id>|task:<id>]", description: "Query blackboard facts." },
   { name: "session", group: "Kernel", usage: "/session [session_id|new]", description: "Inspect sessions or start a fresh TUI chat state.", completionPriority: 60 },
   { name: "memory", group: "Kernel", usage: "/memory [session_id]", description: "Show remembered session context and resume freshness.", completionPriority: 65 },
-  { name: "resume", group: "Kernel", usage: "/resume [session_id] [message]", description: "Resume the recent local coding-loop session or a stored planned session.", aliases: ["continue"], completionPriority: 70 },
-  { name: "continue", group: "Kernel", usage: "/continue [message]", description: "Continue the most recent local coding-loop session.", aliases: ["resume"], completionPriority: 75 },
+  { name: "resume", group: "Kernel", usage: "/resume [session_id] [message]", description: "Resume the recent local coding-loop session or a stored planned session with a preflight summary.", aliases: ["continue"], completionPriority: 70 },
+  { name: "continue", group: "Kernel", usage: "/continue [message]", description: "Continue the most recent local coding-loop session with a preflight summary.", aliases: ["resume"], completionPriority: 75 },
+  { name: "checkpoint", group: "Kernel", usage: "/checkpoint <list|create|revert> [name|id]", description: "List, create, or revert local workspace checkpoints." },
+  { name: "revert", group: "Kernel", usage: "/revert last|<checkpoint_id>", description: "Revert the latest or named checkpoint." },
   { name: "replay", group: "Kernel", usage: "/replay <session_id>", description: "Replay a persisted session snapshot." },
   { name: "fork", group: "Kernel", usage: "/fork <session_id> [message]", description: "Create a new session from a previous session." },
   { name: "trace", group: "Kernel", usage: "/trace <session_id>", description: "Show persisted envelopes for a session." },
@@ -72,7 +79,7 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "graph", group: "Kernel", usage: "/graph [session_id]", description: "Inspect the task graph." },
   { name: "task", group: "Kernel", usage: "/task <task_id> [session_id]", description: "Inspect one task's attempts, trace, audit, and usage." },
   { name: "approvals", group: "Kernel", usage: "/approvals [session_id]", description: "List approval records." },
-  { name: "approval", group: "Kernel", usage: "/approval <approval_id>", description: "Inspect one approval." },
+  { name: "approval", group: "Kernel", usage: "/approval <approval_id>", description: "Inspect one approval.", completionPriority: 60 },
   { name: "audit", group: "Kernel", usage: "/audit [session_id]", description: "List audit records." },
   { name: "budget", group: "Kernel", usage: "/budget [session_id]", description: "Inspect policy budget and usage." },
   { name: "usage", group: "Kernel", usage: "/usage [session_id]", description: "Inspect usage counters." },
@@ -94,17 +101,21 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "symphony-stop", group: "Symphony", usage: "/symphony-stop [daemon_id|all] [--cancel-running]", description: "Stop local TUI-managed Symphony daemon loops." },
   { name: "symphony-cleanup", group: "Symphony", usage: "/symphony-cleanup [workflow_path] [--execute]", description: "Dry-run or execute terminal workspace cleanup." },
   { name: "provider", group: "Config", usage: "/provider [id]", description: "Show or change the default provider." },
-  { name: "model", group: "Config", usage: "/model [planner|worker|aggregator] [provider/model]", description: "Show or update selected models." },
+  { name: "model", group: "Config", usage: "/model [planner|worker|aggregator] [provider/model]", description: "Show or update selected models.", completionPriority: 50 },
   { name: "models", group: "Config", usage: "/models [provider]", description: "List configured models." },
   { name: "refresh-models", group: "Config", usage: "/refresh-models [provider]", description: "Refresh provider model discovery." },
-  { name: "permissions", group: "Config", usage: "/permissions", description: "Inspect permission settings." },
+  { name: "permissions", group: "Config", usage: "/permissions", description: "Inspect permission mode, sandbox, rules, read roots, and recent approvals." },
+  { name: "add-dir", group: "Config", usage: "/add-dir <directory>", description: "Add a persistent read-only directory to tool permissions." },
+  { name: "remove-dir", group: "Config", usage: "/remove-dir <directory>", description: "Remove a persistent additional read directory." },
   { name: "permission-mode", group: "Config", usage: "/permission-mode [ask|auto-edit|full-auto|yolo]", description: "Show or change the permission mode." },
+  { name: "sandbox", group: "Config", usage: "/sandbox [workspace-write|read-only]", description: "Inspect or change the TUI sandbox mode, scope, and write gates." },
   { name: "capabilities", group: "Config", usage: "/capabilities [kind|provider|query|all]", description: "Summarize registered local, slash, agent, skill, MCP, and plugin capabilities." },
   { name: "capability-enable", group: "Config", usage: "/capability-enable <capability_id>", description: "Remove a capability id from the disabled capability list." },
   { name: "capability-disable", group: "Config", usage: "/capability-disable <capability_id>", description: "Add a capability id to the disabled capability list." },
   { name: "capability-show", group: "Config", usage: "/capability-show <capability_id>", description: "Allow a capability to be visible to the model again." },
   { name: "capability-hide", group: "Config", usage: "/capability-hide <capability_id>", description: "Hide a capability from the model without disabling user visibility." },
   { name: "plugins", group: "Config", usage: "/plugins [plugin_id|all]", description: "Summarize discovered extension plugins and manifest diagnostics." },
+  { name: "commands", group: "Config", usage: "/commands [all]", description: "Summarize custom and plugin slash commands." },
   { name: "plugin-install", group: "Config", usage: "/plugin-install <root_path>", description: "Add a local plugin root to settings.extensions.plugins.roots." },
   { name: "plugin-update", group: "Config", usage: "/plugin-update", description: "Reload settings and refresh plugin capabilities." },
   { name: "plugin-remove-root", group: "Config", usage: "/plugin-remove-root <root_path>", description: "Remove a local plugin root from settings.extensions.plugins.roots." },
@@ -124,17 +135,70 @@ const BASIC_SLASH_COMMAND_NAMES = new Set([
   "help",
   "doctor",
   "mode",
-  "why",
-  "interrupt",
-  "onboard",
+  "view",
+  "model",
+  "approval",
   "kernel",
-  "status",
-  "session",
-  "memory",
   "resume",
-  "continue",
-  "attempts"
+  "continue"
 ]);
+
+const SLASH_HELP_NAMESPACES: Record<string, { title: string; names: string[] }> = {
+  main: {
+    title: "Main commands",
+    names: [...BASIC_SLASH_COMMAND_NAMES]
+  },
+  work: {
+    title: "Work commands",
+    names: ["work", "session", "attempts", "output", "changes", "tasks", "graph", "task", "workers", "worker", "checkpoint", "revert"]
+  },
+  debug: {
+    title: "Debug commands",
+    names: ["debug", "trace", "blackboard", "audit", "usage", "budget", "approvals", "approval", "leases", "span"]
+  },
+  ext: {
+    title: "Extension commands",
+    names: ["ext", "capabilities", "commands", "skills", "skill", "plugins", "mcp", "mcp-refresh", "mcp-resources", "mcp-read", "mcp-prompts", "mcp-prompt"]
+  },
+  symphony: {
+    title: "Symphony commands",
+    names: ["symphony", "symphony-tick", "symphony-run-once", "symphony-start", "symphony-stop", "symphony-cleanup", "symphony-daemon", "work-items"]
+  }
+};
+
+const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
+  work: [
+    { name: "sessions", group: "Kernel", usage: "/work sessions", description: "List recent work sessions.", completionPriority: 10 },
+    { name: "attempts", group: "Kernel", usage: "/work attempts", description: "List run attempts.", completionPriority: 20 },
+    { name: "output", group: "Tools", usage: "/work output", description: "Show recent tool output.", completionPriority: 30 },
+    { name: "files", group: "Kernel", usage: "/work files", description: "Show changed files for a session.", completionPriority: 40 },
+    { name: "checks", group: "Kernel", usage: "/work checks", description: "Show recorded checks for a session.", completionPriority: 50 },
+    { name: "workers", group: "Agents", usage: "/work workers", description: "List worker agents.", completionPriority: 60 }
+  ],
+  debug: [
+    { name: "trace", group: "Kernel", usage: "/debug trace", description: "Show persisted envelopes.", completionPriority: 10 },
+    { name: "blackboard", group: "Kernel", usage: "/debug blackboard", description: "Query blackboard facts.", completionPriority: 20 },
+    { name: "audit", group: "Kernel", usage: "/debug audit", description: "List audit records.", completionPriority: 30 },
+    { name: "usage", group: "Kernel", usage: "/debug usage", description: "Inspect usage counters.", completionPriority: 40 },
+    { name: "cache", group: "Kernel", usage: "/debug cache", description: "Inspect prompt cache status.", completionPriority: 50 },
+    { name: "events", group: "Kernel", usage: "/debug events", description: "Show recent runtime events.", completionPriority: 60 }
+  ],
+  ext: [
+    { name: "capabilities", group: "Config", usage: "/ext capabilities", description: "Summarize capabilities.", completionPriority: 10 },
+    { name: "commands", group: "Config", usage: "/ext commands", description: "Summarize custom commands.", completionPriority: 20 },
+    { name: "skills", group: "Config", usage: "/ext skills", description: "Summarize skills.", completionPriority: 30 },
+    { name: "plugins", group: "Config", usage: "/ext plugins", description: "Summarize plugins.", completionPriority: 40 },
+    { name: "mcp", group: "Config", usage: "/ext mcp", description: "Summarize MCP servers.", completionPriority: 50 }
+  ],
+  symphony: [
+    { name: "status", group: "Symphony", usage: "/symphony status", description: "Show Symphony status.", completionPriority: 10 },
+    { name: "tick", group: "Symphony", usage: "/symphony tick", description: "Dispatch one scheduler tick.", completionPriority: 20 },
+    { name: "run-once", group: "Symphony", usage: "/symphony run-once", description: "Dispatch and execute one tick.", completionPriority: 30 },
+    { name: "start", group: "Symphony", usage: "/symphony start", description: "Start TUI-managed daemon polling.", completionPriority: 40 },
+    { name: "stop", group: "Symphony", usage: "/symphony stop", description: "Stop daemon polling.", completionPriority: 50 },
+    { name: "cleanup", group: "Symphony", usage: "/symphony cleanup", description: "Clean terminal Symphony workspaces.", completionPriority: 60 }
+  ]
+};
 
 export function parseSlashCommandLine(commandLine: string): ParsedSlashCommand | undefined {
   const slashIndex = commandLine.search(/\S/);
@@ -164,8 +228,19 @@ export function rawSlashArgsAfter(parsed: ParsedSlashCommand, consumedArgs: numb
   return nextArg ? parsed.source.slice(nextArg.start).trim() : "";
 }
 
-export function renderSlashHelp(options: { includeAdvanced?: boolean } = {}): string {
+export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?: string } = {}): string {
   const includeAdvanced = options.includeAdvanced ?? false;
+  const namespace = options.namespace?.toLowerCase();
+  if (namespace && SLASH_HELP_NAMESPACES[namespace]) {
+    const help = SLASH_HELP_NAMESPACES[namespace];
+    const commands = help.names
+      .map((name) => slashCommands.find((command) => command.name === name))
+      .filter((command): command is SlashCommandSpec => command !== undefined);
+    return [
+      help.title,
+      ...commands.map((command) => `  ${command.usage} - ${command.description}`)
+    ].join("\n");
+  }
   return slashCommandGroups
     .map((group) => {
       const commands = slashCommands.filter((command) =>
@@ -186,16 +261,26 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean } = {}): st
 export function commandCandidatesForInput(
   value: string,
   cursor: number,
-  options: { includeAdvanced?: boolean } = {}
+  options: { includeAdvanced?: boolean; extraCommands?: SlashCommandSpec[] } = {}
 ): SlashCommandSpec[] {
   const token = slashCommandToken(value, cursor);
   if (!token) {
     return [];
   }
   const query = token.name.toLowerCase();
-  const commands = options.includeAdvanced || query.length >= 2
+  if (token.namespace) {
+    const commands = SLASH_NAMESPACE_SUBCOMMANDS[token.namespace] ?? [];
+    return commands
+      .map((command) => ({ command, score: slashCommandScore(command, query) }))
+      .filter((item) => item.score < 100)
+      .sort((a, b) => a.score - b.score || a.command.name.localeCompare(b.command.name))
+      .map((item) => item.command);
+  }
+  const visibleNamespaces = new Set(["debug", "work", "ext", "symphony"]);
+  const baseCommands = options.includeAdvanced || query.length >= 2
     ? slashCommands
-    : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name));
+    : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name) || visibleNamespaces.has(command.name));
+  const commands = mergeSlashCommands(baseCommands, options.extraCommands ?? []);
   return commands
     .map((command) => ({ command, score: slashCommandScore(command, query) }))
     .filter((item) => item.score < 100)
@@ -203,12 +288,16 @@ export function commandCandidatesForInput(
     .map((item) => item.command);
 }
 
-export function completeSlashCommand(value: string, cursor: number): { value: string; cursor: number } | undefined {
+export function completeSlashCommand(
+  value: string,
+  cursor: number,
+  options: { includeAdvanced?: boolean; extraCommands?: SlashCommandSpec[] } = {}
+): { value: string; cursor: number } | undefined {
   const token = slashCommandToken(value, cursor);
   if (!token) {
     return undefined;
   }
-  const matches = commandCandidatesForInput(value, cursor);
+  const matches = commandCandidatesForInput(value, cursor, options);
   if (matches.length === 0) {
     return undefined;
   }
@@ -220,9 +309,29 @@ export function completeSlashCommand(value: string, cursor: number): { value: st
   if (!completion || completion.length <= query.length) {
     return undefined;
   }
-  const replacement = `/${completion}${bestMatches.length === 1 ? " " : ""}`;
+  const replacement = token.namespace
+    ? `${completion}${bestMatches.length === 1 ? " " : ""}`
+    : `/${completion}${bestMatches.length === 1 ? " " : ""}`;
   const next = value.slice(0, token.start) + replacement + value.slice(token.end);
   return { value: next, cursor: token.start + replacement.length };
+}
+
+function mergeSlashCommands(primary: SlashCommandSpec[], extra: SlashCommandSpec[]): SlashCommandSpec[] {
+  const commands: SlashCommandSpec[] = [];
+  const seen = new Set<string>();
+  for (const command of [...primary, ...extra]) {
+    const name = command.name.trim();
+    if (!name) {
+      continue;
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    commands.push(command);
+  }
+  return commands;
 }
 
 export function acceptSlashCommandCandidate(
@@ -234,42 +343,102 @@ export function acceptSlashCommandCandidate(
   if (!token || !candidate) {
     return undefined;
   }
-  const replacement = `/${candidate.name} `;
+  const replacement = token.namespace ? `${candidate.name} ` : `/${candidate.name} `;
   const next = value.slice(0, token.start) + replacement + value.slice(token.end).replace(/^\s*/, "");
   return { value: next, cursor: token.start + replacement.length };
 }
 
 export function slashCommandCompletionKey(value: string, cursor: number): string | undefined {
   const token = slashCommandToken(value, cursor);
-  return token ? value.slice(token.start, token.end) : undefined;
+  if (!token) {
+    return undefined;
+  }
+  return token.namespace
+    ? `${token.namespace}:${value.slice(token.start, token.end)}`
+    : value.slice(token.start, token.end);
 }
 
-function slashCommandToken(value: string, cursor: number): { start: number; end: number; name: string } | undefined {
-  if (!value.startsWith("/")) {
-    return undefined;
-  }
+function slashCommandToken(value: string, cursor: number): { start: number; end: number; name: string; namespace?: string } | undefined {
   const safeCursor = Math.max(0, Math.min(value.length, cursor));
-  const firstWhitespace = value.search(/\s/);
-  const end = firstWhitespace === -1 ? value.length : firstWhitespace;
-  if (safeCursor > end) {
+  const namespaceToken = slashNamespaceToken(value, safeCursor);
+  if (namespaceToken) {
+    return namespaceToken;
+  }
+  const slashStart = slashCommandStart(value, safeCursor);
+  if (slashStart === undefined) {
     return undefined;
   }
-  return { start: 0, end, name: value.slice(1, end) };
+  let commandEnd = slashStart;
+  while (commandEnd < value.length && !/\s/.test(value[commandEnd])) {
+    commandEnd += 1;
+  }
+  if (safeCursor > commandEnd) {
+    const namespace = value.slice(slashStart + 1, commandEnd).toLowerCase();
+    if (!SLASH_NAMESPACE_SUBCOMMANDS[namespace]) {
+      return undefined;
+    }
+    let start = commandEnd;
+    while (start < value.length && /\s/.test(value[start])) {
+      start += 1;
+    }
+    let subEnd = start;
+    while (subEnd < value.length && !/\s/.test(value[subEnd])) {
+      subEnd += 1;
+    }
+    if (safeCursor < start || safeCursor > subEnd) {
+      return undefined;
+    }
+    return { start, end: subEnd, name: value.slice(start, subEnd), namespace };
+  }
+  return { start: slashStart, end: commandEnd, name: value.slice(slashStart + 1, commandEnd) };
+}
+
+function slashNamespaceToken(value: string, cursor: number): { start: number; end: number; name: string; namespace: string } | undefined {
+  const prefix = value.slice(0, cursor);
+  const match = /(?:^|\s)\/([^\s]+)\s+([^\s]*)$/.exec(prefix);
+  if (!match) {
+    return undefined;
+  }
+  const namespace = match[1]?.toLowerCase();
+  if (!namespace || !SLASH_NAMESPACE_SUBCOMMANDS[namespace]) {
+    return undefined;
+  }
+  const name = match[2] ?? "";
+  const start = cursor - name.length;
+  return { start, end: cursor, name, namespace };
+}
+
+function slashCommandStart(value: string, cursor: number): number | undefined {
+  let start = Math.max(0, Math.min(value.length, cursor));
+  while (start > 0 && !/\s/.test(value[start - 1])) {
+    start -= 1;
+  }
+  return value[start] === "/" ? start : undefined;
 }
 
 function slashCommandScore(command: SlashCommandSpec, query: string): number {
   if (!query) {
     return command.completionPriority ?? (command.group === "Core" ? 200 : command.group === "Kernel" ? 300 : 400);
   }
-  const haystack = [command.name, ...(command.aliases ?? [])].map((item) => item.toLowerCase());
-  if (haystack.includes(query)) {
+  const name = command.name.toLowerCase();
+  const aliases = (command.aliases ?? []).map((item) => item.toLowerCase());
+  if (name === query) {
     return 0;
   }
-  if (haystack.some((item) => item.startsWith(query))) {
+  if (aliases.includes(query)) {
+    return 2;
+  }
+  if (name.startsWith(query)) {
     return 5;
   }
-  if (haystack.some((item) => item.includes(query))) {
+  if (aliases.some((item) => item.startsWith(query))) {
+    return 8;
+  }
+  if (name.includes(query)) {
     return 20;
+  }
+  if (aliases.some((item) => item.includes(query))) {
+    return 25;
   }
   if (command.description.toLowerCase().includes(query) || command.group.toLowerCase().includes(query)) {
     return 40;
@@ -385,11 +554,11 @@ export function indentPreview(value: string, prefix: string): string {
 }
 
 export function formatToolOutputPreview(result: CommandOutputPreviewRecord): string {
-  const preview = commandOutputPreview(result.content, 6, 700);
+  const preview = commandOutputPreview(result.content, 4, 420);
   return [
     `${result.task_id}${result.attempt ? `#${result.attempt}` : ""} ${result.action} [${result.status ?? "unknown"}]: ${result.summary}`,
     result.recoverySuggestion ? `Recovery: ${result.recoverySuggestion}` : undefined,
-    result.outputRef ? `Full output: ${result.outputRef}` : undefined,
+    result.outputRef ? `Saved: ${result.outputRef}` : undefined,
     preview ? indentPreview(preview, "  ") : undefined
   ].filter(Boolean).join("\n");
 }

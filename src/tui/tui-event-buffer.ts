@@ -1,7 +1,7 @@
 import type { RuntimeEvent } from "../runtime/events.js";
 import { formatRuntimeEventBrief } from "../runtime/event-formatters.js";
 
-export const TUI_EVENT_BUFFER_LIMIT = 80;
+export const TUI_EVENT_BUFFER_LIMIT = 2_000;
 
 export function appendTuiRuntimeEvent(
   previous: RuntimeEvent[],
@@ -34,7 +34,7 @@ export function sameRuntimeEventDisplay(a: RuntimeEvent | undefined, b: RuntimeE
 export function runtimeEventDisplaySignature(event: RuntimeEvent): string {
   switch (event.type) {
     case "loop_activity":
-      return `${event.type}:${event.session_id}:${event.phase}:${event.turn ?? ""}:${event.tool ?? ""}:${event.task_id ?? ""}:${event.message}`;
+      return `${event.type}:${activityAgentSignature(event)}:${event.session_id}:${event.phase}:${event.turn ?? ""}:${event.tool ?? ""}:${event.task_id ?? ""}:${event.message}`;
     case "progress":
       return `${event.type}:${event.completed}/${event.total}`;
     case "task":
@@ -50,4 +50,21 @@ export function runtimeEventDisplaySignature(event: RuntimeEvent): string {
     default:
       return `${event.type}:${formatRuntimeEventBrief(event)}`;
   }
+}
+
+function activityAgentSignature(event: Extract<RuntimeEvent, { type: "loop_activity" }>): string {
+  const agent = event.agent;
+  if (!agent) {
+    return "";
+  }
+  return [
+    agent.worker_id,
+    agent.agent_id,
+    agent.role,
+    agent.display_name,
+    agent.role_title,
+    agent.agent_spec_id,
+    agent.invocation_mode,
+    agent.capability
+  ].filter(Boolean).join("/");
 }

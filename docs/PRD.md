@@ -2,7 +2,7 @@
 
 ## Vision
 
-Swarm is a versatile, self-iterating local and distributed agent swarm CLI. Users talk only to the main Swarm. Swarm decides when to answer directly, run a local coding loop, spawn workers, run a full swarm, review results, ask for clarification, or improve itself.
+Swarm is a local CLI/TUI-first coding agent runtime for evidence-bounded workspace work. Users talk only to the main Swarm. Swarm decides when to answer directly, run a local coding loop, spawn local workers, run the experimental full-swarm path, review results, ask for clarification, or improve itself.
 
 Swarm is not a report generator by default. For coding and project work, the final product is real workspace changes; `.swarm/artifacts` stores intermediate outputs, long logs, worker drafts, trace snapshots, and temporary evidence.
 
@@ -22,7 +22,7 @@ Swarm is not a report generator by default. For coding and project work, the fin
 - LLM control decisions drive routing and interruption; hardcoded keyword routing is not the primary behavior.
 - Workers never speak directly to users; worker notifications flow back to the main Swarm.
 - The startup workspace is the default write boundary; paths outside that boundary are read-only unless configured.
-- Yolo mode is an explicit opt-in permission mode for skipping approval prompts while preserving workspace and deny-list boundaries.
+- Yolo mode is an explicit opt-in permission mode for skipping most approval prompts while preserving workspace and deny-list boundaries; destructive `r4` shell commands still stop for confirmation unless explicitly allowed.
 - Provider support must remain multi-vendor: OpenAI-compatible, Claude-compatible, Kimi coding plan, and custom endpoints.
 
 ## Core Capabilities
@@ -31,6 +31,7 @@ Swarm is not a report generator by default. For coding and project work, the fin
 - Local coding loop with file read/search/edit/write, shell/test/lint/git tools, permission checks, output budgets, and long-output artifact persistence.
 - Web search tool with provider-native server-side search when available, local fallback search, domain filters, and source-preserving output for current information.
 - Local Gateway HTTP/event-stream API for scripts, editor integrations, approval callbacks, live-message injection, and read APIs for graph, trace, audit, usage, workers, and handoffs. The product UI is the CLI TUI; Gateway is API only.
+- Conversation-first TUI renderer substrate with ScrollBox, message-level virtual transcript layout, render caching, sticky prompt/unseen divider behavior, footer status pills, transcript search, compact foldable tool/thinking/result rows, and explicit detail surfaces for cache, Gateway, Symphony, and LSP status.
 - Main Swarm control plane with structured decisions for answer, coding loop, full swarm, live-message injection, interruption, clarification, review, compacting, and self-improvement.
 - Worker lifecycle with spawn, continue, stop, status, persisted worker records, tool budgets, file scope, and worker notifications.
 - Agent spec registry with specialized personas for researcher, coder, reviewer, critic, verifier, architect, self-improver, and handoff specialist.
@@ -41,14 +42,73 @@ Swarm is not a report generator by default. For coding and project work, the fin
 - Trace and debug logs for user input, control decisions, LLM calls, tool calls, workers, blackboard writes, permissions, review, and final output.
 - Self-iteration loop: inspect recent logs/traces/artifacts, classify failure modes, generate a plan, edit Swarm, run checks, and summarize verification.
 
+## Current Implementation Status
+
+The current Agent OS implementation status is tracked in
+`.workflow/specs/work-kernel-docs-coverage-matrix.md`.
+The current release-readiness audit is
+`.workflow/scratch/20260512-plan-P7-productization-continuous-iteration/release-readiness-audit.md`.
+
+The product surface is CLI/TUI first. Headless CLI, Gateway, Symphony, and ASP
+are supporting automation, background intake, and protocol surfaces. They should
+be described from the user's perspective as local controls and observability,
+not as separate product UIs.
+
+- Implemented and directly tested: worker-loop contracts, Work protocol
+  projections, Work contract summaries, Symphony scheduler recovery/status,
+  approval report guardrails, Gateway approval live-route smoke, Gateway
+  event-stream helpers, bounded Gateway checkpoint route smoke, scoped-write
+  runtime integration, TUI slash command registry, TUI kernel operator surface
+  formatting, Gateway run management report/watch helpers, Gateway server-level
+  Symphony route smoke, Symphony WorkSource local/fake parsing and refresh
+  matching, Symphony local runner terminal bookkeeping, workflow loader failure
+  handling, shared Symphony status formatting, daemon lifecycle, Symphony
+  cleanup, doctor reports, benchmark metadata/comparison, extension catalog
+  reports, custom markdown commands, local ASP envelope/router behavior
+  including blackboard query filters, bounded child-process ASP transport
+  behavior, execution-router fallback policy, prompt-cache status projection,
+  conversation-first TUI regression coverage including virtualized long-session
+  gates, footer/status overlays, transcript search, foldable runtime rows, and
+  narrow/short viewport checks, Symphony workspace boundary checks, and narrow
+  LSP status/restart/logs plus TypeScript semantic fallback coverage.
+- Implemented with partial or missing focused tests: checkpoint/revert source,
+  broader end-to-end session creation coverage, and broad Blackboard semantics
+  beyond the tested store/router query and mutation paths.
+- Deferred from this iteration: hook-race approval arbitration, broader
+  checkpoint orchestration beyond the bounded Gateway checkpoint route, broader
+  distributed ASP transport hardening beyond the verified local child-process
+  seam, and richer WorkSource write operations.
+
+Release-ready wording should stay bounded to the verified local surface:
+
+- "Gateway automation" means the tested local HTTP/event-stream, run, approval,
+  session, worker, handoff, capability, bounded Gateway checkpoint route, and
+  Symphony route surfaces.
+- "Symphony" means local repository-owned work-source intake, scheduling,
+  daemon, runner, status, workspace preparation, and cleanup over shared Work
+  Kernel records.
+- "LSP" means a narrow local semantic helper surface for status/restart/logs
+  and file-level completion, hover, definition, references, symbols,
+  diagnostics, code actions, rename preview, and format preview. It is not an
+  IDE replacement claim.
+- "ASP protocol hardening" currently means local envelope/router,
+  child-process IPC forwarding/reply/progress behavior, and execution routing
+  policy. Network transport, cross-host routing, distributed trace, and a new
+  distributed worker model are not completed claims.
+
 ## Milestones
 
 1. Reliable local Swarm CLI: onboarding, provider/model selection, stable TUI, coding loop, live input, trace/artifact/session inspection.
 2. Local multi-agent collaboration: agent spec registry, LLM dispatch, persisted workers, handoff sessions, worker continuation/stop, richer use of the existing blackboard, reviewer/critic, file locks, read-only worker parallelism, write serialization.
 3. Self-iteration: self-review command, failure taxonomy, improvement planning, eval suite, verified self-modification.
 4. Work Kernel and Symphony ingress: common work/session/attempt/workspace/policy types, optional `WORKFLOW.md` loader, local/fake work sources, claim/retry/reconciliation loop, and shared status snapshots.
-5. ASP protocol hardening: local Gateway, envelope-first lifecycle, idempotency, capability routing, consensus, policy, and transport abstraction.
-6. Distributed Swarm: child-process/daemon workers, worktree isolation, health checks, retry-different-worker, distributed trace.
+5. ASP protocol hardening: verified local envelope lifecycle, idempotency,
+   capability routing, consensus, policy, execution routing, and bounded
+   child-process transport behavior; broader transport abstraction remains
+   bounded to future distributed work.
+6. Distributed Swarm: daemon workers, worktree isolation, health checks,
+   retry-different-worker, network/cross-host routing, and distributed trace
+   remain planned beyond the verified local child-process seam.
 
 ## Success Metrics
 

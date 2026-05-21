@@ -1,0 +1,69 @@
+{
+  "id": "CAND-PROD-046-TASK-001",
+  "title": "Ink DOM-level ScrollBox substrate",
+  "status": "completed",
+  "type": "tui-renderer-foundation",
+  "priority": "P0",
+  "wave": 1,
+  "depends_on": [],
+  "objective": "Introduce a Swarm-owned DOM-level scroll/render substrate modeled on cc's ScrollBox so long-session scrolling can bypass React state churn and support sticky scroll, pending delta, clamp bounds, and viewport culling.",
+  "files": [
+    "src/tui/ink/ScrollBox.tsx",
+    "src/tui/ink/dom.ts",
+    "src/tui/ink/rendering.ts",
+    "src/tui/components/ConversationFullscreenLayout.tsx",
+    "src/tui/ink/scroll-box.test.ts",
+    "src/tui/conversation-render.test.ts"
+  ],
+  "read_first": [
+    "E:/Playground/cc/src/ink/components/ScrollBox.tsx",
+    "E:/Playground/cc/src/components/FullscreenLayout.tsx",
+    "src/tui/components/ConversationFullscreenLayout.tsx",
+    "src/tui/SwarmChatApp.tsx",
+    "src/tui/conversation-layout.ts",
+    "src/tui/conversation-render.test.ts"
+  ],
+  "actions": [
+    "Create a Swarm TUI scroll primitive with imperative `scrollTo`, `scrollBy`, `scrollToBottom`, `isSticky`, `subscribe`, and clamp-bound APIs.",
+    "Keep scroll position and pending wheel/page deltas in the rendered node or a stable external store rather than React state.",
+    "Support sticky-scroll behavior for streaming output while allowing manual scroll to break stickiness.",
+    "Expose fresh viewport and content-height reads for later virtual-list and search behavior.",
+    "Integrate the primitive behind `ConversationFullscreenLayout` without changing the default conversation presentation yet."
+  ],
+  "convergence": {
+    "criteria": [
+      "Scroll mutations no longer require updating React state per scroll event.",
+      "Sticky bottom behavior remains correct while assistant output streams.",
+      "Manual scroll breaks stickiness and preserves the user's viewport.",
+      "Tests cover scrollTo, scrollBy, sticky bottom, pending delta, and clamp-bound behavior.",
+      "Existing TUI tests still pass with the new primitive present but minimally integrated."
+    ]
+  },
+  "verification": [
+    "node --import tsx --test src/tui/ink/scroll-box.test.ts src/tui/conversation-render.test.ts",
+    "npm run check"
+  ],
+  "non_goals": [
+    "Do not rewrite the entire Ink renderer in one task.",
+    "Do not migrate message virtualization before the ScrollBox API is covered by tests.",
+    "Do not change Gateway, Symphony, LSP, or cache behavior in this task."
+  ],
+  "source_references": [
+    "E:/Playground/cc/src/ink/components/ScrollBox.tsx:10",
+    "E:/Playground/cc/src/ink/components/ScrollBox.tsx:72",
+    "E:/Playground/cc/src/ink/components/ScrollBox.tsx:89"
+  ],
+  "completed_at": "2026-05-21T18:50:30+08:00",
+  "findings": "Added Swarm-owned ScrollBox substrate with external mutable scroll controller, sticky bottom, pending delta, clamp bounds, window reads, and minimal ConversationFullscreenLayout integration without changing default transcript presentation.",
+  "files_modified": [
+    "src/tui/ink/ScrollBox.tsx",
+    "src/tui/ink/dom.ts",
+    "src/tui/ink/rendering.ts",
+    "src/tui/components/ConversationFullscreenLayout.tsx",
+    "src/tui/ink/scroll-box.test.ts"
+  ],
+  "tests_passed": [
+    "node --import tsx --test src/tui/ink/scroll-box.test.ts src/tui/conversation-render.test.ts",
+    "npm run check"
+  ]
+}

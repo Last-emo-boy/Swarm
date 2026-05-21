@@ -1,0 +1,68 @@
+{
+  "id": "CAND-PROD-046-TASK-003",
+  "title": "Unseen divider, sticky prompt, and jump-to-bottom",
+  "status": "completed",
+  "type": "tui-scroll-ux",
+  "priority": "P1",
+  "wave": 2,
+  "depends_on": [
+    "CAND-PROD-046-TASK-001"
+  ],
+  "objective": "Upgrade Swarm's scroll-away behavior so users get stable unseen-message boundaries, a sticky prior prompt header, and a jump-to-bottom pill during streaming work.",
+  "files": [
+    "src/tui/conversation-layout.ts",
+    "src/tui/components/ConversationFirstPane.tsx",
+    "src/tui/components/ConversationFullscreenLayout.tsx",
+    "src/tui/SwarmChatApp.tsx",
+    "src/tui/conversation-layout.test.ts",
+    "src/tui/conversation-render.test.ts"
+  ],
+  "read_first": [
+    "E:/Playground/cc/src/components/FullscreenLayout.tsx",
+    "E:/Playground/cc/src/components/VirtualMessageList.tsx",
+    "src/tui/conversation-layout.ts",
+    "src/tui/components/ConversationFirstPane.tsx",
+    "src/tui/SwarmChatApp.tsx"
+  ],
+  "actions": [
+    "Track the first scroll-away snapshot using message index and rendered content position.",
+    "Count unseen messages by user-visible assistant turns, not raw progress/tool-only events.",
+    "Keep the unseen divider stable as new messages stream or as earlier content is prepended/restored.",
+    "Render a sticky user prompt header when the current viewport is below the prompt that produced the visible output.",
+    "Add a clickable or key-triggered jump-to-bottom pill that restores sticky scroll and clears unseen state."
+  ],
+  "convergence": {
+    "criteria": [
+      "Progress, tool-only, and status-only events do not inflate the unseen count.",
+      "New assistant text while scrolled up produces a stable divider and bottom pill.",
+      "Jump-to-bottom restores sticky scroll without losing the divider prematurely during racey input batches.",
+      "Sticky prompt disappears when its original prompt is visible in the viewport.",
+      "Tests cover user scroll-away, assistant append, progress append, user submit, and jump-to-bottom."
+    ]
+  },
+  "verification": [
+    "node --import tsx --test src/tui/conversation-layout.test.ts src/tui/conversation-render.test.ts",
+    "npm run check"
+  ],
+  "non_goals": [
+    "Do not add transcript search here; search is TASK-005.",
+    "Do not redesign message roles or runtime event schemas.",
+    "Do not make service-health panels visible by default."
+  ],
+  "source_references": [
+    "E:/Playground/cc/src/components/FullscreenLayout.tsx:86",
+    "E:/Playground/cc/src/components/FullscreenLayout.tsx:200",
+    "E:/Playground/cc/src/components/FullscreenLayout.tsx:239"
+  ],
+  "completed_at": "2026-05-21T19:00:00+08:00",
+  "findings": "Unseen-message count now follows user-visible assistant message semantics: progress, tool/result, system, and thinking rows preserve scroll-away baseline but do not inflate the bottom pill count. Existing sticky prompt, divider, and jump-to-bottom reset behavior remains covered.",
+  "files_modified": [
+    "src/tui/conversation-layout.ts",
+    "src/tui/conversation-layout.test.ts",
+    "src/tui/components/VirtualConversationList.tsx"
+  ],
+  "tests_passed": [
+    "node --import tsx --test src/tui/conversation-layout.test.ts src/tui/conversation-render.test.ts",
+    "npm run check"
+  ]
+}

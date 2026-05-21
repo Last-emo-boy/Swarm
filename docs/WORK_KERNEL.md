@@ -1,12 +1,25 @@
 # Swarm And Symphony Work Kernel
 
-Status: implemented skeleton plus next iteration plan
+Status: local product surface implemented with traceability matrix
 
 This document combines the ideas in `Swarm.md` and `Symphony.md` into one
 architecture. The goal is not to merge the two products into one shape. The
 goal is to give them a shared work kernel so interactive local agent work and
 background local work-source automation use the same session, task, runner,
 policy, trace, and review primitives.
+
+Current release-readiness is intentionally local and evidence-bounded:
+
+- Swarm is the CLI/TUI product surface.
+- Gateway is a local automation and event-stream API, not a separate product UI.
+- Symphony is local background intake over repository-owned work sources.
+- ASP is verified for local envelope/router, execution-routing behavior, and
+  the bounded local child-process transport seam. Broader distributed transport
+  hardening remains a planned follow-on slice.
+
+The coverage source of truth is
+`.workflow/specs/work-kernel-docs-coverage-matrix.md`; the current product audit
+is `.workflow/scratch/20260512-plan-P7-productization-continuous-iteration/release-readiness-audit.md`.
 
 ## One Model, Multiple Entrypoints
 
@@ -386,8 +399,14 @@ Kernel events instead of custom status objects.
 
 ### Phase 6: Distributed ASP Hardening
 
-After the local kernel is stable, harden envelope routing, idempotency,
-capability routing, separate-process workers, and transport abstraction.
+After the local kernel is stable, harden separate-process workers and transport
+abstraction. The local ASP proof is covered by deterministic tests for envelope
+idempotency, routing fields, in-process router dispatch, blackboard, task,
+artifact, bid, consensus, and execution-router fallback policy. P6 adds a
+bounded child-process transport proof: child runtime envelopes are forwarded
+into the router, addressed replies are handed back to child agents, task
+progress becomes loop activity, and capability/idempotency replay edge cases
+are pinned. Broader distributed transport hardening remains a later slice.
 
 ## Non-Goals For The First Combined Iteration
 
@@ -425,11 +444,19 @@ The current codebase now has the first concrete slice of this architecture:
   traces.
 - Interactive Swarm sessions create workspace leases and project runtime events
   into Work Kernel attempts, evidence, review, verification, and final outcome.
-- Gateway session responses include `work_snapshot` so API users see the same
-  execution truth as the TUI.
+- Gateway session responses include `work_snapshot` plus stable
+  `work_contracts` summaries so API users see the same execution truth,
+  delegated write policy, and file scope context as the TUI.
+- Task state now persists capability, write policy, and delegated file scope so
+  task graphs, task detail routes, and WorkSnapshot task contracts share one
+  stable contract source instead of reconstructing that metadata from events.
 - `symphony preview` loads `WORKFLOW.md`, normalizes local or fake work-source
   records into `WorkItem`, prepares per-item workspaces, creates sessions, and writes preview
   facts to the blackboard.
+- Local and fake `WorkSource` behavior now has focused coverage for Markdown,
+  JSON, and JSONL parsing, default fake items, active/terminal state filtering,
+  read-only source-file reads, and refresh matching by work-item key, source id,
+  and human id.
 - `symphony tick` is the first scheduler slice. It loads the workflow, fetches
   candidate work, applies active-state and capacity policy, claims eligible
   work, prepares a workspace lease, creates a running Work Kernel session,
@@ -464,6 +491,11 @@ The current codebase now has the first concrete slice of this architecture:
   the same Work Kernel session and `WorkspaceLease`. This preserves the Symphony
   `WorkItem` source on the original session and avoids a separate Symphony
   execution model.
+- `LocalCodingLoopSymphonyRunner` terminal outcomes now have focused evidence.
+  Completed, cancelled, failed, and skipped dispatch paths persist stable
+  `symphony.runner` attempts, write blackboard result/decision/evidence facts,
+  classify retryable errors, and are readable through the shared Symphony status
+  projection without making real model calls.
 - `POST /v1/symphony/tick` exposes the same dispatch path through the Gateway.
   `POST /v1/symphony/run-once` or `POST /v1/symphony/tick` with
   `{"execute": true}` enables the runner bridge through the same Gateway
@@ -475,11 +507,20 @@ The current codebase now has the first concrete slice of this architecture:
   `run-once`. Each daemon tick prints a compact scheduler summary and surfaces
   blocking preflight/dispatch errors directly instead of requiring users to
   inspect the database.
+- Runtime now also has a lightweight internal system loop. When `WORKFLOW.md`
+  exists and `system_loop.enabled` is not false, the main runtime debounces
+  startup, blackboard work-source entries, task/artifact envelopes, and terminal
+  session events into a Symphony scheduler tick. The tick still uses the same
+  scheduler, claim store, `task.assign` envelope, blackboard dispatch decision,
+  workspace lease, and runner path; `system_loop.execute` controls whether the
+  tick only dispatches or also runs the local coding-loop runner.
 - Symphony status is now a shared derived surface, not a daemon-local string.
   `src/symphony/status.ts` reads Symphony-sourced Work Kernel sessions,
   `RunAttempt`s, workspace leases, and workflow policy to produce one status
   object. `symphony status`, `GET /v1/symphony/status`, and the TUI
-  `/symphony` command all read that same object.
+  `/symphony` command all read that same object. The CLI status text is now
+  covered through a pure formatter so workflow errors, totals, retry queues,
+  capacity, and recent sessions remain stable without process-spawn tests.
 - Reconciliation now has a live cancellation path for local WorkSession runners.
   When a recovered/running work item leaves an active state, the scheduler
   calls the Runtime to interrupt that specific session, records whether a live
@@ -508,6 +549,42 @@ The current codebase now has the first concrete slice of this architecture:
   Slash command approvals, tool calls, audit rows, usage rows, attempts, and
   workspace leases use that session id, so TUI-local work is inspectable through
   `/session`, `/attempts`, `/approvals`, `/audit`, `/usage`, and `/kernel`.
+- Prompt-cache status is generated once from provider usage and reused by
+  result cards and `/debug cache`, so cache misses expose mode, key/scope,
+  hit/write rates, changed prefix fields, and token counters without making the
+  default conversation view a diagnostics dashboard.
+- The TUI renderer path is intentionally local and incremental. It uses the
+  in-repo Ink `ScrollBox` substrate plus message-level virtual transcript
+  layout and render caches rather than claiming a full external DOM renderer.
+  Current gates cover 1000+ message sessions, append cache reuse, short/narrow
+  viewport budgets, sticky prompts, unseen dividers, footer pills, transcript
+  search, foldable thinking/tool/result rows, and explicit inspector/detail
+  handoff for cache, Gateway, Symphony, and LSP status.
+- The local ASP protocol surface now has focused deterministic coverage.
+  `createEnvelope` preserves trace, routing, correlation, auth, priority, and
+  ttl fields while deriving stable idempotency keys for idempotent message
+  types. The in-process `EnvelopeRouter` covers direct, broadcast, role, and
+  capability routing; duplicate idempotent suppression; replay suppression
+  before semantic store mutation; blackboard write/read/update/lock/unlock;
+  blackboard query filters and invalid query errors; task create/cancel;
+  artifact create/update; bid aggregation; consensus vote/result; and
+  correlated ack/error replies.
+- Symphony workflow loading has focused malformed-input coverage. The loader
+  reports missing files, unclosed frontmatter, non-map frontmatter, unsupported
+  frontmatter lines, empty keys, and unknown template variables as structured
+  workflow/preflight errors instead of crashing ordinary Swarm paths.
+- Symphony workspace preparation has focused boundary evidence for safe
+  workspace keys, `create=false`, root-contained paths, and long labels.
+- The local child-process ASP seam now has focused deterministic coverage.
+  `handleRuntimeChildTransportMessage` proves child runtime envelopes enter the
+  `EnvelopeRouter`, dispatch failures produce correlated error replies,
+  addressed replies are handed back to child agents, and `task.progress`
+  becomes Work Kernel `loop_activity`.
+- The execution router is pinned to a conservative local-product boundary.
+  Forced modes bypass provider calls, simple chat and workspace tasks have fast
+  routes, unsafe structured chat/full-swarm decisions are downgraded to the
+  local coding loop, invalid provider JSON can be repaired, and provider
+  failures fall back to the local coding loop.
 
 This is now a minimal local daemon. `tick` creates the shared execution truth and
 observable dispatch record. `run-once` proves the runner contract by executing
@@ -520,6 +597,30 @@ kernel. The product UI is the CLI/TUI; Gateway is only a local API and
 event-stream surface. TUI `/kernel` is the combined Swarm, Work Kernel, and
 Symphony status surface over the same local facts.
 
+Local LSP support is intentionally narrow. The TypeScript path has an
+in-process semantic fallback; configured stdio providers are lifecycle-managed
+through `LspManager` and exposed through status, restart, logs, timeout, exit,
+and cleanup behavior. Non-TypeScript provider work remains provider-command
+driven and does not imply an IDE replacement surface.
+
+## Traceability
+
+The current implementation, test coverage, partial areas, and deferred items are
+tracked in `.workflow/specs/work-kernel-docs-coverage-matrix.md`. Treat that
+matrix as the release-gate companion to this narrative: an implemented claim is
+only considered fully backed when it has both a source anchor and a focused test
+anchor. Rows marked `implemented-unverified`, `implemented+partial-test`,
+`partial`, or `deferred` should drive the next Maestro iteration before the docs
+claim stronger completion.
+
+Checkpoint/resume evidence is bounded to the current local surfaces. The CLI/TUI
+checkpoint commands, resume report, Gateway event stream helpers, and the
+bounded Gateway checkpoint route group share the same workspace-scoped runtime
+checkpoint helpers. Broader checkpoint orchestration remains deferred: no
+session/run-scoped checkpoint API, distributed checkpoint transport, checkpoint
+event-stream expansion, or checkpoint storage redesign is part of the verified
+local product surface.
+
 ## Runtime Boundary Notes
 
 The useful runtime boundary is operational, not vendor-specific:
@@ -531,9 +632,11 @@ The useful runtime boundary is operational, not vendor-specific:
 - Hook outputs are structured decisions. A hook may allow, deny, block, add
   context, or pass through. Runtime control should not depend on parsing human
   strings.
-- Permission hooks and user approval can race; the first authoritative decision
-  wins, and the loser is cancelled or ignored. This keeps UI responsive while
-  still allowing policy automation.
+- Permission hooks and user approval can race. First-authoritative-decision
+  behavior is a deferred design intent, not implemented arbitration in the
+  current local product surface. Today the verified boundary is persisted
+  approval history plus live actionable Gateway decisions with hook execution
+  guarded by workspace trust and explicit hook approval.
 - Multi-session systems show capacity and per-session activity directly. The
   scheduler snapshot should expose running count, max concurrency, retry queue,
   and current session activity from Work Kernel state.
@@ -548,15 +651,19 @@ For this repo, these map to three concrete rules:
    structured blackboard entries, attempts, audit rows, and envelopes.
 3. TUI status and Gateway read APIs should read WorkSnapshot/scheduler snapshot
    rather than bespoke runtime strings.
+4. Cache, worker, trace, and LSP diagnostics should stay behind result/detail
+   surfaces unless they are the current action.
 
 ## Next Iteration
 
 The next implementation slice should keep extending the TUI-first local product
 without forking a separate runtime:
 
-1. Harden the TUI `/kernel` status view into the default operator surface for
-   Swarm, Work Kernel, and Symphony state.
-2. Add richer local source operations behind `WorkSource`; keep source writes
-   out of the scheduler unless implemented as explicit approved local tools.
-3. Expand local runner cancellation/retry coverage while preserving the same
-   local `WorkSession`, `RunAttempt`, and `WorkspaceLease` contracts.
+1. Use the P6 child-process transport evidence to keep ASP docs bounded to the
+   verified local IPC seam before broader distributed claims.
+2. Keep broad WorkSession lifecycle, Policy/Sandbox matrices, and reviewer
+   decision-quality claims partial until they have their own focused slices.
+3. Keep richer WorkSource writes out of the scheduler unless implemented as
+   explicit approved local tools.
+4. Preserve the same local `WorkSession`, `RunAttempt`, and `WorkspaceLease`
+   contracts when adding any new runner or source capabilities.
