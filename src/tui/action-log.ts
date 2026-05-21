@@ -1,5 +1,6 @@
 import type { RuntimeEvent } from "../runtime/events.js";
 import { formatRuntimeEventBrief, formatWorkerBrief, formatWorkerDetail } from "../runtime/event-formatters.js";
+import { formatRecoveryAdviceInline } from "../runtime/recovery.js";
 import { buildWorkRecordFromRuntimeEvent, type WorkProtocolRecord } from "../runtime/work-protocol.js";
 import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "../runtime/tool-task-sandbox.js";
 
@@ -431,6 +432,7 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
           event.outputRef ? `output=${event.outputRef}` : undefined,
           event.errorCode ? `error=${event.errorCode}` : undefined,
           event.recoverySuggestion ? `recovery=${event.recoverySuggestion}` : undefined,
+          event.recovery ? `recovery_detail=${formatRecoveryAdviceInline(event.recovery)}` : undefined,
           event.write_policy ? `policy=${event.write_policy}` : undefined,
           event.file_scope?.length ? `scope=${event.file_scope.join(",")}` : undefined,
           event.sandbox ? `sandbox=${event.sandbox.policy}/${event.sandbox.decision} ${event.sandbox.reason}` : undefined,
@@ -510,6 +512,7 @@ export function workProtocolToActionRow(
           work.output_ref ? `output_ref=${work.output_ref}` : undefined,
           work.error_code ? `error=${work.error_code}` : undefined,
           work.recovery_suggestion ? `recovery=${work.recovery_suggestion}` : undefined,
+          work.recovery ? `recovery_detail=${formatRecoveryAdviceInline(work.recovery)}` : undefined,
           work.sandbox ? `sandbox=${work.sandbox.policy}/${work.sandbox.status} ${work.sandbox.reason}` : undefined,
           work.sandbox?.targets?.length ? `targets=${work.sandbox.targets.join(", ")}` : undefined,
           work.sandbox?.file_scope?.length
@@ -611,6 +614,7 @@ export function workProtocolToActionRow(
           work.summary ? `summary=${work.summary}` : undefined,
           work.error_code ? `error=${work.error_code}` : undefined,
           work.recovery_suggestion ? `recovery=${work.recovery_suggestion}` : undefined,
+          work.recovery ? `recovery_detail=${formatRecoveryAdviceInline(work.recovery)}` : undefined,
           event ? `runtime=${safeJson(event)}` : undefined
         )
       };

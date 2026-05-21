@@ -21,6 +21,8 @@ import { renderHostEnvironmentPrompt } from "./host-context.js";
 import { applyToolResultBudget, createContentReplacementState, type ContentReplacementState } from "./tool-result-budget.js";
 import type { WorkspaceIndex } from "./workspace-index.js";
 import { workspaceIndexSummary } from "./workspace-index.js";
+import type { RecoveryAdvice } from "./recovery.js";
+import { formatRecoveryAdvice, recoveryAdviceFromToolFailure } from "./recovery.js";
 import {
   assertCapabilityAllowedBySandbox,
   assertToolActionAllowedBySandbox,
@@ -62,6 +64,7 @@ type CodingLoopToolResult = {
   errors?: string[];
   errorCode?: string;
   recoverySuggestion?: string;
+  recovery?: RecoveryAdvice;
   sandbox?: SandboxDecision;
 };
 
@@ -982,6 +985,7 @@ export class CodingAgentLoop {
       };
       const rawResult = await runLocalTool(action, toolContext);
       const prepared = await prepareToolOutput(sessionId, id, rawResult, renderToolResultDetail(rawResult));
+      const recovery = rawResult.recovery ?? recoveryAdviceForRawToolResult(action.type, rawResult);
       const result: CodingLoopToolResult = {
         id,
         action: action.type,
@@ -992,7 +996,8 @@ export class CodingAgentLoop {
         data: prepared.data,
         errors: rawResult.errors,
         errorCode: rawResult.errorCode,
-        recoverySuggestion: rawResult.recoverySuggestion
+        recoverySuggestion: rawResult.recoverySuggestion,
+        recovery
       };
       this.options.events.emitEvent({
         type: "tool_result",
@@ -1006,6 +1011,7 @@ export class CodingAgentLoop {
         outputRef: prepared.outputRef,
         errorCode: rawResult.errorCode,
         recoverySuggestion: rawResult.recoverySuggestion,
+        recovery,
         write_policy: taskContract.write_policy,
         file_scope: taskContract.file_scope,
         sandbox: result.sandbox,
@@ -1018,15 +1024,23 @@ export class CodingAgentLoop {
       const sandbox = sandboxDecisionFromError(error);
       const summary = sandbox ? sandboxFailureSummary(sandbox) : reason;
       const recoverySuggestion = recoverySuggestionForToolError(errorCode, reason, sandbox);
+      const recovery = recoveryAdviceFromToolFailure({
+        action: actionName,
+        reason,
+        errorCode,
+        recoverySuggestion,
+        sandbox
+      });
       const result: CodingLoopToolResult = {
         id,
         action: actionName,
         status: "failed",
         summary,
-        content: formatToolFailureContent(actionName, summary, errorCode, recoverySuggestion, sandbox),
+        content: formatToolFailureContent(actionName, summary, errorCode, recoverySuggestion, sandbox, recovery),
         errors: [reason],
         errorCode,
         recoverySuggestion,
+        recovery,
         sandbox
       };
       this.options.events.emitEvent({
@@ -1040,6 +1054,7 @@ export class CodingAgentLoop {
         status: "failed",
         errorCode: result.errorCode,
         recoverySuggestion: result.recoverySuggestion,
+        recovery: result.recovery,
         write_policy: taskContract?.write_policy,
         file_scope: taskContract?.file_scope,
         sandbox: result.sandbox,
@@ -1090,13 +1105,20 @@ export class CodingAgentLoop {
         ? `Use ToolSearch with a focused query such as ${JSON.stringify(capability.title ?? capability.name)} or ${JSON.stringify(capability.searchHint ?? capability.providerId)} first, then retry on the next turn.`
         : "Use ToolSearch to discover the relevant capability first.";
       const summary = `Tool ${capability.name} is deferred and not yet loaded.`;
+      const recovery = recoveryAdviceFromToolFailure({
+        action: capability.name,
+        reason: summary,
+        errorCode: "TOOL_DEFERRED",
+        recoverySuggestion
+      });
       const rawResult: ToolResult = {
         action: capability.name,
         status: "failed",
         summary,
-        content: formatToolFailureContent(capability.name, summary, "TOOL_DEFERRED", recoverySuggestion),
+        content: formatToolFailureContent(capability.name, summary, "TOOL_DEFERRED", recoverySuggestion, undefined, recovery),
         errorCode: "TOOL_DEFERRED",
         recoverySuggestion,
+        recovery,
         data: {
           capability_id: capability.id,
           provider_id: capability.providerId,
@@ -1115,7 +1137,8 @@ export class CodingAgentLoop {
         data: prepared.data,
         errors: [summary],
         errorCode: "TOOL_DEFERRED",
-        recoverySuggestion
+        recoverySuggestion,
+        recovery
       };
       this.options.events.emitEvent({
         type: "tool_result",
@@ -1129,6 +1152,7 @@ export class CodingAgentLoop {
         outputRef: prepared.outputRef,
         errorCode: result.errorCode,
         recoverySuggestion: result.recoverySuggestion,
+        recovery: result.recovery,
         write_policy: this.options.writePolicy ?? (capability.readOnly ? "read_only" : undefined),
         file_scope: this.options.fileScope,
         sandbox: result.sandbox,
@@ -3064,6 +3088,8 @@ function codingLoopResultFromTool(
   action: string,
   result: ToolResult
 ): CodingLoopToolResult {
+  const sandbox = sandboxDecisionFromUnknown(result.metadata?.sandbox ?? result.data);
+  const recovery = result.recovery ?? recoveryAdviceForRawToolResult(action, result, sandbox);
   return {
     id,
     action,
@@ -3075,8 +3101,28 @@ function codingLoopResultFromTool(
     errors: result.errors,
     errorCode: result.errorCode,
     recoverySuggestion: result.recoverySuggestion,
-    sandbox: sandboxDecisionFromUnknown(result.metadata?.sandbox ?? result.data)
+    recovery,
+    sandbox
   };
+}
+
+function recoveryAdviceForRawToolResult(action: string, result: ToolResult, sandbox?: SandboxDecision): RecoveryAdvice | undefined {
+  if ((result.status ?? "success") !== "failed" && !result.recoverySuggestion && !result.errorCode) {
+    return undefined;
+  }
+  if (result.recovery) {
+    return result.recovery;
+  }
+  if (!result.recoverySuggestion && !result.errorCode) {
+    return undefined;
+  }
+  return recoveryAdviceFromToolFailure({
+    action,
+    reason: result.errors?.[0] ?? result.content ?? result.summary,
+    errorCode: result.errorCode,
+    recoverySuggestion: result.recoverySuggestion,
+    sandbox
+  });
 }
 
 function collectOutcome(
@@ -3208,13 +3254,18 @@ export function formatToolFailureContent(
   reason: string,
   errorCode?: string,
   recoverySuggestion?: string,
-  sandbox?: SandboxDecision
+  sandbox?: SandboxDecision,
+  recovery?: RecoveryAdvice
 ): string {
+  const advice = recovery ?? (recoverySuggestion || errorCode || sandbox
+    ? recoveryAdviceFromToolFailure({ action, reason, errorCode, recoverySuggestion, sandbox })
+    : undefined);
   return [
     `ERROR: ${reason}`,
     errorCode ? `Error code: ${errorCode}` : undefined,
     sandbox ? formatSandboxFailureDetail(sandbox) : undefined,
     recoverySuggestion ? `Recovery: ${recoverySuggestion}` : undefined,
+    advice ? formatRecoveryAdvice(advice) : undefined,
     `Action: ${action}`
   ].filter(Boolean).join("\n");
 }

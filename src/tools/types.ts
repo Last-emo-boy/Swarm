@@ -1,4 +1,5 @@
 import type { SwarmSettings } from "../config/settings.js";
+import type { RecoveryAdvice } from "../runtime/recovery.js";
 import type {
   LspCodeActionsAction,
   LspCompletionAction,
@@ -507,6 +508,7 @@ export type ToolResult = {
   retryable?: boolean;
   recoverable?: boolean;
   recoverySuggestion?: string;
+  recovery?: RecoveryAdvice;
   data?: unknown;
   metadata?: Record<string, unknown>;
 };

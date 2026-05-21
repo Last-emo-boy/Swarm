@@ -147,6 +147,13 @@ test("failed tool_result maps to failed task phase and denied sandbox", () => {
     status: "failed",
     errorCode: "SANDBOX_DENIED",
     recoverySuggestion: "Use scoped write",
+    recovery: {
+      category: "sandbox",
+      severity: "error",
+      retryable: true,
+      summary: "Sandbox read_only blocked file.write.",
+      nextAction: "Use scoped write"
+    },
     sandbox: {
       decision: "deny",
       policy: "read_only",
@@ -162,6 +169,8 @@ test("failed tool_result maps to failed task phase and denied sandbox", () => {
   assert.equal(record.phase, "failed");
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "SANDBOX_DENIED");
+  assert.equal(record.recovery?.category, "sandbox");
+  assert.equal(record.recovery?.severity, "error");
   assert.equal(record.sandbox?.status, "denied");
 });
 
@@ -178,6 +187,13 @@ test("loop_activity events become activity records with error and recovery field
     summary: "npm run check",
     errorCode: "E_CHECK",
     recoverySuggestion: "Fix types",
+    recovery: {
+      category: "tool",
+      severity: "warning",
+      retryable: true,
+      summary: "Type check failed.",
+      nextAction: "Fix types"
+    },
     agent: {
       worker_id: "worker-1",
       display_name: "Ada",
@@ -191,6 +207,8 @@ test("loop_activity events become activity records with error and recovery field
   assert.equal(record.phase, "running_tool");
   assert.equal(record.error_code, "E_CHECK");
   assert.equal(record.recovery_suggestion, "Fix types");
+  assert.equal(record.recovery?.category, "tool");
+  assert.equal(record.recovery?.nextAction, "Fix types");
   assert.equal(record.worker_id, "worker-1");
   assert.equal(record.agent_label, "Ada / Diff Investigator");
   assert.equal(record.agent_spec_id, "researcher");

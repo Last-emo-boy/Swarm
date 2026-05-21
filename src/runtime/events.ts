@@ -7,6 +7,7 @@ import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { ProviderUsageReport } from "../providers/openai-provider.js";
 import type { SandboxDecision } from "./sandbox-policy.js";
 import type { CheckpointSummary } from "./checkpoints.js";
+import type { RecoveryAdvice } from "./recovery.js";
 
 export type SessionOutcome = WorkSessionOutcome;
 
@@ -73,11 +74,12 @@ export type RuntimeEvent =
       summary?: string;
       errorCode?: string;
       recoverySuggestion?: string;
+      recovery?: RecoveryAdvice;
       agent?: RuntimeAgentIdentity;
     }
   | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped"; checkpoint?: CheckpointSummary }
   | { type: "error"; message: string }
-  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; write_policy?: "read_only" | "scoped_write" | "workspace_write"; file_scope?: string[]; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass }; sandbox?: SandboxDecision; agent?: RuntimeAgentIdentity }
+  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; recovery?: RecoveryAdvice; write_policy?: "read_only" | "scoped_write" | "workspace_write"; file_scope?: string[]; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass }; sandbox?: SandboxDecision; agent?: RuntimeAgentIdentity }
   | { type: "provider_usage"; usage: ProviderUsageReport }
   | { type: "progress"; completed: number; total: number };
 

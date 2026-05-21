@@ -783,6 +783,7 @@ function buildHeadlessTrajectory(input: {
           extra: {
             errorCode: event.errorCode,
             recoverySuggestion: event.recoverySuggestion,
+            recovery: event.recovery,
             outputRef: event.outputRef,
             write_policy: event.write_policy,
             file_scope: event.file_scope
@@ -796,6 +797,7 @@ function buildHeadlessTrajectory(input: {
               status: event.status,
               errorCode: event.errorCode,
               recoverySuggestion: event.recoverySuggestion,
+              recovery: event.recovery,
               outputRef: event.outputRef,
               write_policy: event.write_policy,
               file_scope: event.file_scope
@@ -808,6 +810,7 @@ function buildHeadlessTrajectory(input: {
           task_id: event.task_id,
           status: event.status,
           capability: event.capability,
+          recovery: event.recovery,
           write_policy: event.write_policy,
           file_scope: event.file_scope
         }

@@ -12,7 +12,7 @@ export type TuiTone =
 export type TuiStatus = "info" | "running" | "pending" | "success" | "warning" | "error";
 export type TuiColor = "cyan" | "gray" | "green" | "yellow" | "red" | "magenta" | "white";
 export type TranscriptEventKind = "message" | "logo" | "command" | "tool_use" | "tool_result" | "thinking" | "approval" | "progress";
-export type ResultSectionKind = "summary" | "changed" | "checks" | "review" | "risks" | "artifacts" | "memory" | "contracts" | "checkpoint" | "cache" | "next";
+export type ResultSectionKind = "summary" | "changed" | "checks" | "review" | "risks" | "recovery" | "artifacts" | "memory" | "contracts" | "checkpoint" | "cache" | "next";
 
 export function toneColor(tone: TuiTone): TuiColor {
   switch (tone) {
@@ -152,6 +152,7 @@ export function resultSectionToken(section: ResultSectionKind): {
     case "checks": return { label: "CHECKS", tone: "success" };
     case "review": return { label: "REVIEW", tone: "pending" };
     case "risks": return { label: "RISKS", tone: "warning" };
+    case "recovery": return { label: "RECOVERY", tone: "warning" };
     case "artifacts": return { label: "ARTIFACTS", tone: "neutral" };
     case "memory": return { label: "MEMORY", tone: "muted" };
     case "contracts": return { label: "CONTRACTS", tone: "neutral" };

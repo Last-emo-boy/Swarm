@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import type { ReviewResult, WorkSnapshot } from "../protocol/types.js";
+import type { ReviewResult, RunAttempt, WorkSnapshot } from "../protocol/types.js";
 import { buildResultCard, buildResultCardFromSnapshot, formatResultCardText } from "./result-card.js";
 
 test("Review / Verification evidence surfaces review warnings in result cards", () => {
@@ -132,7 +132,56 @@ test("Result cards render prompt cache status with shared cache formatting", () 
   });
 
   assert.equal(card.cache?.status, "changed");
+  assert(card.recovery?.some((advice) => advice.category === "cache"));
   assert(formatResultCardText(card).includes("Cache: changed hit 64%, write 12% requestPrefixHash4096"));
+  assert(formatResultCardText(card).includes("Recovery (1)"));
+  assert(formatResultCardText(card).includes("[cache/info/retry]"));
+});
+
+test("Result cards surface recovery from attempts, result content, and cache status", () => {
+  const snapshot = workSnapshot({
+    attempts: [{
+      attempt_id: "attempt-recovery-1",
+      session_id: "session-result-card",
+      task_id: "task-recovery",
+      kind: "tool_call",
+      status: "failed",
+      attempt: 1,
+      title: "Edit stale text",
+      terminal_reason: "str_replace requires exactly one match",
+      started_at: AT,
+      ended_at: AT,
+      last_event_at: AT,
+      error_code: "INVALID_INPUT",
+      recovery_suggestion: "Run file.grep for a unique oldText, then retry file.edit.",
+      metadata: {}
+    }]
+  });
+
+  const card = buildResultCard({
+    result: {
+      session_id: "session-result-card",
+      content: "Tool failed.\nRecovery: Add a read root before retrying: /add-dir E:\\Shared",
+      outcome: snapshot.final_outcome,
+      status: "failed"
+    },
+    route: "work",
+    snapshot,
+    cache: {
+      status: "changed",
+      outcome: "miss",
+      changed: ["requestPrefixHash4096"]
+    }
+  });
+  const text = formatResultCardText(card);
+
+  assert(card.recovery, "expected recovery advice");
+  assert(card.recovery.some((advice) => advice.category === "tool"));
+  assert(card.recovery.some((advice) => advice.category === "read_root" && advice.commandHint === "/add-dir E:\\Shared"));
+  assert(card.recovery.some((advice) => advice.category === "cache"));
+  assert(text.includes("Recovery (3)"));
+  assert(text.includes("[read_root/warning/retry]"));
+  assert(text.includes("[cache/info/retry]"));
 });
 
 function reviewResult(input: {
@@ -153,6 +202,7 @@ function reviewResult(input: {
 
 function workSnapshot(input: {
   checks?: string[];
+  attempts?: RunAttempt[];
   review?: ReviewResult;
   verification?: unknown;
 } = {}): WorkSnapshot {
@@ -165,7 +215,7 @@ function workSnapshot(input: {
       created_at: AT,
       updated_at: AT
     },
-    attempts: [],
+    attempts: input.attempts ?? [],
     workers: [],
     graph: { tasks: [], edges: [] },
     blackboard_counts: {},

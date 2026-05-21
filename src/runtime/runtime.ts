@@ -1979,7 +1979,8 @@ export class SwarmRuntime {
             status: event.status ?? "success",
             outputRef: event.outputRef,
             errorCode: event.errorCode,
-            recoverySuggestion: event.recoverySuggestion
+            recoverySuggestion: event.recoverySuggestion,
+            recovery: event.recovery
           });
           const row = this.sessionStore.get(event.session_id);
           this.taskGraphStore.upsertSyntheticTool({
@@ -2022,7 +2023,8 @@ export class SwarmRuntime {
               summary: event.summary,
               outputRef: event.outputRef,
               errorCode: event.errorCode,
-              recoverySuggestion: event.recoverySuggestion
+              recoverySuggestion: event.recoverySuggestion,
+              recovery: event.recovery
             },
             risk_class: event.capability?.riskClass ?? riskClassForActionName(event.action),
             decision: event.status === "failed" ? "failed" : "executed",
@@ -2048,6 +2050,7 @@ export class SwarmRuntime {
               permission: event.capability?.permissionName,
               outputRef: event.outputRef,
               recoverySuggestion: event.recoverySuggestion,
+              recovery: event.recovery,
               status: event.status ?? "success"
             }
           });
@@ -2078,7 +2081,8 @@ export class SwarmRuntime {
               summary: event.summary,
               outputRef: event.outputRef,
               errorCode: event.errorCode,
-              recoverySuggestion: event.recoverySuggestion
+              recoverySuggestion: event.recoverySuggestion,
+              recovery: event.recovery
             },
             risk_class: event.capability?.riskClass ?? riskClassForActionName(event.action),
             decision: event.status === "failed" ? "failed" : "executed",

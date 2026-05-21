@@ -195,7 +195,11 @@ test("coding loop gives actionable recovery for unmatched file.edit replacement"
   assert.equal(failedEdit.status, "failed");
   assert.match(failedEdit.summary, /str_replace requires exactly one match/);
   assert.match(failedEdit.recoverySuggestion ?? "", /file\.grep|unique oldText/);
+  assert.equal(failedEdit.recovery?.category, "tool");
+  assert.match(failedEdit.content ?? "", /Recovery detail:/);
+  assert.match(failedEdit.content ?? "", /Next:/);
   assert.doesNotMatch(failedEdit.recoverySuggestion ?? "", /capability diagnostics/i);
+  assert.doesNotMatch(failedEdit.content ?? "", /sk-test/);
 });
 
 test("coding loop gives actionable recovery for partial-read file.edit refusal", async () => {

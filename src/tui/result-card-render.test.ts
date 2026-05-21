@@ -20,6 +20,14 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
       ],
       review: { status: "warning", summary: "Review found a narrow viewport risk." },
       risks: [{ level: "high", message: "One verification check failed." }],
+      recovery: [{
+        category: "provider_rate_limit",
+        severity: "warning",
+        retryable: true,
+        summary: "Model provider rate limit or quota was hit.",
+        nextAction: "Wait and retry, reduce concurrency, or switch to a less constrained model/provider.",
+        commandHint: "swarm run --max-agents 1"
+      }],
       artifacts: [],
       next: ["rerun focused tests", "inspect the failed check"],
       checkpoint: {
@@ -43,6 +51,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /CHECKS npm run check failed \[ERR\]/);
   assert.match(plain, /REVIEW \[WARN\] Review found a narrow viewport risk\./);
   assert.match(plain, /RISKS high: One verification check failed\./);
+  assert.match(plain, /RECOVERY \[provider_rate_limit\/warning\/retry\]/);
   assert.match(plain, /NEXT rerun focused tests/);
   assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);
   assert.match(plain, /CACHE cache:cache_hit hit 64%, write 12%/);

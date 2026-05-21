@@ -4,6 +4,7 @@ import { TypeScriptSemanticProvider } from "./typescript-provider.js";
 import type { LspOperationResult, LspToolAction } from "./types.js";
 import type { LocalToolContext, ToolResult } from "../tools/types.js";
 import { displayPath, resolveReadablePath } from "../tools/permissions.js";
+import { formatRecoveryAdvice, recoveryAdviceFromLspFailure } from "../runtime/recovery.js";
 
 const PROVIDER_TTL_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -105,15 +106,25 @@ function toToolResult(action: string, result: LspOperationResult<unknown>, conte
     : result.status.code === "partial" || result.truncated
       ? "partial"
       : "failed";
+  const recovery = status === "failed"
+    ? recoveryAdviceFromLspFailure({
+        code: result.status.code,
+        language: result.status.language,
+        action,
+        fallback: recoverySuggestion(result.status.code),
+        root: result.status.root ? displayPath(result.status.root, context.workspace) : undefined
+      })
+    : undefined;
   return {
     action,
     status,
     summary: result.summary,
-    content: result.content,
+    content: [result.content, recovery ? formatRecoveryAdvice(recovery) : undefined].filter(Boolean).join("\n"),
     data: result.data,
     errorCode: status === "failed" ? result.status.code : undefined,
     recoverable: status === "failed",
     recoverySuggestion: recoverySuggestion(result.status.code),
+    recovery,
     metadata: {
       lsp_status: result.status.code,
       language: result.status.language,
@@ -127,6 +138,13 @@ function toToolResult(action: string, result: LspOperationResult<unknown>, conte
 
 function unsupportedLanguage(action: string, language: string, root: string, context: LocalToolContext): ToolResult {
   const fallback = lspFallbackSuggestion(action, language, root, context);
+  const recovery = recoveryAdviceFromLspFailure({
+    code: "unsupported_language",
+    language,
+    action,
+    fallback,
+    root: displayPath(root, context.workspace)
+  });
   return {
     action,
     status: "failed",
@@ -134,11 +152,13 @@ function unsupportedLanguage(action: string, language: string, root: string, con
     content: [
       `No semantic provider is registered for ${language}.`,
       `root=${displayPath(root, context.workspace)}`,
-      `fallback=${fallback}`
+      `fallback=${fallback}`,
+      recovery ? formatRecoveryAdvice(recovery) : undefined
     ].join("\n"),
     errorCode: "unsupported_language",
     recoverable: true,
     recoverySuggestion: fallback,
+    recovery,
     metadata: {
       lsp_status: "unsupported_language",
       language,
@@ -168,6 +188,12 @@ async function withTimeout(promise: Promise<ToolResult>, timeoutMs: number, acti
       promise,
       new Promise<ToolResult>((resolvePromise) => {
         timer = setTimeout(() => {
+          const recovery = recoveryAdviceFromLspFailure({
+            code: "request_timeout",
+            action,
+            fallback: "Retry with a narrower file/query or fall back to grep/read.",
+            root: displayPath(context.workspace, context.workspace)
+          });
           resolvePromise({
             action,
             status: "failed",
@@ -175,6 +201,8 @@ async function withTimeout(promise: Promise<ToolResult>, timeoutMs: number, acti
             errorCode: "request_timeout",
             recoverable: true,
             recoverySuggestion: "Retry with a narrower file/query or fall back to grep/read.",
+            recovery,
+            content: recovery ? formatRecoveryAdvice(recovery) : undefined,
             metadata: {
               lsp_status: "request_timeout",
               workspace: displayPath(context.workspace, context.workspace)

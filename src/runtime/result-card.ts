@@ -2,6 +2,12 @@ import type { ExecutionResult } from "./orchestrator.js";
 import type { WorkSnapshot } from "../protocol/types.js";
 import type { ResultCardPromptCacheStatus } from "./prompt-cache-status.js";
 import { formatPromptCacheInline } from "./prompt-cache-status.js";
+import type { RecoveryAdvice } from "./recovery.js";
+import {
+  formatRecoveryAdviceInline,
+  recoveryAdviceFromCacheStatus,
+  recoveryAdviceFromSuggestion
+} from "./recovery.js";
 
 export type ResultCardRoute = "ask" | "work" | "team" | "daemon";
 
@@ -23,6 +29,7 @@ export type ResultCard = {
     level: "low" | "medium" | "high";
     message: string;
   }>;
+  recovery?: RecoveryAdvice[];
   artifacts: string[];
   next: string[];
   memory?: {
@@ -77,6 +84,7 @@ export type ResultCardInput = {
     revertAvailable: boolean;
   };
   cache?: ResultCardPromptCacheStatus;
+  recovery?: RecoveryAdvice[];
 };
 
 export function buildResultCard(input: ResultCardInput): ResultCard {
@@ -111,6 +119,7 @@ export function buildResultCard(input: ResultCardInput): ResultCard {
       summary: reviewSummary
     },
     risks: buildRisks(snapshot, input.result),
+    recovery: buildRecoveryAdvice(input.result, snapshot, input.cache, input.recovery),
     artifacts: uniqueStrings([
       ...(snapshot?.verification && typeof snapshot.verification === "object" && "worker_id" in snapshot.verification && typeof (snapshot.verification as { worker_id?: unknown }).worker_id === "string"
         ? [(snapshot.verification as { worker_id?: string }).worker_id as string]
@@ -175,6 +184,9 @@ export function formatResultCardText(card: ResultCard): string {
     "",
     `Risks (${card.risks.length})`,
     ...formatList(card.risks.map((risk) => `${risk.level}: ${risk.message}`), "(none)"),
+    "",
+    `Recovery (${card.recovery?.length ?? 0})`,
+    ...formatList((card.recovery ?? []).map(formatRecoveryAdviceInline), "(none)"),
     "",
     `Artifacts (${card.artifacts.length})`,
     ...formatList(card.artifacts),
@@ -344,6 +356,69 @@ function buildNextActions(result: Pick<ExecutionResult, "content" | "outcome" | 
     next.push("run a focused check or test before trusting the change");
   }
   return next;
+}
+
+function buildRecoveryAdvice(
+  result: Pick<ExecutionResult, "content" | "outcome" | "artifact_path" | "status">,
+  snapshot: WorkSnapshot | undefined,
+  cache: ResultCardPromptCacheStatus | undefined,
+  explicit: RecoveryAdvice[] | undefined
+): RecoveryAdvice[] {
+  const items: RecoveryAdvice[] = [...(explicit ?? [])];
+  const latestAttempts = [...(snapshot?.attempts ?? [])]
+    .filter((attempt) => attempt.status === "failed" || attempt.recovery_suggestion)
+    .slice(-6)
+    .reverse();
+  for (const attempt of latestAttempts) {
+    if (!attempt.recovery_suggestion) {
+      continue;
+    }
+    items.push(recoveryAdviceFromSuggestion({
+      suggestion: attempt.recovery_suggestion,
+      errorCode: attempt.error_code,
+      summary: attempt.terminal_reason ?? attempt.title ?? (typeof attempt.metadata.summary === "string" ? attempt.metadata.summary : undefined)
+    }));
+  }
+  const contentRecovery = extractRecoverySuggestion(result.content);
+  if (contentRecovery) {
+    items.push(recoveryAdviceFromSuggestion({
+      suggestion: contentRecovery,
+      summary: firstLine(result.content, 180)
+    }));
+  }
+  const cacheRecovery = recoveryAdviceFromCacheStatus(cache);
+  if (cacheRecovery) {
+    items.push(cacheRecovery);
+  }
+  return uniqueRecoveryAdvice(items).slice(0, 5);
+}
+
+function extractRecoverySuggestion(content: string | undefined): string | undefined {
+  if (!content) {
+    return undefined;
+  }
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^Recovery:\s*(?!\[)(.+)$/i);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+  return undefined;
+}
+
+function uniqueRecoveryAdvice(items: RecoveryAdvice[]): RecoveryAdvice[] {
+  const seen = new Set<string>();
+  const unique: RecoveryAdvice[] = [];
+  for (const item of items) {
+    const key = `${item.category}\0${item.summary}\0${item.nextAction}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
 }
 
 function inferCheckStatus(command: string): "passed" | "failed" | "skipped" | "unknown" {

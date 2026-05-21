@@ -1,6 +1,7 @@
 import type { RuntimeAgentIdentity, RuntimeEvent } from "./events.js";
 import type { RunMode, RunSandboxMode } from "./execution-router.js";
 import type { HeadlessPermissionMode, HeadlessToolPolicy } from "./headless-artifacts.js";
+import type { RecoveryAdvice } from "./recovery.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
 
 export const SWARM_WORK_PROTOCOL_VERSION = "swarm.work.v1";
@@ -77,6 +78,7 @@ export type WorkActivityRecord = {
   summary?: string;
   error_code?: string;
   recovery_suggestion?: string;
+  recovery?: RecoveryAdvice;
 };
 
 export type WorkQueueRecord = {
@@ -174,6 +176,7 @@ export type WorkTaskRecord = {
   output_ref?: string;
   error_code?: string;
   recovery_suggestion?: string;
+  recovery?: RecoveryAdvice;
   sandbox?: WorkTaskSandbox;
   spawn_reason?: string;
   requested_by?: string;
@@ -451,6 +454,7 @@ function toolResultWorkRecord(event: Extract<RuntimeEvent, { type: "tool_result"
     output_ref: event.outputRef,
     error_code: event.errorCode,
     recovery_suggestion: event.recoverySuggestion,
+    recovery: event.recovery,
     sandbox: taskSandboxMetadata(event),
     status: resultStatus
   });
@@ -502,7 +506,8 @@ function activityWorkRecord(event: Extract<RuntimeEvent, { type: "loop_activity"
     status: event.status,
     summary: event.summary,
     error_code: event.errorCode,
-    recovery_suggestion: event.recoverySuggestion
+    recovery_suggestion: event.recoverySuggestion,
+    recovery: event.recovery
   });
 }
 

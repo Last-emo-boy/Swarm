@@ -116,6 +116,8 @@ test("LSP semantic gateway gives actionable fallback for unsupported languages",
     assert.equal(result.errorCode, "unsupported_language");
     assert.match(result.summary, /python/);
     assert.match(result.content ?? "", /fallback=/);
+    assert.equal(result.recovery?.category, "lsp");
+    assert.match(result.content ?? "", /Recovery detail/);
     assert.match(result.recoverySuggestion ?? "", /file\.grep/);
     assert.match(result.recoverySuggestion ?? "", /file\.read/);
     assert.match(result.recoverySuggestion ?? "", /provider for python/);

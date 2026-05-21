@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { ResultCard as ResultCardData } from "../../runtime/result-card.js";
 import { formatPromptCacheInline } from "../../runtime/prompt-cache-status.js";
+import { formatRecoveryAdviceInline } from "../../runtime/recovery.js";
 import {
   cacheOutcomeTone,
   checkStatusTone,
@@ -35,6 +36,7 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
     ...card.risks.filter((risk) => risk.level === "high"),
     ...card.risks.filter((risk) => risk.level !== "high")
   ].slice(0, 2);
+  const visibleRecovery = (card.recovery ?? []).slice(0, 2);
   return (
     <Box flexDirection="column" width="100%">
       <Text color="cyan" bold wrap="truncate">{sectionLabel("Result")}</Text>
@@ -68,6 +70,14 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
           tone={visibleRisks.some((risk) => risk.level === "high") ? "danger" : "warning"}
           value={visibleRisks.map((risk) => `${risk.level}: ${compactValue(risk.message, 72)}`).join(" | ")}
           meta={card.risks.length > visibleRisks.length ? `+${card.risks.length - visibleRisks.length}` : undefined}
+        />
+      )}
+      {visibleRecovery.length > 0 && (
+        <SectionLine
+          section="recovery"
+          tone={visibleRecovery.some((advice) => advice.severity === "error") ? "danger" : "warning"}
+          value={visibleRecovery.map((advice) => compactValue(formatRecoveryAdviceInline(advice), 112)).join(" | ")}
+          meta={(card.recovery?.length ?? 0) > visibleRecovery.length ? `+${(card.recovery?.length ?? 0) - visibleRecovery.length}` : undefined}
         />
       )}
       {card.next.length > 0 && (
