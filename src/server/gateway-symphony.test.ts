@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { BlackboardEntry, WorkItem } from "../protocol/types.js";
+import { consumeGatewaySessionStream } from "../runtime/gateway-event-stream.js";
+import type { WorkProtocolRecord } from "../runtime/work-protocol.js";
 import { gatewayClientAuthHeaders } from "./gateway-auth.js";
 import { SwarmGatewayServer } from "./gateway.js";
 import { sanitizeWorkspaceKey } from "../symphony/workspace.js";
@@ -196,6 +198,127 @@ test("Gateway Symphony preview exposes normalized product-surface evidence throu
   }
 });
 
+test("Gateway/Symphony smoke aligns preview sessions, work streams, approvals, and MCP surfaces", async () => {
+  const fixture = createPreviewFixture();
+  const oldToken = process.env.SWARM_GATEWAY_TOKEN;
+  delete process.env.SWARM_GATEWAY_TOKEN;
+  const server = new SwarmGatewayServer({
+    host: "127.0.0.1",
+    port: 0,
+    workspace: fixture.root,
+    databasePath: fixture.databasePath
+  });
+  server.runtime.settings.extensions.mcp.enabled = true;
+  server.runtime.settings.extensions.mcp.exposeGatewayServer = true;
+
+  const streamMessages: Array<{ event: string; data: unknown }> = [];
+  const streamAbort = new AbortController();
+  let streamTimeout: NodeJS.Timeout | undefined;
+  try {
+    const started = await server.start();
+    const stream = consumeGatewaySessionStream({
+      gatewayUrl: started.url,
+      protocol: "work",
+      signal: streamAbort.signal,
+      shouldStop: () =>
+        streamMessages.some((message) => message.event === "session") &&
+        streamMessages.some((message) => message.event === "runtime_event"),
+      onMessage: (message) => streamMessages.push(message)
+    });
+    streamTimeout = setTimeout(() => streamAbort.abort(), 5_000);
+
+    const preview = await postJson<PreviewResponse>(`${started.url}/v1/symphony/preview`, {
+      workflow_path: fixture.workflowPath,
+      create_workspace: false
+    }, 201);
+    const streamSummary = await stream;
+
+    assert.equal(preview.items.length, 2);
+    assert.equal(preview.sessions.length, 2);
+    assert(streamSummary.events >= 2, `expected stream events, got ${streamSummary.events}`);
+    const workRecords = streamMessages.map((message) => message.data).filter(isWorkRecord);
+    assert(workRecords.some((record) => record.kind === "session" && record.status === "created"));
+    assert(workRecords.some((record) => record.kind === "runtime_event" && record.event_type === "blackboard"));
+
+    const previewSessionIds = preview.sessions.map((item) =>
+      stringValue(recordValue(item.session).session_id, "preview session_id")
+    );
+    const sessionId = previewSessionIds[0];
+    const sessionView = await readJson<SessionSmokeViewPayload>(`${started.url}/v1/sessions/${encodeURIComponent(sessionId)}`);
+    assert.equal(sessionView.session_id, sessionId);
+    assert.equal(sessionView.work_snapshot.session.session_id, sessionId);
+    assert.equal(sessionView.work_snapshot.session.source?.source, "symphony");
+    assert.equal(sessionView.approvals.summary.actionable_pending, 0);
+    assert.equal(sessionView.approvals.summary.persisted_pending, 0);
+
+    const status = await readJson<SymphonyStatusPayload>(`${started.url}/v1/symphony/status?workflow=${encodeURIComponent(fixture.workflowPath)}`);
+    assert(status.totals.sessions >= previewSessionIds.length);
+    assert(status.totals.running >= previewSessionIds.length);
+    const statusSessionIds = new Set(status.sessions.map((session) => session.session_id));
+    for (const id of previewSessionIds) {
+      assert(statusSessionIds.has(id), `missing preview session in Symphony status: ${id}`);
+    }
+    assert.equal(status.scheduler.capacity.max_concurrent, 2);
+    assert(status.scheduler.capacity.running >= previewSessionIds.length);
+    assert.equal(status.scheduler.capacity.available, Math.max(0, status.scheduler.capacity.max_concurrent - status.scheduler.capacity.running));
+
+    const approvals = await readJson<ApprovalQueuePayload>(`${started.url}/v1/approvals?session_id=${encodeURIComponent(sessionId)}`);
+    assert.deepEqual(approvals.summary, {
+      actionable_pending: 0,
+      persisted_pending: 0,
+      approved: 0,
+      denied: 0
+    });
+
+    const mcpHealth = await readJson<{ service: string; status: string }>(`${started.url}/mcp`);
+    assert.equal(mcpHealth.service, "swarm-mcp");
+    assert.equal(mcpHealth.status, "enabled");
+    const tools = await postMcp<McpToolsListResult>(started.url, {
+      jsonrpc: "2.0",
+      id: "tools",
+      method: "tools/list"
+    });
+    assert(tools.result?.tools.some((tool) => tool.name === "swarm.session_status"));
+    assert(tools.result?.tools.some((tool) => tool.name === "swarm.approvals"));
+
+    const mcpSession = await postMcp<McpToolCallResult>(started.url, {
+      jsonrpc: "2.0",
+      id: "session-status",
+      method: "tools/call",
+      params: {
+        name: "swarm.session_status",
+        arguments: { session_id: sessionId, limit: 20 }
+      }
+    });
+    const mcpSessionStatus = recordValue(mcpSession.result?.structuredContent);
+    assert.equal(mcpSessionStatus.session_id, sessionId);
+    assert.equal(recordValue(mcpSessionStatus.approvals).summary && recordValue(recordValue(mcpSessionStatus.approvals).summary).actionable_pending, 0);
+
+    const mcpApprovals = await postMcp<McpToolCallResult>(started.url, {
+      jsonrpc: "2.0",
+      id: "approvals",
+      method: "tools/call",
+      params: {
+        name: "swarm.approvals",
+        arguments: { session_id: sessionId, limit: 20 }
+      }
+    });
+    assert.equal(recordValue(recordValue(mcpApprovals.result?.structuredContent).summary).actionable_pending, 0);
+  } finally {
+    if (streamTimeout) {
+      clearTimeout(streamTimeout);
+    }
+    streamAbort.abort();
+    await server.stop();
+    fixture.close();
+    if (oldToken === undefined) {
+      delete process.env.SWARM_GATEWAY_TOKEN;
+    } else {
+      process.env.SWARM_GATEWAY_TOKEN = oldToken;
+    }
+  }
+});
+
 type JsonRecord = Record<string, unknown>;
 
 type GatewayHealthPayload = {
@@ -211,8 +334,11 @@ type SymphonyStatusPayload = {
     };
   };
   scheduler: {
+    running?: unknown[];
     capacity: {
       max_concurrent: number;
+      running: number;
+      available: number;
     };
   };
   totals: {
@@ -223,6 +349,53 @@ type SymphonyStatusPayload = {
     cancelled: number;
     retrying: number;
   };
+  sessions: Array<{
+    session_id: string;
+  }>;
+};
+
+type ApprovalQueuePayload = {
+  summary: {
+    actionable_pending: number;
+    persisted_pending: number;
+    approved: number;
+    denied: number;
+  };
+};
+
+type SessionSmokeViewPayload = {
+  session_id: string;
+  approvals: ApprovalQueuePayload;
+  work_snapshot: {
+    session: {
+      session_id: string;
+      source?: WorkItem;
+    };
+  };
+};
+
+type McpResponse<T> = {
+  jsonrpc: "2.0";
+  id: string | number | null;
+  result?: T;
+  error?: {
+    code: number;
+    message: string;
+  };
+};
+
+type McpToolsListResult = {
+  tools: Array<{
+    name: string;
+  }>;
+};
+
+type McpToolCallResult = {
+  content: Array<{
+    type: string;
+    text: string;
+  }>;
+  structuredContent?: unknown;
 };
 
 type PreviewResponse = {
@@ -285,6 +458,35 @@ async function readJson<T = JsonRecord>(url: string): Promise<T> {
   const body = await response.json() as JsonRecord;
   assert.equal(response.ok, true, JSON.stringify(body));
   return body as T;
+}
+
+async function postJson<T = JsonRecord>(url: string, body: Record<string, unknown>, expectedStatus = 200): Promise<T> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...gatewayClientAuthHeaders()
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json() as JsonRecord;
+  assert.equal(response.status, expectedStatus, JSON.stringify(payload));
+  return payload as T;
+}
+
+async function postMcp<T>(gatewayUrl: string, body: Record<string, unknown>): Promise<McpResponse<T>> {
+  const response = await fetch(`${gatewayUrl}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...gatewayClientAuthHeaders()
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json() as McpResponse<T>;
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.error, undefined, JSON.stringify(payload.error));
+  return payload;
 }
 
 function assertPreviewEntry(
@@ -356,6 +558,10 @@ function previewWorkflowText(workItemsPath: string, workspaceRoot: string): stri
 function recordValue(value: unknown): Record<string, unknown> {
   assert(value && typeof value === "object" && !Array.isArray(value), "expected record value");
   return value as Record<string, unknown>;
+}
+
+function isWorkRecord(value: unknown): value is WorkProtocolRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && typeof (value as { kind?: unknown }).kind === "string");
 }
 
 function stringValue(value: unknown, description: string): string {
