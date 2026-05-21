@@ -28,6 +28,12 @@ test("footer navigation cycles compact service pills and opens the selected targ
   });
   let state = createFooterNavigationState();
 
+  assert.equal(selectedFooterPill(state, items), undefined);
+  assert.deepEqual(footerNavigationReducer(state, { type: "open" }, items), state);
+
+  state = footerNavigationReducer(state, { type: "next" }, items);
+  assert.equal(selectedFooterPill(state, items)?.id, "tasks");
+
   state = footerNavigationReducer(state, { type: "next" }, items);
   assert.equal(selectedFooterPill(state, items)?.id, "approvals");
 

@@ -205,6 +205,82 @@ test("headless telemetry falls back to result-card prompt cache when usage event
   assert.equal(artifacts.telemetry.llm.cacheable_prefix_estimate, 4184);
   assert.equal(artifacts.telemetry.llm.cache_hit_rate, 5120 / 9749);
   assert.deepEqual(artifacts.telemetry.llm.prompt_cache_diagnostics, { stable: 1 });
+  assert.deepEqual(artifacts.telemetry.llm.cache_trend, {
+    source: "result_card_fallback",
+    calls: 1,
+    cacheable_calls: 1,
+    hit_calls: 1,
+    miss_calls: 0,
+    warming_calls: 0,
+    bypass_calls: 0,
+    unknown_calls: 0,
+    hit_rate: 5120 / 9749,
+    write_rate: 0,
+    changed: []
+  });
+});
+
+test("headless telemetry exposes provider prompt cache trend when usage events are captured", () => {
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Project prompt cache trend",
+    workspace: WORKSPACE,
+    mode: "coding_loop",
+    permissionMode: "auto-edit",
+    sandboxMode: "workspace-write",
+    startedAt: STARTED_AT,
+    endedAt: ENDED_AT,
+    durationMs: 2_000,
+    capturedEvents: [
+      {
+        at: STARTED_AT,
+        event: {
+          type: "provider_usage",
+          usage: providerUsage({
+            taskId: "turn-1",
+            status: "new_scope",
+            cachedInputTokens: 0,
+            totalInputWithCacheTokens: 3000
+          })
+        }
+      },
+      {
+        at: ENDED_AT,
+        event: {
+          type: "provider_usage",
+          usage: providerUsage({
+            taskId: "turn-2",
+            status: "stable",
+            cachedInputTokens: 2400,
+            totalInputWithCacheTokens: 4000
+          })
+        }
+      }
+    ],
+    result: {
+      session_id: "session-cache-trend",
+      content: "Done",
+      status: "completed"
+    }
+  });
+
+  assert.equal(artifacts.telemetry.llm.calls, 2);
+  assert.equal(artifacts.telemetry.llm.cached_input_tokens, 2400);
+  assert.equal(artifacts.telemetry.llm.total_input_with_cache_tokens, 7000);
+  assert.equal(artifacts.telemetry.llm.cache_hit_rate, 2400 / 7000);
+  assert.deepEqual(artifacts.telemetry.llm.prompt_cache_diagnostics, { new_scope: 1, stable: 1 });
+  assert.deepEqual(artifacts.telemetry.llm.cache_trend, {
+    source: "provider_usage",
+    calls: 2,
+    cacheable_calls: 2,
+    hit_calls: 1,
+    miss_calls: 0,
+    warming_calls: 1,
+    bypass_calls: 0,
+    unknown_calls: 0,
+    hit_rate: 2400 / 7000,
+    write_rate: 0,
+    changed: []
+  });
 });
 
 function assertPolicyMetadata(value: Record<string, unknown> | undefined): void {
@@ -329,3 +405,55 @@ const FAILED_REVIEW_RESULT_CARD: ResultCard = {
   artifacts: [],
   next: ["inspect the error and rerun the narrowest failing step"]
 };
+
+function providerUsage(input: {
+  taskId: string;
+  status: "new_scope" | "stable" | "changed";
+  cachedInputTokens: number;
+  totalInputWithCacheTokens: number;
+}) {
+  return {
+    providerId: "deepseek",
+    protocol: "openai-chat-completions" as const,
+    model: "deepseek-v4-flash",
+    purpose: "worker_coding_loop",
+    sessionId: "session-cache-trend",
+    taskId: input.taskId,
+    cacheMode: "prefix-structured",
+    promptCacheKey: "swarm:worker:stable:test",
+    promptCacheScope: "scope",
+    cacheablePrefixTokensEstimate: 4096,
+    durationMs: 12,
+    inputTokens: input.totalInputWithCacheTokens,
+    cachedInputTokens: input.cachedInputTokens,
+    totalInputWithCacheTokens: input.totalInputWithCacheTokens,
+    uncachedInputTokens: Math.max(0, input.totalInputWithCacheTokens - input.cachedInputTokens),
+    promptCacheDiagnostics: {
+      scope: "scope",
+      status: input.status,
+      changed: input.status === "changed" ? ["requestPrefixHash4096"] : [],
+      current: {
+        systemHash: "system",
+        userHash: "user",
+        cacheablePrefixHash: "prefix",
+        cacheableSystemHash: "system-prefix",
+        cacheableUserHash: "user-prefix",
+        toolSchemaHash: "tools",
+        dynamicUserHash: "dynamic",
+        requestPrefixHash1024: "1024",
+        requestPrefixHash4096: "4096",
+        firstDynamicBlockIndex: 1,
+        cacheKey: "swarm:worker:stable:test",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat-completions" as const,
+        retention: "in_memory" as const,
+        ttlSeconds: 3600,
+        anthropicTtl: "5m" as const
+      },
+      cachedInputTokens: input.cachedInputTokens,
+      totalInputWithCacheTokens: input.totalInputWithCacheTokens,
+      cacheHitRate: input.cachedInputTokens / Math.max(1, input.totalInputWithCacheTokens),
+      minimumCacheableTokens: 1024
+    }
+  };
+}

@@ -716,9 +716,20 @@ test("inline inspector avoids command-output chrome unless real command detail i
     latestDetailSource: "command",
     latestDetail: true
   }), {
+    enabled: false,
+    source: "event",
+    title: "Inspector"
+  });
+
+  assert.deepEqual(inlineInspectorTargetForPane({
+    pane: "overview",
+    selectedAction: false,
+    latestDetailSource: "ai",
+    latestDetail: true
+  }), {
     enabled: true,
-    source: "command",
-    title: "Latest Output"
+    source: "ai",
+    title: "Assistant Detail"
   });
 
   assert.equal(detailTitleForSource("command"), "Command Output");

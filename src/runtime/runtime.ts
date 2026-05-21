@@ -80,7 +80,7 @@ import { renderHostEnvironmentPrompt } from "./host-context.js";
 import { ensureWorkspaceIndex, type WorkspaceIndex } from "./workspace-index.js";
 import { createCheckpoint as createWorkspaceCheckpoint, revertCheckpoint as revertWorkspaceCheckpoint, listCheckpoints as listWorkspaceCheckpoints, type CheckpointSummary } from "./checkpoints.js";
 import { buildResultCard } from "./result-card.js";
-import { promptCacheStatusFromUsage, type PromptCacheRuntimeStatus } from "./prompt-cache-status.js";
+import { promptCacheStatusFromUsage, promptCacheTrendFromUsage, type PromptCacheRuntimeStatus, type PromptCacheTrend } from "./prompt-cache-status.js";
 import { buildTaskContractSnapshot, buildWorkContractHandoff, buildWorkContractSnapshot, buildWorkContractWorker } from "./work-contracts.js";
 import { RuntimeSystemLoop } from "./system-loop.js";
 import {
@@ -179,6 +179,7 @@ export class SwarmRuntime {
   private workspaceIndexPromise?: Promise<WorkspaceIndex>;
   private lastCheckpoint?: CheckpointSummary;
   private latestPromptCache?: PromptCacheRuntimeStatus;
+  private readonly promptCacheUsageHistory: ProviderUsageReport[] = [];
   private activeCodingLoop?: CodingAgentLoop;
   private activeCodingLoopSessionId?: string;
   private activeSwarmSession?: SwarmSession;
@@ -385,6 +386,10 @@ export class SwarmRuntime {
 
   getPromptCacheStatus(): PromptCacheRuntimeStatus | undefined {
     return this.latestPromptCache;
+  }
+
+  getPromptCacheTrend(): PromptCacheTrend {
+    return promptCacheTrendFromUsage(this.promptCacheUsageHistory);
   }
 
   async getWorkspaceIndex(): Promise<WorkspaceIndex> {
@@ -2268,6 +2273,10 @@ export class SwarmRuntime {
   private recordProviderUsage(usage: ProviderUsageReport): void {
     if (this.disposed) {
       return;
+    }
+    this.promptCacheUsageHistory.push(usage);
+    if (this.promptCacheUsageHistory.length > 200) {
+      this.promptCacheUsageHistory.splice(0, this.promptCacheUsageHistory.length - 200);
     }
     this.latestPromptCache = promptCacheStatusFromUsage(usage);
     this.usageStore.append({

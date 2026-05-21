@@ -732,7 +732,7 @@ export function inlineInspectorTargetForPane(input: {
   latestDetailSource: "none" | "ai" | "command" | "task" | "event";
   latestDetail: boolean;
 }): InlineInspectorTarget {
-  if (input.latestDetailSource !== "none" && input.latestDetail) {
+  if (input.latestDetail && (input.latestDetailSource === "ai" || input.latestDetailSource === "task")) {
     return {
       enabled: true,
       source: input.latestDetailSource,

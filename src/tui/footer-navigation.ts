@@ -38,20 +38,24 @@ export function footerNavigationReducer(
   if (ids.length === 0) {
     return {};
   }
-  const selected = ids.includes(state.selectedId as FooterPillId) ? state.selectedId : ids[0];
+  const selected = ids.includes(state.selectedId as FooterPillId) ? state.selectedId : undefined;
   switch (action.type) {
     case "next":
-      return { selectedId: stepFooterSelection(ids, selected, 1), openId: state.openId };
+      return { selectedId: selected ? stepFooterSelection(ids, selected, 1) : ids[0], openId: state.openId };
     case "previous":
-      return { selectedId: stepFooterSelection(ids, selected, -1), openId: state.openId };
+      return { selectedId: selected ? stepFooterSelection(ids, selected, -1) : ids[ids.length - 1], openId: state.openId };
     case "select":
       return ids.includes(action.id) ? { selectedId: action.id, openId: state.openId } : state;
     case "open": {
       const openId = action.id ?? selected;
+      if (!action.id && !selected) {
+        return state;
+      }
       return openId && ids.includes(openId) ? { selectedId: openId, openId } : state;
     }
-    case "close":
-      return { selectedId: selected };
+    case "close": {
+      return selected ? { selectedId: selected } : {};
+    }
     case "clear":
       return {};
   }
@@ -61,7 +65,10 @@ export function selectedFooterPill(
   state: FooterNavigationState,
   items: readonly FooterPill[]
 ): FooterPill | undefined {
-  const selectedId = state.selectedId ?? items[0]?.id;
+  const selectedId = state.selectedId;
+  if (!selectedId) {
+    return undefined;
+  }
   return items.find((item) => item.id === selectedId);
 }
 

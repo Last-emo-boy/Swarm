@@ -30,7 +30,7 @@ import { buildWorkRecordFromRuntimeEvent } from "../runtime/work-protocol.js";
 import type { RunMode, RunSandboxMode } from "../runtime/execution-router.js";
 import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
 import { buildResultCardFromSnapshot, type ResultCard as RuntimeResultCard } from "../runtime/result-card.js";
-import { formatPromptCacheBrief, formatPromptCacheDetail } from "../runtime/prompt-cache-status.js";
+import { formatPromptCacheBrief, formatPromptCacheDetailWithTrend } from "../runtime/prompt-cache-status.js";
 import type { PromptCacheRuntimeStatus } from "../runtime/prompt-cache-status.js";
 import { formatToolFailureContent } from "../runtime/coding-agent-loop.js";
 import {
@@ -1079,13 +1079,22 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setFooterNavigation((state) => footerNavigationReducer(state, { type: "select", id }, footerItems));
     try {
       const detail = await renderFooterDetail(id);
+      const presentation = footerDetailPresentation(id);
       setLatestDetail(detail);
-      setLatestDetailSource("command");
+      setLatestDetailSource(presentation.source);
       setDetailScroll(0);
       setDetailOpen(true);
     } catch (error) {
       pushError(error);
     }
+  }
+
+  function footerDetailPresentation(id: FooterPillId): {
+    source: "task" | "event";
+  } {
+    return {
+      source: id === "tasks" ? "task" : "event"
+    };
   }
 
   async function renderFooterDetail(id: FooterPillId): Promise<string> {
@@ -1097,7 +1106,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
     }
     if (id === "cache") {
-      return formatPromptCacheDetail(promptCacheStatus);
+      return formatPromptCacheDetailWithTrend(promptCacheStatus, runtime?.getPromptCacheTrend());
     }
     if (id === "gateway") {
       return renderGatewayStatusDetail();
@@ -1321,7 +1330,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (subcommand === "cache") {
         if (!runtime) throw new Error("Runtime is not ready.");
         const cache = runtime.getPromptCacheStatus();
-        return { brief: formatPromptCacheBrief(cache), detail: formatPromptCacheDetail(cache) };
+        return { brief: formatPromptCacheBrief(cache), detail: formatPromptCacheDetailWithTrend(cache, runtime.getPromptCacheTrend()) };
       }
       if (subcommand === "events") {
         const detail = events.slice(-80).map((event) => JSON.stringify(event)).join("\n");

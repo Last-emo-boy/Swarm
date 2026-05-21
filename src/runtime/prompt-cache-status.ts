@@ -44,6 +44,27 @@ export type ResultCardPromptCacheStatus = Pick<PromptCacheRuntimeStatus,
   | "recommendation"
 >;
 
+export type PromptCacheTrend = {
+  source: "provider_usage" | "result_card_fallback" | "none";
+  calls: number;
+  cacheableCalls: number;
+  hitCalls: number;
+  missCalls: number;
+  warmingCalls: number;
+  bypassCalls: number;
+  unknownCalls: number;
+  cachedInputTokens: number;
+  totalInputWithCacheTokens: number;
+  cacheCreationInputTokens: number;
+  uncachedInputTokens: number;
+  cacheablePrefixTokensEstimate: number;
+  hitRate?: number;
+  writeRate?: number;
+  diagnostics: Record<string, number>;
+  changed: string[];
+  latest?: ResultCardPromptCacheStatus;
+};
+
 export function promptCacheStatusFromUsage(usage: ProviderUsageReport): PromptCacheRuntimeStatus {
   const hitRate = usage.cacheHitRate ?? (
     usage.totalInputWithCacheTokens && typeof usage.cachedInputTokens === "number"
@@ -80,6 +101,94 @@ export function promptCacheStatusFromUsage(usage: ProviderUsageReport): PromptCa
     minimumCacheableTokens: usage.promptCacheDiagnostics?.minimumCacheableTokens,
     ...analysis
   };
+}
+
+export function promptCacheTrendFromUsage(usages: ProviderUsageReport[]): PromptCacheTrend {
+  return promptCacheTrendFromStatuses(usages.map(promptCacheStatusFromUsage), "provider_usage");
+}
+
+export function promptCacheTrendFromResultCardCache(status: ResultCardPromptCacheStatus | undefined): PromptCacheTrend {
+  return promptCacheTrendFromStatuses(status ? [status] : [], status ? "result_card_fallback" : "none");
+}
+
+export function promptCacheTrendFromStatuses(
+  statuses: ResultCardPromptCacheStatus[],
+  source: PromptCacheTrend["source"] = "provider_usage"
+): PromptCacheTrend {
+  const trend: PromptCacheTrend = {
+    source: statuses.length ? source : "none",
+    calls: statuses.length,
+    cacheableCalls: 0,
+    hitCalls: 0,
+    missCalls: 0,
+    warmingCalls: 0,
+    bypassCalls: 0,
+    unknownCalls: 0,
+    cachedInputTokens: 0,
+    totalInputWithCacheTokens: 0,
+    cacheCreationInputTokens: 0,
+    uncachedInputTokens: 0,
+    cacheablePrefixTokensEstimate: 0,
+    diagnostics: {},
+    changed: []
+  };
+  const changed = new Set<string>();
+  for (const status of statuses) {
+    trend.latest = status;
+    const outcome = promptCacheTrendOutcome(status);
+    if (outcome === "hit") trend.hitCalls += 1;
+    else if (outcome === "miss") trend.missCalls += 1;
+    else if (outcome === "warming") trend.warmingCalls += 1;
+    else if (outcome === "bypass") trend.bypassCalls += 1;
+    else trend.unknownCalls += 1;
+
+    if (typeof status.totalInputWithCacheTokens === "number" && status.totalInputWithCacheTokens > 0) {
+      trend.cacheableCalls += 1;
+      trend.totalInputWithCacheTokens += status.totalInputWithCacheTokens;
+    }
+    trend.cachedInputTokens += status.cachedInputTokens ?? 0;
+    trend.cacheCreationInputTokens += status.cacheCreationInputTokens ?? 0;
+    trend.cacheablePrefixTokensEstimate += status.cacheablePrefixTokensEstimate ?? 0;
+    if (typeof status.totalInputWithCacheTokens === "number" && typeof status.cachedInputTokens === "number") {
+      trend.uncachedInputTokens += Math.max(0, status.totalInputWithCacheTokens - status.cachedInputTokens);
+    }
+    if (status.status) {
+      trend.diagnostics[status.status] = (trend.diagnostics[status.status] ?? 0) + 1;
+    }
+    for (const item of status.changed ?? []) {
+      changed.add(item);
+    }
+  }
+  trend.changed = [...changed].sort();
+  if (trend.totalInputWithCacheTokens > 0) {
+    trend.hitRate = trend.cachedInputTokens / trend.totalInputWithCacheTokens;
+    trend.writeRate = trend.cacheCreationInputTokens / trend.totalInputWithCacheTokens;
+  }
+  return trend;
+}
+
+function promptCacheTrendOutcome(status: ResultCardPromptCacheStatus): PromptCacheRuntimeStatus["outcome"] | "unknown" {
+  if (status.outcome) {
+    return status.outcome;
+  }
+  if (status.status === "new_scope") {
+    return "warming";
+  }
+  if (status.status === "changed" || status.status === "cache_miss" || status.changed?.length) {
+    return "miss";
+  }
+  if (status.status === "expected_empty_cache" || status.cacheMode === "off" || status.cacheMode === "disabled") {
+    return "bypass";
+  }
+  if (
+    (typeof status.hitRate === "number" && status.hitRate > 0)
+    || (typeof status.cachedInputTokens === "number" && status.cachedInputTokens > 0)
+    || status.status === "stable"
+    || status.status === "cache_hit"
+  ) {
+    return "hit";
+  }
+  return "unknown";
 }
 
 export function resultCardCacheStatus(status: PromptCacheRuntimeStatus | undefined): ResultCardPromptCacheStatus | undefined {
@@ -123,6 +232,13 @@ export function formatPromptCacheBrief(status: PromptCacheRuntimeStatus | undefi
 }
 
 export function formatPromptCacheDetail(status: PromptCacheRuntimeStatus | undefined): string {
+  return formatPromptCacheDetailWithTrend(status);
+}
+
+export function formatPromptCacheDetailWithTrend(
+  status: PromptCacheRuntimeStatus | undefined,
+  trend?: PromptCacheTrend
+): string {
   if (!status) {
     return "No prompt cache usage has been recorded yet.";
   }
@@ -145,6 +261,20 @@ export function formatPromptCacheDetail(status: PromptCacheRuntimeStatus | undef
     status.recommendation ? `recommendation=${status.recommendation}` : undefined,
     status.changed?.length ? `changed=${status.changed.join(", ")}` : undefined,
     status.diagnostics ? `diagnostics=${status.diagnostics}` : undefined,
+    ...(trend && trend.calls > 0 ? [
+      "",
+      "Trend",
+      `source=${trend.source}`,
+      `calls=${trend.calls} cacheable=${trend.cacheableCalls} hit=${trend.hitCalls} miss=${trend.missCalls} warming=${trend.warmingCalls} bypass=${trend.bypassCalls} unknown=${trend.unknownCalls}`,
+      formatPromptCacheRates({ hitRate: trend.hitRate, writeRate: trend.writeRate }),
+      `cached_input_tokens=${trend.cachedInputTokens}`,
+      `total_input_with_cache_tokens=${trend.totalInputWithCacheTokens}`,
+      `cache_creation_input_tokens=${trend.cacheCreationInputTokens}`,
+      `uncached_input_tokens=${trend.uncachedInputTokens}`,
+      `cacheable_prefix_tokens_estimate=${trend.cacheablePrefixTokensEstimate}`,
+      trend.changed.length ? `changed=${trend.changed.join(", ")}` : undefined,
+      Object.keys(trend.diagnostics).length ? `diagnostics=${Object.entries(trend.diagnostics).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `${key}:${value}`).join(", ")}` : undefined
+    ] : []),
     "",
     "JSON",
     JSON.stringify(status, null, 2)

@@ -480,6 +480,24 @@ test("post-change partial verification remains a completed run with warning evid
     review: {
       target_task_id: "coding_loop",
       reviewer: { agent_id: "reviewer", role: "reviewer" },
+      verdict: "needs_revision",
+      score: 80,
+      issues: [{
+        severity: "low",
+        message: "LOW missing test for discountPct=0."
+      }],
+      summary: "Review found a low-priority edge-case coverage warning."
+    },
+    verification: {
+      status: "success",
+      summary: "All tests pass."
+    }
+  }), "completed");
+
+  assert.equal(postChangeExecutionStatus({
+    review: {
+      target_task_id: "coding_loop",
+      reviewer: { agent_id: "reviewer", role: "reviewer" },
       verdict: "approve",
       score: 95,
       summary: "Review passed."

@@ -4,6 +4,8 @@ import type { RunMode, RunSandboxMode } from "./execution-router.js";
 import type { RuntimeEvent, SessionOutcome } from "./events.js";
 import type { ExecutionResult } from "./orchestrator.js";
 import type { ResultCard } from "./result-card.js";
+import type { ProviderUsageReport } from "../providers/openai-provider.js";
+import { promptCacheTrendFromResultCardCache, promptCacheTrendFromUsage, type PromptCacheTrend } from "./prompt-cache-status.js";
 import { buildWorkRecordFromRuntimeEvent, buildWorkRunRecord, type WorkProtocolRecord } from "./work-protocol.js";
 import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-sandbox.js";
 
@@ -200,6 +202,7 @@ export type HeadlessTelemetry = {
     cache_write_rate?: number;
     cacheable_prefix_estimate: number;
     prompt_cache_diagnostics: Record<string, number>;
+    cache_trend: HeadlessPromptCacheTrend;
   };
   outcome?: SessionOutcome;
   final?: {
@@ -214,6 +217,20 @@ export type HeadlessTelemetry = {
   error?: {
     message: string;
   };
+};
+
+export type HeadlessPromptCacheTrend = {
+  source: PromptCacheTrend["source"];
+  calls: number;
+  cacheable_calls: number;
+  hit_calls: number;
+  miss_calls: number;
+  warming_calls: number;
+  bypass_calls: number;
+  unknown_calls: number;
+  hit_rate?: number;
+  write_rate?: number;
+  changed: string[];
 };
 
 export type HeadlessTrajectory = {
@@ -457,6 +474,7 @@ function buildHeadlessTelemetry(input: {
   const providerIds = new Set<string>();
   const purposes = new Set<string>();
   const promptCacheDiagnostics: Record<string, number> = {};
+  const providerUsages: ProviderUsageReport[] = [];
   const usageTotals = {
     calls: 0,
     inputTokens: 0,
@@ -491,6 +509,7 @@ function buildHeadlessTelemetry(input: {
       toolResults[captured.event.status ?? "success"] += 1;
     } else if (captured.event.type === "provider_usage") {
       const usage = captured.event.usage;
+      providerUsages.push(usage);
       usageTotals.calls += 1;
       if (usage.providerId) {
         providerIds.add(usage.providerId);
@@ -540,6 +559,9 @@ function buildHeadlessTelemetry(input: {
       }
     }
   }
+  const cacheTrend = providerUsages.length > 0
+    ? promptCacheTrendFromUsage(providerUsages)
+    : promptCacheTrendFromResultCardCache(input.result?.result_card?.cache);
 
   const outcome = input.result?.outcome;
   const final = input.result ? {
@@ -595,11 +617,28 @@ function buildHeadlessTelemetry(input: {
         ? usageTotals.cacheCreationInputTokens / usageTotals.totalInputWithCacheTokens
         : undefined,
       cacheable_prefix_estimate: usageTotals.cacheablePrefixEstimate,
-      prompt_cache_diagnostics: promptCacheDiagnostics
+      prompt_cache_diagnostics: promptCacheDiagnostics,
+      cache_trend: headlessPromptCacheTrend(cacheTrend)
     },
     outcome: input.result?.outcome,
     final,
     error: input.error ? { message: input.error.message } : undefined
+  };
+}
+
+function headlessPromptCacheTrend(trend: PromptCacheTrend): HeadlessPromptCacheTrend {
+  return {
+    source: trend.source,
+    calls: trend.calls,
+    cacheable_calls: trend.cacheableCalls,
+    hit_calls: trend.hitCalls,
+    miss_calls: trend.missCalls,
+    warming_calls: trend.warmingCalls,
+    bypass_calls: trend.bypassCalls,
+    unknown_calls: trend.unknownCalls,
+    hit_rate: trend.hitRate,
+    write_rate: trend.writeRate,
+    changed: trend.changed
   };
 }
 
