@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { homedir } from "node:os";
-import type { PermissionMode, SwarmSettings } from "../config/settings.js";
+import { defaultSwarmSettings, type PermissionMode, type SwarmSettings } from "../config/settings.js";
 import type { LocalToolContext, ToolAction, ToolApprovalRequest } from "./types.js";
 import type { RiskClass } from "../protocol/types.js";
+
+const DEFAULT_PERMISSION_ASK_RULES = new Set(defaultSwarmSettings().permissions.ask);
 
 export function resolveReadablePath(path: string, context: LocalToolContext): string {
   const resolved = resolveToolPath(path, context.workspace);
@@ -41,53 +43,187 @@ export type PermissionMatchContext = {
   workspace?: string;
 };
 
-export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): boolean {
-  assertToolAllowedByPermissions(action, settings, context);
+export type ToolPermissionDecision = {
+  decision: "allow" | "ask" | "deny";
+  reason: string;
+  mode: PermissionMode;
+  permission_name: string;
+  matched_rule?: string;
+};
+
+export function decideToolPermission(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): ToolPermissionDecision {
   const mode = normalizePermissionMode(settings.permissions.defaultMode);
-  if (matchesPermissionRules(action, settings.permissions.allow, context)) {
-    return false;
+  const permissionName = permissionNameForAction(action);
+  const denyRule = findMatchingPermissionRule(action, settings.permissions.deny, context);
+  if (denyRule) {
+    return {
+      decision: "deny",
+      reason: `Denied by ~/.swarm/settings.json permissions: ${denyRule}`,
+      mode,
+      permission_name: permissionName,
+      matched_rule: denyRule
+    };
+  }
+
+  const allowRule = findMatchingPermissionRule(action, settings.permissions.allow, context);
+  if (allowRule) {
+    return {
+      decision: "allow",
+      reason: `Allowed by ~/.swarm/settings.json permissions: ${allowRule}`,
+      mode,
+      permission_name: permissionName,
+      matched_rule: allowRule
+    };
+  }
+
+  const askRule = findMatchingAskRule(action, settings.permissions.ask, mode, context);
+  if (askRule) {
+    return {
+      decision: "ask",
+      reason: `Approval required by ~/.swarm/settings.json permissions: ${askRule}`,
+      mode,
+      permission_name: permissionName,
+      matched_rule: askRule
+    };
+  }
+
+  if (requiresExplicitApprovalForRisk(action, mode)) {
+    return {
+      decision: "ask",
+      reason: `High-risk destructive command requires approval even in ${mode} permission mode.`,
+      mode,
+      permission_name: permissionName
+    };
   }
 
   if (mode === "yolo") {
-    return false;
-  }
-
-  if (matchesPermissionRules(action, settings.permissions.ask, context)) {
-    return true;
+    return {
+      decision: "allow",
+      reason: "Allowed by yolo permission mode.",
+      mode,
+      permission_name: permissionName
+    };
   }
 
   if (isShellLikeAction(action) || action.type === "package.install" || action.type === "exec") {
-    return !skipsApproval(mode);
+    return skipsApproval(mode)
+      ? {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "ask",
+          reason: `${action.type} requires approval in ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        };
   }
   if (isWriteLikeAction(action) || action.type === "notebook.edit" || action.type === "json.edit") {
-    return mode === "ask";
+    return mode === "ask"
+      ? {
+          decision: "ask",
+          reason: `${action.type} modifies files and requires approval in ask mode.`,
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        };
   }
-  if (action.type === "agent.delegate") {
-    return !skipsApproval(mode);
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
+    return skipsApproval(mode)
+      ? {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "ask",
+          reason: `${action.type} requires approval unless permission mode skips approvals.`,
+          mode,
+          permission_name: permissionName
+        };
   }
   if (action.type === "blackboard.write") {
-    return mode === "ask";
+    return mode === "ask"
+      ? {
+          decision: "ask",
+          reason: "blackboard.write requires approval in ask mode.",
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        };
   }
   if (action.type === "git.branch" && action.action !== "list") {
-    return !skipsApproval(mode);
+    return skipsApproval(mode)
+      ? {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "ask",
+          reason: "git branch changes require approval unless permission mode skips approvals.",
+          mode,
+          permission_name: permissionName
+        };
   }
   if (action.type === "web.fetch") {
-    return mode === "ask";
+    return mode === "ask"
+      ? {
+          decision: "ask",
+          reason: "web.fetch requires approval in ask mode.",
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        };
   }
-  return false;
+  return {
+    decision: "allow",
+    reason: "Read-only or low-risk tool action does not require approval.",
+    mode,
+    permission_name: permissionName
+  };
+}
+
+export function toolRequiresApproval(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): boolean {
+  const decision = decideToolPermission(action, settings, context);
+  if (decision.decision === "deny") {
+    throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${approvalSummary(action)}`);
+  }
+  return decision.decision === "ask";
 }
 
 export function assertToolAllowedByPermissions(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): void {
-  if (matchesPermissionRules(action, settings.permissions.deny, context)) {
+  if (decideToolPermission(action, settings, context).decision === "deny") {
     throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${approvalSummary(action)}`);
   }
 }
 
-export function createToolApprovalRequest(action: ToolAction): ToolApprovalRequest {
+export function createToolApprovalRequest(action: ToolAction, decision?: ToolPermissionDecision): ToolApprovalRequest {
   const id = `approval_${randomUUID()}`;
   const risk = riskForAction(action);
   const riskClass = riskClassForAction(action);
   const target = approvalTarget(action);
+  const summaryDiff = approvalPreviewForAction(action);
+  const attentionNote = approvalAttentionNote(action);
   const base = {
     id,
     action: action.type,
@@ -96,7 +232,18 @@ export function createToolApprovalRequest(action: ToolAction): ToolApprovalReque
     target,
     why_now: `Swarm needs to run ${action.type} to continue the current task.`,
     predicted_impact: predictedImpact(action, riskClass),
-    rollback_plan: rollbackPlan(action, riskClass)
+    rollback_plan: rollbackPlan(action, riskClass),
+    ...(decision
+      ? {
+          permission_decision: decision.decision,
+          permission_reason: decision.reason,
+          permission_mode: decision.mode,
+          permission_name: decision.permission_name,
+          ...(decision.matched_rule ? { permission_rule: decision.matched_rule } : {})
+        }
+      : {}),
+    ...(attentionNote ? { attention_note: attentionNote } : {}),
+    ...(summaryDiff ? { summary_diff: summaryDiff } : {})
   };
   if (action.type === "process.stop") {
     return {
@@ -106,11 +253,10 @@ export function createToolApprovalRequest(action: ToolAction): ToolApprovalReque
     };
   }
   if (action.type === "shell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.build" || action.type === "process.start") {
-    const command = action.command;
     return {
       ...base,
-      summary: `Run ${action.type === "process.start" ? "background" : action.type === "code.test" ? "test" : action.type === "code.build" ? "build" : action.type === "exec" ? "exec" : "shell"} command: ${command}`,
-      detail: [`Command: ${command}`, `CWD: ${action.cwd || "."}`, `Timeout: ${action.timeoutMs ?? 120000} ms`].join("\n")
+      summary: approvalSummary(action),
+      detail: commandApprovalDetail(action)
     };
   }
 
@@ -134,7 +280,7 @@ export function riskClassForAction(action: ToolAction): RiskClass {
   if (action.type === "shell.exec" || action.type === "exec" || action.type === "process.start" || action.type === "process.stop") {
     return "r2";
   }
-  if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "agent.delegate") {
+  if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
     return "r1";
   }
   return "r0";
@@ -218,10 +364,52 @@ function skipsApproval(mode: PermissionMode): boolean {
   return mode === "full-auto" || mode === "yolo";
 }
 
+function requiresExplicitApprovalForRisk(action: ToolAction, mode: PermissionMode): boolean {
+  return skipsApproval(mode) && riskClassForAction(action) === "r4";
+}
+
+function findMatchingAskRule(
+  action: ToolAction,
+  rules: string[],
+  mode: PermissionMode,
+  context?: PermissionMatchContext
+): string | undefined {
+  const matches = findMatchingPermissionRules(action, rules, context);
+  if (matches.length === 0) {
+    return undefined;
+  }
+  if (!skipsApproval(mode)) {
+    if (mode === "auto-edit") {
+      return matches.find((rule) => !isAutoEditBaselineBypassRule(action, rule));
+    }
+    return matches[0];
+  }
+  return matches.find((rule) => !DEFAULT_PERMISSION_ASK_RULES.has(rule));
+}
+
+function isAutoEditBaselineBypassRule(action: ToolAction, rule: string): boolean {
+  if (!DEFAULT_PERMISSION_ASK_RULES.has(rule)) {
+    return false;
+  }
+  const parsed = parsePermissionRule(rule);
+  if (!parsed || (parsed.name !== "Write" && parsed.name !== "Edit")) {
+    return false;
+  }
+  return isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit";
+}
+
 function matchesPermissionRules(action: ToolAction, rules: string[], context?: PermissionMatchContext): boolean {
+  return Boolean(findMatchingPermissionRule(action, rules, context));
+}
+
+function findMatchingPermissionRule(action: ToolAction, rules: string[], context?: PermissionMatchContext): string | undefined {
+  return findMatchingPermissionRules(action, rules, context)[0];
+}
+
+function findMatchingPermissionRules(action: ToolAction, rules: string[], context?: PermissionMatchContext): string[] {
   const permissionName = permissionNameForAction(action);
   const contents = permissionRuleContentCandidatesForAction(action, context);
-  return rules.some((rule) => {
+  return rules.filter((rule) => {
     const parsed = parsePermissionRule(rule);
     if (!parsed || parsed.name !== permissionName) {
       return false;
@@ -238,6 +426,9 @@ function matchesPermissionRules(action: ToolAction, rules: string[], context?: P
 }
 
 function permissionNameForAction(action: ToolAction): string {
+  if (action.type.startsWith("lsp.")) {
+    return "Read";
+  }
   if (action.type === "shell.exec") {
     return "Bash";
   }
@@ -313,8 +504,11 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "package.install") {
     return "PackageInstall";
   }
-  if (action.type === "agent.delegate") {
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
     return "Agent";
+  }
+  if (action.type === "agent.list" || action.type === "agent.status") {
+    return "AgentRead";
   }
   if (action.type === "blackboard.write") {
     return "BlackboardWrite";
@@ -338,7 +532,124 @@ function renderActionDetail(action: ToolAction): string {
   return JSON.stringify(action, null, 2);
 }
 
+function approvalPreviewForAction(action: ToolAction): string | undefined {
+  if (action.type === "file.write") {
+    if (isSensitiveApprovalTarget(action.path)) {
+      return redactedApprovalPreview(action.path);
+    }
+    return renderApprovalPreview(action.path, "file.write", [], action.content.split(/\r?\n/));
+  }
+  if (action.type === "file.edit") {
+    if (isSensitiveApprovalTarget(action.path)) {
+      return redactedApprovalPreview(action.path);
+    }
+    if (action.operation === "insert") {
+      const content = action.content ?? action.newText ?? "";
+      return renderApprovalPreview(
+        action.path,
+        `file.edit insert${action.line !== undefined ? ` line ${action.line}` : ""}`,
+        [],
+        content.split(/\r?\n/)
+      );
+    }
+    return renderApprovalPreview(
+      action.path,
+      "file.edit str_replace",
+      (action.oldText ?? "").split(/\r?\n/),
+      (action.newText ?? "").split(/\r?\n/)
+    );
+  }
+  if (action.type === "file.patch") {
+    if (isSensitiveApprovalTarget(action.path)) {
+      return redactedApprovalPreview(action.path);
+    }
+    const lines: string[] = [`--- ${action.path}`, `+++ ${action.path}`];
+    for (const [index, hunk] of action.hunks.entries()) {
+      lines.push(`@@ hunk ${index + 1} @@`);
+      lines.push(...previewLines("-", hunk.oldText.split(/\r?\n/)));
+      lines.push(...previewLines("+", hunk.newText.split(/\r?\n/)));
+    }
+    return truncateApprovalPreview(lines);
+  }
+  if (action.type === "json.edit") {
+    if (isSensitiveApprovalTarget(action.path) || isSensitiveApprovalTarget(action.pointer)) {
+      return redactedApprovalPreview(`${action.path} ${action.pointer}`);
+    }
+    return truncateApprovalPreview([
+      `--- ${action.path}`,
+      `+++ ${action.path}`,
+      `@@ json.edit ${action.operation} ${action.pointer} @@`,
+      action.operation === "delete" ? `- ${action.pointer}` : `+ ${JSON.stringify(action.value)}`
+    ]);
+  }
+  if (action.type === "notebook.edit") {
+    if (isSensitiveApprovalTarget(action.notebookPath)) {
+      return redactedApprovalPreview(action.notebookPath);
+    }
+    return renderApprovalPreview(
+      action.notebookPath,
+      `notebook.edit ${action.editMode ?? "replace"}`,
+      [],
+      (action.newSource ?? "").split(/\r?\n/)
+    );
+  }
+  return undefined;
+}
+
+function redactedApprovalPreview(target: string): string {
+  return [
+    `--- ${target}`,
+    `+++ ${target}`,
+    "@@ preview redacted @@",
+    "[redacted: sensitive target]"
+  ].join("\n");
+}
+
+function isSensitiveApprovalTarget(value: string): boolean {
+  return /(^|[\\/])\.env(?:\.|$)|secret|credential|password|token|api[_-]?key|private[_-]?key|\.pem$|\.key$/i.test(value);
+}
+
+function renderApprovalPreview(path: string, label: string, removed: string[], added: string[]): string | undefined {
+  return truncateApprovalPreview([
+    `--- ${path}`,
+    `+++ ${path}`,
+    `@@ ${label} @@`,
+    ...previewLines("-", removed),
+    ...previewLines("+", added)
+  ]);
+}
+
+function previewLines(prefix: "+" | "-", lines: string[]): string[] {
+  const meaningful = lines.length === 1 && lines[0] === "" ? [] : lines;
+  return meaningful.length ? meaningful.map((line) => `${prefix}${line}`) : [];
+}
+
+function truncateApprovalPreview(lines: string[]): string | undefined {
+  const filtered = lines.filter((line, index) => index < 3 || line.length > 0);
+  if (filtered.length <= 3) {
+    return undefined;
+  }
+  const maxLines = 40;
+  const selected = filtered.slice(0, maxLines);
+  if (filtered.length > maxLines) {
+    selected.push(`... ${filtered.length - maxLines} preview lines omitted`);
+  }
+  const maxBytes = 12_000;
+  const content = selected.join("\n");
+  const buffer = Buffer.from(content, "utf8");
+  if (buffer.length <= maxBytes) {
+    return content;
+  }
+  return `${buffer.subarray(0, maxBytes).toString("utf8").trimEnd()}\n... preview truncated`;
+}
+
 function approvalSummary(action: ToolAction): string {
+  if (action.type.startsWith("lsp.")) {
+    return `${action.type}: ${permissionRuleContentForAction(action) ?? "workspace"}`;
+  }
+  if (action.type === "shell.exec") {
+    return `${isDestructiveShellAction(action) ? "Run destructive shell command" : "Run shell command"}: ${action.command}`;
+  }
   if (action.type === "file.write") {
     return `Write file: ${action.path}`;
   }
@@ -381,11 +692,17 @@ function approvalSummary(action: ToolAction): string {
   if (action.type === "package.install") {
     return `Install packages: ${action.command}`;
   }
-  if (action.type === "exec" || action.type === "code.build") {
-    return `Run command: ${action.command}`;
+  if (action.type === "exec") {
+    return `${isDestructiveShellAction(action) ? "Run destructive command" : "Run exec command"}: ${action.command}`;
+  }
+  if (action.type === "code.test") {
+    return `Run test command: ${action.command}`;
+  }
+  if (action.type === "code.build") {
+    return `${isDestructiveShellAction(action) ? "Run destructive build command" : "Run build command"}: ${action.command}`;
   }
   if (action.type === "process.start") {
-    return `Start background process: ${action.command}`;
+    return `${isDestructiveShellAction(action) ? "Start destructive background command" : "Start background process"}: ${action.command}`;
   }
   if (action.type === "process.stop") {
     return `Stop background process: ${action.processId}`;
@@ -398,6 +715,18 @@ function approvalSummary(action: ToolAction): string {
   }
   if (action.type === "agent.delegate") {
     return `Launch agent for ${action.capability}: ${action.task}`;
+  }
+  if (action.type === "agent.list") {
+    return `List agents${action.parent_session_id ? ` for ${action.parent_session_id}` : ""}`;
+  }
+  if (action.type === "agent.status") {
+    return `Inspect agent: ${action.worker_id}`;
+  }
+  if (action.type === "agent.stop") {
+    return `Stop agent: ${action.worker_id}`;
+  }
+  if (action.type === "agent.continue") {
+    return `Continue agent: ${action.worker_id}`;
   }
   if (action.type === "blackboard.write") {
     return `Write blackboard entry: ${action.key}`;
@@ -451,6 +780,12 @@ function approvalTarget(action: ToolAction): string {
   if (action.type === "agent.delegate") {
     return action.capability;
   }
+  if (action.type === "agent.list") {
+    return action.parent_session_id ?? action.status ?? "agents";
+  }
+  if (action.type === "agent.status" || action.type === "agent.stop" || action.type === "agent.continue") {
+    return action.worker_id;
+  }
   if (action.type === "blackboard.write") {
     return action.key;
   }
@@ -467,6 +802,9 @@ function approvalTarget(action: ToolAction): string {
 }
 
 function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
+  if (isDestructiveShellAction(action)) {
+    return `Runs a destructive local command in ${"cwd" in action ? action.cwd ?? "." : "."}; it may delete files, reset branches, or cause irreversible workspace changes.`;
+  }
   if (action.type === "file.write") {
     return `Creates or replaces workspace file ${action.path}.`;
   }
@@ -490,6 +828,12 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   }
   if (action.type === "agent.delegate") {
     return "Spawns an internal specialist with its own tool budget.";
+  }
+  if (action.type === "agent.stop") {
+    return "Requests cancellation of an internal worker or background agent.";
+  }
+  if (action.type === "agent.continue") {
+    return "Recalls a prior worker by spawning a continuation with historical context.";
   }
   if (action.type === "blackboard.write") {
     return "Writes shared Swarm session state visible to other agents.";
@@ -520,7 +864,7 @@ function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
   if (action.type === "package.install") {
     return "install";
   }
-  if (action.type === "agent.delegate") {
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
     return "delegate";
   }
   if (isShellLikeAction(action) || action.type === "exec" || action.type === "git.branch") {
@@ -531,6 +875,27 @@ function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
 
 function isShellLikeAction(action: ToolAction): boolean {
   return action.type === "shell.exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start" || action.type === "process.stop";
+}
+
+function isDestructiveShellAction(action: ToolAction): boolean {
+  return (action.type === "shell.exec" || action.type === "exec" || action.type === "code.build" || action.type === "process.start")
+    && riskClassForAction(action) === "r4";
+}
+
+function approvalAttentionNote(action: ToolAction): string | undefined {
+  if (!isDestructiveShellAction(action)) {
+    return undefined;
+  }
+  return "Destructive shell command detected. Review the command literally before approving.";
+}
+
+function commandApprovalDetail(action: Extract<ToolAction, { type: "shell.exec" | "exec" | "code.test" | "code.build" | "process.start" }>): string {
+  return [
+    approvalAttentionNote(action) ? `Warning: ${approvalAttentionNote(action)}` : undefined,
+    `Command: ${action.command}`,
+    `CWD: ${action.cwd || "."}`,
+    `Timeout: ${action.timeoutMs ?? 120000} ms`
+  ].filter(Boolean).join("\n");
 }
 
 function isWriteLikeAction(action: ToolAction): boolean {
@@ -544,7 +909,162 @@ function isWriteLikeAction(action: ToolAction): boolean {
 }
 
 function isDestructiveCommand(command: string): boolean {
-  return /\b(rm\s+-rf|del\s+\/[sq]|remove-item\b.*\b-recurse\b|format\b|diskpart\b|git\s+reset\s+--hard)\b/i.test(command);
+  return commandRiskScanCandidates(command).some((candidate) => isDestructiveCommandCandidate(candidate));
+}
+
+function isDestructiveCommandCandidate(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return [
+    /(?:^|[;&|]\s*)(?:sudo\s+)?rm\b/i,
+    /(?:^|[;&|]\s*)(?:sudo\s+)?unlink\b/i,
+    /(?:^|[;&|]\s*)(?:del|erase|rmdir|rd)\b/i,
+    /(?:^|[;&|]\s*)remove-item\b/i,
+    /(?:^|[;&|]\s*)format(?:\.com)?(?:\s|$)/i,
+    /(?:^|[;&|]\s*)diskpart\b/i,
+    /(?:^|[;&|]\s*)git\s+reset\s+--hard\b/i
+  ].some((pattern) => pattern.test(trimmed));
+}
+
+function commandRiskScanCandidates(command: string): string[] {
+  const pending = [command];
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  while (pending.length > 0) {
+    const raw = pending.pop();
+    if (!raw) {
+      continue;
+    }
+    const current = stripOuterQuotes(raw.trim());
+    if (!current || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    candidates.push(current);
+    const withoutSudo = unwrapLeadingSudo(current);
+    if (withoutSudo) {
+      pending.push(withoutSudo);
+    }
+    const unwrapped = unwrapShellLauncher(current);
+    if (unwrapped) {
+      pending.push(unwrapped);
+    }
+  }
+  return candidates;
+}
+
+function unwrapLeadingSudo(command: string): string | undefined {
+  const tokens = tokenizeCommand(command);
+  if (normalizeCommandToken(tokens[0]) !== "sudo" || tokens.length < 2) {
+    return undefined;
+  }
+  return joinCommandTokens(tokens.slice(1));
+}
+
+function unwrapShellLauncher(command: string): string | undefined {
+  const tokens = tokenizeCommand(command);
+  if (tokens.length < 2) {
+    return undefined;
+  }
+  const executable = normalizeCommandToken(tokens[0]);
+  if (executable === "cmd" || executable === "cmd.exe") {
+    return ["/c", "/k"].includes(normalizeCommandToken(tokens[1]))
+      ? joinCommandTokens(tokens.slice(2))
+      : undefined;
+  }
+  if (executable === "powershell" || executable === "powershell.exe" || executable === "pwsh" || executable === "pwsh.exe") {
+    for (let index = 1; index < tokens.length; index += 1) {
+      const option = normalizeCommandToken(tokens[index]);
+      if (option === "-encodedcommand" || option === "-ec") {
+        return undefined;
+      }
+      if (option === "-command" || option === "-c") {
+        return joinCommandTokens(tokens.slice(index + 1));
+      }
+    }
+    return undefined;
+  }
+  if (["bash", "sh", "zsh", "fish"].includes(executable)) {
+    return /^-\w*c\w*$/i.test(tokens[1])
+      ? joinCommandTokens(tokens.slice(2))
+      : undefined;
+  }
+  if (executable === "wsl" || executable === "wsl.exe") {
+    return unwrapWslLauncher(tokens);
+  }
+  return undefined;
+}
+
+function unwrapWslLauncher(tokens: string[]): string | undefined {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const option = normalizeCommandToken(tokens[index]);
+    if (option === "--" || option === "-e" || option === "--exec") {
+      return joinCommandTokens(tokens.slice(index + 1));
+    }
+    if (option === "-d" || option === "--distribution" || option === "-u" || option === "--user" || option === "--cd" || option === "--shell-type") {
+      index += 1;
+      continue;
+    }
+    if (/^--(?:distribution|user|cd|shell-type)=/i.test(tokens[index])) {
+      continue;
+    }
+    if (option.startsWith("-")) {
+      continue;
+    }
+    return joinCommandTokens(tokens.slice(index));
+  }
+  return undefined;
+}
+
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | undefined;
+  for (const character of command.trim()) {
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+    if (character === "'" || character === "\"") {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += character;
+  }
+  if (current) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+function joinCommandTokens(tokens: string[]): string | undefined {
+  const joined = stripOuterQuotes(tokens.join(" ").trim());
+  return joined || undefined;
+}
+
+function stripOuterQuotes(value: string): string {
+  let current = value.trim();
+  while (current.length >= 2 && ((current.startsWith("\"") && current.endsWith("\"")) || (current.startsWith("'") && current.endsWith("'")))) {
+    current = current.slice(1, -1).trim();
+  }
+  return current;
+}
+
+function normalizeCommandToken(token: string | undefined): string {
+  return stripOuterQuotes(token ?? "").toLowerCase();
 }
 
 function permissionRuleContentForAction(action: ToolAction): string | undefined {
@@ -596,6 +1116,12 @@ function permissionRuleContentsForAction(action: ToolAction): Array<{ value: str
   }
   if (action.type === "agent.delegate") {
     return [{ value: action.capability, pathLike: false }];
+  }
+  if (action.type === "agent.list") {
+    return [{ value: action.parent_session_id ?? action.status ?? "agents", pathLike: false }];
+  }
+  if (action.type === "agent.status" || action.type === "agent.stop" || action.type === "agent.continue") {
+    return [{ value: action.worker_id, pathLike: false }];
   }
   if (action.type === "blackboard.write") {
     return [{ value: action.key, pathLike: false }];

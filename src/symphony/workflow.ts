@@ -53,6 +53,15 @@ export type WorkflowRuntimeConfig = {
       preserve_artifacts: boolean;
     };
   };
+  system_loop?: {
+    enabled: boolean;
+    execute: boolean;
+    startup_tick: boolean;
+    tick_on_events: boolean;
+    debounce_ms: number;
+    max_runner_turns?: number;
+    max_runner_tool_calls?: number;
+  };
 };
 
 const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
@@ -97,6 +106,7 @@ export function normalizeWorkflowConfig(workflow: WorkflowDefinition): WorkflowR
   const hooks = objectValue(workflow.config.hooks);
   const cleanup = objectValue(workflow.config.cleanup);
   const retention = objectValue(cleanup.retention);
+  const systemLoop = objectValue(workflow.config.system_loop);
   return {
     work_source: {
       kind: stringValue(workSource.kind) ?? "local",
@@ -127,6 +137,15 @@ export function normalizeWorkflowConfig(workflow: WorkflowDefinition): WorkflowR
         keep_latest: nonNegativeIntValue(retention.keep_latest, 0),
         preserve_artifacts: booleanValue(retention.preserve_artifacts, false)
       }
+    },
+    system_loop: {
+      enabled: booleanValue(systemLoop.enabled, true),
+      execute: booleanValue(systemLoop.execute, false),
+      startup_tick: booleanValue(systemLoop.startup_tick, true),
+      tick_on_events: booleanValue(systemLoop.tick_on_events, true),
+      debounce_ms: nonNegativeIntValue(systemLoop.debounce_ms, 250),
+      max_runner_turns: optionalPositiveIntValue(systemLoop.max_runner_turns),
+      max_runner_tool_calls: optionalPositiveIntValue(systemLoop.max_runner_tool_calls)
     }
   };
 }
@@ -184,7 +203,10 @@ function parseSimpleYaml(text: string): Record<string, unknown> {
     }
     const indent = rawLine.match(/^ */)?.[0].length ?? 0;
     const line = rawLine.trim();
-    const match = line.match(/^([^:]+):(.*)$/);
+    if (indent === 0 && line.startsWith("- ")) {
+      throw new WorkflowParseError("workflow_front_matter_not_a_map", "Workflow front matter must be a map.");
+    }
+    const match = line.match(/^([^:]*):(.*)$/);
     if (!match) {
       throw new WorkflowParseError("workflow_parse_error", `Unsupported front matter line ${index + 1}: ${line}`);
     }
@@ -347,6 +369,11 @@ function stringArrayValue(value: unknown): string[] | undefined {
 function positiveIntValue(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function optionalPositiveIntValue(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
 
 function nonNegativeIntValue(value: unknown, fallback: number): number {

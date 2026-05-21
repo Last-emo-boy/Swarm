@@ -168,13 +168,14 @@ function matchesFilter(capability: CapabilityDescriptor, filter: CapabilityFilte
   if (filter.query) {
     const query = filter.query.toLowerCase();
     const haystack = [
-      capability.id,
-      capability.name,
-      capability.title ?? "",
-      capability.description,
-      capability.providerId,
-      capability.permissionName
-    ].join("\n").toLowerCase();
+    capability.id,
+    capability.name,
+    capability.title ?? "",
+    capability.description,
+    capability.providerId,
+    capability.permissionName,
+    capability.searchHint ?? ""
+  ].join("\n").toLowerCase();
     if (!haystack.includes(query)) {
       return false;
     }

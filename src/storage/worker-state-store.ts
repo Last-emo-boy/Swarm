@@ -2,7 +2,7 @@ import type { SessionOutcome } from "../runtime/events.js";
 import type { AgentInvocationMode, AgentTaskPacket } from "../runtime/agent-specs.js";
 import type { SwarmDatabase } from "./database.js";
 
-export type WorkerStatus = "running" | "completed" | "failed" | "stopped";
+export type WorkerStatus = "pending" | "running" | "completed" | "failed" | "stopped";
 
 export type WorkerRecord = {
   worker_id: string;
@@ -75,6 +75,7 @@ export class WorkerStateStore {
     parent_session_id: string;
     capability: string;
     objective: string;
+    status?: WorkerStatus;
     agent_spec_id?: string;
     invocation_mode?: AgentInvocationMode;
     handoff_id?: string;
@@ -106,7 +107,7 @@ export class WorkerStateStore {
       handoff_id: input.handoff_id,
       capability: input.capability,
       objective: input.objective,
-      status: "running",
+      status: input.status ?? "running",
       file_scope: input.file_scope ?? [],
       tool_budget: input.tool_budget,
       persona_snapshot: input.persona_snapshot,
@@ -168,7 +169,7 @@ export class WorkerStateStore {
     worker_session_id?: string;
     last_result?: string;
     outcome?: SessionOutcome;
-    blocked_reason?: string;
+    blocked_reason?: string | null;
     last_review?: unknown;
     last_verification?: unknown;
     change_refs?: string[];
@@ -183,7 +184,9 @@ export class WorkerStateStore {
       worker_session_id: input.worker_session_id ?? existing.worker_session_id,
       last_result: input.last_result ?? existing.last_result,
       outcome: input.outcome ?? existing.outcome,
-      blocked_reason: input.blocked_reason ?? existing.blocked_reason,
+      blocked_reason: input.blocked_reason === undefined
+        ? existing.blocked_reason
+        : input.blocked_reason ?? undefined,
       last_review: input.last_review ?? existing.last_review,
       last_verification: input.last_verification ?? existing.last_verification,
       change_refs: input.change_refs ?? existing.change_refs,

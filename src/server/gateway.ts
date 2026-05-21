@@ -4,21 +4,47 @@ import { URL } from "node:url";
 import type { SwarmSession } from "../protocol/types.js";
 import { SwarmRuntime } from "../runtime/runtime.js";
 import type { RuntimeEvent } from "../runtime/events.js";
+import type { SandboxWritePolicy } from "../runtime/sandbox-policy.js";
+import { buildWorkRecordFromRuntimeEvent, type WorkProtocolRecord } from "../runtime/work-protocol.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
+import type { ApprovalRecord } from "../storage/approval-store.js";
 import { installPluginRoot, removePluginRoot, setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import type { CapabilityFilter } from "../extensions/types.js";
 import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
 import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
+import { buildSessionSnapshot, buildWorkspaceSnapshot } from "./session-view.js";
+import {
+  authorizeGatewayRequest,
+  envFlag,
+  gatewayCorsDecision,
+  parseGatewayAllowedOrigins,
+  validateGatewayBindHost
+} from "./gateway-auth.js";
+import {
+  delay,
+  errorMessage,
+  HttpError,
+  integerParam,
+  optionalHeader,
+  parseJson,
+  readJsonBody,
+  sendJson,
+  setCommonHeaders,
+  writeSse
+} from "./gateway-http.js";
 
 export type GatewayOptions = {
   host?: string;
   port?: number;
   workspace?: string;
   databasePath?: string;
+  authToken?: string;
+  allowRemote?: boolean;
+  allowedOrigins?: string[];
 };
 
 type GatewayRunStatus = "starting" | "running" | "completed" | "failed";
@@ -41,28 +67,54 @@ type PendingApproval = {
   created_at: string;
 };
 
+type ApprovalQueueView = {
+  session_id?: string;
+  session_ids?: string[];
+  pending_requests: ToolApprovalRequest[];
+  actionable_approval_ids: string[];
+  approvals: ApprovalRecord[];
+  summary: {
+    actionable_pending: number;
+    persisted_pending: number;
+    approved: number;
+    denied: number;
+  };
+};
+
 type SseClient = {
   id: string;
   sessionId?: string;
+  protocol: "runtime" | "work";
   response: ServerResponse;
 };
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 38171;
-const MAX_BODY_BYTES = 1_000_000;
 const EVENT_BUFFER_LIMIT = 500;
 const PUBLIC_API_SURFACE = [
   "/",
   "/health",
   "/mcp",
+  "/v1/live",
+  "/v1/live/messages",
+  "/v1/live/interrupt",
   "/v1/sessions",
   "/v1/runs",
+  "/v1/checkpoints",
+  "/v1/checkpoints/:id/revert",
   "/v1/events",
+  "/v1/work-events",
   "/v1/sessions/:id/events",
+  "/v1/sessions/:id/work-events",
   "/v1/approvals",
   "/v1/approvals/:id/decision",
   "/v1/workers",
+  "/v1/workers/:id",
+  "/v1/workers/:id/stop",
+  "/v1/workers/:id/continue",
   "/v1/handoffs",
+  "/v1/handoffs/:id",
+  "/v1/handoffs/:id/take-back",
   "/v1/capabilities",
   "/v1/capabilities/:id",
   "/v1/capabilities/:id/invoke",
@@ -100,7 +152,7 @@ export class SwarmGatewayServer {
   private readonly clients = new Map<string, SseClient>();
   private readonly symphonySchedulers = new Map<string, SymphonyScheduler>();
   private readonly symphonyDaemons: SymphonyDaemonManager;
-  private readonly eventBuffer: { id: number; event: RuntimeEvent }[] = [];
+  private readonly eventBuffer: { id: number; at: string; event: RuntimeEvent; work: WorkProtocolRecord }[] = [];
   private nextEventId = 1;
   private listening = false;
 
@@ -123,6 +175,10 @@ export class SwarmGatewayServer {
       const address = this.server.address();
       const port = typeof address === "object" && address ? address.port : this.port;
       return { host: this.host, port, url: `http://${this.host}:${port}` };
+    }
+    const bindDecision = validateGatewayBindHost(this.host, this.securityOptions);
+    if (!bindDecision.ok) {
+      throw new HttpError(bindDecision.status, bindDecision.message);
     }
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
@@ -168,11 +224,37 @@ export class SwarmGatewayServer {
     return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_PORT;
   }
 
+  private get securityOptions(): {
+    authToken?: string;
+    allowRemote?: boolean;
+    allowedOrigins?: string[];
+  } {
+    return {
+      authToken: this.options.authToken ?? process.env.SWARM_GATEWAY_TOKEN,
+      allowRemote: this.options.allowRemote ?? envFlag(process.env.SWARM_GATEWAY_ALLOW_REMOTE),
+      allowedOrigins: this.options.allowedOrigins ?? parseGatewayAllowedOrigins(process.env.SWARM_GATEWAY_ALLOWED_ORIGINS)
+    };
+  }
+
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    setCommonHeaders(response);
+    setCommonHeaders(response, request.headers.origin, this.securityOptions);
+    const corsDecision = gatewayCorsDecision(optionalHeader(request.headers.origin), this.securityOptions);
+    if (!corsDecision.ok) {
+      sendJson(response, corsDecision.status, { error: { message: corsDecision.message, status: corsDecision.status } });
+      return;
+    }
     if (request.method === "OPTIONS") {
       response.writeHead(204);
       response.end();
+      return;
+    }
+    const authDecision = authorizeGatewayRequest({
+      method: request.method,
+      headers: request.headers,
+      remoteAddress: request.socket.remoteAddress
+    }, this.securityOptions);
+    if (!authDecision.ok) {
+      sendJson(response, authDecision.status, { error: { message: authDecision.message, status: authDecision.status } });
       return;
     }
 
@@ -198,22 +280,20 @@ export class SwarmGatewayServer {
           response,
           body,
           startRun: (objective, mode) => this.startRuntimeRun(objective, mode),
-          interrupt: (_sessionId, content) => this.runtime.interrupt(content),
-          approvalDecision: (approvalId, approved) => {
-            const pending = this.pendingApprovals.get(approvalId);
-            if (!pending) {
-              return false;
-            }
-            pending.resolve(approved);
-            this.pendingApprovals.delete(approvalId);
-            return true;
-          }
+          interrupt: (sessionId, content, requestId) => this.runtime.requestInterrupt(content, { sessionId, requestId }),
+          approvalDecision: (approvalId, approved) => this.applyApprovalDecision(approvalId, approved),
+          listApprovals: (sessionId, limit) => this.approvalQueueView(sessionId, limit)
         });
         return;
       }
 
       if (request.method === "GET" && segments[0] === "v1" && segments[1] === "events") {
-        this.openEventStream(response);
+        this.openEventStream(response, undefined, "runtime");
+        return;
+      }
+
+      if (request.method === "GET" && segments[0] === "v1" && segments[1] === "work-events") {
+        this.openEventStream(response, undefined, "work");
         return;
       }
 
@@ -248,8 +328,18 @@ export class SwarmGatewayServer {
       return;
     }
 
+    if (resource === "checkpoints") {
+      await this.handleCheckpoints(request, response, url, id, child);
+      return;
+    }
+
+    if (resource === "live") {
+      await this.handleLive(request, response, id);
+      return;
+    }
+
     if (resource === "approvals") {
-      await this.handleApprovals(request, response, id, child);
+      await this.handleApprovals(request, response, url, id, child);
       return;
     }
 
@@ -259,7 +349,7 @@ export class SwarmGatewayServer {
     }
 
     if (resource === "handoffs") {
-      await this.handleHandoffs(request, response, id, child);
+      await this.handleHandoffs(request, response, url, id, child);
       return;
     }
 
@@ -289,6 +379,39 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown v1 route.");
+  }
+
+  private async handleCheckpoints(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    checkpointId?: string,
+    action?: string
+  ): Promise<void> {
+    if (request.method === "GET" && !checkpointId) {
+      const checkpoints = await this.runtime.listCheckpoints(integerParam(url, "limit", 20));
+      sendJson(response, 200, { workspace: this.runtime.workspaceRoot(), checkpoints });
+      return;
+    }
+
+    if (request.method === "POST" && !checkpointId) {
+      const body = await readJsonBody(request);
+      const checkpoint = await this.runtime.createCheckpoint(stringField(body, "name"), optionalString(body.reason));
+      sendJson(response, 201, { workspace: this.runtime.workspaceRoot(), checkpoint });
+      return;
+    }
+
+    if (request.method === "POST" && checkpointId && action === "revert") {
+      const selector = checkpointId === "last" ? undefined : checkpointId;
+      const checkpoint = await this.runtime.revertCheckpoint(selector);
+      if (!checkpoint) {
+        throw new HttpError(404, selector ? `Unknown checkpoint: ${selector}` : "No checkpoint found to revert.");
+      }
+      sendJson(response, 200, { workspace: this.runtime.workspaceRoot(), checkpoint });
+      return;
+    }
+
+    throw new HttpError(404, "Unknown checkpoint route.");
   }
 
   private async handleSymphony(
@@ -348,7 +471,7 @@ export class SwarmGatewayServer {
           status: item.status,
           reason: item.reason,
           work_item: item.work_item,
-          session: item.session ? sessionSnapshot(this.runtime, item.session.session_id) : undefined,
+          session: item.session ? sessionSnapshot(this.runtime, item.session.session_id, this.approvalQueueView(item.session.session_id, 80)) : undefined,
           workspace_path: item.workspace_path,
           prompt: item.prompt,
           attempt: item.attempt
@@ -377,7 +500,7 @@ export class SwarmGatewayServer {
         workflow: result.workflow.workflow,
         items: result.items,
         sessions: result.sessions.map((item) => ({
-          session: sessionSnapshot(this.runtime, item.session.session_id),
+          session: sessionSnapshot(this.runtime, item.session.session_id, this.approvalQueueView(item.session.session_id, 80)),
           workspace_path: item.workspace_path,
           prompt: item.prompt
         }))
@@ -449,7 +572,9 @@ export class SwarmGatewayServer {
       const result = await this.runtime.invokeCapability(capability.id, args, sessionId, {
         taskId,
         title: `Gateway invoke ${capability.title ?? capability.name}`,
-        source: "gateway"
+        source: "gateway",
+        writePolicy: capabilityInvocationWritePolicy(body),
+        fileScope: capabilityInvocationFileScope(body)
       });
       sendJson(response, result.status === "failed" ? 500 : 200, { capability, result });
       return;
@@ -706,6 +831,63 @@ export class SwarmGatewayServer {
     return daemon;
   }
 
+  private async handleLive(
+    request: IncomingMessage,
+    response: ServerResponse,
+    child?: string
+  ): Promise<void> {
+    if (request.method === "GET" && !child) {
+      const activeTarget = this.runtime.getActiveLiveTarget();
+      sendJson(response, 200, activeTarget
+        ? {
+            status: "active",
+            active_target: activeTarget,
+            controls: {
+              reply: true,
+              interrupt: true
+            },
+            session: sessionSnapshot(this.runtime, activeTarget.session_id, this.approvalQueueView(activeTarget.session_id, 80))
+          }
+        : {
+            status: "idle",
+            active_target: null,
+            controls: {
+              reply: false,
+              interrupt: false
+            }
+          });
+      return;
+    }
+
+    if (request.method === "POST" && child === "messages") {
+      const body = await readJsonBody(request);
+      try {
+        const target = await this.runtime.sendUserMessage(stringField(body, "content"), {
+          requestId: optionalString(body.request_id ?? body.requestId)
+        });
+        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+      } catch (error) {
+        throw liveReplyHttpError(error);
+      }
+      return;
+    }
+
+    if (request.method === "POST" && child === "interrupt") {
+      const body = await readJsonBody(request);
+      try {
+        const target = this.runtime.requestInterrupt(optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.", {
+          requestId: optionalString(body.request_id ?? body.requestId)
+        });
+        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+      } catch (error) {
+        throw interruptHttpError(error);
+      }
+      return;
+    }
+
+    throw new HttpError(404, "Unknown route.");
+  }
+
   private async handleSessions(
     request: IncomingMessage,
     response: ServerResponse,
@@ -716,7 +898,10 @@ export class SwarmGatewayServer {
   ): Promise<void> {
     if (request.method === "GET" && !sessionId) {
       const limit = integerParam(url, "limit", 25);
-      sendJson(response, 200, { sessions: this.runtime.sessionStore.listRecent(limit) });
+      sendJson(response, 200, buildWorkspaceSnapshot(this.runtime, {
+        limit,
+        approvals: this.approvalQueueView(undefined, limit)
+      }));
       return;
     }
 
@@ -729,15 +914,15 @@ export class SwarmGatewayServer {
         const planned = await this.runtime.createPlan(objective);
         if (execute) {
           const run = this.startPlannedExecution(planned);
-          sendJson(response, 202, { run, session: sessionSnapshot(this.runtime, planned.session.session_id), plan: planned.plan });
+          sendJson(response, 202, { run, session: sessionSnapshot(this.runtime, planned.session.session_id, this.approvalQueueView(planned.session.session_id, 80)), plan: planned.plan });
         } else {
-          sendJson(response, 201, { session: sessionSnapshot(this.runtime, planned.session.session_id), plan: planned.plan });
+          sendJson(response, 201, { session: sessionSnapshot(this.runtime, planned.session.session_id, this.approvalQueueView(planned.session.session_id, 80)), plan: planned.plan });
         }
         return;
       }
 
       const run = await this.startRuntimeRun(objective, mode);
-      sendJson(response, 202, { run, session: run.session_id ? sessionSnapshot(this.runtime, run.session_id) : undefined });
+      sendJson(response, 202, { run, session: run.session_id ? sessionSnapshot(this.runtime, run.session_id, this.approvalQueueView(run.session_id, 80)) : undefined });
       return;
     }
 
@@ -746,39 +931,58 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "GET" && !child) {
-      sendJson(response, 200, sessionSnapshot(this.runtime, sessionId));
+      sendJson(response, 200, sessionSnapshot(this.runtime, sessionId, this.approvalQueueView(sessionId, 80)));
       return;
     }
 
     if (request.method === "GET" && child === "events") {
-      this.openEventStream(response, sessionId);
+      this.openEventStream(response, sessionId, "runtime");
+      return;
+    }
+
+    if (request.method === "GET" && child === "work-events") {
+      this.openEventStream(response, sessionId, "work");
       return;
     }
 
     if (request.method === "POST" && child === "messages") {
       const body = await readJsonBody(request);
-      await this.runtime.sendUserMessage(stringField(body, "content"));
-      sendJson(response, 202, { status: "queued", session_id: sessionId });
+      try {
+        const target = await this.runtime.sendUserMessage(stringField(body, "content"), {
+          sessionId,
+          requestId: optionalString(body.request_id ?? body.requestId)
+        });
+        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+      } catch (error) {
+        throw liveReplyHttpError(error);
+      }
       return;
     }
 
     if (request.method === "POST" && child === "interrupt") {
       const body = await readJsonBody(request);
-      this.runtime.interrupt(optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.");
-      sendJson(response, 202, { status: "interrupt_queued", session_id: sessionId });
+      try {
+        const target = this.runtime.requestInterrupt(optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.", {
+          sessionId,
+          requestId: optionalString(body.request_id ?? body.requestId)
+        });
+        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+      } catch (error) {
+        throw interruptHttpError(error);
+      }
       return;
     }
 
     if (request.method === "POST" && child === "execute") {
       const planned = plannedSessionFromStore(this.runtime, sessionId);
-      sendJson(response, 202, { run: this.startPlannedExecution(planned), session: sessionSnapshot(this.runtime, sessionId) });
+      sendJson(response, 202, { run: this.startPlannedExecution(planned), session: sessionSnapshot(this.runtime, sessionId, this.approvalQueueView(sessionId, 80)) });
       return;
     }
 
     if (request.method === "POST" && child === "fork") {
       const body = await readJsonBody(request);
       const planned = await this.runtime.forkSession(sessionId, optionalString(body.message));
-      sendJson(response, 201, { session: sessionSnapshot(this.runtime, planned.session.session_id), plan: planned.plan });
+      sendJson(response, 201, { session: sessionSnapshot(this.runtime, planned.session.session_id, this.approvalQueueView(planned.session.session_id, 80)), plan: planned.plan });
       return;
     }
 
@@ -808,7 +1012,7 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "GET" && child === "approvals") {
-      sendJson(response, 200, { session_id: sessionId, approvals: this.runtime.approvalStore.list(sessionId, integerParam(url, "limit", 80)) });
+      sendJson(response, 200, this.approvalQueueView(sessionId, integerParam(url, "limit", 80)));
       return;
     }
 
@@ -832,14 +1036,13 @@ export class SwarmGatewayServer {
   private async handleApprovals(
     request: IncomingMessage,
     response: ServerResponse,
+    url: URL,
     approvalId?: string,
     child?: string
   ): Promise<void> {
     if (request.method === "GET" && !approvalId) {
-      sendJson(response, 200, {
-        pending: [...this.pendingApprovals.values()].map((item) => item.request),
-        approvals: this.runtime.approvalStore.list(undefined, 100)
-      });
+      const sessionId = url.searchParams.get("session_id") ?? undefined;
+      sendJson(response, 200, this.approvalQueueView(sessionId, integerParam(url, "limit", 100)));
       return;
     }
 
@@ -848,24 +1051,14 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "GET" && !child) {
-      const approval = this.runtime.approvalStore.get(approvalId);
-      if (!approval) {
-        throw new HttpError(404, `Unknown approval: ${approvalId}`);
-      }
-      sendJson(response, 200, approval);
+      sendJson(response, 200, this.approvalDetail(approvalId));
       return;
     }
 
     if (request.method === "POST" && child === "decision") {
-      const pending = this.pendingApprovals.get(approvalId);
-      if (!pending) {
-        throw new HttpError(409, `Approval is not pending in this gateway process: ${approvalId}`);
-      }
       const body = await readJsonBody(request);
       const approved = body.approved === true || body.decision === "approved" || body.status === "approved";
-      pending.resolve(approved);
-      this.pendingApprovals.delete(approvalId);
-      sendJson(response, 200, { approval_id: approvalId, status: approved ? "approved" : "denied" });
+      sendJson(response, 200, this.applyApprovalDecision(approvalId, approved));
       return;
     }
 
@@ -880,11 +1073,33 @@ export class SwarmGatewayServer {
     child?: string
   ): Promise<void> {
     if (request.method === "GET" && !workerId) {
+      const limit = integerParam(url, "limit", 50);
       const parent = url.searchParams.get("parent_session_id") ?? undefined;
       const workers = parent
         ? this.runtime.workerStateStore.listByParent(parent)
-        : this.runtime.workerStateStore.listRecent(integerParam(url, "limit", 50));
-      sendJson(response, 200, { workers });
+        : this.runtime.workerStateStore.listRecent(limit);
+      const workerContracts = this.runtime.listWorkerContracts(parent, limit);
+      sendJson(response, 200, {
+        workers,
+        worker_contracts: workerContracts,
+        work_contract_summary: parent ? this.runtime.getWorkSnapshot(parent).work_contracts.summary : undefined
+      });
+      return;
+    }
+
+    if (request.method === "GET" && workerId && !child) {
+      const worker = this.runtime.workerStateStore.get(workerId);
+      if (!worker) {
+        throw new HttpError(404, `Unknown worker: ${workerId}`);
+      }
+      const workerSession = worker.worker_session_id && this.runtime.sessionStore.get(worker.worker_session_id)
+        ? sessionSnapshot(this.runtime, worker.worker_session_id, this.approvalQueueView(worker.worker_session_id, 80))
+        : undefined;
+      sendJson(response, 200, {
+        worker,
+        worker_contract: this.runtime.getWorkerContract(workerId),
+        worker_session: workerSession
+      });
       return;
     }
 
@@ -894,17 +1109,47 @@ export class SwarmGatewayServer {
       return;
     }
 
+    if (request.method === "POST" && workerId && child === "continue") {
+      const body = await readJsonBody(request);
+      const message = optionalString(body.message ?? body.instruction ?? body.prompt);
+      if (!message) {
+        throw new HttpError(400, "Missing string field: message");
+      }
+      const result = await this.runtime.continueAgent(workerId, message);
+      sendJson(response, 200, { worker_id: workerId, result });
+      return;
+    }
+
     throw new HttpError(404, "Unknown worker route.");
   }
 
   private async handleHandoffs(
     request: IncomingMessage,
     response: ServerResponse,
+    url: URL,
     handoffId?: string,
     child?: string
   ): Promise<void> {
     if (request.method === "GET" && !handoffId) {
-      sendJson(response, 200, { handoffs: this.runtime.listHandoffs(50) });
+      const limit = integerParam(url, "limit", 50);
+      const parent = url.searchParams.get("parent_session_id") ?? undefined;
+      const handoffs = parent
+        ? this.runtime.handoffStore.listByParent(parent)
+        : this.runtime.listHandoffs(limit);
+      sendJson(response, 200, {
+        handoffs,
+        handoff_contracts: this.runtime.listHandoffContracts(parent, limit),
+        work_contract_summary: parent ? this.runtime.getWorkSnapshot(parent).work_contracts.summary : undefined
+      });
+      return;
+    }
+
+    if (request.method === "GET" && handoffId && !child) {
+      const handoff = this.runtime.getHandoff(handoffId);
+      if (!handoff) {
+        throw new HttpError(404, `Unknown handoff: ${handoffId}`);
+      }
+      sendJson(response, 200, { handoff, handoff_contract: this.runtime.getHandoffContract(handoffId) });
       return;
     }
 
@@ -990,6 +1235,129 @@ export class SwarmGatewayServer {
     });
   }
 
+  private pendingApprovalRequests(sessionId?: string, limit = 100): ToolApprovalRequest[] {
+    const sessionIds = this.sessionScopeIds(sessionId);
+    return [...this.pendingApprovals.values()]
+      .filter((item) => !sessionId || (item.request.session_id ? sessionIds.has(item.request.session_id) : false))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((item) => item.request);
+  }
+
+  private approvalQueueView(sessionId?: string, limit = 100): ApprovalQueueView {
+    const sessionIds = this.sessionScopeIds(sessionId);
+    const pendingRequests = this.pendingApprovalRequests(sessionId, limit);
+    const approvals = this.listApprovalsForSessions(sessionIds, limit);
+    return {
+      session_id: sessionId,
+      session_ids: sessionId ? [...sessionIds] : undefined,
+      pending_requests: pendingRequests,
+      actionable_approval_ids: pendingRequests.map((request) => request.id),
+      approvals,
+      summary: {
+        actionable_pending: pendingRequests.length,
+        persisted_pending: approvals.filter((approval) => approval.status === "pending").length,
+        approved: approvals.filter((approval) => approval.status === "approved").length,
+        denied: approvals.filter((approval) => approval.status === "denied").length
+      }
+    };
+  }
+
+  private listApprovalsForSessions(sessionIds: Set<string>, limit: number): ApprovalRecord[] {
+    if (sessionIds.size === 0) {
+      return this.runtime.approvalStore.list(undefined, limit);
+    }
+    const records = [...sessionIds]
+      .flatMap((sessionId) => this.runtime.approvalStore.list(sessionId, Math.max(limit * 2, limit)))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.approval_id.localeCompare(left.approval_id));
+    const seen = new Set<string>();
+    const deduped: ApprovalRecord[] = [];
+    for (const record of records) {
+      if (seen.has(record.approval_id)) {
+        continue;
+      }
+      seen.add(record.approval_id);
+      deduped.push(record);
+      if (deduped.length >= limit) {
+        break;
+      }
+    }
+    return deduped;
+  }
+
+  private sessionScopeIds(sessionId?: string): Set<string> {
+    if (!sessionId) {
+      return new Set<string>();
+    }
+    return new Set(this.runtime.listSessionFamilySessionIds(sessionId, 1_000));
+  }
+
+  private eventMatchesSession(event: RuntimeEvent, sessionId?: string): boolean {
+    if (!sessionId) {
+      return true;
+    }
+    const eventId = eventSessionId(event);
+    return eventId ? this.sessionScopeIds(sessionId).has(eventId) : false;
+  }
+
+  private approvalDetail(approvalId: string): {
+    approval: ApprovalRecord;
+    actionable: boolean;
+    pending_request?: ToolApprovalRequest;
+    gateway_pending_created_at?: string;
+  } {
+    const approval = this.runtime.approvalStore.get(approvalId);
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!approval && !pending) {
+      throw new HttpError(404, `Unknown approval: ${approvalId}`);
+    }
+    return {
+      approval: approval ?? {
+        approval_id: pending!.request.id,
+        session_id: pending!.request.session_id,
+        task_id: pending!.request.task_id,
+        action: pending!.request.action,
+        summary: pending!.request.summary,
+        detail: pending!.request.detail,
+        risk: pending!.request.risk,
+        risk_class: pending!.request.risk_class,
+        target: pending!.request.target,
+        status: "pending",
+        challenge: pending!.request,
+        created_at: pending!.created_at,
+        updated_at: pending!.created_at
+      },
+      actionable: Boolean(pending),
+      pending_request: pending?.request,
+      gateway_pending_created_at: pending?.created_at
+    };
+  }
+
+  private applyApprovalDecision(approvalId: string, approved: boolean): {
+    approval_id: string;
+    status: "approved" | "denied";
+    session_id?: string;
+  } {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      const approval = this.runtime.approvalStore.get(approvalId);
+      if (!approval) {
+        throw new HttpError(404, `Unknown approval: ${approvalId}`);
+      }
+      if (approval.status === "pending") {
+        throw new HttpError(409, `Approval is recorded as pending but is not actionable in this gateway process: ${approvalId}`);
+      }
+      throw new HttpError(409, `Approval is not pending in this gateway process: ${approvalId} current_status=${approval.status}`);
+    }
+    pending.resolve(approved);
+    this.pendingApprovals.delete(approvalId);
+    return {
+      approval_id: approvalId,
+      status: approved ? "approved" : "denied",
+      session_id: pending.request.session_id
+    };
+  }
+
   private waitForNextSession(objective: string): Promise<Extract<RuntimeEvent, { type: "session" }>> {
     return new Promise((resolve) => {
       const unsubscribe = this.runtime.events.onEvent((event) => {
@@ -1003,22 +1371,25 @@ export class SwarmGatewayServer {
 
   private recordAndBroadcast(event: RuntimeEvent): void {
     const id = this.nextEventId++;
-    this.eventBuffer.push({ id, event });
+    const at = new Date().toISOString();
+    const work = buildWorkRecordFromRuntimeEvent(event, at);
+    this.eventBuffer.push({ id, at, event, work });
     if (this.eventBuffer.length > EVENT_BUFFER_LIMIT) {
       this.eventBuffer.shift();
     }
     for (const client of this.clients.values()) {
-      if (client.sessionId && eventSessionId(event) !== client.sessionId) {
+      if (!this.eventMatchesSession(event, client.sessionId)) {
         continue;
       }
-      writeSse(client.response, id, event.type, event);
+      writeGatewayEvent(client, id, { at, event, work });
     }
   }
 
-  private openEventStream(response: ServerResponse, sessionId?: string): void {
+  private openEventStream(response: ServerResponse, sessionId?: string, protocol: "runtime" | "work" = "runtime"): void {
     const client: SseClient = {
       id: `sse_${randomUUID()}`,
       sessionId,
+      protocol,
       response
     };
     response.writeHead(200, {
@@ -1027,12 +1398,12 @@ export class SwarmGatewayServer {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no"
     });
-    writeSse(response, 0, "ready", { session_id: sessionId, message: "Swarm Gateway event stream connected." });
+    writeSse(response, 0, "ready", { session_id: sessionId, protocol, message: "Swarm Gateway event stream connected." });
     for (const item of this.eventBuffer) {
-      if (sessionId && eventSessionId(item.event) !== sessionId) {
+      if (!this.eventMatchesSession(item.event, sessionId)) {
         continue;
       }
-      writeSse(response, item.id, item.event.type, item.event);
+      writeGatewayEvent(client, item.id, item);
     }
     this.clients.set(client.id, client);
     response.on("close", () => {
@@ -1041,20 +1412,18 @@ export class SwarmGatewayServer {
   }
 }
 
-function sessionSnapshot(runtime: SwarmRuntime, sessionId: string): Record<string, unknown> {
-  const row = runtime.sessionStore.get(sessionId);
-  if (!row) {
-    throw new HttpError(404, `Unknown session: ${sessionId}`);
+function sessionSnapshot(runtime: SwarmRuntime, sessionId: string, approvals?: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return approvals
+      ? { ...buildSessionSnapshot(runtime, sessionId), approvals }
+      : buildSessionSnapshot(runtime, sessionId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("Unknown session: ")) {
+      throw new HttpError(404, message);
+    }
+    throw error;
   }
-  return {
-    ...row,
-    policy: parseJson(row.policy_json),
-    participants: parseJson(row.participants_json),
-    plan: row.plan_json ? parseJson(row.plan_json) : undefined,
-    graph: runtime.getTaskGraph(sessionId),
-    usage_summary: runtime.usageStore.summarize(sessionId),
-    work_snapshot: runtime.getWorkSnapshot(sessionId)
-  };
 }
 
 function plannedSessionFromStore(runtime: SwarmRuntime, sessionId: string): PlannedSession {
@@ -1184,50 +1553,47 @@ function capabilityInvocationArguments(body: Record<string, unknown>): Record<st
   return value;
 }
 
+function capabilityInvocationWritePolicy(body: Record<string, unknown>): SandboxWritePolicy | undefined {
+  if (body.read_only === true || body.readOnly === true) {
+    return "read_only";
+  }
+  const value = optionalString(body.write_policy ?? body.writePolicy ?? body.sandbox_mode ?? body.sandboxMode ?? body.sandbox);
+  if (!value) {
+    return undefined;
+  }
+  if (value === "workspace_write" || value === "workspace-write") {
+    return "workspace_write";
+  }
+  if (value === "scoped_write" || value === "scoped-write") {
+    return "scoped_write";
+  }
+  if (value === "read_only" || value === "read-only" || value === "readonly") {
+    return "read_only";
+  }
+  throw new HttpError(400, "Capability invocation sandbox must be workspace_write, scoped_write, or read_only.");
+}
+
+function capabilityInvocationFileScope(body: Record<string, unknown>): string[] | undefined {
+  const value = body.file_scope ?? body.fileScope;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, "Capability invocation file_scope must be an array of relative paths.");
+  }
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (normalized.length !== value.length) {
+    throw new HttpError(400, "Capability invocation file_scope must contain only non-empty strings.");
+  }
+  return normalized;
+}
+
 function positiveBodyInteger(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.byteLength;
-    if (total > MAX_BODY_BYTES) {
-      throw new HttpError(413, "Request body is too large.");
-    }
-    chunks.push(buffer);
-  }
-  if (chunks.length === 0) {
-    return {};
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
-  } catch {
-    throw new HttpError(400, "Request body must be valid JSON.");
-  }
-}
-
-function integerParam(url: URL, key: string, fallback: number): number {
-  const parsed = Number(url.searchParams.get(key));
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 500) : fallback;
-}
-
-function parseJson(text: string): unknown {
-  return JSON.parse(text);
-}
-
-function setCommonHeaders(response: ServerResponse): void {
-  response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-function sendJson(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function gatewayIndex(): Record<string, unknown> {
@@ -1239,22 +1605,36 @@ function gatewayIndex(): Record<string, unknown> {
   };
 }
 
-function writeSse(response: ServerResponse, id: number, eventName: string, value: unknown): void {
-  response.write(`id: ${id}\n`);
-  response.write(`event: ${eventName}\n`);
-  response.write(`data: ${JSON.stringify(value)}\n\n`);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
+function writeGatewayEvent(
+  client: SseClient,
+  id: number,
+  item: { at: string; event: RuntimeEvent; work: WorkProtocolRecord }
+): void {
+  if (client.protocol === "work") {
+    writeSse(client.response, id, item.work.kind, item.work);
+    return;
   }
+  writeSse(client.response, id, item.event.type, {
+    at: item.at,
+    event: item.event,
+    work: item.work
+  });
+}
+
+function liveReplyHttpError(error: unknown): HttpError {
+  const message = errorMessage(error);
+  if (message.includes("No active work is available to receive a live reply.")
+    || message.startsWith("Active live target is ")) {
+    return new HttpError(409, message);
+  }
+  return new HttpError(500, message);
+}
+
+function interruptHttpError(error: unknown): HttpError {
+  const message = errorMessage(error);
+  if (message.includes("No active work is available to interrupt.")
+    || message.startsWith("Active live target is ")) {
+    return new HttpError(409, message);
+  }
+  return new HttpError(500, message);
 }

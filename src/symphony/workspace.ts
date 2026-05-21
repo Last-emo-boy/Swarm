@@ -37,12 +37,7 @@ export function prepareWorkItemWorkspace(input: {
       metadata: {
         kind: "symphony_workspace",
         workspace_key: workspaceKey,
-        work_item: {
-          source: input.item.source,
-          source_id: workItemSourceId(input.item),
-          human_id: input.item.human_id,
-          title: input.item.title
-        }
+        work_item: input.item
       }
     }
   };

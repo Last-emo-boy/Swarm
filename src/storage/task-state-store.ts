@@ -11,6 +11,9 @@ export class TaskStateStore {
     status: SwarmTask["status"];
     attempt?: number;
     assigned_to?: AgentAddress;
+    capability?: string;
+    write_policy?: "read_only" | "scoped_write" | "workspace_write";
+    file_scope?: string[];
     last_error?: string;
   }): TaskStateSnapshot {
     const snapshot: TaskStateSnapshot = {
@@ -25,6 +28,9 @@ export class TaskStateStore {
       required_capabilities: input.task.required_capabilities,
       dependencies: input.task.dependencies ?? [],
       assigned_to: input.assigned_to ?? input.task.assigned_to,
+      capability: input.capability,
+      write_policy: input.write_policy,
+      file_scope: input.file_scope,
       last_error: input.last_error,
       updated_at: new Date().toISOString()
     };
@@ -33,8 +39,9 @@ export class TaskStateStore {
       .prepare(
         `INSERT INTO task_states (
           session_id, task_id, swarm_id, parent_task_id, subtask_id, title, status, attempt,
-          required_capabilities_json, dependencies_json, assigned_to_json, last_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          required_capabilities_json, dependencies_json, assigned_to_json, capability, write_policy,
+          file_scope_json, last_error, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, task_id) DO UPDATE SET
           swarm_id = excluded.swarm_id,
           parent_task_id = excluded.parent_task_id,
@@ -45,6 +52,9 @@ export class TaskStateStore {
           required_capabilities_json = excluded.required_capabilities_json,
           dependencies_json = excluded.dependencies_json,
           assigned_to_json = excluded.assigned_to_json,
+          capability = excluded.capability,
+          write_policy = excluded.write_policy,
+          file_scope_json = excluded.file_scope_json,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at`
       )
@@ -60,6 +70,9 @@ export class TaskStateStore {
         JSON.stringify(snapshot.required_capabilities),
         JSON.stringify(snapshot.dependencies),
         snapshot.assigned_to ? JSON.stringify(snapshot.assigned_to) : null,
+        snapshot.capability ?? null,
+        snapshot.write_policy ?? null,
+        JSON.stringify(snapshot.file_scope ?? []),
         snapshot.last_error ?? null,
         snapshot.updated_at
       );
@@ -82,6 +95,9 @@ export class TaskStateStore {
       required_capabilities_json: string;
       dependencies_json: string;
       assigned_to_json?: string | null;
+      capability?: string | null;
+      write_policy?: "read_only" | "scoped_write" | "workspace_write" | null;
+      file_scope_json?: string | null;
       last_error?: string | null;
       updated_at: string;
     }[];
@@ -98,6 +114,9 @@ export class TaskStateStore {
       required_capabilities: JSON.parse(row.required_capabilities_json),
       dependencies: JSON.parse(row.dependencies_json),
       assigned_to: row.assigned_to_json ? JSON.parse(row.assigned_to_json) : undefined,
+      capability: row.capability ?? undefined,
+      write_policy: row.write_policy ?? undefined,
+      file_scope: row.file_scope_json ? JSON.parse(row.file_scope_json) as string[] : undefined,
       last_error: row.last_error ?? undefined,
       updated_at: row.updated_at
     }));

@@ -106,6 +106,12 @@ export class SessionStore {
       .all(limit) as SessionRow[];
   }
 
+  listByParentSession(parentSessionId: string, limit = 500): SessionRow[] {
+    return this.database.db
+      .prepare("SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY updated_at DESC LIMIT ?")
+      .all(parentSessionId, limit) as SessionRow[];
+  }
+
   listBySource(source: string, limit = 500): SessionRow[] {
     const rows = this.database.db
       .prepare("SELECT * FROM sessions WHERE source_json IS NOT NULL ORDER BY updated_at DESC LIMIT ?")

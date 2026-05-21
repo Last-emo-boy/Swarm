@@ -1,8 +1,24 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import type { AgentCard, BlackboardEntry, ReviewResult, RunAttemptStatus, SwarmEnvelope, SwarmPolicy, SwarmSession, WorkItem, WorkSnapshot } from "../protocol/types.js";
+import type {
+  AgentCard,
+  BlackboardEntry,
+  ReviewResult,
+  SwarmEnvelope,
+  SwarmPolicy,
+  SwarmSession,
+  RunAttemptStatus,
+  TaskContractRecord,
+  TaskContractSummary,
+  WorkContractHandoff,
+  WorkContractSnapshot,
+  WorkContractWorker,
+  WorkItem,
+  WorkSnapshot
+} from "../protocol/types.js";
 import { createEnvelope } from "../protocol/envelope.js";
 import { ArtifactStore } from "../storage/artifact-store.js";
 import { BlackboardStore } from "../storage/blackboard-store.js";
@@ -10,7 +26,7 @@ import { SwarmDatabase } from "../storage/database.js";
 import { SessionStore } from "../storage/session-store.js";
 import { TaskStateStore } from "../storage/task-state-store.js";
 import { TraceStore } from "../storage/trace-store.js";
-import { makeWorkerIdentity, WorkerStateStore } from "../storage/worker-state-store.js";
+import { makeWorkerIdentity, workerDisplayLabel, WorkerStateStore } from "../storage/worker-state-store.js";
 import { HandoffStore } from "../storage/handoff-store.js";
 import { ApprovalStore } from "../storage/approval-store.js";
 import { AuditStore } from "../storage/audit-store.js";
@@ -19,11 +35,11 @@ import { UsageStore } from "../storage/usage-store.js";
 import { RunAttemptStore } from "../storage/run-attempt-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
 import { SymphonyClaimStore } from "../storage/symphony-claim-store.js";
-import { SessionContextStore } from "../storage/session-context-store.js";
+import { SessionContextStore, type SessionContextBudget } from "../storage/session-context-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { OpenAIProvider, type ProviderUsageReport } from "../providers/openai-provider.js";
-import { ensureSwarmHome, getSwarmPaths, loadSwarmSettings, type SwarmSettings } from "../config/settings.js";
+import { ensureSwarmHome, formatModelReadinessProblems, getSwarmPaths, loadSwarmSettings, type SwarmSettings } from "../config/settings.js";
 import { builtinAgents } from "./builtin-agents.js";
 import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import { AgentRegistry } from "./registry.js";
@@ -32,14 +48,15 @@ import { PlanGenerator } from "./plan-generator.js";
 import { Orchestrator, type ExecutionResult, type PlannedSession, type ToolApprovalHandler } from "./orchestrator.js";
 import { getDebugLogger, type DebugLogger } from "./debug-logger.js";
 import { CodingAgentLoop } from "./coding-agent-loop.js";
-import type { ExecutionRoute, RunOptions } from "./execution-router.js";
-import { SwarmController } from "./swarm-controller.js";
+import type { ExecutionRoute, RunOptions, RunSandboxMode } from "./execution-router.js";
+import { SwarmController, type ControllerLiveDecision } from "./swarm-controller.js";
 import { createSelfReview, type SelfReviewResult } from "./self-review.js";
 import {
   getAgentSpec,
   listAgentSpecs,
   renderAgentSpec,
   type AgentInvocationMode,
+  type AgentPermissionContext,
   type AgentInvocationRequest,
   type AgentSpawnDecision,
   type AgentSpec,
@@ -54,14 +71,77 @@ import type { WorkerRecord } from "../storage/worker-state-store.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { createCapabilityPlane, type CapabilityPlane } from "../extensions/capability-plane.js";
 import { CapabilityBroker, type CapabilityInvokeOptions } from "../extensions/broker.js";
-import type { McpServerRecord } from "../extensions/mcp.js";
+import { applyRuntimeMcpConfig, type McpServerRecord, type RuntimeMcpConfigOptions } from "../extensions/mcp.js";
 import type { PluginRecord } from "../extensions/plugins.js";
 import type { ActivatedSkill, SkillRecord } from "../extensions/skills.js";
+import type { CustomCommandRecord } from "../extensions/custom-commands.js";
 import type { CapabilityDescriptor, CapabilityFilter, CapabilityProviderSnapshot } from "../extensions/types.js";
 import { renderHostEnvironmentPrompt } from "./host-context.js";
+import { ensureWorkspaceIndex, type WorkspaceIndex } from "./workspace-index.js";
+import { createCheckpoint as createWorkspaceCheckpoint, revertCheckpoint as revertWorkspaceCheckpoint, listCheckpoints as listWorkspaceCheckpoints, type CheckpointSummary } from "./checkpoints.js";
+import { buildResultCard } from "./result-card.js";
+import { promptCacheStatusFromUsage, type PromptCacheRuntimeStatus } from "./prompt-cache-status.js";
+import { buildTaskContractSnapshot, buildWorkContractHandoff, buildWorkContractSnapshot, buildWorkContractWorker } from "./work-contracts.js";
+import { RuntimeSystemLoop } from "./system-loop.js";
+import {
+  buildResumeHealth,
+  buildResumePrompt as buildResumePromptReport,
+  formatResumeHandoffContract,
+  formatResumeHealth,
+  formatResumeWorkContracts,
+  formatResumeWorkerContract,
+  renderResumePreflight as renderResumePreflightReport
+} from "./resume-report.js";
+import { disposeGlobalLspManager } from "../lsp/manager.js";
+
+type McpResourceReadResult = {
+  contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }>;
+  _swarm_artifact?: { path: string; bytes: number; lines: number };
+};
+
+type McpPromptGetResult = {
+  description?: string;
+  messages: Array<{ role: string; content: unknown }>;
+  _swarm_artifact?: { path: string; bytes: number; lines: number };
+};
 
 const CHAT_MAX_OUTPUT_TOKENS = 4_000;
 const CONTROL_PLANE_MAX_OUTPUT_TOKENS = 1_200;
+const WORKER_SLOT_POLL_MS = 50;
+const NO_ACTIVE_LIVE_REPLY_MESSAGE = "No active work is available to receive a live reply. Start or resume a run first.";
+const NO_ACTIVE_INTERRUPT_MESSAGE = "No active work is available to interrupt. Start or resume a run first.";
+
+export type RuntimeChildTransportMessageResult = {
+  handled: boolean;
+  kind: "disposed" | "provider_usage" | "runtime_envelope" | "task_progress" | "reply";
+};
+
+export type RuntimeChildTransportMessageInput = {
+  disposed: boolean;
+  message: unknown;
+  child: Pick<ChildProcess, "send">;
+  router: EnvelopeRouter;
+  events: RuntimeEvents;
+  forwardToAddressedAgent: (envelope: SwarmEnvelope) => void;
+};
+
+export type ActiveLiveTarget = {
+  route: "coding_loop" | "full_swarm";
+  session_id: string;
+};
+
+export type ActiveLiveControlResult = ActiveLiveTarget & {
+  request_id?: string;
+  duplicate?: boolean;
+  control?: ControllerLiveDecision;
+};
+
+type LoopSessionSourceOptions = {
+  labels?: string[];
+  mode?: string;
+  source?: WorkItem["source"];
+  sourceId?: string;
+};
 
 export class SwarmRuntime {
   readonly events = new RuntimeEvents();
@@ -94,21 +174,28 @@ export class SwarmRuntime {
   private readonly workspace: string;
   private readonly approvalHandler?: ToolApprovalHandler;
   private readonly controller: SwarmController;
+  private readonly systemLoop: RuntimeSystemLoop;
+  private readonly liveControlResults = new Map<string, ActiveLiveControlResult>();
+  private workspaceIndexPromise?: Promise<WorkspaceIndex>;
+  private lastCheckpoint?: CheckpointSummary;
+  private latestPromptCache?: PromptCacheRuntimeStatus;
   private activeCodingLoop?: CodingAgentLoop;
   private activeCodingLoopSessionId?: string;
   private activeSwarmSession?: SwarmSession;
   private readonly sessionWorkspaceOverrides = new Map<string, string>();
   private readonly ownedSessionIds = new Set<string>();
   private readonly children: ChildProcess[] = [];
+  private unsubscribeRuntimeEventPersister?: () => void;
+  private unsubscribeRuntimeEventLogger?: () => void;
   private disposed = false;
 
-  constructor(options: { databasePath?: string; workspace?: string; approvalHandler?: ToolApprovalHandler; debugSessionId?: string } = {}) {
+  constructor(options: { databasePath?: string; workspace?: string; approvalHandler?: ToolApprovalHandler; debugSessionId?: string; mcpConfig?: RuntimeMcpConfigOptions } = {}) {
     ensureSwarmHome();
     const workspace = options.workspace ?? process.cwd();
     this.workspace = workspace;
     this.approvalHandler = options.approvalHandler;
     this.debugSessionId = options.debugSessionId ?? process.env.SWARM_DEBUG_SESSION_ID;
-    this.settings = loadSwarmSettings(workspace);
+    this.settings = applyRuntimeMcpConfig(loadSwarmSettings(workspace), options.mcpConfig);
     this.capabilityPlane = createCapabilityPlane({ settings: this.settings, workspace });
     this.debug = getDebugLogger(getSwarmPaths().logsDir, { sessionId: this.debugSessionId });
     this.debug?.info("runtime", `SwarmRuntime init. workspace=${workspace} pid=${process.pid}`);
@@ -141,7 +228,7 @@ export class SwarmRuntime {
         this.forwardToAddressedAgent(envelope);
       }
     });
-    const provider = new OpenAIProvider({ onUsage: (usage) => this.recordProviderUsage(usage) });
+    const provider = new OpenAIProvider({ onUsage: (usage) => this.recordProviderUsage(usage), workspace });
     this.provider = provider;
     this.capabilityBroker = new CapabilityBroker({
       capabilityPlane: this.capabilityPlane,
@@ -157,14 +244,17 @@ export class SwarmRuntime {
         task: action.task,
         context: action.context,
         preferred_agent_spec_id: action.preferred_agent_spec_id,
-        preferred_mode: action.preferred_mode,
+        preferred_mode: action.run_in_background ? "parallel" : action.preferred_mode,
         file_scope: action.file_scope,
         spawn_reason: `capability broker delegate from ${taskId}`
       }),
+      agentControl: this.createRuntimeAgentControlTools(),
       onWorkspaceChange: (sessionId, change) => this.recordWorkspaceChange(change.sessionId ?? sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event),
       blackboard: this.createRuntimeBlackboardTools(),
       activateSkill: (name, sessionId, reason) => this.activateSkill(name, sessionId, reason),
+      materializeMcp: (input) => this.recordMcpMaterial(input),
+      runSlashCommandObjective: (objective, input) => this.runSlashCommandObjective(objective, input),
       serverWebSearch: (searchAction) => provider.webSearch(searchAction)
     });
     this.orchestrator = new Orchestrator(
@@ -177,18 +267,21 @@ export class SwarmRuntime {
       this.events,
       this.settings,
       workspace,
-      options.approvalHandler
+      options.approvalHandler,
+      () => this.lastCheckpoint
     );
     this.controller = new SwarmController(provider, this.events, {
-      executeRoute: (objective, route) => this.executeRoute(objective, route),
-      handleLiveMessage: (content) => this.handleLiveUserMessage(content),
-      handleInterrupt: (content) => this.handleInterrupt(content)
+      executeRoute: (objective, route, options) => this.executeRoute(objective, route, options),
+      handleLiveMessage: (content, requestId) => this.handleLiveUserMessage(content, requestId),
+      handleInterrupt: (content, requestId) => this.handleInterrupt(content, requestId)
     });
     this.spawnBuiltins(workspace);
-    this.events.onEvent((event) => this.recordRuntimeEvent(event));
+    this.systemLoop = new RuntimeSystemLoop(this);
+    this.systemLoop.start();
+    this.unsubscribeRuntimeEventPersister = this.events.onEvent((event) => this.recordRuntimeEvent(event));
 
     if (this.debug) {
-      this.events.onEvent((event) => {
+      this.unsubscribeRuntimeEventLogger = this.events.onEvent((event) => {
         if (event.type === "envelope") {
           const env = event.envelope;
           this.debug?.debug("envelope", `${env.type} ${env.from.agent_id ?? "?"} → ${Array.isArray(env.to) ? env.to.map((a) => a.agent_id ?? a.capability ?? "?").join(",") : env.to.agent_id ?? env.to.capability ?? "?"}`, {
@@ -273,16 +366,48 @@ export class SwarmRuntime {
     }
 
     if (!provider.enabled) {
+      const problems = formatModelReadinessProblems(provider.readiness());
       this.events.emitEvent({
         type: "log",
         level: "warn",
-        message: "No usable model provider is configured. Run swarm onboard or configure ~/.swarm/config.json."
+        message: `No usable model provider is configured. ${problems.join(" | ")} Run swarm onboard or configure ~/.swarm/config.json.`
       });
     }
   }
 
   workspaceRoot(): string {
     return this.workspace;
+  }
+
+  getLastCheckpoint(): CheckpointSummary | undefined {
+    return this.lastCheckpoint;
+  }
+
+  getPromptCacheStatus(): PromptCacheRuntimeStatus | undefined {
+    return this.latestPromptCache;
+  }
+
+  async getWorkspaceIndex(): Promise<WorkspaceIndex> {
+    this.workspaceIndexPromise ??= ensureWorkspaceIndex(this.workspace);
+    return this.workspaceIndexPromise;
+  }
+
+  async createCheckpoint(name: string, reason?: string): Promise<CheckpointSummary> {
+    const checkpoint = await createWorkspaceCheckpoint(this.workspace, name, reason);
+    this.lastCheckpoint = checkpoint;
+    return checkpoint;
+  }
+
+  async listCheckpoints(limit = 20): Promise<CheckpointSummary[]> {
+    return listWorkspaceCheckpoints(this.workspace, limit);
+  }
+
+  async revertCheckpoint(checkpointId?: string): Promise<CheckpointSummary | undefined> {
+    const checkpoint = await revertWorkspaceCheckpoint(this.workspace, checkpointId);
+    if (checkpoint) {
+      this.lastCheckpoint = checkpoint;
+    }
+    return checkpoint;
   }
 
   async createPlan(objective: string): Promise<PlannedSession> {
@@ -304,12 +429,42 @@ export class SwarmRuntime {
     return planned;
   }
 
-  execute(planned: PlannedSession): Promise<ExecutionResult> {
-    return this.orchestrator.execute(planned);
+  async execute(planned: PlannedSession): Promise<ExecutionResult> {
+    const previousActiveSwarmSession = this.activeSwarmSession;
+    this.activeSwarmSession = planned.session;
+    try {
+      const result = await this.orchestrator.execute(planned);
+      return {
+        ...result,
+        result_card: buildResultCard({
+          result,
+          route: "team",
+          snapshot: this.getWorkSnapshot(result.session_id),
+          checkpoint: this.lastCheckpoint,
+          cache: this.latestPromptCache
+        })
+      };
+    } finally {
+      if (this.activeSwarmSession?.session_id === planned.session.session_id) {
+        this.activeSwarmSession = previousActiveSwarmSession;
+      }
+    }
   }
 
   async run(objective: string, options: RunOptions = {}): Promise<ExecutionResult> {
-    return this.controller.run(objective, options);
+    const restoreAdditionalReadDirectories = this.applyRuntimeAdditionalReadDirectories(options.additionalReadDirectories);
+    try {
+      this.systemLoop.wake("before_user_run");
+      const result = await this.controller.run(objective, options);
+      this.systemLoop.wake("after_user_run");
+      return result;
+    } finally {
+      restoreAdditionalReadDirectories();
+    }
+  }
+
+  async runSystemLoopOnce(reason = "operator"): Promise<import("./system-loop.js").RuntimeSystemLoopRunResult> {
+    return this.systemLoop.runOnce(reason);
   }
 
   ensureTuiChatSession(sessionId: string): void {
@@ -339,6 +494,13 @@ export class SwarmRuntime {
     workspace_path?: string;
     maxTurns?: number;
     maxToolCalls?: number;
+    sandboxMode?: RunOptions["sandboxMode"];
+    allowedTools?: RunOptions["allowedTools"];
+    disallowedTools?: RunOptions["disallowedTools"];
+    additionalReadDirectories?: RunOptions["additionalReadDirectories"];
+    systemPrompt?: RunOptions["systemPrompt"];
+    appendSystemPrompt?: RunOptions["appendSystemPrompt"];
+    skills?: RunOptions["skills"];
   }): Promise<ExecutionResult> {
     const row = this.sessionStore.get(input.session_id);
     if (!row) {
@@ -348,6 +510,8 @@ export class SwarmRuntime {
       ?? (row.workspace_lease_id ? this.workspaceLeaseStore.get(row.workspace_lease_id)?.workspace_path : undefined)
       ?? this.workspaceLeaseStore.getBySession(input.session_id)?.workspace_path
       ?? this.workspace;
+    const workspaceIndex = await this.getWorkspaceIndex();
+    this.activateRunSkills(input.session_id, input.skills, "headless resume/run skill option");
     this.sessionStore.setStatus(input.session_id, "running");
     const loop = new CodingAgentLoop({
       workspace,
@@ -357,13 +521,21 @@ export class SwarmRuntime {
       approvalHandler: this.approvalHandler,
       workerStore: this.workerStateStore,
       toolReplacementStore: this.toolContentReplacementStore,
+      workspaceIndex,
+      checkpoint: this.lastCheckpoint,
       invokeAgent: (request) => this.invokeAgent(request),
+      agentControl: this.createRuntimeAgentControlTools(),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: () => this.renderDurableContextForSession(input.session_id),
       sessionId: input.session_id,
       maxTurns: input.maxTurns,
       maxToolCalls: input.maxToolCalls,
+      writePolicy: input.sandboxMode === "read-only" ? "read_only" : undefined,
+      allowedTools: input.allowedTools,
+      disallowedTools: input.disallowedTools,
+      systemPrompt: input.systemPrompt,
+      appendSystemPrompt: input.appendSystemPrompt,
       onSessionStart: (sessionId, loopObjective) => {
         this.activeCodingLoopSessionId = sessionId;
         this.events.emitEvent({ type: "session", session_id: sessionId, status: "running", objective: loopObjective });
@@ -381,18 +553,35 @@ export class SwarmRuntime {
     this.activeCodingLoop = loop;
     this.activeCodingLoopSessionId = input.session_id;
     this.sessionWorkspaceOverrides.set(input.session_id, workspace);
+    const restoreAdditionalReadDirectories = this.applyRuntimeAdditionalReadDirectories(input.additionalReadDirectories);
     try {
       const result = await loop.run(input.prompt);
+      if (this.disposed) {
+        return result;
+      }
+      const resultCard = buildResultCard({
+        result,
+        route: "work",
+        snapshot: this.getWorkSnapshot(input.session_id),
+        checkpoint: this.lastCheckpoint,
+        cache: this.latestPromptCache
+      });
       if (result.status === "stopped") {
         this.sessionStore.setFinalOutput(input.session_id, result.content, "cancelled");
         this.sessionStore.setStatus(input.session_id, "cancelled");
         this.events.emitEvent({ type: "session", session_id: input.session_id, status: "cancelled", objective: row.objective });
-        return result;
+        return {
+          ...result,
+          result_card: resultCard
+        };
       }
       const status = sessionStatusFromExecutionStatus(result.status);
       this.sessionStore.setFinalOutput(input.session_id, result.content, status);
       this.events.emitEvent({ type: "session", session_id: input.session_id, status, objective: row.objective });
-      return result;
+      return {
+        ...result,
+        result_card: resultCard
+      };
     } catch (error) {
       this.sessionStore.setStatus(input.session_id, "failed");
       this.events.emitEvent({ type: "session", session_id: input.session_id, status: "failed", objective: row.objective });
@@ -403,7 +592,52 @@ export class SwarmRuntime {
         this.activeCodingLoopSessionId = undefined;
       }
       this.sessionWorkspaceOverrides.delete(input.session_id);
+      restoreAdditionalReadDirectories();
     }
+  }
+
+  buildResumePrompt(sessionId: string, instruction = ""): string {
+    const snapshot = this.getWorkSnapshot(sessionId);
+    return buildResumePromptReport({
+      sessionId,
+      snapshot,
+      instruction,
+      freshness: this.renderWorkspaceFreshnessContract({
+        sessionId,
+        fileScope: snapshot.changed_files,
+        reason: "resuming a previous WorkSession"
+      }),
+      liveControlDirectives: this.liveControlDirectives(sessionId),
+      memory: this.sessionContextStore.renderForSession(sessionId),
+      replay: this.replaySession(sessionId)
+    });
+  }
+
+  renderResumePreflight(input: {
+    sessionId: string;
+    instruction?: string;
+    sandboxMode?: RunSandboxMode;
+    command?: "resume" | "continue";
+    route?: "stored_plan" | "coding_loop";
+  }): string {
+    const snapshot = this.getWorkSnapshot(input.sessionId);
+    const row = this.sessionStore.get(input.sessionId);
+    return renderResumePreflightReport({
+      sessionId: input.sessionId,
+      snapshot,
+      instruction: input.instruction,
+      sandboxMode: input.sandboxMode,
+      command: input.command,
+      route: input.route,
+      hasStoredPlan: Boolean(row?.plan_json),
+      finalOutput: row?.final_output ?? undefined,
+      freshness: this.renderWorkspaceFreshnessContract({
+        sessionId: input.sessionId,
+        fileScope: snapshot.changed_files,
+        reason: "preflighting a session resume"
+      }),
+      liveControlDirectives: this.liveControlDirectives(input.sessionId)
+    });
   }
 
   interruptWorkSession(sessionId: string, reason = "Work session cancellation requested. Stop at the next safe boundary."): boolean {
@@ -421,24 +655,49 @@ export class SwarmRuntime {
     return false;
   }
 
-  private async executeRoute(objective: string, route: ExecutionRoute): Promise<ExecutionResult> {
+  private async executeRoute(
+    objective: string,
+    route: ExecutionRoute,
+    options: RunOptions = {},
+    sessionSource: LoopSessionSourceOptions = {}
+  ): Promise<ExecutionResult> {
+    if (route.mode === "full_swarm" && (
+      hasRunToolPolicy(options) ||
+      hasRunWorkspaceReadPolicy(options) ||
+      hasRunPromptCustomization(options) ||
+      hasRunSkillActivation(options) ||
+      hasRunSandboxPolicy(options)
+    )) {
+      route = {
+        ...route,
+        mode: "coding_loop",
+        reason: `${route.reason}; demoted to coding_loop because per-run tool, read-directory, prompt, skill activation, and read-only sandbox policy is enforced by the coding loop.`
+      };
+    }
     this.events.emitEvent({
       type: "log",
       level: "info",
       message: `Execution route: ${route.mode} (${Math.round(route.confidence * 100)}%) - ${route.reason}`
     });
     if (route.mode === "full_swarm") {
+      this.lastCheckpoint = await this.createCheckpoint(objective, route.reason);
       const planned = await this.createPlan(objective);
-      this.activeSwarmSession = planned.session;
       try {
         const result = await this.execute(planned);
+        const resultCard = buildResultCard({
+          result,
+          route: "team",
+          snapshot: this.getWorkSnapshot(result.session_id),
+          checkpoint: this.lastCheckpoint,
+          cache: this.latestPromptCache
+        });
         this.events.emitEvent({
           type: "session",
           session_id: planned.session.session_id,
           status: this.sessionStore.get(planned.session.session_id)?.status ?? "completed",
           objective: planned.session.objective
         });
-        return result;
+        return { ...result, result_card: resultCard };
       } catch (error) {
         this.events.emitEvent({
           type: "session",
@@ -447,32 +706,34 @@ export class SwarmRuntime {
           objective: planned.session.objective
         });
         throw error;
-      } finally {
-        if (this.activeSwarmSession?.session_id === planned.session.session_id) {
-          this.activeSwarmSession = undefined;
-        }
       }
     }
     if (route.mode === "chat") {
       const sessionId = `chat_${randomUUID()}`;
       this.ensureLoopSession(sessionId, objective);
+      const activatedSkills = this.activateRunSkills(sessionId, options.skills, "headless chat skill option");
+      const chatSystemPrompt = [
+        options.systemPrompt !== undefined ? options.systemPrompt : [
+          "You are Swarm, a local coding CLI assistant.",
+          "Answer the user's question directly.",
+          "Do not claim you inspected or modified workspace files unless tool results were provided.",
+          "Keep the answer concise and practical.",
+          renderHostEnvironmentPrompt(this.workspace, this.settings.permissions.additionalDirectories)
+        ].join(" "),
+        options.appendSystemPrompt,
+        activatedSkills.length ? renderActivatedSkillsForPrompt(activatedSkills) : undefined
+      ].filter(Boolean).join("\n\n");
       const content = await this.provider.generateText({
         model: this.provider.workerModel,
         system: [{
-          text: [
-            "You are Swarm, a local coding CLI assistant.",
-            "Answer the user's question directly.",
-            "Do not claim you inspected or modified workspace files unless tool results were provided.",
-            "Keep the answer concise and practical.",
-            renderHostEnvironmentPrompt(this.workspace)
-          ].join(" "),
+          text: chatSystemPrompt,
           cache: true
         }],
         user: objective,
         usage: { sessionId, taskId: `${sessionId}_chat`, purpose: "chat" },
         maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS
       });
-      const result = {
+      const result: ExecutionResult = {
         session_id: sessionId,
         content,
         outcome: {
@@ -481,12 +742,20 @@ export class SwarmRuntime {
           tests_run: [],
           final_summary: content.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) ?? "Completed"
         }
-      } satisfies ExecutionResult;
+      };
+      result.result_card = buildResultCard({
+        result,
+        route: "ask",
+        snapshot: this.getWorkSnapshot(sessionId),
+        cache: this.latestPromptCache
+      });
       this.sessionStore.setFinalOutput(sessionId, content, "completed");
       this.events.emitEvent({ type: "session", session_id: sessionId, status: "completed", objective });
-      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome: result.outcome, status: "completed" });
+      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome: result.outcome, status: "completed", checkpoint: this.lastCheckpoint });
       return result;
     }
+    this.lastCheckpoint = await this.createCheckpoint(objective, route.reason);
+    const workspaceIndex = await this.getWorkspaceIndex();
     const loop = new CodingAgentLoop({
       workspace: this.workspace,
       settings: this.settings,
@@ -495,13 +764,28 @@ export class SwarmRuntime {
       approvalHandler: this.approvalHandler,
       workerStore: this.workerStateStore,
       toolReplacementStore: this.toolContentReplacementStore,
+      workspaceIndex,
+      checkpoint: this.lastCheckpoint,
       invokeAgent: (request) => this.invokeAgent(request),
+      agentControl: this.createRuntimeAgentControlTools(),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: (sessionId) => this.renderDurableContextForSession(sessionId),
+      maxTurns: options.maxTurns,
+      maxToolCalls: options.maxToolCalls,
+      expectedSideEffects: route.expected_side_effects,
+      writePolicy: options.sandboxMode === "read-only" ? "read_only" : undefined,
+      allowedTools: options.allowedTools,
+      disallowedTools: options.disallowedTools,
+      systemPrompt: options.systemPrompt,
+      appendSystemPrompt: options.appendSystemPrompt,
       onSessionStart: (sessionId, loopObjective) => {
         this.activeCodingLoopSessionId = sessionId;
-        this.ensureLoopSession(sessionId, loopObjective);
+        this.ensureLoopSession(sessionId, loopObjective, undefined, {
+          ...sessionSource,
+          sourceId: sessionSource.sourceId ?? (sessionSource.source === "self" ? sessionId : undefined)
+        });
+        this.activateRunSkills(sessionId, options.skills, "headless run skill option");
       },
       onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event)
@@ -510,16 +794,26 @@ export class SwarmRuntime {
     this.activeCodingLoopSessionId = undefined;
     try {
       const result = await loop.run(objective);
+      if (this.disposed) {
+        return result;
+      }
       const resultStatus = sessionStatusFromExecutionStatus(result.status);
       this.sessionStore.setFinalOutput(result.session_id, result.content, resultStatus);
+      const resultCard = buildResultCard({
+        result,
+        route: "work",
+        snapshot: this.getWorkSnapshot(result.session_id),
+        checkpoint: this.lastCheckpoint,
+        cache: this.latestPromptCache
+      });
       if (resultStatus !== "completed") {
         this.events.emitEvent({ type: "session", session_id: result.session_id, status: resultStatus, objective });
-        return result;
+        return { ...result, result_card: resultCard };
       }
       const postCheck = await this.runPostChangeChecks(result.session_id, objective, result.outcome);
       if (!postCheck) {
         this.events.emitEvent({ type: "session", session_id: result.session_id, status: "completed", objective });
-        return result;
+        return { ...result, result_card: resultCard };
       }
       const content = [
         result.content,
@@ -530,15 +824,29 @@ export class SwarmRuntime {
         "Swarm Verification",
         postCheck.verification.summary
       ].join("\n");
+      const postStatus = postChangeExecutionStatus(postCheck);
+      const postSessionStatus = sessionStatusFromExecutionStatus(postStatus);
       const baseOutcome = result.outcome ?? { changed_files: [], intermediate_artifacts: [], tests_run: [], final_summary: firstLine(content) };
       const outcome = {
         ...baseOutcome,
         tests_run: [...new Set([...baseOutcome.tests_run, postCheck.verification.summary])]
       };
-      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome, status: "completed" });
-      this.sessionStore.setFinalOutput(result.session_id, content, "completed");
-      this.events.emitEvent({ type: "session", session_id: result.session_id, status: "completed", objective });
-      return { ...result, content, outcome };
+      this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome, status: postStatus, checkpoint: this.lastCheckpoint });
+      this.sessionStore.setFinalOutput(result.session_id, content, postSessionStatus);
+      this.events.emitEvent({ type: "session", session_id: result.session_id, status: postSessionStatus, objective });
+      return {
+        ...result,
+        status: postStatus,
+        content,
+        outcome,
+        result_card: buildResultCard({
+          result: { ...result, status: postStatus, content, outcome },
+          route: "work",
+          snapshot: this.getWorkSnapshot(result.session_id),
+          checkpoint: this.lastCheckpoint,
+          cache: this.latestPromptCache
+        })
+      };
     } finally {
       if (this.activeCodingLoop === loop) {
         this.activeCodingLoop = undefined;
@@ -547,46 +855,226 @@ export class SwarmRuntime {
     }
   }
 
-  async sendUserMessage(content: string): Promise<void> {
-    await this.controller.submitUserMessage(content);
+  getActiveLiveTarget(): ActiveLiveTarget | undefined {
+    if (this.activeCodingLoop && this.activeCodingLoopSessionId) {
+      return {
+        route: "coding_loop",
+        session_id: this.activeCodingLoopSessionId
+      };
+    }
+    if (this.activeSwarmSession?.session_id) {
+      return {
+        route: "full_swarm",
+        session_id: this.activeSwarmSession.session_id
+      };
+    }
+    return undefined;
   }
 
-  private async handleLiveUserMessage(content: string): Promise<void> {
-    if (this.activeCodingLoop) {
-      await this.activeCodingLoop.submitUserMessage(content);
-      return;
+  async sendUserMessage(content: string, options: { sessionId?: string; requestId?: string } = {}): Promise<ActiveLiveControlResult> {
+    const requestId = normalizeLiveControlRequestId(options.requestId);
+    const cached = requestId ? this.liveControlResults.get(requestId) : undefined;
+    if (cached) {
+      return { ...cached, duplicate: true };
+    }
+    const target = this.requireActiveLiveTarget(options.sessionId);
+    const control = await this.controller.submitUserMessage(content, "next", requestId);
+    const result: ActiveLiveControlResult = {
+      ...target,
+      request_id: requestId,
+      control
+    };
+    this.rememberLiveControlResult(requestId, result);
+    return result;
+  }
+
+  requestInterrupt(
+    content = "User requested an interrupt. Reassess the current work before continuing.",
+    options: { sessionId?: string; requestId?: string } = {}
+  ): ActiveLiveControlResult {
+    const requestId = normalizeLiveControlRequestId(options.requestId);
+    const cached = requestId ? this.liveControlResults.get(requestId) : undefined;
+    if (cached) {
+      return { ...cached, duplicate: true };
+    }
+    const target = this.requireInterruptTarget(options.sessionId);
+    if (target.route === "coding_loop") {
+      const control = this.activeCodingLoop?.requestInterrupt(content, { requestId });
+      const result: ActiveLiveControlResult = {
+        ...target,
+        request_id: requestId,
+        control
+      };
+      this.rememberLiveControlResult(requestId, result);
+      return result;
     }
     if (this.activeSwarmSession) {
-      const id = `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      this.events.emitEvent({ type: "live_message", id, session_id: this.activeSwarmSession.session_id, content, status: "processing" });
+      const control = this.recordFullSwarmLiveControl(this.activeSwarmSession, content, {
+        action: "interrupt_and_redirect",
+        reason: "Explicit user interrupt.",
+        instruction: content
+      }, requestId);
+      this.orchestrator.requestStop(this.activeSwarmSession.session_id, content);
+      this.takeBackActiveHandoffs(this.activeSwarmSession.session_id);
+      const result: ActiveLiveControlResult = {
+        ...target,
+        request_id: requestId,
+        control
+      };
+      this.rememberLiveControlResult(requestId, result);
+      return result;
+    }
+    const result: ActiveLiveControlResult = { ...target, request_id: requestId };
+    this.rememberLiveControlResult(requestId, result);
+    return result;
+  }
+
+  private async handleLiveUserMessage(content: string, requestId?: string): Promise<ControllerLiveDecision | undefined> {
+    const target = this.requireActiveLiveTarget();
+    if (target.route === "coding_loop" && this.activeCodingLoop) {
+      return this.activeCodingLoop.submitUserMessage(content, { requestId });
+    }
+    if (target.route === "full_swarm" && this.activeSwarmSession) {
+      const id = this.emitFullSwarmLiveMessage(this.activeSwarmSession.session_id, content, requestId);
       const decision = await this.decideLiveControl(content, this.activeSwarmSession);
-      this.events.emitEvent({ type: "control", message_id: id, ...decision });
+      const control = this.recordFullSwarmLiveControl(this.activeSwarmSession, content, decision, id);
       if (decision.action === "interrupt_and_redirect") {
-        for (const handoff of this.handoffStore.listRecent(20).filter((item) => item.parent_session_id === this.activeSwarmSession?.session_id && item.status === "active")) {
-          this.takeBackHandoff(handoff.handoff_id);
-        }
+        this.orchestrator.requestStop(this.activeSwarmSession.session_id, decision.instruction || content);
+        this.takeBackActiveHandoffs(this.activeSwarmSession.session_id);
       }
-      this.orchestrator.recordLiveMessage(this.activeSwarmSession, {
-        message_id: id,
+      return control;
+    }
+    throw new Error(NO_ACTIVE_LIVE_REPLY_MESSAGE);
+  }
+
+  private emitFullSwarmLiveMessage(sessionId: string, content: string, requestId?: string): string {
+    const id = requestId ?? `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.events.emitEvent({ type: "live_message", id, session_id: sessionId, content, status: "received" });
+    this.events.emitEvent({ type: "live_message", id, session_id: sessionId, content, status: "processing" });
+    return id;
+  }
+
+  private recordFullSwarmLiveControl(
+    session: SwarmSession,
+    content: string,
+    decision: Omit<ControllerLiveDecision, "message_id"> | ControllerLiveDecision,
+    existingMessageId?: string
+  ): ControllerLiveDecision {
+    const messageId = existingMessageId ?? this.emitFullSwarmLiveMessage(session.session_id, content);
+    const control: ControllerLiveDecision = {
+      message_id: messageId,
+      action: decision.action,
+      reason: decision.reason,
+      instruction: decision.instruction
+    };
+    this.events.emitEvent({ type: "control", ...control });
+    try {
+      this.orchestrator.recordLiveMessage(session, {
+        message_id: messageId,
         content,
-        decision
+        decision: control
       });
-      this.events.emitEvent({ type: "live_message", id, session_id: this.activeSwarmSession.session_id, content, status: "applied" });
+    } catch (error) {
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Failed to persist full_swarm live control directive: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+    this.events.emitEvent({ type: "live_message", id: messageId, session_id: session.session_id, content, status: "applied" });
+    return control;
+  }
+
+  private rememberLiveControlResult(requestId: string | undefined, result: ActiveLiveControlResult): void {
+    if (!requestId) {
       return;
     }
-    this.events.emitEvent({
-      type: "log",
-      level: "warn",
-      message: "No active coding loop is available to receive a live message. The message will be handled by the next user turn."
-    });
+    this.liveControlResults.set(requestId, result);
+    if (this.liveControlResults.size > 200) {
+      const first = this.liveControlResults.keys().next().value as string | undefined;
+      if (first) {
+        this.liveControlResults.delete(first);
+      }
+    }
   }
 
   interrupt(content = "User requested an interrupt. Reassess the current work before continuing."): void {
-    this.controller.interrupt(content);
+    try {
+      this.requestInterrupt(content);
+    } catch (error) {
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  requestStopActiveWork(reason = "Stop requested. Finish the current safe boundary and return a stopped result."): boolean {
+    if (this.activeCodingLoop) {
+      this.activeCodingLoop.requestStop(reason);
+      this.events.emitEvent({ type: "log", level: "warn", message: `Stop requested for active coding loop: ${reason}` });
+      return true;
+    }
+    if (this.activeSwarmSession) {
+      this.orchestrator.requestStop(this.activeSwarmSession.session_id, reason);
+      this.takeBackActiveHandoffs(this.activeSwarmSession.session_id);
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Stop requested for active full_swarm session ${this.activeSwarmSession.session_id}: ${reason}`
+      });
+      return true;
+    }
+    this.events.emitEvent({ type: "log", level: "warn", message: "No active work is available to stop." });
+    return false;
+  }
+
+  private requireActiveLiveTarget(expectedSessionId?: string): ActiveLiveTarget {
+    const target = this.getActiveLiveTarget();
+    if (!target) {
+      throw new Error(NO_ACTIVE_LIVE_REPLY_MESSAGE);
+    }
+    if (expectedSessionId && expectedSessionId !== target.session_id) {
+      throw new Error(`Active live target is ${target.session_id} (${target.route}), not ${expectedSessionId}. Resume or start that session before sending a live reply.`);
+    }
+    return target;
+  }
+
+  private requireInterruptTarget(expectedSessionId?: string): ActiveLiveTarget {
+    const target = this.getActiveLiveTarget();
+    if (!target) {
+      throw new Error(NO_ACTIVE_INTERRUPT_MESSAGE);
+    }
+    if (expectedSessionId && expectedSessionId !== target.session_id) {
+      throw new Error(`Active live target is ${target.session_id} (${target.route}), not ${expectedSessionId}. Resume or start that session before requesting an interrupt.`);
+    }
+    if (target.route === "coding_loop" && !this.activeCodingLoop) {
+      throw new Error(NO_ACTIVE_INTERRUPT_MESSAGE);
+    }
+    return target;
+  }
+
+  private takeBackActiveHandoffs(sessionId: string): void {
+    for (const handoff of this.handoffStore.listRecent(20).filter((item) => item.parent_session_id === sessionId && item.status === "active")) {
+      this.takeBackHandoff(handoff.handoff_id);
+    }
   }
 
   stopWorker(workerId: string): void {
+    const existing = this.workerStateStore.get(workerId);
     const worker = this.workerStateStore.requestStop(workerId);
+    if (existing?.status === "pending") {
+      this.events.emitEvent({
+        type: "queue",
+        queue: "worker_slots",
+        operation: "dequeue",
+        id: workerId,
+        size: this.listActiveWorkers(worker.parent_session_id).filter((item) => item.status === "pending").length,
+        session_id: worker.parent_session_id,
+        message: "Worker removed from the pending queue."
+      });
+    }
     this.events.emitEvent({ type: "worker", worker, status: worker.status, message: "Stop requested." });
   }
 
@@ -601,6 +1089,10 @@ export class SwarmRuntime {
 
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityDescriptor[]> {
     return this.capabilityPlane.listCapabilities(filter);
+  }
+
+  getWorkspacePath(): string {
+    return this.workspace;
   }
 
   listRecentSessionsForWorkspace(limit = 10, workspace = this.workspace): ReturnType<SessionStore["listRecent"]> {
@@ -633,6 +1125,67 @@ export class SwarmRuntime {
       .slice(0, limit);
   }
 
+  sessionFamilyRootSessionId(sessionId: string): string {
+    let current = sessionId.trim();
+    if (!current) {
+      return sessionId;
+    }
+    const seen = new Set<string>();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const parent = this.sessionStore.get(current)?.parent_session_id?.trim();
+      if (!parent) {
+        return current;
+      }
+      current = parent;
+    }
+    return current || sessionId;
+  }
+
+  listSessionFamilySessionIds(sessionId: string, limit = 500): string[] {
+    const normalized = sessionId.trim();
+    if (!normalized) {
+      return [];
+    }
+    const root = this.sessionFamilyRootSessionId(normalized);
+    const seen = new Set<string>();
+    const queue = [root];
+    const resolvedLimit = Math.max(1, limit);
+    while (queue.length > 0 && seen.size < resolvedLimit) {
+      const current = queue.shift();
+      if (!current || seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      for (const child of this.sessionStore.listByParentSession(current, Math.max(resolvedLimit * 2, resolvedLimit))) {
+        if (!seen.has(child.session_id)) {
+          queue.push(child.session_id);
+        }
+      }
+    }
+    return [...seen];
+  }
+
+  listApprovalsForSessionFamily(sessionId: string, limit = 100): ApprovalRecord[] {
+    const sessionIds = this.listSessionFamilySessionIds(sessionId, Math.max(limit * 4, limit));
+    const rows = sessionIds
+      .flatMap((id) => this.approvalStore.list(id, Math.max(limit * 2, limit)))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.approval_id.localeCompare(left.approval_id));
+    const deduped: ApprovalRecord[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (seen.has(row.approval_id)) {
+        continue;
+      }
+      seen.add(row.approval_id);
+      deduped.push(row);
+      if (deduped.length >= limit) {
+        break;
+      }
+    }
+    return deduped;
+  }
+
   listRecentWorkersForWorkspace(limit = 20, workspace = this.workspace): WorkerRecord[] {
     return this.workerStateStore.listRecent(Math.max(limit * 8, limit))
       .filter((worker) => this.workspaceForRecordSession(worker.parent_session_id) === workspace)
@@ -643,6 +1196,37 @@ export class SwarmRuntime {
     return this.handoffStore.listRecent(Math.max(limit * 8, limit))
       .filter((handoff) => this.workspaceForRecordSession(handoff.parent_session_id) === workspace)
       .slice(0, limit);
+  }
+
+  getWorkspaceContractSnapshot(limit = 20, workspace = this.workspace): WorkContractSnapshot {
+    return buildWorkContractSnapshot({
+      workers: this.listRecentWorkersForWorkspace(limit, workspace),
+      handoffs: this.listRecentHandoffsForWorkspace(limit, workspace)
+    });
+  }
+
+  listWorkerContracts(parentSessionId?: string, limit = 20): WorkContractWorker[] {
+    const workers = parentSessionId
+      ? this.workerStateStore.listByParent(parentSessionId)
+      : this.workerStateStore.listRecent(limit);
+    return workers.map(buildWorkContractWorker);
+  }
+
+  getWorkerContract(workerId: string): WorkContractWorker | undefined {
+    const worker = this.workerStateStore.get(workerId);
+    return worker ? buildWorkContractWorker(worker) : undefined;
+  }
+
+  listHandoffContracts(parentSessionId?: string, limit = 20): WorkContractHandoff[] {
+    const handoffs = parentSessionId
+      ? this.handoffStore.listByParent(parentSessionId)
+      : this.handoffStore.listRecent(limit);
+    return handoffs.map(buildWorkContractHandoff);
+  }
+
+  getHandoffContract(handoffId: string): WorkContractHandoff | undefined {
+    const handoff = this.handoffStore.get(handoffId);
+    return handoff ? buildWorkContractHandoff(handoff) : undefined;
   }
 
   getCapability(id: string): Promise<CapabilityDescriptor | undefined> {
@@ -659,8 +1243,23 @@ export class SwarmRuntime {
 
   reloadSettings(): SwarmSettings {
     Object.assign(this.settings, loadSwarmSettings(this.workspace));
+    this.provider.reload(this.workspace);
     this.capabilityPlane.registry.invalidate();
     return this.settings;
+  }
+
+  private applyRuntimeAdditionalReadDirectories(paths: string[] | undefined): () => void {
+    if (!paths?.length) {
+      return () => undefined;
+    }
+    const previous = [...this.settings.permissions.additionalDirectories];
+    this.settings.permissions.additionalDirectories = addUniqueResolvedPaths(
+      this.settings.permissions.additionalDirectories,
+      paths
+    );
+    return () => {
+      this.settings.permissions.additionalDirectories = previous;
+    };
   }
 
   listSkills(): SkillRecord[] {
@@ -713,8 +1312,42 @@ export class SwarmRuntime {
     return skill;
   }
 
+  private activateRunSkills(sessionId: string, skills: string[] | undefined, reason: string): ActivatedSkill[] {
+    if (!skills?.length) {
+      return [];
+    }
+    const activated: ActivatedSkill[] = [];
+    for (const name of skills) {
+      const skill = this.activateSkill(name, sessionId, reason);
+      activated.push(skill);
+      this.events.emitEvent({
+        type: "controller",
+        id: `skill_${skill.name}_${randomUUID()}`,
+        action: "skill_activated",
+        reason,
+        instruction: skill.name,
+        details: {
+          session_id: sessionId,
+          skill: skill.name,
+          path: skill.path,
+          allowed_tools: skill.allowedTools,
+          resource_paths: skill.resourcePaths
+        }
+      });
+    }
+    return activated;
+  }
+
   listPlugins(): PluginRecord[] {
     return this.capabilityPlane.listPlugins();
+  }
+
+  listCustomCommands(): CustomCommandRecord[] {
+    return this.capabilityPlane.listCustomCommands();
+  }
+
+  getCustomCommand(name: string): CustomCommandRecord | undefined {
+    return this.capabilityPlane.getCustomCommand(name);
   }
 
   listMcpServers(): McpServerRecord[] {
@@ -734,12 +1367,117 @@ export class SwarmRuntime {
     return this.capabilityBroker.invoke(capabilityId, args, sessionId, options);
   }
 
+  private async runSlashCommandObjective(
+    objective: string,
+    input: {
+      capability: CapabilityDescriptor;
+      args: Record<string, unknown>;
+      sessionId?: string;
+      taskId: string;
+    }
+  ): Promise<ToolResult> {
+    const result = await this.run(objective, {
+      mode: slashCommandRunMode(input.args),
+      sandboxMode: slashCommandSandboxMode(input.args),
+      maxTurns: positiveRunIntegerArg(input.args.maxTurns ?? input.args.max_turns),
+      maxToolCalls: positiveRunIntegerArg(input.args.maxToolCalls ?? input.args.max_tool_calls)
+    });
+    return {
+      action: input.capability.name,
+      status: toolStatusFromExecutionStatus(result.status),
+      summary: result.outcome?.final_summary ?? (firstLine(result.content) || `Slash command completed: ${input.capability.name}`),
+      content: result.content,
+      data: {
+        session_id: result.session_id,
+        outcome: result.outcome,
+        result_card: result.result_card
+      },
+      metadata: {
+        child_session_id: result.session_id,
+        status: result.status ?? "completed",
+        invoked_from_session_id: input.sessionId,
+        task_id: input.taskId
+      }
+    };
+  }
+
   createRuntimeBlackboardTools(): NonNullable<LocalToolContext["blackboard"]> {
     return {
       write: (action, context) => this.writeBlackboardViaEnvelope(action, context),
       read: (action, context) => this.readBlackboardViaEnvelope(action, context),
       search: (action, context) => this.searchBlackboardViaEnvelope(action, context),
       list: (action, context) => this.listBlackboardViaEnvelope(action, context)
+    };
+  }
+
+  createRuntimeAgentControlTools(): NonNullable<LocalToolContext["agentControl"]> {
+    return {
+      list: (action, context) => {
+        const limit = positiveLimit(action.limit, 30);
+        const parentSessionId = action.parent_session_id ?? context.sessionId;
+        const workers = (parentSessionId
+          ? this.workerStateStore.listByParent(parentSessionId)
+          : this.listRecentWorkersForWorkspace(limit))
+          .filter((worker) => !action.status || worker.status === action.status)
+          .slice(0, limit);
+        return {
+          action: action.type,
+          status: "success",
+          summary: `agent.list returned ${workers.length} worker${workers.length === 1 ? "" : "s"}`,
+          content: renderWorkerList(workers),
+          data: {
+            workers: workers.map(compactWorkerRecord),
+            parent_session_id: parentSessionId,
+            status: action.status
+          }
+        };
+      },
+      status: (action) => {
+        const worker = this.workerStateStore.get(action.worker_id);
+        if (!worker) {
+          return {
+            action: action.type,
+            status: "failed",
+            summary: `Unknown worker: ${action.worker_id}`,
+            errorCode: "WORKER_NOT_FOUND",
+            recoverable: true,
+            recoverySuggestion: "Call agent.list to find current worker ids, then retry with a valid worker_id."
+          };
+        }
+        return {
+          action: action.type,
+          status: "success",
+          summary: `${worker.worker_id} is ${worker.status}`,
+          content: renderWorkerDetailForTool(worker),
+          data: {
+            worker: compactWorkerRecord(worker),
+            worker_contract: this.getWorkerContract(worker.worker_id)
+          }
+        };
+      },
+      stop: (action) => {
+        const worker = this.workerStateStore.get(action.worker_id);
+        if (!worker) {
+          return {
+            action: action.type,
+            status: "failed",
+            summary: `Unknown worker: ${action.worker_id}`,
+            errorCode: "WORKER_NOT_FOUND",
+            recoverable: true,
+            recoverySuggestion: "Call agent.list to find current worker ids, then retry with a valid worker_id."
+          };
+        }
+        this.stopWorker(action.worker_id);
+        const stopped = this.workerStateStore.get(action.worker_id) ?? worker;
+        return {
+          action: action.type,
+          status: "success",
+          summary: `Stop requested for ${action.worker_id}`,
+          content: renderWorkerDetailForTool(stopped),
+          data: { worker: compactWorkerRecord(stopped) }
+        };
+      },
+      continue: (action) => this.continueAgent(action.worker_id, action.message, { runInBackground: action.run_in_background })
     };
   }
 
@@ -751,27 +1489,54 @@ export class SwarmRuntime {
     return this.capabilityPlane.listMcpPrompts(serverId);
   }
 
-  async readMcpResource(serverId: string, uri: string, sessionId?: string) {
-    const result = await this.capabilityPlane.readMcpResource(serverId, uri);
-    return this.recordMcpMaterial({
-      kind: "resource",
-      serverId,
-      nameOrUri: uri,
-      result,
-      sessionId
+  async readMcpResource(serverId: string, uri: string, sessionId?: string): Promise<McpResourceReadResult> {
+    const capability = await this.findMcpMaterialCapability("mcp_resource", serverId, uri);
+    if (!capability) {
+      throw new Error(`Unknown MCP resource capability: ${serverId}:${uri}`);
+    }
+    const result = await this.invokeCapability(capability.id, { uri }, sessionId, {
+      taskId: `mcp.resource.${sanitizeKey(serverId)}.${sanitizeKey(uri).slice(0, 80)}`,
+      title: `Read MCP resource ${serverId}:${uri}`,
+      source: "runtime"
     });
+    if (result.status === "failed") {
+      throw new Error(result.summary);
+    }
+    return (result.data ?? result.metadata ?? {}) as McpResourceReadResult;
   }
 
-  async getMcpPrompt(serverId: string, name: string, args?: Record<string, string>, sessionId?: string) {
-    const result = await this.capabilityPlane.getMcpPrompt(serverId, name, args);
-    return this.recordMcpMaterial({
-      kind: "prompt",
-      serverId,
-      nameOrUri: name,
-      result,
-      sessionId,
-      args
+  async getMcpPrompt(serverId: string, name: string, args?: Record<string, string>, sessionId?: string): Promise<McpPromptGetResult> {
+    const capability = await this.findMcpMaterialCapability("mcp_prompt", serverId, name);
+    if (!capability) {
+      throw new Error(`Unknown MCP prompt capability: ${serverId}:${name}`);
+    }
+    const result = await this.invokeCapability(capability.id, { name, arguments: args }, sessionId, {
+      taskId: `mcp.prompt.${sanitizeKey(serverId)}.${sanitizeKey(name).slice(0, 80)}`,
+      title: `Get MCP prompt ${serverId}:${name}`,
+      source: "runtime"
     });
+    if (result.status === "failed") {
+      throw new Error(result.summary);
+    }
+    return (result.data ?? result.metadata ?? {}) as McpPromptGetResult;
+  }
+
+  private async findMcpMaterialCapability(
+    kind: "mcp_resource" | "mcp_prompt",
+    serverId: string,
+    nameOrUri: string
+  ): Promise<CapabilityDescriptor | undefined> {
+    const metadataKey = kind === "mcp_resource" ? "uri" : "prompt_name";
+    const capabilities = await this.listCapabilities({
+      kind,
+      providerId: `mcp:${serverId}`,
+      includeDisabled: true
+    });
+    return capabilities.find((capability) =>
+      capability.kind === kind &&
+      capability.metadata?.server_id === serverId &&
+      capability.metadata?.[metadataKey] === nameOrUri
+    );
   }
 
   listHandoffs(limit = 20): HandoffSessionRecord[] {
@@ -801,10 +1566,35 @@ export class SwarmRuntime {
     return handoff;
   }
 
-  async continueAgent(workerId: string, message: string): Promise<ToolResult> {
+  async continueAgent(workerId: string, message: string, options: { runInBackground?: boolean } = {}): Promise<ToolResult> {
     const worker = this.workerStateStore.get(workerId);
     if (!worker) {
       throw new Error(`Unknown worker: ${workerId}`);
+    }
+    if (worker.status === "running" || worker.status === "pending") {
+      throw new Error(`Worker is still active: ${workerId}. Wait for it to finish or stop it before starting a continuation.`);
+    }
+    this.events.emitEvent({
+      type: "controller",
+      id: `worker_continue_${randomUUID()}`,
+      action: "worker_continuation",
+      reason: `Continuation requested for ${worker.worker_id}`,
+      instruction: message,
+      details: {
+        worker_id: worker.worker_id,
+        worker_status: worker.status,
+        worker_session_id: worker.worker_session_id,
+        handoff_id: worker.handoff_id
+      }
+    });
+    if (worker.handoff_id) {
+      this.events.emitEvent({
+        type: "handoff_message",
+        session_id: worker.parent_session_id,
+        handoff_id: worker.handoff_id,
+        worker_id: worker.worker_id,
+        message
+      });
     }
     const workspaceFreshness = this.renderWorkspaceFreshnessContract({
       sessionId: worker.parent_session_id,
@@ -822,12 +1612,15 @@ export class SwarmRuntime {
         worker.agent_spec_id ? `Previous agent spec: ${worker.agent_spec_id}.` : undefined,
         worker.invocation_mode ? `Previous invocation mode: ${worker.invocation_mode}.` : undefined,
         worker.handoff_id ? `Previous handoff: ${worker.handoff_id}.` : undefined,
+        worker.worker_session_id ? `Previous worker session: ${worker.worker_session_id}. Reuse its transcript as historical context, but refresh workspace facts before relying on it.` : undefined,
         worker.task_packet ? `Previous task packet:\n${JSON.stringify(worker.task_packet, null, 2)}` : undefined,
         worker.last_result ? `Previous result:\n${worker.last_result}` : undefined
       ].filter(Boolean).join("\n\n"),
       preferred_agent_spec_id: worker.agent_spec_id,
-      preferred_mode: worker.invocation_mode === "handoff" ? "handoff" : "call_subagent",
+      preferred_mode: options.runInBackground ? "parallel" : worker.invocation_mode === "handoff" ? "handoff" : "call_subagent",
       file_scope: worker.file_scope,
+      prior_worker_session_id: worker.worker_session_id,
+      permission_snapshot: worker.task_packet?.permission_context,
       spawn_reason: `Continuation requested for ${worker.worker_id}`
     });
   }
@@ -850,7 +1643,16 @@ export class SwarmRuntime {
       "",
       JSON.stringify(review, null, 2)
     ].join("\n");
-    return this.executeRoute(objective, { mode: "coding_loop", confidence: 1, reason: "self-improvement command" });
+    return this.executeRoute(
+      objective,
+      { mode: "coding_loop", confidence: 1, reason: "self-improvement command" },
+      {},
+      {
+        labels: ["self-improvement", "review"],
+        mode: "self_improvement",
+        source: "self"
+      }
+    );
   }
 
   listBlackboardEntries(sessionId?: string, query: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string; agentId?: string } = {}): BlackboardEntry[] {
@@ -869,8 +1671,17 @@ export class SwarmRuntime {
     return this.taskGraphStore.get(sessionId);
   }
 
+  getTaskContracts(sessionId: string): { summary: TaskContractSummary; tasks: TaskContractRecord[] } {
+    return buildTaskContractSnapshot(this.taskGraphStore.get(sessionId).tasks);
+  }
+
+  getTaskContract(sessionId: string, taskId: string): TaskContractRecord | undefined {
+    return this.getTaskContracts(sessionId).tasks.find((task) => task.task_id === taskId);
+  }
+
   getTaskDetail(sessionId: string, taskId: string): {
     task?: ReturnType<TaskGraphStore["get"]>["tasks"][number];
+    task_contract?: TaskContractRecord;
     attempts: ReturnType<RunAttemptStore["listByTask"]>;
     blackboard: BlackboardEntry[];
     trace: SwarmEnvelope[];
@@ -879,6 +1690,7 @@ export class SwarmRuntime {
   } {
     return {
       task: this.taskGraphStore.get(sessionId).tasks.find((task) => task.task_id === taskId),
+      task_contract: this.getTaskContract(sessionId, taskId),
       attempts: this.runAttemptStore.listByTask(sessionId, taskId),
       blackboard: this.blackboardStore.query(sessionId, { taskId }),
       trace: this.traceStore.list(sessionId).filter((envelope) => envelope.task_id === taskId),
@@ -899,6 +1711,7 @@ export class SwarmRuntime {
       ? this.workspaceLeaseStore.get(row.workspace_lease_id)
       : this.workspaceLeaseStore.getBySession(sessionId);
     const workers = this.workerStateStore.listByParent(sessionId);
+    const handoffs = this.handoffStore.listByParent(sessionId);
     const finalOutcome = row.final_outcome_json
       ? JSON.parse(row.final_outcome_json) as WorkSnapshot["final_outcome"]
       : undefined;
@@ -946,6 +1759,8 @@ export class SwarmRuntime {
       review: reviewEntry?.value as ReviewResult | undefined,
       verification: verificationEntry?.value,
       usage_summary: this.usageStore.summarize(sessionId),
+      task_contracts: buildTaskContractSnapshot(graph.tasks),
+      work_contracts: buildWorkContractSnapshot({ workers, handoffs }),
       context_summary: {
         entries: contextEntries.length,
         compactions: compactions.length,
@@ -963,15 +1778,35 @@ export class SwarmRuntime {
     };
   }
 
+  private liveControlDirectives(sessionId: string, limit = 8): string[] {
+    const entries = this.blackboardStore.list(sessionId)
+      .filter(isLiveControlDirectiveEntry)
+      .slice(-limit);
+    return entries.length ? entries.map(formatLiveControlDirective) : ["(none)"];
+  }
+
   replaySession(sessionId: string): string {
     const snapshot = this.getWorkSnapshot(sessionId);
-    const approvals = this.approvalStore.list(sessionId, 100);
+    const approvals = this.listApprovalsForSessionFamily(sessionId, 100);
     const audit = this.auditStore.list(sessionId, 100);
     const trace = this.traceStore.list(sessionId);
+    const resumeHealth = buildResumeHealth(snapshot.attempts);
+    const workerContracts = [...snapshot.work_contracts.active_workers, ...snapshot.work_contracts.resumable_workers];
+    const handoffContracts = snapshot.work_contracts.active_handoffs;
+    const liveControlDirectives = this.liveControlDirectives(sessionId);
     return [
       `Source: ${snapshot.session.source?.source ?? "user"}${snapshot.session.source?.human_id ? ` ${snapshot.session.source.human_id}` : ""}`,
       `${snapshot.session.session_id} [${snapshot.session.status}]`,
       snapshot.session.objective,
+      "",
+      "Resume Health",
+      ...formatResumeHealth(resumeHealth),
+      "",
+      "Resume Work Contracts",
+      ...formatResumeWorkContracts(snapshot.work_contracts),
+      "",
+      "Live Control Directives",
+      ...liveControlDirectives,
       "",
       "Workspace",
       snapshot.workspace ? `${snapshot.workspace.workspace_path} boundary=${snapshot.workspace.write_boundary}` : "(none)",
@@ -982,8 +1817,11 @@ export class SwarmRuntime {
       `Tasks: ${snapshot.graph.tasks.length}`,
       ...snapshot.graph.tasks.map((task) => `${task.task_id} [${task.status}] #${task.attempt} ${task.title}`),
       "",
-      `Workers: ${snapshot.workers.length}`,
-      ...snapshot.workers.map((worker) => isRecord(worker) ? `${String(worker.worker_id ?? "-")} [${String(worker.status ?? "-")}] ${String(worker.agent_spec_id ?? worker.capability ?? "")}` : JSON.stringify(worker)),
+      `Workers: ${workerContracts.length}`,
+      ...(workerContracts.length ? workerContracts.map(formatResumeWorkerContract) : ["(none)"]),
+      "",
+      `Handoffs: ${handoffContracts.length}`,
+      ...(handoffContracts.length ? handoffContracts.map(formatResumeHandoffContract) : ["(none)"]),
       "",
       `Changes: ${snapshot.changed_files.length}`,
       ...(snapshot.changed_files.length ? snapshot.changed_files : ["(none)"]),
@@ -1041,6 +1879,9 @@ export class SwarmRuntime {
   }
 
   private recordRuntimeEvent(event: Parameters<RuntimeEvents["emitEvent"]>[0]): void {
+    if (this.disposed) {
+      return;
+    }
     try {
       if (event.type === "plan") {
         this.taskGraphStore.storePlan(event.session_id, event.plan);
@@ -1081,6 +1922,16 @@ export class SwarmRuntime {
         }
         return;
       }
+      if (event.type === "queue" && event.session_id) {
+        this.recordSessionContext(event.session_id, "loop_activity", "system", `${event.queue} queue ${event.operation}: ${event.message ?? event.id ?? `size=${event.size}`}`, {
+          queue: event.queue,
+          operation: event.operation,
+          id: event.id,
+          size: event.size,
+          priority: event.priority
+        });
+        return;
+      }
       if (event.type === "task_attempt" && event.session_id) {
         this.recordSessionContext(event.session_id, "loop_activity", "system", `${event.status}: ${event.title}`, {
           task_id: event.task_id,
@@ -1119,7 +1970,9 @@ export class SwarmRuntime {
             title: event.title,
             action: event.action,
             status: event.status === "failed" ? "failed" : "completed",
-            attempt: event.attempt
+            attempt: event.attempt,
+            write_policy: event.write_policy,
+            file_scope: event.file_scope
           });
           this.usageStore.append({
             session_id: event.session_id,
@@ -1260,7 +2113,11 @@ export class SwarmRuntime {
           phase: event.phase,
           turn: event.turn,
           tool: event.tool,
-          task_id: event.task_id
+          task_id: event.task_id,
+          status: event.status,
+          summary: event.summary,
+          errorCode: event.errorCode,
+          recoverySuggestion: event.recoverySuggestion
         });
         return;
       }
@@ -1409,6 +2266,10 @@ export class SwarmRuntime {
   }
 
   private recordProviderUsage(usage: ProviderUsageReport): void {
+    if (this.disposed) {
+      return;
+    }
+    this.latestPromptCache = promptCacheStatusFromUsage(usage);
     this.usageStore.append({
       session_id: usage.sessionId,
       task_id: usage.taskId,
@@ -1422,6 +2283,8 @@ export class SwarmRuntime {
       ["output", usage.outputTokens],
       ["cached_input", usage.cachedInputTokens],
       ["cache_creation_input", usage.cacheCreationInputTokens],
+      ["uncached_input", usage.uncachedInputTokens],
+      ["total_input_with_cache", usage.totalInputWithCacheTokens],
       ["cacheable_prefix_estimate", usage.cacheablePrefixTokensEstimate]
     ] as const) {
       if (typeof amount !== "number" || amount <= 0) {
@@ -1458,7 +2321,39 @@ export class SwarmRuntime {
   }
 
   private async invokeAgent(request: AgentInvocationRequest): Promise<ToolResult> {
+    const roiDecision = evaluateDelegationRoi(request);
+    if (!roiDecision.allow) {
+      this.events.emitEvent({
+        type: "controller",
+        id: `delegate_roi_${randomUUID()}`,
+        action: "delegate_roi_gate",
+        reason: roiDecision.reason,
+        instruction: request.task
+      });
+      return {
+        action: "agent.delegate",
+        status: "failed",
+        summary: `Delegation skipped by ROI gate: ${roiDecision.reason}`,
+        content: roiDecision.reason,
+        errorCode: "DELEGATION_ROI_GATE",
+        retryable: false,
+        recoverable: true,
+        recoverySuggestion: "Keep this work in the main coding loop or provide a broader file scope / explicit parallel workstream.",
+        metadata: {
+          roi_gate: roiDecision,
+          request: {
+            capability: request.capability,
+            file_scope: request.file_scope ?? [],
+            preferred_agent_spec_id: request.preferred_agent_spec_id,
+            preferred_mode: request.preferred_mode
+          }
+        }
+      };
+    }
     this.checkWorkerBudget(request.parent_session_id);
+    const workerLimits = this.workerLimits(request.parent_session_id);
+    const maxParallelTasks = Math.max(1, Math.min(workerLimits.maxAgents, workerLimits.maxParallelTasks));
+    const permissionSnapshot = request.permission_snapshot ?? snapshotAgentPermissionContext(this.settings);
     const workerId = `worker_${randomUUID()}`;
     const decision = await this.decideAgentSpawn(request);
     const spec = this.getAgentSpec(decision.agent_spec_id) ?? this.getAgentSpec("researcher");
@@ -1466,7 +2361,7 @@ export class SwarmRuntime {
       throw new Error("No agent specs are available.");
     }
     const workerDecision = withWorkerIdentityFallback(decision, workerId, request, spec);
-    const taskPacket = buildAgentTaskPacket(request, spec, workerDecision);
+    const taskPacket = buildAgentTaskPacket(request, spec, workerDecision, permissionSnapshot);
     taskPacket.relevant_context = [
       this.renderWorkspaceFreshnessContract({
         sessionId: request.parent_session_id,
@@ -1478,6 +2373,13 @@ export class SwarmRuntime {
     const durableTaskPacket = stripEphemeralAgentPersona(taskPacket);
     const durableDecision = stripEphemeralAgentDecision(workerDecision);
     const handoffId = workerDecision.invocation_mode === "handoff" ? `handoff_${randomUUID()}` : undefined;
+    const activeWorkers = this.listActiveWorkers(request.parent_session_id);
+    const runningWorkers = activeWorkers.filter((item) => item.status === "running").length;
+    const pendingWorkers = activeWorkers.filter((item) => item.status === "pending").length;
+    const queuedForSlot = pendingWorkers > 0 || runningWorkers >= maxParallelTasks;
+    const initialBlockedReason = queuedForSlot
+      ? this.workerSlotBlockedReason(runningWorkers, maxParallelTasks, pendingWorkers + 1)
+      : undefined;
     const worker = this.workerStateStore.create({
       worker_id: workerId,
       display_name: workerDecision.display_name,
@@ -1485,6 +2387,7 @@ export class SwarmRuntime {
       parent_session_id: request.parent_session_id,
       capability: request.capability,
       objective: request.task,
+      status: queuedForSlot ? "pending" : "running",
       agent_spec_id: spec.id,
       invocation_mode: workerDecision.invocation_mode,
       handoff_id: handoffId,
@@ -1494,9 +2397,16 @@ export class SwarmRuntime {
       task_packet: durableTaskPacket,
       output_contract: taskPacket.expected_output,
       spawn_reason: workerDecision.reason || request.spawn_reason,
-      requested_by: request.requested_by
+      requested_by: request.requested_by,
+      blocked_reason: initialBlockedReason
     });
-    this.events.emitEvent({ type: "agent_spawn_decision", worker_id: workerId, decision: durableDecision, task_packet: durableTaskPacket });
+    this.events.emitEvent({
+      type: "agent_spawn_decision",
+      worker_id: workerId,
+      parent_session_id: request.parent_session_id,
+      decision: durableDecision,
+      task_packet: durableTaskPacket
+    });
     this.writeBlackboardEvidence(request.parent_session_id, {
       key: `decision.spawn.${workerId}`,
       type: "decision",
@@ -1504,131 +2414,242 @@ export class SwarmRuntime {
       tags: ["decision", "spawn", spec.id, workerDecision.invocation_mode],
       created_by: { agent_id: "main_swarm", role: "controller" }
     });
-    this.events.emitEvent({ type: "agent_run_started", worker, task_packet: durableTaskPacket });
-    this.events.emitEvent({ type: "worker", worker, status: worker.status, message: `${spec.id}/${workerDecision.invocation_mode}: ${request.task}` });
+    const runInBackground = workerDecision.invocation_mode === "parallel";
+    const executeWorker = async (): Promise<ToolResult> => {
+      let runningWorker = worker;
+      if (queuedForSlot) {
+        this.events.emitEvent({
+          type: "queue",
+          queue: "worker_slots",
+          operation: "enqueue",
+          id: workerId,
+          size: pendingWorkers + 1,
+          session_id: request.parent_session_id,
+          message: initialBlockedReason
+        });
+        this.events.emitEvent({
+          type: "worker",
+          worker,
+          status: worker.status,
+          message: worker.blocked_reason ?? `${spec.id}/${workerDecision.invocation_mode}: waiting for a worker slot`
+        });
+        const admittedWorker = await this.waitForWorkerSlot(request.parent_session_id, workerId, maxParallelTasks);
+        if (!admittedWorker || admittedWorker.status !== "running") {
+          const latestWorker = admittedWorker ?? this.workerStateStore.get(workerId) ?? worker;
+          const stopMessage = latestWorker.last_result
+            ?? latestWorker.blocked_reason
+            ?? "Worker stopped before it could start.";
+          return {
+            action: "agent.delegate",
+            status: latestWorker.status === "failed" ? "failed" : "partial",
+            summary: `${spec.name} ${latestWorker.status}: ${stopMessage}`,
+            content: stopMessage,
+            errorCode: latestWorker.status === "failed" ? "AGENT_RUN_FAILED" : "AGENT_RUN_STOPPED",
+            recoverable: latestWorker.status !== "failed",
+            data: {
+              worker_id: workerId,
+              agent_spec_id: spec.id,
+              invocation_mode: workerDecision.invocation_mode,
+              handoff_id: handoffId,
+              capability: request.capability,
+              worker_status: latestWorker.status
+            }
+          };
+        }
+        runningWorker = admittedWorker;
+      }
 
-    let handoff: HandoffSessionRecord | undefined;
-    if (handoffId) {
-      handoff = this.handoffStore.create({
-        handoff_id: handoffId,
-        worker_id: workerId,
-        parent_session_id: request.parent_session_id,
-        source_agent: request.requested_by,
-        target_agent_spec_id: spec.id,
-        reason: workerDecision.reason,
-        task_packet: durableTaskPacket
+      this.events.emitEvent({ type: "agent_run_started", worker: runningWorker, task_packet: durableTaskPacket });
+      this.events.emitEvent({
+        type: "worker",
+        worker: runningWorker,
+        status: runningWorker.status,
+        message: `${spec.id}/${workerDecision.invocation_mode}: ${request.task}`
       });
-      this.events.emitEvent({ type: "handoff_started", handoff });
-    }
 
-    const workerLoop = new CodingAgentLoop({
-      workspace: this.workspaceForSession(request.parent_session_id),
-      settings: this.settings,
-      provider: this.provider,
-      events: this.events,
-      approvalHandler: this.approvalHandler,
-      role: "worker",
-      parentSessionId: request.parent_session_id,
-      workerId,
+      let handoff: HandoffSessionRecord | undefined;
+      if (handoffId) {
+        handoff = this.handoffStore.create({
+          handoff_id: handoffId,
+          worker_id: workerId,
+          parent_session_id: request.parent_session_id,
+          source_agent: request.requested_by,
+          target_agent_spec_id: spec.id,
+          reason: workerDecision.reason,
+          task_packet: durableTaskPacket
+        });
+        this.events.emitEvent({ type: "handoff_started", handoff });
+      }
+
+      const workerSettings = settingsForAgentTask(this.settings, taskPacket);
+      const workerLoop = new CodingAgentLoop({
+        workspace: this.workspaceForSession(request.parent_session_id),
+        settings: workerSettings,
+        provider: this.provider,
+        events: this.events,
+        approvalHandler: this.approvalHandler,
+        role: "worker",
+        parentSessionId: request.parent_session_id,
+        workerId,
       workerStore: this.workerStateStore,
       toolReplacementStore: this.toolContentReplacementStore,
       delegateDepth: 0,
-      maxTurns: taskPacket.budget.max_turns,
-      maxToolCalls: taskPacket.budget.max_tool_calls,
-      sessionObjective: request.task,
+        maxTurns: taskPacket.budget.max_turns,
+        maxToolCalls: taskPacket.budget.max_tool_calls,
+        sessionObjective: request.task,
       emitFinal: false,
       emitProgress: false,
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
-      durableContext: () => this.renderDurableContextForSession(request.parent_session_id),
-      agentInstructions: renderAgentRuntimeInstructions(spec, workerDecision, taskPacket),
-      allowedTools: taskPacket.allowed_tools,
-      writePolicy: taskPacket.write_policy,
-      onSessionStart: (sessionId, loopObjective) => {
-        this.activeCodingLoopSessionId = sessionId;
-        this.ensureLoopSession(sessionId, loopObjective, request.parent_session_id);
-      },
-      onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? request.parent_session_id, change),
-      onFileLock: (event) => this.recordFileLock(event)
-    });
-
-    try {
-      const result = await workerLoop.run(renderAgentTaskPrompt(taskPacket, workerDecision));
-      const latestWorker = this.workerStateStore.get(workerId);
-      const latestHandoff = handoff ? this.handoffStore.get(handoff.handoff_id) : undefined;
-      const stopped = latestWorker?.status === "stopped" || latestHandoff?.status === "taken_back";
-      const status = workerStatusFromExecutionStatus(result.status, stopped);
-      const finalRecord = this.workerStateStore.setResult({
-        worker_id: workerId,
-        status,
-        worker_session_id: result.session_id,
-        last_result: result.content,
-        outcome: result.outcome
+      agentControl: this.createRuntimeAgentControlTools(),
+      durableContext: () => this.renderAgentDurableContext(request.parent_session_id, request.prior_worker_session_id),
+        agentInstructions: renderAgentRuntimeInstructions(spec, workerDecision, taskPacket),
+        allowedTools: taskPacket.allowed_tools,
+        writePolicy: taskPacket.write_policy,
+        fileScope: taskPacket.file_scope,
+        onSessionStart: (sessionId, loopObjective) => {
+          if (!runInBackground) {
+            this.activeCodingLoopSessionId = sessionId;
+          }
+          this.ensureLoopSession(sessionId, loopObjective, request.parent_session_id);
+          const sessionLinkedWorker = this.workerStateStore.setResult({
+            worker_id: workerId,
+            status: "running",
+            worker_session_id: sessionId
+          });
+          this.events.emitEvent({
+            type: "worker",
+            worker: sessionLinkedWorker,
+            status: sessionLinkedWorker.status,
+            message: `Worker session ${sessionId} started.`
+          });
+        },
+        onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? request.parent_session_id, change),
+        onFileLock: (event) => this.recordFileLock(event)
       });
-      this.events.emitEvent({ type: "worker", worker: finalRecord, status: finalRecord.status, message: firstLine(result.content) });
-      this.events.emitEvent({ type: "agent_run_completed", worker: finalRecord, result: result.content });
 
-      let finalHandoff = latestHandoff;
-      if (handoff && latestHandoff?.status !== "taken_back") {
-        finalHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: status === "failed" ? "failed" : "returned", result: result.content });
-        this.events.emitEvent({ type: "handoff_returned", handoff: finalHandoff, result: result.content });
-      }
-
-      const compactedResult = await this.compactWorkerResultForParent({
-        parentSessionId: request.parent_session_id,
-        workerId,
-        workerSessionId: result.session_id,
-        specId: spec.id,
-        status,
-        content: result.content,
-        outcome: result.outcome
-      });
-      return {
-        action: "agent.delegate",
-        status: delegatedToolStatus(status),
-        summary: `${spec.name} ${status}: ${compactedResult.summary}`,
-        content: compactedResult.content,
-        outputRef: compactedResult.outputRef,
-        data: {
+      try {
+        const result = await workerLoop.run(renderAgentTaskPrompt(taskPacket, workerDecision));
+        const latestWorker = this.workerStateStore.get(workerId);
+        const latestHandoff = handoff ? this.handoffStore.get(handoff.handoff_id) : undefined;
+        const stopped = latestWorker?.status === "stopped" || latestHandoff?.status === "taken_back";
+        const status = workerStatusFromExecutionStatus(result.status, stopped);
+        const finalRecord = this.workerStateStore.setResult({
           worker_id: workerId,
+          status,
           worker_session_id: result.session_id,
-          agent_spec_id: spec.id,
-          invocation_mode: workerDecision.invocation_mode,
-          handoff_id: finalHandoff?.handoff_id,
-          capability: request.capability,
-          outcome: result.outcome,
-          worker_status: status,
-          result_ref: compactedResult.outputRef
+          last_result: result.content,
+          outcome: result.outcome
+        });
+        this.events.emitEvent({ type: "worker", worker: finalRecord, status: finalRecord.status, message: firstLine(result.content) });
+        this.events.emitEvent({ type: "agent_run_completed", worker: finalRecord, result: result.content });
+
+        let finalHandoff = latestHandoff;
+        if (handoff && latestHandoff?.status !== "taken_back") {
+          finalHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: status === "failed" ? "failed" : "returned", result: result.content });
+          this.events.emitEvent({ type: "handoff_returned", handoff: finalHandoff, result: result.content });
         }
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const failedRecord = this.workerStateStore.setResult({
-        worker_id: workerId,
-        status: "failed",
-        last_result: message
-      });
-      this.events.emitEvent({ type: "worker", worker: failedRecord, status: failedRecord.status, message });
-      if (handoff) {
-        const failedHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: "failed", result: message });
-        this.events.emitEvent({ type: "handoff_returned", handoff: failedHandoff, result: message });
+
+        const compactedResult = await this.compactWorkerResultForParent({
+          parentSessionId: request.parent_session_id,
+          workerId,
+          workerSessionId: result.session_id,
+          specId: spec.id,
+          status,
+          content: result.content,
+          outcome: result.outcome
+        });
+        return {
+          action: "agent.delegate",
+          status: delegatedToolStatus(status),
+          summary: `${spec.name} ${status}: ${compactedResult.summary}`,
+          content: compactedResult.content,
+          outputRef: compactedResult.outputRef,
+          data: {
+            worker_id: workerId,
+            worker_session_id: result.session_id,
+            agent_spec_id: spec.id,
+            invocation_mode: workerDecision.invocation_mode,
+            handoff_id: finalHandoff?.handoff_id,
+            capability: request.capability,
+            outcome: result.outcome,
+            worker_status: status,
+            result_ref: compactedResult.outputRef
+          }
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const failedRecord = this.workerStateStore.setResult({
+          worker_id: workerId,
+          status: "failed",
+          last_result: message
+        });
+        this.events.emitEvent({ type: "worker", worker: failedRecord, status: failedRecord.status, message });
+        if (handoff) {
+          const failedHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: "failed", result: message });
+          this.events.emitEvent({ type: "handoff_returned", handoff: failedHandoff, result: message });
+        }
+        return {
+          action: "agent.delegate",
+          status: "failed",
+          summary: `${spec.name} failed: ${message}`,
+          content: message,
+          errorCode: "AGENT_RUN_FAILED",
+          recoverable: true,
+          data: {
+            worker_id: workerId,
+            agent_spec_id: spec.id,
+            invocation_mode: workerDecision.invocation_mode,
+            handoff_id: handoff?.handoff_id,
+            capability: request.capability
+          }
+        };
       }
+    };
+
+    if (runInBackground) {
+      void executeWorker().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        const existing = this.workerStateStore.get(workerId);
+        if (!existing) {
+          this.events.emitEvent({ type: "log", level: "error", message: `Background worker ${workerId} failed before registration: ${message}` });
+          return;
+        }
+        const failedRecord = this.workerStateStore.setResult({
+          worker_id: workerId,
+          status: "failed",
+          last_result: message
+        });
+        this.events.emitEvent({ type: "worker", worker: failedRecord, status: failedRecord.status, message });
+        this.events.emitEvent({ type: "agent_run_completed", worker: failedRecord, result: message });
+      });
+      const currentWorker = this.workerStateStore.get(workerId) ?? worker;
+      const stateLine = currentWorker.status === "pending" && currentWorker.blocked_reason
+        ? `Current state: pending (${currentWorker.blocked_reason})`
+        : `Current state: ${currentWorker.status}`;
       return {
         action: "agent.delegate",
-        status: "failed",
-        summary: `${spec.name} failed: ${message}`,
-        content: message,
-        errorCode: "AGENT_RUN_FAILED",
-        recoverable: true,
+        status: "partial",
+        summary: `${spec.name} launched in background: ${workerId}`,
+        content: [
+          `Background worker launched: ${workerId}`,
+          `Agent: ${currentWorker.display_name} (${spec.id}/${workerDecision.invocation_mode})`,
+          stateLine,
+          "The main agent can continue. Completion will be recorded in worker state, session memory, and runtime events."
+        ].join("\n"),
         data: {
           worker_id: workerId,
           agent_spec_id: spec.id,
           invocation_mode: workerDecision.invocation_mode,
-          handoff_id: handoff?.handoff_id,
-          capability: request.capability
+          handoff_id: handoffId,
+          capability: request.capability,
+          worker_status: currentWorker.status,
+          background: true
         }
       };
     }
+
+    return executeWorker();
   }
 
   private workspaceForSession(sessionId: string): string {
@@ -1687,8 +2708,8 @@ export class SwarmRuntime {
     return sessionId ? this.workspaceForSession(sessionId) : this.workspace;
   }
 
-  private renderDurableContextForSession(sessionId: string): string {
-    const sessionMemory = this.sessionContextStore.renderForSession(sessionId);
+  private renderDurableContextForSession(sessionId: string, budget: Partial<SessionContextBudget> = {}): string {
+    const sessionMemory = this.sessionContextStore.renderForSession(sessionId, budget);
     const entries = this.blackboardStore.query(sessionId, { tag: "durable-context" });
     const durableEntries = entries
       .filter((entry) => entry.key.startsWith("durable_context."))
@@ -1711,6 +2732,33 @@ export class SwarmRuntime {
       sessionMemory ? `WorkSession context memory:\n${sessionMemory}` : undefined,
       durableEntries.length ? `Pinned durable context:\n${durableEntries.join("\n\n")}` : undefined
     ].filter(Boolean).join("\n\n");
+  }
+
+  private renderAgentDurableContext(parentSessionId: string, priorWorkerSessionId?: string): string {
+    const sections = [this.renderDurableContextForSession(parentSessionId)];
+    const priorWorkerContext = this.renderPriorWorkerSessionContext(priorWorkerSessionId);
+    if (priorWorkerContext) {
+      sections.push(priorWorkerContext);
+    }
+    return sections.filter(Boolean).join("\n\n");
+  }
+
+  private renderPriorWorkerSessionContext(workerSessionId?: string): string {
+    if (!workerSessionId) {
+      return "";
+    }
+    const workerMemory = this.renderDurableContextForSession(workerSessionId, {
+      maxTokens: 4_500,
+      keepRecentEntries: 8,
+      summaryMaxTokens: 900
+    });
+    const row = this.sessionStore.get(workerSessionId);
+    return [
+      `Previous worker session transcript (${workerSessionId}).`,
+      row?.objective ? `Objective: ${row.objective}` : undefined,
+      "Treat this as internal historical context from the prior worker run. Refresh current workspace facts before relying on it.",
+      workerMemory || undefined
+    ].filter(Boolean).join("\n");
   }
 
   renderWorkspaceFreshnessContract(input: {
@@ -1822,13 +2870,13 @@ export class SwarmRuntime {
     sessionId: string,
     objective: string,
     parentSessionId?: string,
-    options: { labels?: string[]; mode?: string; source?: WorkItem["source"] } = {}
+    options: LoopSessionSourceOptions = {}
   ): void {
     const timestamp = new Date().toISOString();
     const policy = createLocalPolicy(this.settings);
     const source: WorkItem = {
       source: options.source ?? (parentSessionId ? "worker" : sessionId.startsWith("chat_") ? "user" : "user"),
-      source_id: parentSessionId,
+      source_id: options.sourceId ?? parentSessionId,
       human_id: sessionId,
       title: firstLine(objective) || objective.slice(0, 120),
       description: objective,
@@ -1877,23 +2925,98 @@ export class SwarmRuntime {
   }
 
   private checkWorkerBudget(parentSessionId: string): void {
-    const row = this.sessionStore.get(parentSessionId);
-    const policy = row ? JSON.parse(row.policy_json) as SwarmPolicy : createLocalPolicy(this.settings);
-    const maxAgents = policy.budget?.max_agents ?? policy.max_agents ?? this.settings.runtime.maxAgents;
-    const running = this.workerStateStore.listByParent(parentSessionId).filter((worker) => worker.status === "running").length;
-    if (running >= maxAgents) {
+    const { maxAgents } = this.workerLimits(parentSessionId);
+    const activeWorkers = this.listActiveWorkers(parentSessionId);
+    const active = activeWorkers.length;
+    const running = activeWorkers.filter((worker) => worker.status === "running").length;
+    const pending = activeWorkers.filter((worker) => worker.status === "pending").length;
+    if (active >= maxAgents) {
       this.auditStore.append({
         session_id: parentSessionId,
         actor_type: "policy",
         actor_id: "resource_manager",
         action: "agent.spawn",
-        resource: { running, max_agents: maxAgents },
+        resource: { active, running, pending, max_agents: maxAgents },
         risk_class: "r1",
         decision: "blocked",
-        reason: `Worker budget exceeded: ${running}/${maxAgents}`
+        reason: `Worker budget exceeded: ${active}/${maxAgents}`
       });
-      throw new Error(`Worker budget exceeded for ${parentSessionId}: ${running}/${maxAgents}`);
+      throw new Error(`Worker budget exceeded for ${parentSessionId}: ${active}/${maxAgents}`);
     }
+  }
+
+  private workerLimits(parentSessionId: string): { maxAgents: number; maxParallelTasks: number } {
+    const row = this.sessionStore.get(parentSessionId);
+    const policy = row ? JSON.parse(row.policy_json) as SwarmPolicy : createLocalPolicy(this.settings);
+    return {
+      maxAgents: policy.budget?.max_agents ?? policy.max_agents ?? this.settings.runtime.maxAgents,
+      maxParallelTasks: policy.max_parallel_tasks ?? policy.max_concurrency ?? this.settings.runtime.maxParallelTasks
+    };
+  }
+
+  private listActiveWorkers(parentSessionId: string): WorkerRecord[] {
+    return this.workerStateStore
+      .listByParent(parentSessionId)
+      .filter((worker) => worker.status === "pending" || worker.status === "running")
+      .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.worker_id.localeCompare(right.worker_id));
+  }
+
+  private workerSlotBlockedReason(running: number, maxParallelTasks: number, queued: number): string {
+    return `Waiting for a worker slot: running ${running}/${maxParallelTasks}, queued ${queued}`;
+  }
+
+  private async waitForWorkerSlot(parentSessionId: string, workerId: string, maxParallelTasks: number): Promise<WorkerRecord | undefined> {
+    while (!this.disposed) {
+      const worker = this.workerStateStore.get(workerId);
+      if (!worker) {
+        return undefined;
+      }
+      if (worker.status === "running") {
+        return worker;
+      }
+      if (worker.status !== "pending") {
+        return worker;
+      }
+      const activeWorkers = this.listActiveWorkers(parentSessionId);
+      const running = activeWorkers.filter((item) => item.status === "running").length;
+      const pendingWorkers = activeWorkers.filter((item) => item.status === "pending");
+      const queueIndex = pendingWorkers.findIndex((item) => item.worker_id === workerId);
+      if (queueIndex === -1) {
+        return this.workerStateStore.get(workerId);
+      }
+      const blockedReason = this.workerSlotBlockedReason(running, maxParallelTasks, pendingWorkers.length);
+      if (worker.blocked_reason !== blockedReason) {
+        const updated = this.workerStateStore.setResult({
+          worker_id: workerId,
+          status: "pending",
+          blocked_reason: blockedReason
+        });
+        this.events.emitEvent({ type: "worker", worker: updated, status: updated.status, message: blockedReason });
+      }
+      if (running < maxParallelTasks && queueIndex === 0) {
+        const admitted = this.workerStateStore.setResult({
+          worker_id: workerId,
+          status: "running",
+          blocked_reason: null
+        });
+        this.events.emitEvent({
+          type: "queue",
+          queue: "worker_slots",
+          operation: "dequeue",
+          id: workerId,
+          size: Math.max(0, pendingWorkers.length - 1),
+          session_id: parentSessionId,
+          message: `Worker slot granted: running ${running + 1}/${maxParallelTasks}`
+        });
+        return admitted;
+      }
+      await delay(WORKER_SLOT_POLL_MS);
+    }
+    return this.workerStateStore.setResult({
+      worker_id: workerId,
+      status: "stopped",
+      last_result: "Runtime disposed before the worker could start."
+    });
   }
 
   private recordSessionContext(
@@ -1965,7 +3088,7 @@ export class SwarmRuntime {
       parent_session_id: sessionId,
       requested_by: "main_swarm",
       capability: "code.review",
-      task: "Review the current workspace changes for correctness, regressions, missing tests, and user-goal fit. Return a clear verdict.",
+      task: "Review the current workspace changes for correctness, regressions, missing tests, and user-goal fit. Prioritize findings; do not rubber-stamp. If you find any bug, regression, unsupported claim, or verification gap, report it clearly with severity and evidence.",
       context,
       preferred_agent_spec_id: "reviewer",
       preferred_mode: "call_subagent",
@@ -1986,7 +3109,7 @@ export class SwarmRuntime {
       parent_session_id: sessionId,
       requested_by: "main_swarm",
       capability: "verify",
-      task: "Verify the workspace changes. Prefer existing check/build/test scripts; if no command is suitable, run git.diff and state the verification gap.",
+      task: "Verify the workspace changes by proving they work, not by confirming files exist. Prefer code.test/code.lint for commands in read-only verification. If no command is suitable, use read-only inspection and state the verification gap. Treat not-a-git-repository as a skipped git check, not a failure.",
       context: [
         context,
         "",
@@ -1997,12 +3120,7 @@ export class SwarmRuntime {
       preferred_mode: "call_subagent",
       spawn_reason: "automatic post-change verification"
     });
-    const verification = {
-      status: verificationTool.status ?? "success",
-      summary: verificationTool.summary,
-      content: verificationTool.content,
-      worker_id: isRecord(verificationTool.data) && typeof verificationTool.data.worker_id === "string" ? verificationTool.data.worker_id : undefined
-    };
+    const verification = await normalizeVerificationToolResult(verificationTool);
     this.events.emitEvent({ type: "verification_completed", session_id: sessionId, result: verification });
     this.writeBlackboardEvidence(sessionId, {
       key: `verify.coding_loop.${Date.now()}`,
@@ -2015,6 +3133,7 @@ export class SwarmRuntime {
   }
 
   private async normalizeReviewResult(tool: ToolResult, sessionId: string): Promise<ReviewResult> {
+    const hydratedTool = await hydrateToolResultForReport(tool);
     try {
       const response = await this.provider.generateText({
         model: this.provider.workerModel,
@@ -2029,21 +3148,22 @@ export class SwarmRuntime {
           ].join(" "),
           cache: true
         }],
-        user: JSON.stringify({ session_id: sessionId, tool }, null, 2),
+        user: JSON.stringify({ session_id: sessionId, tool: hydratedTool }, null, 2),
         usage: { sessionId, purpose: "review_normalization" },
+        responseFormat: "json_object",
         maxOutputTokens: CONTROL_PLANE_MAX_OUTPUT_TOKENS
       });
       const parsed = parseJsonObject(response);
-      return normalizeReviewJson(parsed, sessionId);
+      return guardReviewResult(normalizeReviewJson(parsed, sessionId), hydratedTool, sessionId);
     } catch {
-      return {
+      return guardReviewResult({
         target_task_id: "coding_loop",
         reviewer: { agent_id: "reviewer", role: "reviewer" },
-        verdict: tool.status === "failed" ? "reject" : "needs_revision",
-        score: tool.status === "failed" ? 0 : 70,
-        issues: tool.status === "failed" ? [{ severity: "high", message: tool.summary }] : undefined,
-        summary: tool.summary
-      };
+        verdict: hydratedTool.status === "failed" ? "reject" : "needs_revision",
+        score: hydratedTool.status === "failed" ? 0 : 70,
+        issues: hydratedTool.status === "failed" ? [{ severity: "high", message: hydratedTool.summary }] : undefined,
+        summary: hydratedTool.summary
+      }, hydratedTool, sessionId);
     }
   }
 
@@ -2208,7 +3328,7 @@ export class SwarmRuntime {
             "persona_brief must be one concise sentence describing this worker's operating style for only the current task; do not mention persistence, memory, or future recall.",
             "Use handoff only when a focused specialist should own a segment across multiple tool turns.",
             "Use call_subagent for bounded research, review, implementation, or verification whose result returns to main Swarm.",
-            "Use parallel only when the request describes independent side work that can run concurrently with other internal work; if concurrency is not actually available at this call site, it will be executed as a bounded subagent call.",
+            "Use parallel only when the request describes independent side work that can run in the background while the main agent continues.",
             "Prefer read_only agents for exploration, review, critique, and verification.",
             "Choose scoped_write or workspace_write agents only when the task genuinely requires edits and the request includes an appropriate file_scope or the task is explicitly self-improvement.",
             "Do not escalate a read-only request to a writer agent just because the target capability is vague.",
@@ -2242,6 +3362,7 @@ export class SwarmRuntime {
           sessionId: request.parent_session_id,
           purpose: "agent_spawn_decision"
         },
+        responseFormat: "json_object",
         maxOutputTokens: CONTROL_PLANE_MAX_OUTPUT_TOKENS
       });
       return normalizeAgentSpawnDecision(parseJsonObject(response), request, this.listAgentSpecs());
@@ -2263,12 +3384,17 @@ export class SwarmRuntime {
     }
   }
 
-  private handleInterrupt(content: string): void {
-    if (this.activeCodingLoop) {
-      this.activeCodingLoop.requestInterrupt(content);
-      return;
+  private handleInterrupt(content: string, requestId?: string): ControllerLiveDecision | undefined {
+    try {
+      return this.requestInterrupt(content, { requestId }).control;
+    } catch (error) {
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return undefined;
     }
-    this.events.emitEvent({ type: "log", level: "warn", message: "No active coding loop to interrupt." });
   }
 
   private agentSpecSource(): { settings: SwarmSettings; workspace: string } {
@@ -2306,6 +3432,7 @@ export class SwarmRuntime {
         sessionId: session.session_id,
         purpose: "full_swarm_control"
       },
+      responseFormat: "json_object",
       maxOutputTokens: CONTROL_PLANE_MAX_OUTPUT_TOKENS
     });
     const parsed = parseJsonObject(response);
@@ -2326,13 +3453,26 @@ export class SwarmRuntime {
     if (this.disposed) {
       return;
     }
+    const reason = "Runtime disposed before active work completed.";
+    try {
+      this.activeCodingLoop?.requestStop(reason);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.debug?.warn("runtime", `failed to request active work stop during dispose: ${message}`);
+    }
+    this.systemLoop.stop();
     this.disposed = true;
-    this.markActiveWorkStopped("Runtime disposed before active work completed.");
+    this.unsubscribeRuntimeEventPersister?.();
+    this.unsubscribeRuntimeEventPersister = undefined;
+    this.unsubscribeRuntimeEventLogger?.();
+    this.unsubscribeRuntimeEventLogger = undefined;
+    this.markActiveWorkStopped(reason);
     for (const child of this.children) {
       child.removeAllListeners("message");
       child.kill();
     }
     void this.capabilityPlane.dispose();
+    void disposeGlobalLspManager(this.workspace);
     this.database.close();
   }
 
@@ -2358,62 +3498,14 @@ export class SwarmRuntime {
     });
 
     child.on("message", (message: unknown) => {
-      if (this.disposed) {
-        return;
-      }
-      if (isChildProviderUsageMessage(message)) {
-        this.events.emitEvent({ type: "provider_usage", usage: message.usage });
-        return;
-      }
-      const envelope = message as SwarmEnvelope;
-      if (isChildRuntimeEnvelope(envelope)) {
-        this.router.dispatch(envelope).catch((error: unknown) => {
-          const reason = error instanceof Error ? error.message : String(error);
-          this.events.emitEvent({ type: "error", message: reason });
-          child.send(
-            createEnvelope({
-              swarm_id: envelope.swarm_id,
-              session_id: envelope.session_id,
-              task_id: envelope.task_id,
-              from: { agent_id: "runtime", role: "router" },
-              to: envelope.from,
-              type: "error",
-              intent: "router.dispatch_failed",
-              payload: {
-                error_code: "CAPABILITY_NOT_FOUND",
-                message: reason,
-                retryable: false,
-                failed_task_id: envelope.task_id,
-                recovery_suggestion: "abort_swarm"
-              },
-              correlation_id: envelope.correlation_id ?? envelope.id,
-              reply_to: envelope.id
-            })
-          );
-        });
-        return;
-      }
-
-      if (envelope.type === "task.progress") {
-        this.router.receive(envelope);
-        const payload = isRecord(envelope.payload) ? envelope.payload : {};
-        const message = typeof payload.message === "string"
-          ? payload.message
-          : typeof payload.summary === "string"
-            ? payload.summary
-            : `Progress from ${envelope.from.agent_id ?? envelope.from.role ?? "agent"}`;
-        this.events.emitEvent({
-          type: "loop_activity",
-          session_id: envelope.session_id,
-          phase: "turn_complete",
-          message,
-          task_id: envelope.task_id
-        });
-        return;
-      }
-
-      this.router.receive(envelope);
-      this.forwardToAddressedAgent(envelope);
+      handleRuntimeChildTransportMessage({
+        disposed: this.disposed,
+        message,
+        child,
+        router: this.router,
+        events: this.events,
+        forwardToAddressedAgent: (envelope) => this.forwardToAddressedAgent(envelope)
+      });
     });
     child.on("exit", (code) => {
       if (this.disposed) {
@@ -2472,7 +3564,7 @@ export class SwarmRuntime {
       }
 
       const runningWorkers = this.workerStateStore.listRecent(1000).filter((worker) =>
-        worker.status === "running" &&
+        (worker.status === "running" || worker.status === "pending") &&
         (sessionIds.has(worker.parent_session_id) || (worker.worker_session_id ? sessionIds.has(worker.worker_session_id) : false))
       );
       for (const worker of runningWorkers) {
@@ -2504,10 +3596,92 @@ export class SwarmRuntime {
   }
 }
 
+function addUniqueResolvedPaths(existing: string[], additions: string[] | undefined): string[] {
+  if (!additions?.length) {
+    return existing;
+  }
+  const values = new Set(existing.map((path) => resolve(path)));
+  for (const addition of additions) {
+    const trimmed = addition.trim();
+    if (trimmed) {
+      values.add(resolve(trimmed));
+    }
+  }
+  return [...values].sort();
+}
+
+function hasRunToolPolicy(options: RunOptions): boolean {
+  return Boolean(options.allowedTools?.length || options.disallowedTools?.length);
+}
+
+function hasRunWorkspaceReadPolicy(options: RunOptions): boolean {
+  return Boolean(options.additionalReadDirectories?.length);
+}
+
+function hasRunPromptCustomization(options: RunOptions): boolean {
+  return Boolean(options.systemPrompt !== undefined || options.appendSystemPrompt !== undefined);
+}
+
+function hasRunSkillActivation(options: RunOptions): boolean {
+  return Boolean(options.skills?.length);
+}
+
+function hasRunSandboxPolicy(options: RunOptions): boolean {
+  return options.sandboxMode === "read-only";
+}
+
+function renderActivatedSkillsForPrompt(skills: ActivatedSkill[]): string {
+  return [
+    "Activated skills for this run:",
+    ...skills.map((skill) => [
+      `Skill: ${skill.displayName} (${skill.name})`,
+      skill.description,
+      skill.content
+    ].filter(Boolean).join("\n"))
+  ].join("\n\n");
+}
+
+function evaluateDelegationRoi(request: AgentInvocationRequest): { allow: boolean; reason: string } {
+  const task = `${request.task}\n${request.context ?? ""}`.toLowerCase();
+  const fileScope = request.file_scope ?? [];
+  const explicitParallel = /\b(agent swarm|subagent|sub-agent|subagents|multi-agent|multiple agents|team of agents|use a team|parallel agents|separate experts|independent workstreams|independent roles|reviewer agent|critic agent|architect agent)\b/.test(task);
+  const readOnlyCapability = /(?:research|search|review|verify|audit|analysis|critique|plan|summarize|docs)/.test(request.capability);
+  const readOnlySignals = /\b(research|review|verify|audit|search|summarize|summary|analysis|critique|plan|inspect|compare|trace)\b/.test(task);
+  const writeSignals = /\b(edit|fix|implement|change|refactor|modify|patch|update|remove|add|create|write|bug)\b/.test(task);
+  const smallTask = request.task.trim().split(/\s+/).length < 20;
+
+  if (readOnlyCapability) {
+    return { allow: true, reason: "read-only capability is a good delegation fit." };
+  }
+  if (request.preferred_mode === "handoff") {
+    return { allow: true, reason: "handoff requests are allowed when the caller explicitly wants a focused worker." };
+  }
+  if (explicitParallel) {
+    return { allow: true, reason: "explicit parallel or team-style request justifies worker delegation." };
+  }
+  if (readOnlySignals && !writeSignals) {
+    return { allow: true, reason: "read-only exploration, review, or verification is a good delegation fit." };
+  }
+  if (fileScope.length >= 2) {
+    return { allow: true, reason: "broader isolated file scope gives the worker enough room to justify delegation." };
+  }
+  if (writeSignals && (fileScope.length <= 1) && smallTask) {
+    return { allow: false, reason: "small single-file write tasks should stay in the main coding loop." };
+  }
+  if (request.capability.startsWith("code.") && (fileScope.length <= 1) && smallTask) {
+    return { allow: false, reason: "small code task with narrow scope is cheaper and safer in the main coding loop." };
+  }
+  if (request.task.trim().length < 80) {
+    return { allow: false, reason: "task is too small to justify worker coordination overhead." };
+  }
+  return { allow: true, reason: "task has enough breadth to justify delegation." };
+}
+
 function buildAgentTaskPacket(
   request: AgentInvocationRequest,
   spec: AgentSpec,
-  decision: AgentSpawnDecision
+  decision: AgentSpawnDecision,
+  permissionContext: AgentPermissionContext
 ): AgentTaskPacket {
   return {
     objective: request.task,
@@ -2520,6 +3694,7 @@ function buildAgentTaskPacket(
     file_scope: request.file_scope ?? [],
     allowed_tools: spec.tools,
     write_policy: spec.write_policy,
+    permission_context: permissionContext,
     budget: spec.default_budget,
     expected_output: spec.output_contract,
     return_conditions: [
@@ -2546,6 +3721,7 @@ function renderAgentRuntimeInstructions(
     `Dispatch reason: ${decision.reason}`,
     `Expected output: ${spec.output_contract}`,
     `Write policy: ${spec.write_policy}.`,
+    `Permission mode snapshot: ${taskPacket.permission_context.default_mode}.`,
     taskPacket.file_scope.length
       ? `File scope: ${taskPacket.file_scope.join(", ")}. Stay inside this write scope unless the main Swarm explicitly expands it.`
       : "File scope is not predeclared. Read broadly as needed, but keep writes tightly connected to the delegated objective.",
@@ -2563,8 +3739,34 @@ function renderAgentTaskPrompt(taskPacket: AgentTaskPacket, decision: AgentSpawn
     "Historical memory and prior worker results are hints only. Refresh the current workspace facts before relying on them, especially before editing files or making a code-state claim.",
     "Return concrete evidence, changed files, checks, risks, and unresolved questions according to the output contract.",
     "",
-    JSON.stringify(taskPacket, null, 2)
+    JSON.stringify(promptVisibleAgentTaskPacket(taskPacket), null, 2)
   ].join("\n");
+}
+
+function promptVisibleAgentTaskPacket(taskPacket: AgentTaskPacket): Omit<AgentTaskPacket, "permission_context"> {
+  const { permission_context: _permissionContext, ...visibleTaskPacket } = taskPacket;
+  return visibleTaskPacket;
+}
+
+function snapshotAgentPermissionContext(settings: SwarmSettings): AgentPermissionContext {
+  return {
+    default_mode: settings.permissions.defaultMode,
+    allow: [...settings.permissions.allow],
+    ask: [...settings.permissions.ask],
+    deny: [...settings.permissions.deny],
+    additional_directories: [...settings.permissions.additionalDirectories]
+  };
+}
+
+function settingsForAgentTask(baseSettings: SwarmSettings, taskPacket: AgentTaskPacket): SwarmSettings {
+  const settings = structuredClone(baseSettings) as SwarmSettings;
+  const snapshot = taskPacket.permission_context;
+  settings.permissions.defaultMode = snapshot.default_mode;
+  settings.permissions.allow = [...snapshot.allow];
+  settings.permissions.ask = [...snapshot.ask];
+  settings.permissions.deny = [...snapshot.deny];
+  settings.permissions.additionalDirectories = [...snapshot.additional_directories];
+  return settings;
 }
 
 function normalizeAgentSpawnDecision(
@@ -2706,6 +3908,19 @@ function isAgentInvocationMode(value: string): value is AgentInvocationMode {
   return value === "call_subagent" || value === "handoff" || value === "parallel";
 }
 
+export function postChangeExecutionStatus(input: {
+  review: ReviewResult;
+  verification: { status: "success" | "partial" | "failed"; summary: string; content?: string };
+}): "completed" | "failed" {
+  if (input.review.verdict === "reject") {
+    return "failed";
+  }
+  if (input.verification.status !== "success") {
+    return "failed";
+  }
+  return "completed";
+}
+
 function normalizeReviewJson(parsed: Record<string, unknown>, sessionId: string): ReviewResult {
   const verdict = parsed.verdict === "approve" || parsed.verdict === "reject" || parsed.verdict === "needs_revision"
     ? parsed.verdict
@@ -2735,6 +3950,193 @@ function normalizeReviewJson(parsed: Record<string, unknown>, sessionId: string)
       ? parsed.summary.trim()
       : `Review completed for ${sessionId}.`
   };
+}
+
+async function normalizeVerificationToolResult(tool: ToolResult): Promise<{ status: "success" | "partial" | "failed"; summary: string; content?: string; worker_id?: string }> {
+  const hydratedTool = await hydrateToolResultForReport(tool);
+  const rawText = [hydratedTool.summary, hydratedTool.content, ...(hydratedTool.errors ?? [])].filter(Boolean).join("\n");
+  const baseStatus = hydratedTool.status ?? "success";
+  const status = baseStatus === "failed"
+    ? "failed"
+    : verificationTextSuggestsGap(rawText)
+      ? "partial"
+      : baseStatus;
+  return {
+    status,
+    summary: summarizeToolResultForReport(hydratedTool, status === "failed" ? "Verification failed." : "Verification completed."),
+    content: hydratedTool.content,
+    worker_id: isRecord(hydratedTool.data) && typeof hydratedTool.data.worker_id === "string" ? hydratedTool.data.worker_id : undefined
+  };
+}
+
+function guardReviewResult(review: ReviewResult, tool: ToolResult, sessionId: string): ReviewResult {
+  const rawText = [tool.summary, tool.content, ...(tool.errors ?? [])].filter(Boolean).join("\n");
+  const reportedFinding = reviewTextSuggestsFinding(rawText);
+  const issues = [...(review.issues ?? [])];
+  if (reportedFinding && issues.length === 0) {
+    const evidence = firstMeaningfulToolLine(rawText);
+    issues.push({
+      severity: "medium",
+      message: evidence || "Review reported findings but did not provide structured issues.",
+      evidence: evidence || undefined,
+      suggested_fix: "Inspect the reviewer output and either fix the issue or explicitly justify why it is non-blocking."
+    });
+  }
+  const guardedScore = issues.length > 0 || reportedFinding
+    ? Math.min(review.score, 85)
+    : review.score;
+  const guardedVerdict = (issues.length > 0 || reportedFinding) && review.verdict === "approve"
+    ? "needs_revision"
+    : review.verdict;
+  const guardedSummary = summarizeToolResultForReport(tool, review.summary || `Review completed for ${sessionId}.`);
+  return {
+    ...review,
+    verdict: guardedVerdict,
+    score: guardedScore,
+    issues: issues.length ? issues : review.issues,
+    summary: guardedSummary
+  };
+}
+
+async function hydrateToolResultForReport(tool: ToolResult): Promise<ToolResult> {
+  const ref = toolOutputRefPath(tool);
+  if (!ref) {
+    return tool;
+  }
+  let fullOutput = "";
+  try {
+    fullOutput = await readFile(ref, "utf8");
+  } catch {
+    return tool;
+  }
+  if (!fullOutput.trim()) {
+    return tool;
+  }
+  const reportOutput = truncateReportOutput(fullOutput);
+  const existingContent = tool.content ?? "";
+  const hydratedContent = existingContent.includes(reportOutput)
+    ? existingContent
+    : [
+        existingContent,
+        `Full worker result (${ref}):`,
+        reportOutput
+      ].filter(Boolean).join("\n\n");
+  return {
+    ...tool,
+    content: hydratedContent
+  };
+}
+
+function toolOutputRefPath(tool: ToolResult): string | undefined {
+  if (typeof tool.outputRef === "string" && tool.outputRef.trim()) {
+    return tool.outputRef;
+  }
+  return outputRefPathFromRecord(tool.data)
+    ?? outputRefPathFromRecord(tool.metadata);
+}
+
+function outputRefPathFromRecord(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of ["result_ref", "outputRef", "output_ref"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+    if (isRecord(candidate) && typeof candidate.path === "string" && candidate.path.trim()) {
+      return candidate.path;
+    }
+  }
+  return undefined;
+}
+
+function truncateReportOutput(text: string): string {
+  const maxChars = 80_000;
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const slice = Math.floor((maxChars - 80) / 2);
+  return [
+    text.slice(0, slice),
+    "[... full worker result truncated for report normalization ...]",
+    text.slice(-slice)
+  ].join("\n\n");
+}
+
+function summarizeToolResultForReport(tool: Pick<ToolResult, "summary" | "content" | "errors">, fallback: string): string {
+  const summary = typeof tool.summary === "string" ? tool.summary.trim() : "";
+  if (summary && !isGenericReportHeading(summary)) {
+    return clipFirstLine(summary, 500);
+  }
+  const fromContent = firstMeaningfulToolLine(tool.content ?? "");
+  if (fromContent) {
+    return clipFirstLine(fromContent, 500);
+  }
+  const fromError = firstMeaningfulToolLine((tool.errors ?? []).join("\n"));
+  return clipFirstLine(fromError || summary || fallback, 500);
+}
+
+function firstMeaningfulToolLine(text: string): string {
+  const lines = text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isGenericReportHeading(line))
+    .filter((line) => !/^[-*]\s*$/.test(line));
+  return lines[0] ?? "";
+}
+
+function isGenericReportHeading(text: string): boolean {
+  const trimmed = text.trim();
+  if (/^(full worker result|full output|original output|worker session|changed files|tests run|artifacts)\b\s*[:(]/i.test(trimmed)) {
+    return true;
+  }
+  const withoutCompletionPrefix = trimmed.replace(/^.*?\bcompleted:\s*/i, "");
+  const normalized = withoutCompletionPrefix.replace(/^#+\s*/, "").replace(/:$/, "").toLowerCase();
+  return [
+    "verdict",
+    "findings",
+    "high severity",
+    "medium severity",
+    "low severity",
+    "critical severity",
+    "test gaps",
+    "gaps",
+    "verification results",
+    "review results",
+    "review complete",
+    "verification complete",
+    "results"
+  ].includes(normalized);
+}
+
+function reviewTextSuggestsFinding(text: string): boolean {
+  const lowered = text.toLowerCase();
+  if (!lowered.trim()) {
+    return false;
+  }
+  if (/\b(no findings|no issues|no problems|no further action|nothing to fix|no blocking issues)\b/.test(lowered)
+    && !/\b(minor issue|potential issue|bug|regression|missing|risk|gap|required fix|problem)\b/.test(lowered)) {
+    return false;
+  }
+  return /\b(minor issue|potential issue|bug|bugs detected|edge-case|regression|missing test|test gaps?|verification gap|not covered|risk|required fix|should be fixed|high severity|medium severity|corrupted|silently|misidentifies|accepts trailing|drag-and-drop does not|does not update|unexpected ordering)\b/.test(lowered);
+}
+
+function verificationTextSuggestsGap(text: string): boolean {
+  const lowered = text.toLowerCase();
+  if (!lowered.trim()) {
+    return false;
+  }
+  if (/\b(no findings|no issues|no problems|no bugs detected|no gaps|nothing to fix)\b/.test(lowered)
+    && !/\b(but|however|except|missing|not covered|should be fixed|detected but|gap|risk)\b/.test(lowered)) {
+    return false;
+  }
+  return /\b(edge-case bugs?|bugs? detected|high severity|medium severity|test gaps?|verification gaps?|not covered|should be fixed|missing tests?|failed to verify|unable to verify|verification gap|manual verification required)\b/.test(lowered);
+}
+
+function clipFirstLine(value: string, maxLength: number): string {
+  const line = value.split(/\r?\n/).find((item) => item.trim())?.trim() ?? "";
+  return line.length > maxLength ? `${line.slice(0, Math.max(0, maxLength - 1))}…` : line;
 }
 
 function createLocalPolicy(settings: SwarmSettings): SwarmPolicy {
@@ -2796,6 +4198,10 @@ function sanitizeKey(value: string): string {
   return value.replace(/\\/g, "/").replace(/[^A-Za-z0-9._/-]+/g, "_").replace(/\//g, ".");
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function filterBlackboardSearch(entries: BlackboardEntry[], query: string | undefined): BlackboardEntry[] {
   const needle = query?.trim().toLowerCase();
   if (!needle) {
@@ -2812,6 +4218,35 @@ function filterBlackboardSearch(entries: BlackboardEntry[], query: string | unde
   });
 }
 
+function normalizeLiveControlRequestId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized.slice(0, 200) : undefined;
+}
+
+function isLiveControlDirectiveEntry(entry: BlackboardEntry): boolean {
+  return entry.key.startsWith("user.live_message.") || (entry.tags ?? []).includes("live-message");
+}
+
+function formatLiveControlDirective(entry: BlackboardEntry): string {
+  const value = isRecord(entry.value) ? entry.value : {};
+  const decision = isRecord(value.decision) ? value.decision : {};
+  const messageId = entry.key.startsWith("user.live_message.")
+    ? entry.key.slice("user.live_message.".length)
+    : entry.entry_id;
+  const createdAt = typeof value.created_at === "string" ? value.created_at : entry.created_at;
+  const action = typeof decision.action === "string" ? decision.action : "live_message";
+  const reason = typeof decision.reason === "string" ? firstLine(decision.reason) : "";
+  const instruction = typeof decision.instruction === "string" ? firstLine(decision.instruction) : "";
+  const content = typeof value.content === "string" ? firstLine(value.content) : "";
+  return [
+    `${createdAt} message_id=${messageId}`,
+    `action=${action}`,
+    reason ? `reason=${reason}` : undefined,
+    instruction ? `instruction=${instruction}` : undefined,
+    content ? `content=${content}` : undefined
+  ].filter(Boolean).join(" ");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2826,6 +4261,87 @@ function formatWorkspaceChangeForFreshness(value: unknown): string {
   const path = typeof record.path === "string" ? record.path : "(unknown path)";
   const afterHash = typeof record.afterHash === "string" ? record.afterHash.slice(0, 12) : undefined;
   return afterHash ? `${operation} ${path}@${afterHash}` : `${operation} ${path}`;
+}
+
+export function handleRuntimeChildTransportMessage(input: RuntimeChildTransportMessageInput): RuntimeChildTransportMessageResult {
+  if (input.disposed) {
+    return { handled: false, kind: "disposed" };
+  }
+  if (isChildProviderUsageMessage(input.message)) {
+    input.events.emitEvent({ type: "provider_usage", usage: input.message.usage });
+    return { handled: true, kind: "provider_usage" };
+  }
+
+  const envelope = input.message as SwarmEnvelope;
+  if (isChildRuntimeEnvelope(envelope)) {
+    input.router.dispatch(envelope).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      input.events.emitEvent({ type: "error", message: reason });
+      input.child.send(
+        createEnvelope({
+          swarm_id: envelope.swarm_id,
+          session_id: envelope.session_id,
+          task_id: envelope.task_id,
+          from: { agent_id: "runtime", role: "router" },
+          to: envelope.from,
+          type: "error",
+          intent: "router.dispatch_failed",
+          payload: {
+            error_code: "CAPABILITY_NOT_FOUND",
+            message: reason,
+            retryable: false,
+            failed_task_id: envelope.task_id,
+            recovery_suggestion: "abort_swarm"
+          },
+          correlation_id: envelope.correlation_id ?? envelope.id,
+          reply_to: envelope.id
+        })
+      );
+    });
+    return { handled: true, kind: "runtime_envelope" };
+  }
+
+  if (envelope.type === "task.progress") {
+    input.router.receive(envelope);
+    const payload = isRecord(envelope.payload) ? envelope.payload : {};
+    const action = typeof payload.action === "string" && payload.action.trim() ? payload.action.trim() : undefined;
+    const status = typeof payload.status === "string" && payload.status.trim() ? payload.status.trim() : undefined;
+    const summary = typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : undefined;
+    const message = typeof payload.message === "string"
+      ? payload.message
+      : action
+        ? `Worker tool ${action} ${status ?? "completed"}${summary ? `: ${firstLine(summary)}` : ""}`
+        : typeof payload.summary === "string"
+          ? payload.summary
+          : `Progress from ${envelope.from.agent_id ?? envelope.from.role ?? "agent"}`;
+    input.events.emitEvent({
+      type: "loop_activity",
+      session_id: envelope.session_id,
+      phase: action ? "running_tool" : "turn_complete",
+      message,
+      status,
+      summary,
+      errorCode: typeof payload.errorCode === "string" && payload.errorCode.trim() ? payload.errorCode.trim() : undefined,
+      recoverySuggestion: typeof payload.recoverySuggestion === "string" && payload.recoverySuggestion.trim()
+        ? payload.recoverySuggestion.trim()
+        : undefined,
+      tool: action,
+      task_id: envelope.task_id,
+      agent: {
+        worker_id: envelope.from.agent_id,
+        agent_id: envelope.from.agent_id,
+        role: envelope.from.role,
+        capability: envelope.from.capability,
+        display_name: envelope.from.agent_id,
+        role_title: envelope.from.role
+      }
+    });
+    return { handled: true, kind: "task_progress" };
+  }
+
+  input.router.receive(envelope);
+  input.forwardToAddressedAgent(envelope);
+  return { handled: true, kind: "reply" };
 }
 
 function isChildRuntimeEnvelope(envelope: SwarmEnvelope): boolean {
@@ -2862,4 +4378,95 @@ function parseJsonObject(text: string): Record<string, unknown> {
 
 function firstLine(value: string): string {
   return value.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 240) ?? "";
+}
+
+function positiveLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(200, Math.floor(value)));
+}
+
+function compactWorkerRecord(worker: WorkerRecord): Record<string, unknown> {
+  return {
+    worker_id: worker.worker_id,
+    display_name: worker.display_name,
+    role_title: worker.role_title,
+    parent_session_id: worker.parent_session_id,
+    worker_session_id: worker.worker_session_id,
+    agent_spec_id: worker.agent_spec_id,
+    invocation_mode: worker.invocation_mode,
+    capability: worker.capability,
+    objective: worker.objective,
+    status: worker.status,
+    file_scope: worker.file_scope,
+    handoff_id: worker.handoff_id,
+    blocked_reason: worker.blocked_reason,
+    last_result: worker.last_result ? firstLine(worker.last_result) : undefined,
+    outcome: worker.outcome
+      ? {
+          changed_files: worker.outcome.changed_files,
+          tests_run: worker.outcome.tests_run,
+          intermediate_artifacts: worker.outcome.intermediate_artifacts,
+          final_summary: worker.outcome.final_summary
+        }
+      : undefined,
+    created_at: worker.created_at,
+    updated_at: worker.updated_at
+  };
+}
+
+function renderWorkerList(workers: WorkerRecord[]): string {
+  if (workers.length === 0) {
+    return "No workers found.";
+  }
+  return workers.map((worker) => {
+    const label = workerDisplayLabel(worker);
+    const result = worker.last_result ? ` - ${firstLine(worker.last_result)}` : "";
+    const scope = worker.file_scope.length ? ` scope=${worker.file_scope.slice(0, 4).join(",")}` : "";
+    return `${worker.worker_id} [${worker.status}] ${label}${scope}${result}`;
+  }).join("\n");
+}
+
+function renderWorkerDetailForTool(worker: WorkerRecord): string {
+  return [
+    `${worker.worker_id} [${worker.status}] ${workerDisplayLabel(worker)}`,
+    worker.agent_spec_id ? `Agent spec: ${worker.agent_spec_id}` : undefined,
+    worker.invocation_mode ? `Invocation mode: ${worker.invocation_mode}` : undefined,
+    `Capability: ${worker.capability}`,
+    `Parent session: ${worker.parent_session_id}`,
+    worker.worker_session_id ? `Worker session: ${worker.worker_session_id}` : undefined,
+    worker.handoff_id ? `Handoff: ${worker.handoff_id}` : undefined,
+    worker.file_scope.length ? `File scope: ${worker.file_scope.join(", ")}` : undefined,
+    worker.blocked_reason ? `Blocked: ${worker.blocked_reason}` : undefined,
+    worker.last_result ? `Last result: ${firstLine(worker.last_result)}` : undefined,
+    worker.outcome?.final_summary ? `Outcome: ${worker.outcome.final_summary}` : undefined,
+    `Objective: ${worker.objective}`,
+    `Updated: ${worker.updated_at}`
+  ].filter(Boolean).join("\n");
+}
+
+function slashCommandRunMode(args: Record<string, unknown>): RunOptions["mode"] {
+  const value = args.mode ?? args.runMode ?? args.run_mode;
+  return value === "chat" || value === "coding_loop" || value === "full_swarm" || value === "auto" ? value : "auto";
+}
+
+function slashCommandSandboxMode(args: Record<string, unknown>): RunOptions["sandboxMode"] {
+  const value = args.sandboxMode ?? args.sandbox_mode ?? args.sandbox;
+  return value === "read-only" || value === "workspace-write" ? value : undefined;
+}
+
+function positiveRunIntegerArg(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+function toolStatusFromExecutionStatus(status: ExecutionResult["status"]): ToolResult["status"] {
+  if (status === "failed") {
+    return "failed";
+  }
+  if (status === "stopped") {
+    return "partial";
+  }
+  return "success";
 }

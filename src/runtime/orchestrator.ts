@@ -13,9 +13,15 @@ import type { SessionOutcome } from "./events.js";
 import { EnvelopeRouter } from "./router.js";
 import { PlanGenerator } from "./plan-generator.js";
 import { normalizeToolAction } from "../tools/local-tools.js";
-import { createToolApprovalRequest, toolRequiresApproval } from "../tools/permissions.js";
+import { createToolApprovalRequest, decideToolPermission } from "../tools/permissions.js";
 import type { ToolAction, ToolApprovalRequest } from "../tools/types.js";
 import { TaskScheduler } from "./scheduler.js";
+import type { ResultCard } from "./result-card.js";
+import { sandboxDecisionFromUnknown } from "./sandbox-policy.js";
+import { declaredToolTaskFileScope, declaredToolTaskWritePolicy, sandboxedToolTaskInputs } from "./tool-task-sandbox.js";
+import type { CheckpointSummary } from "./checkpoints.js";
+
+export { sandboxedToolTaskInputs } from "./tool-task-sandbox.js";
 
 export type PlannedSession = {
   session: SwarmSession;
@@ -28,6 +34,7 @@ export type ExecutionResult = {
   artifact_path?: string;
   outcome?: SessionOutcome;
   status?: "completed" | "failed" | "stopped";
+  result_card?: ResultCard;
 };
 
 export type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<boolean>;
@@ -43,12 +50,25 @@ export class Orchestrator {
     private readonly events: RuntimeEvents,
     private readonly settings: SwarmSettings,
     private readonly workspace: string,
-    private readonly approvalHandler?: ToolApprovalHandler
+    private readonly approvalHandler?: ToolApprovalHandler,
+    private readonly checkpoint?: () => CheckpointSummary | undefined
   ) {}
 
   private taskTotal = 0;
   private taskCompleted = 0;
   private taskAttempts = new Map<string, number>();
+  private stopRequests = new Map<string, string>();
+
+  requestStop(sessionId: string, reason: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return false;
+    }
+    const normalized = reason.trim() || "Stop requested. Finish the current safe boundary and return a stopped result.";
+    this.stopRequests.set(sessionId, normalized);
+    this.events.emitEvent({ type: "log", level: "warn", message: `Stop requested for ${sessionId}: ${normalized}` });
+    return true;
+  }
 
   async createPlan(objective: string): Promise<PlannedSession> {
     const session = createSession(objective, this.settings);
@@ -110,6 +130,17 @@ export class Orchestrator {
     this.events.emitEvent({ type: "blackboard", entry });
   }
 
+  private taskContext(session: SwarmSession, task: SwarmTask): { context: BlackboardEntry[]; liveDirectives: BlackboardEntry[] } {
+    const baseContext = task.dependencies?.length
+      ? this.blackboard.listForTasks(session.session_id, task.dependencies)
+      : this.blackboard.list(session.session_id);
+    const liveDirectives = this.blackboard.list(session.session_id).filter(isLiveDirectiveEntry);
+    return {
+      context: mergeBlackboardEntries(baseContext, liveDirectives),
+      liveDirectives
+    };
+  }
+
   async execute(planned: PlannedSession): Promise<ExecutionResult> {
     const { session, plan } = planned;
     this.taskTotal = plan.tasks.length;
@@ -132,6 +163,11 @@ export class Orchestrator {
       const scheduler = new TaskScheduler(session.policy.max_parallel_tasks);
 
       while (pending.size > 0) {
+        const stopReason = this.consumeStopRequest(session.session_id);
+        if (stopReason) {
+          return this.finishStoppedSession(session, plan, pending, stopReason);
+        }
+
         const ready = scheduler.selectReadyTasks(pending, completed);
 
         if (ready.length === 0) {
@@ -145,10 +181,30 @@ export class Orchestrator {
             pending.delete(task.task_id);
           })
         );
+
+        {
+          const stopReason = this.consumeStopRequest(session.session_id);
+          if (stopReason) {
+            return this.finishStoppedSession(session, plan, pending, stopReason);
+          }
+        }
+      }
+
+      {
+        const stopReason = this.consumeStopRequest(session.session_id);
+        if (stopReason) {
+          return this.finishStoppedSession(session, plan, pending, stopReason);
+        }
       }
 
       this.sessions.setStatus(session.session_id, "reviewing");
       const reviewResult = this.applyReviewGuards(await this.review(session), plan, session);
+      {
+        const stopReason = this.consumeStopRequest(session.session_id);
+        if (stopReason) {
+          return this.finishStoppedSession(session, plan, pending, stopReason);
+        }
+      }
 
       if (reviewResult.verdict === "reject") {
         this.events.emitEvent({ type: "log", level: "warn", message: `Review rejected with score ${reviewResult.score}. Re-running tasks with new agents.` });
@@ -161,6 +217,10 @@ export class Orchestrator {
           }
         }
         while (pending.size > 0) {
+          const stopReason = this.consumeStopRequest(session.session_id);
+          if (stopReason) {
+            return this.finishStoppedSession(session, plan, pending, stopReason);
+          }
           const ready = scheduler.selectReadyTasks(pending, completed);
           if (ready.length === 0) break;
           await Promise.all(
@@ -170,8 +230,20 @@ export class Orchestrator {
               pending.delete(task.task_id);
             })
           );
+          {
+            const stopReason = this.consumeStopRequest(session.session_id);
+            if (stopReason) {
+              return this.finishStoppedSession(session, plan, pending, stopReason);
+            }
+          }
         }
         const secondReview = this.applyReviewGuards(await this.review(session), plan, session);
+        {
+          const stopReason = this.consumeStopRequest(session.session_id);
+          if (stopReason) {
+            return this.finishStoppedSession(session, plan, pending, stopReason);
+          }
+        }
         if (secondReview.verdict !== "approve") {
           throw new Error(`Review rejected twice. Final verdict: ${secondReview.summary}`);
         }
@@ -193,6 +265,10 @@ export class Orchestrator {
           }
         }
         while (pending.size > 0) {
+          const stopReason = this.consumeStopRequest(session.session_id);
+          if (stopReason) {
+            return this.finishStoppedSession(session, plan, pending, stopReason);
+          }
           const ready = scheduler.selectReadyTasks(pending, completed);
           if (ready.length === 0) break;
           await Promise.all(
@@ -202,8 +278,20 @@ export class Orchestrator {
               pending.delete(task.task_id);
             })
           );
+          {
+            const stopReason = this.consumeStopRequest(session.session_id);
+            if (stopReason) {
+              return this.finishStoppedSession(session, plan, pending, stopReason);
+            }
+          }
         }
         const followUpReview = this.applyReviewGuards(await this.review(session), plan, session);
+        {
+          const stopReason = this.consumeStopRequest(session.session_id);
+          if (stopReason) {
+            return this.finishStoppedSession(session, plan, pending, stopReason);
+          }
+        }
         if (followUpReview.verdict !== "approve") {
           throw new Error(`Revision was not approved: ${followUpReview.summary}`);
         }
@@ -244,12 +332,14 @@ export class Orchestrator {
         session_id: session.session_id,
         content: finalContent,
         artifact_path: artifactPath,
-        outcome
+        outcome,
+        checkpoint: this.checkpoint?.()
       });
       return { session_id: session.session_id, content: finalContent, artifact_path: artifactPath, outcome };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.sessions.setStatus(session.session_id, "failed");
+      this.stopRequests.delete(session.session_id);
       this.router.receive(createEnvelope({
         swarm_id: session.swarm_id,
         session_id: session.session_id,
@@ -264,16 +354,87 @@ export class Orchestrator {
     }
   }
 
+  private async finishStoppedSession(
+    session: SwarmSession,
+    plan: GeneratedPlan,
+    pending: Map<string, SwarmTask>,
+    reason: string
+  ): Promise<ExecutionResult> {
+    this.stopRequests.delete(session.session_id);
+    for (const task of pending.values()) {
+      const taskEventMeta = taskRuntimeMetadata(
+        session.session_id,
+        routeableTaskCapability(task),
+        sandboxedToolTaskInputs(task.inputs, routeableTaskCapability(task))
+      );
+      this.persistTaskState(session, task, "cancelled", this.taskAttempts.get(`${session.session_id}:${task.task_id}`) ?? 0, reason, taskEventMeta);
+      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "cancelled", ...taskEventMeta });
+    }
+    this.sessions.setStatus(session.session_id, "cancelled");
+    const preAggregateOutcome = this.collectSessionOutcome(session.session_id, "");
+    let summary = "";
+    try {
+      summary = await this.aggregate(
+        session,
+        `${plan.objective}\n\nThe run was interrupted before completion. Summarize the completed work, note unfinished tasks, and explain that execution stopped at a safe boundary.`,
+        {
+          ...preAggregateOutcome,
+          final_summary: reason
+        }
+      );
+    } catch {
+      summary = "Swarm stopped before it could produce a final aggregate summary.";
+    }
+    const finalContent = [`Stopped: ${reason}`, summary].filter(Boolean).join("\n\n");
+    const outcome = this.collectSessionOutcome(session.session_id, finalContent);
+    const artifactPath = await this.writeFinalArtifactIfRequested(session, plan, finalContent, outcome);
+    this.sessions.setFinalOutput(session.session_id, finalContent, "cancelled");
+    this.router.receive(createEnvelope({
+      swarm_id: session.swarm_id,
+      session_id: session.session_id,
+      from: { agent_id: "orchestrator", role: "coordinator" },
+      to: { agent_id: "runtime", role: "runtime" },
+      type: "swarm.shutdown",
+      intent: "swarm.cancelled",
+      payload: { status: "cancelled", reason }
+    }));
+    this.events.emitEvent({
+      type: "final",
+      session_id: session.session_id,
+      content: finalContent,
+      artifact_path: artifactPath,
+      outcome,
+      status: "stopped",
+      checkpoint: this.checkpoint?.()
+    });
+    return {
+      session_id: session.session_id,
+      content: finalContent,
+      artifact_path: artifactPath,
+      outcome,
+      status: "stopped"
+    };
+  }
+
+  private consumeStopRequest(sessionId: string): string | undefined {
+    const reason = this.stopRequests.get(sessionId);
+    if (!reason) {
+      return undefined;
+    }
+    this.stopRequests.delete(sessionId);
+    return reason;
+  }
+
   private async runTask(session: SwarmSession, task: SwarmTask, attempt = 0): Promise<void> {
     const capability = routeableTaskCapability(task);
+    const toolInputs = sandboxedToolTaskInputs(task.inputs, capability);
+    const taskEventMeta = taskRuntimeMetadata(session.session_id, capability, toolInputs);
     const runAttempt = this.nextTaskAttempt(session, task);
-    this.persistTaskState(session, task, "assigned", runAttempt);
-    this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "assigned" });
-    await this.ensureToolApproval(task.inputs, capability, session, task.task_id);
+    this.persistTaskState(session, task, "assigned", runAttempt, undefined, taskEventMeta);
+    this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "assigned", ...taskEventMeta });
+    await this.ensureToolApproval(toolInputs, capability, session, task.task_id);
 
-    const context = task.dependencies?.length
-      ? this.blackboard.listForTasks(session.session_id, task.dependencies)
-      : this.blackboard.list(session.session_id);
+    const { context, liveDirectives } = this.taskContext(session, task);
 
     const envelope = createEnvelope({
       swarm_id: session.swarm_id,
@@ -286,8 +447,9 @@ export class Orchestrator {
       intent: capability,
       payload: {
         task,
-        inputs: task.inputs,
+        inputs: toolInputs,
         context,
+        live_directives: liveDirectives,
         attempt: runAttempt
       },
       trace: {
@@ -295,7 +457,7 @@ export class Orchestrator {
         span_id: `task_${task.task_id}_${runAttempt}`
       }
     });
-    this.persistTaskState(session, task, "running", runAttempt);
+    this.persistTaskState(session, task, "running", runAttempt, undefined, taskEventMeta);
     this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "started" });
 
     // Listen for task.accept / task.start to emit running status
@@ -309,7 +471,7 @@ export class Orchestrator {
         !runningEmitted
       ) {
         runningEmitted = true;
-        this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "running" });
+        this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "running", ...taskEventMeta });
       }
     });
 
@@ -337,8 +499,8 @@ export class Orchestrator {
         tags: [task.type, capability, `attempt:${runAttempt}`]
       });
       this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "completed" });
-      this.persistTaskState(session, task, "completed", runAttempt);
-      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "completed" });
+      this.persistTaskState(session, task, "completed", runAttempt, undefined, taskEventMeta);
+      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "completed", ...taskEventMeta });
       this.events.emitEvent({ type: "blackboard", entry });
       if (task.type === "tool_call") {
         this.events.emitEvent({
@@ -352,7 +514,9 @@ export class Orchestrator {
           status: payload.toolStatus,
           outputRef: payload.outputRef,
           attempt: runAttempt,
-          errorCode: payload.errorCode
+          errorCode: payload.errorCode,
+          recoverySuggestion: payload.toolRecoverySuggestion,
+          sandbox: sandboxDecisionFromUnknown(payload.sandbox)
         });
       }
       this.taskCompleted += 1;
@@ -373,7 +537,9 @@ export class Orchestrator {
         status: payload.toolStatus,
         outputRef: payload.outputRef,
         attempt: runAttempt,
-        errorCode: payload.errorCode
+        errorCode: payload.errorCode,
+        recoverySuggestion: payload.toolRecoverySuggestion,
+        sandbox: sandboxDecisionFromUnknown(payload.sandbox)
       });
     }
 
@@ -391,7 +557,7 @@ export class Orchestrator {
 
     if (recovery === "retry_same_agent" && errorPayload.retryable !== false && attempt < session.policy.retry.max_attempts) {
       this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
-      this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
+      this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message, taskEventMeta);
       this.events.emitEvent({ type: "log", level: "warn", message: `Retrying task ${task.task_id} (attempt ${attempt + 1})` });
       return this.runTask(session, task, attempt + 1);
     }
@@ -400,7 +566,7 @@ export class Orchestrator {
       const alternates = task.required_capabilities.map((item) => item.trim()).filter((item) => item && item !== capability);
       if (alternates.length > 0 && attempt < session.policy.retry.max_attempts) {
         this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
-        this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
+        this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message, taskEventMeta);
         this.events.emitEvent({ type: "log", level: "warn", message: `Retrying task ${task.task_id} with alternate capability ${alternates[0]}` });
         task.required_capabilities = [alternates[0], ...alternates.slice(1)];
         return this.runTask(session, task, attempt + 1);
@@ -409,8 +575,8 @@ export class Orchestrator {
 
     if (recovery === "ask_human") {
       this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
-      this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
-      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed" });
+      this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message, taskEventMeta);
+      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed", ...taskEventMeta });
       this.taskCompleted += 1;
       this.events.emitEvent({ type: "progress", completed: this.taskCompleted, total: this.taskTotal });
       this.events.emitEvent({ type: "log", level: "error", message: `Task ${task.task_id} requires human intervention: ${errorPayload.message ?? "no details"}` });
@@ -419,8 +585,8 @@ export class Orchestrator {
 
     if (recovery === "abort_swarm") {
       this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
-      this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
-      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed" });
+      this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message, taskEventMeta);
+      this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed", ...taskEventMeta });
       this.taskCompleted += 1;
       this.events.emitEvent({ type: "progress", completed: this.taskCompleted, total: this.taskTotal });
       this.sessions.setStatus(session.session_id, "cancelled");
@@ -428,8 +594,8 @@ export class Orchestrator {
     }
 
     this.events.emitEvent({ type: "task_attempt", session_id: session.session_id, task_id: task.task_id, title: task.title, attempt: runAttempt, status: "failed" });
-    this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message);
-    this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed" });
+    this.persistTaskState(session, task, "failed", runAttempt, errorPayload.message, taskEventMeta);
+    this.events.emitEvent({ type: "task", task_id: task.task_id, title: task.title, status: "failed", ...taskEventMeta });
     this.taskCompleted += 1;
     this.events.emitEvent({ type: "progress", completed: this.taskCompleted, total: this.taskTotal });
     throw new Error(`Task failed: ${task.task_id}${errorPayload.message ? `: ${errorPayload.message}` : ""}`);
@@ -447,7 +613,12 @@ export class Orchestrator {
     task: SwarmTask,
     status: SwarmTask["status"],
     attempt: number,
-    lastError?: string
+    lastError?: string,
+    metadata?: {
+      capability?: string;
+      write_policy?: "read_only" | "scoped_write" | "workspace_write";
+      file_scope?: string[];
+    }
   ): void {
     this.taskStates.upsert({
       session_id: session.session_id,
@@ -455,6 +626,9 @@ export class Orchestrator {
       task,
       status,
       attempt,
+      capability: metadata?.capability,
+      write_policy: metadata?.write_policy,
+      file_scope: metadata?.file_scope,
       last_error: lastError
     });
   }
@@ -588,12 +762,16 @@ export class Orchestrator {
     if (!artifactPath) {
       return undefined;
     }
-    await this.ensureToolApproval(
+    const toolInputs = sandboxedToolTaskInputs(
       {
         action: "file.write",
         path: artifactPath,
         content
       },
+      "tool.file.write"
+    );
+    await this.ensureToolApproval(
+      toolInputs,
       "tool.file.write",
       session,
       "task_write_final_artifact"
@@ -608,11 +786,7 @@ export class Orchestrator {
       type: "task.assign",
       intent: "tool.file.write",
       payload: {
-        inputs: {
-          action: "write_file",
-          path: artifactPath,
-          content
-        }
+        inputs: toolInputs
       }
     });
 
@@ -669,11 +843,15 @@ export class Orchestrator {
     }
 
     const settings = loadSwarmSettings(this.workspace);
-    if (!toolRequiresApproval(action, settings, { workspace: this.workspace })) {
+    const permissionDecision = decideToolPermission(action, settings, { workspace: this.workspace });
+    if (permissionDecision.decision === "deny") {
+      throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${capability}`);
+    }
+    if (permissionDecision.decision !== "ask") {
       return;
     }
 
-    const request = createToolApprovalRequest(action);
+    const request = createToolApprovalRequest(action, permissionDecision);
     request.session_id = session?.session_id;
     request.task_id = taskId;
     if (action.type === "file.write" || action.type === "file.edit") {
@@ -713,6 +891,22 @@ export class Orchestrator {
     }
     return normalizeToolAction(inputs, capability);
   }
+}
+
+function taskRuntimeMetadata(sessionId: string, capability: string, inputs: Record<string, unknown>): {
+  session_id: string;
+  capability: string;
+  write_policy?: "read_only" | "scoped_write" | "workspace_write";
+  file_scope?: string[];
+} {
+  const writePolicy = declaredToolTaskWritePolicy(inputs);
+  const fileScope = declaredToolTaskFileScope(inputs);
+  return {
+    session_id: sessionId,
+    capability,
+    ...(writePolicy ? { write_policy: writePolicy } : {}),
+    ...(fileScope?.length ? { file_scope: fileScope } : {})
+  };
 }
 
 function routeableTaskCapability(task: SwarmTask): string {
@@ -934,6 +1128,23 @@ function collectPathsFromValue(value: unknown, changedFiles: Set<string>, interm
 function isSwarmInternalPath(path: string): boolean {
   const normalized = path.replace(/\\/g, "/").toLowerCase();
   return normalized.includes("/.swarm/") || normalized.startsWith(".swarm/") || normalized.includes("/.swarm-");
+}
+
+function isLiveDirectiveEntry(entry: BlackboardEntry): boolean {
+  return entry.key.startsWith("user.live_message.") || (entry.tags ?? []).includes("live-message");
+}
+
+function mergeBlackboardEntries(primary: BlackboardEntry[], additional: BlackboardEntry[]): BlackboardEntry[] {
+  const seen = new Set<string>();
+  const merged: BlackboardEntry[] = [];
+  for (const entry of [...primary, ...additional]) {
+    if (seen.has(entry.entry_id)) {
+      continue;
+    }
+    seen.add(entry.entry_id);
+    merged.push(entry);
+  }
+  return merged;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

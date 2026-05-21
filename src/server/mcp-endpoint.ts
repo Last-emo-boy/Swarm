@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { SwarmRuntime } from "../runtime/runtime.js";
+import type { ActiveLiveControlResult, SwarmRuntime } from "../runtime/runtime.js";
 import type { RunMode } from "../runtime/execution-router.js";
+import { buildSessionSnapshot, buildWorkspaceSnapshot } from "./session-view.js";
 
 type JsonRpcRequest = {
   jsonrpc?: string;
@@ -15,8 +16,9 @@ type McpEndpointOptions = {
   response: ServerResponse;
   body: unknown;
   startRun: (objective: string, mode: RunMode) => Promise<{ run_id: string; session_id?: string; status: string }>;
-  interrupt: (sessionId: string | undefined, content: string) => void;
-  approvalDecision: (approvalId: string, approved: boolean) => boolean;
+  interrupt: (sessionId: string | undefined, content: string, requestId?: string) => ActiveLiveControlResult;
+  approvalDecision: (approvalId: string, approved: boolean) => { approval_id: string; status: "approved" | "denied"; session_id?: string };
+  listApprovals: (sessionId?: string, limit?: number) => Record<string, unknown>;
 };
 
 const SWARM_MCP_TOOLS = [
@@ -35,7 +37,8 @@ const SWARM_MCP_TOOLS = [
     description: "Send a live message to the active Swarm session.",
     inputSchema: objectSchema({
       content: { type: "string", description: "Message content." },
-      session_id: { type: "string", description: "Optional target session id." }
+      session_id: { type: "string", description: "Optional target session id." },
+      request_id: { type: "string", description: "Optional idempotency key for retrying the same message." }
     })
   },
   {
@@ -44,8 +47,19 @@ const SWARM_MCP_TOOLS = [
     description: "Interrupt the active Swarm run and ask it to reassess.",
     inputSchema: objectSchema({
       content: { type: "string", description: "Interrupt message." },
-      session_id: { type: "string", description: "Optional target session id." }
+      session_id: { type: "string", description: "Optional target session id." },
+      request_id: { type: "string", description: "Optional idempotency key for retrying the same interrupt." }
     })
+  },
+  {
+    name: "swarm.approvals",
+    title: "Approval Status",
+    description: "Inspect recent approvals and live actionable approval requests.",
+    inputSchema: objectSchema({
+      session_id: { type: "string", description: "Optional session id filter." },
+      limit: { type: "number", description: "Recent approval limit." }
+    }),
+    annotations: { readOnlyHint: true }
   },
   {
     name: "swarm.approval_decision",
@@ -137,7 +151,7 @@ async function handleMcpRequest(options: McpEndpointOptions, rawRequest: unknown
       return jsonRpcResult(id, { resources: listSwarmResources(options.runtime) });
     }
     if (request.method === "resources/read") {
-      return jsonRpcResult(id, readSwarmResource(options.runtime, request.params));
+      return jsonRpcResult(id, readSwarmResource(options.runtime, request.params, options.listApprovals));
     }
     if (request.method === "prompts/list") {
       return jsonRpcResult(id, { prompts: listSwarmPrompts() });
@@ -166,30 +180,38 @@ async function callSwarmTool(options: McpEndpointOptions, params: unknown): Prom
   }
   if (name === "swarm.send_message") {
     const content = stringArg(args, "content");
-    await options.runtime.sendUserMessage(content);
-    return textToolResult("Message queued.", { status: "queued", session_id: optionalString(args.session_id) });
+    const target = await options.runtime.sendUserMessage(content, {
+      sessionId: optionalString(args.session_id),
+      requestId: optionalString(args.request_id ?? args.requestId)
+    });
+    return textToolResult(`Message applied to ${target.session_id} (${target.route})${target.control?.action ? `: ${target.control.action}` : ""}.`, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
   }
   if (name === "swarm.interrupt") {
     const content = optionalString(args.content) ?? "Interrupted through Swarm MCP endpoint.";
-    options.interrupt(optionalString(args.session_id), content);
-    return textToolResult("Interrupt queued.", { status: "interrupt_queued" });
+    const target = options.interrupt(optionalString(args.session_id), content, optionalString(args.request_id ?? args.requestId));
+    return textToolResult(`Interrupt applied to ${target.session_id} (${target.route})${target.control?.action ? `: ${target.control.action}` : ""}.`, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+  }
+  if (name === "swarm.approvals") {
+    const sessionId = optionalString(args.session_id);
+    const limit = positiveInteger(args.limit, 20);
+    const data = options.listApprovals(sessionId, limit);
+    return textToolResult(JSON.stringify(data, null, 2), data);
   }
   if (name === "swarm.approval_decision") {
     const approvalId = stringArg(args, "approval_id");
     const approved = args.approved === true;
-    const found = options.approvalDecision(approvalId, approved);
-    return textToolResult(found ? "Approval decision applied." : "Approval was not pending.", { approval_id: approvalId, approved, found });
+    const result = options.approvalDecision(approvalId, approved);
+    return textToolResult(`Approval ${result.status}: ${result.approval_id}`, result);
   }
   if (name === "swarm.session_status") {
     const sessionId = optionalString(args.session_id);
     const limit = positiveInteger(args.limit, 10);
     const data = sessionId
-      ? sessionSnapshot(options.runtime, sessionId)
-      : {
-          sessions: options.runtime.sessionStore.listRecent(limit),
-          workers: options.runtime.workerStateStore.listRecent(limit),
-          mcp_servers: options.runtime.listMcpServers()
-        };
+      ? sessionSnapshot(options.runtime, sessionId, options.listApprovals(sessionId, limit))
+      : buildWorkspaceSnapshot(options.runtime, {
+          limit,
+          approvals: options.listApprovals(undefined, limit)
+        });
     return textToolResult(JSON.stringify(data, null, 2), data);
   }
   throw new Error(`Unknown Swarm MCP tool: ${name}`);
@@ -221,14 +243,24 @@ function listSwarmResources(runtime: SwarmRuntime): unknown[] {
       name: `audit ${session.session_id}`,
       description: "Persisted audit records.",
       mimeType: "application/json"
+    },
+    {
+      uri: `swarm://sessions/${session.session_id}/approvals`,
+      name: `approvals ${session.session_id}`,
+      description: "Persisted approval records.",
+      mimeType: "application/json"
     }
   ]);
 }
 
-function readSwarmResource(runtime: SwarmRuntime, params: unknown): Record<string, unknown> {
+function readSwarmResource(
+  runtime: SwarmRuntime,
+  params: unknown,
+  listApprovals: (sessionId?: string, limit?: number) => Record<string, unknown>
+): Record<string, unknown> {
   const input = isRecord(params) ? params : {};
   const uri = stringArg(input, "uri");
-  const parsed = /^swarm:\/\/sessions\/([^/]+)(?:\/(events|trace|audit))?$/.exec(uri);
+  const parsed = /^swarm:\/\/sessions\/([^/]+)(?:\/(events|trace|audit|approvals))?$/.exec(uri);
   if (!parsed) {
     throw new Error(`Unsupported Swarm resource URI: ${uri}`);
   }
@@ -241,8 +273,10 @@ function readSwarmResource(runtime: SwarmRuntime, params: unknown): Record<strin
     value = runtime.traceStore.list(sessionId);
   } else if (section === "audit") {
     value = runtime.auditStore.list(sessionId, 200);
+  } else if (section === "approvals") {
+    value = approvalRecords(listApprovals(sessionId, 200));
   } else {
-    value = sessionSnapshot(runtime, sessionId);
+    value = sessionSnapshot(runtime, sessionId, listApprovals(sessionId, 80));
   }
   return {
     contents: [
@@ -312,23 +346,19 @@ function textToolResult(text: string, data?: unknown): Record<string, unknown> {
   };
 }
 
-function sessionSnapshot(runtime: SwarmRuntime, sessionId: string): Record<string, unknown> {
-  const row = runtime.sessionStore.get(sessionId);
-  if (!row) {
-    throw new Error(`Unknown session: ${sessionId}`);
-  }
-  return {
-    ...row,
-    participants: parseJson(row.participants_json),
-    policy: parseJson(row.policy_json),
-    plan: row.plan_json ? parseJson(row.plan_json) : undefined,
-    graph: runtime.getTaskGraph(sessionId),
-    usage_summary: runtime.usageStore.summarize(sessionId)
-  };
+function sessionSnapshot(runtime: SwarmRuntime, sessionId: string, approvals?: Record<string, unknown>): Record<string, unknown> {
+  return approvals
+    ? { ...buildSessionSnapshot(runtime, sessionId), approvals }
+    : buildSessionSnapshot(runtime, sessionId);
 }
 
 function objectSchema(properties: Record<string, unknown>): Record<string, unknown> {
   return { type: "object", properties };
+}
+
+function approvalRecords(view: Record<string, unknown>): unknown[] {
+  const approvals = view.approvals;
+  return Array.isArray(approvals) ? approvals : [];
 }
 
 function jsonRpcResult(id: string | number | null, result: unknown): Record<string, unknown> {
@@ -371,10 +401,6 @@ function optionalString(value: unknown): string | undefined {
 function positiveInteger(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
-function parseJson(text: string): unknown {
-  return JSON.parse(text);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

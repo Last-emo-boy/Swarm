@@ -1,6 +1,7 @@
 import type { GeneratedPlan } from "../protocol/types.js";
 import { OpenAIProvider } from "../providers/openai-provider.js";
 import { renderHostEnvironmentPrompt } from "./host-context.js";
+import { sandboxedToolTaskInputs } from "./tool-task-sandbox.js";
 
 const PLAN_GENERATOR_MAX_OUTPUT_TOKENS = 6_000;
 const PLAN_REPAIR_MAX_OUTPUT_TOKENS = 2_000;
@@ -14,6 +15,7 @@ export class PlanGenerator {
       system: [{ text: plannerSystemPrompt(this.workspace), cache: true }],
       user: JSON.stringify({ objective, output_contract: plannerOutputContract() }, null, 2),
       usage: { purpose: "plan_generator" },
+      responseFormat: "json_object",
       maxOutputTokens: PLAN_GENERATOR_MAX_OUTPUT_TOKENS
     });
 
@@ -36,6 +38,7 @@ export class PlanGenerator {
         2
       ),
       usage: { purpose: "plan_generator_repair" },
+      responseFormat: "json_object",
       maxOutputTokens: PLAN_REPAIR_MAX_OUTPUT_TOKENS
     });
     const repairedResult = parseAndNormalizePlan(repaired, objective);
@@ -343,7 +346,7 @@ function normalizePlan(plan: GeneratedPlan, objective: string): GeneratedPlan {
     tasks: plan.tasks.map((task, index) => {
       const capability = normalizeCapability(firstNonEmptyCapability(task.required_capabilities) ?? inferCapability(task), task);
       const inputs = task.inputs && typeof task.inputs === "object" ? task.inputs : {};
-      const normalizedInputs = normalizeInputsForCapability(inputs, capability);
+      const normalizedInputs = sandboxedToolTaskInputs(normalizeInputsForCapability(inputs, capability), capability);
       validateGeneratedToolInputs(capability, normalizedInputs);
       const type = normalizeTaskType(task.type, capability);
       return {

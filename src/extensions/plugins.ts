@@ -417,6 +417,24 @@ export function loadPluginAgentSpecs(settings: SwarmSettings, workspace: string)
       .map((contribution) => pluginAgentSpec(plugin, contribution)));
 }
 
+export function renderPluginSlashCommandObjective(
+  plugin: PluginRecord,
+  contribution: PluginContributionRecord,
+  rawArgs = ""
+): string {
+  const prompt = typeof contribution.metadata.prompt === "string" && contribution.metadata.prompt.trim()
+    ? contribution.metadata.prompt.trim()
+    : contribution.description;
+  const args = rawArgs.trim();
+  return [
+    prompt,
+    "",
+    `Plugin slash command: /${contribution.id}`,
+    `Plugin: ${plugin.id}`,
+    args ? `Arguments: ${args}` : "Arguments: (none)"
+  ].join("\n");
+}
+
 function normalizePluginMcpServer(item: Record<string, unknown>): McpServerSettings | undefined {
   const transport = item.transport === "http" ? "http" : "stdio";
   const command = typeof item.command === "string" && item.command.trim() ? item.command.trim() : undefined;

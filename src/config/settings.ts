@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const MODEL_MAX_OUTPUT_TOKENS_DEFAULT = 32_000;
 export const MODEL_MAX_OUTPUT_TOKENS_UPPER_LIMIT = 128_000;
@@ -16,10 +16,20 @@ export type ExtensionSettings = {
     roots: string[];
     maxSkills: number;
   };
+  commands: {
+    enabled: boolean;
+    loadProjectCommands: "never" | "trustedWorkspaces" | "always";
+    roots: string[];
+    maxCommands: number;
+  };
   mcp: {
     enabled: boolean;
     exposeGatewayServer: boolean;
     servers: Record<string, McpServerSettings>;
+    runtimeConfig?: {
+      strict?: boolean;
+      paths?: string[];
+    };
   };
   plugins: {
     enabled: boolean;
@@ -138,10 +148,12 @@ export type SwarmConfig = {
 };
 
 export type ProviderReadiness = {
+  role?: "planner" | "worker" | "aggregator";
   providerId: string;
   modelRef: string;
   configured: boolean;
   reason?: string;
+  knownModels?: string[];
 };
 
 export type SwarmPaths = {
@@ -247,6 +259,12 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
         roots: [],
         maxSkills: 100
       },
+      commands: {
+        enabled: true,
+        loadProjectCommands: "trustedWorkspaces",
+        roots: [],
+        maxCommands: 100
+      },
       mcp: {
         enabled: false,
         exposeGatewayServer: false,
@@ -288,15 +306,11 @@ export function ensureSwarmHome(): { paths: SwarmPaths; settings: SwarmSettings;
   if (!existsSync(paths.settingsPath)) {
     writeJson(paths.settingsPath, defaultSwarmSettings(paths));
     created.push(paths.settingsPath);
-  } else {
-    writeJson(paths.settingsPath, loadUserSwarmSettings(paths));
   }
 
   if (!existsSync(paths.configPath)) {
     writeJson(paths.configPath, defaultSwarmConfig());
     created.push(paths.configPath);
-  } else {
-    saveSwarmConfig(loadSwarmConfig());
   }
 
   const readmePath = join(paths.home, "README.md");
@@ -320,6 +334,9 @@ export function ensureSwarmHome(): { paths: SwarmPaths; settings: SwarmSettings;
     );
     created.push(readmePath);
   }
+
+  cleanupStaleAtomicWriteTemps(paths.settingsPath);
+  cleanupStaleAtomicWriteTemps(paths.configPath);
 
   return { paths, settings: loadSwarmSettings(), created };
 }
@@ -497,7 +514,7 @@ export function setModelSelection(input: {
   const settings = loadSwarmSettings();
   const inferredProvider = input.planner?.includes("/") ? input.planner.split("/")[0] : undefined;
   const defaultProvider = input.defaultProvider ?? inferredProvider ?? settings.models.defaultProvider;
-  saveSwarmSettings({
+  const nextSettings = normalizeSwarmSettings(expandSettings({
     ...settings,
     models: {
       ...settings.models,
@@ -506,7 +523,9 @@ export function setModelSelection(input: {
       worker: input.worker ? normalizeModelRef(input.worker, defaultProvider) : settings.models.worker,
       aggregator: input.aggregator ? normalizeModelRef(input.aggregator, defaultProvider) : settings.models.aggregator
     }
-  });
+  }));
+  assertSupportedModelSelection(nextSettings);
+  saveSwarmSettings(nextSettings);
 }
 
 export function setPermissionMode(mode: PermissionMode): void {
@@ -518,6 +537,46 @@ export function setPermissionMode(mode: PermissionMode): void {
       defaultMode: mode
     }
   });
+}
+
+export function addPermissionAdditionalDirectory(path: string): string {
+  const settings = loadSwarmSettings();
+  const directory = resolveExistingDirectory(path, "Additional read directory");
+  const directories = new Set(settings.permissions.additionalDirectories.map((item) => resolvePathLike(item)));
+  directories.add(directory);
+  saveSwarmSettings({
+    ...settings,
+    permissions: {
+      ...settings.permissions,
+      additionalDirectories: [...directories].sort()
+    }
+  });
+  return directory;
+}
+
+export function removePermissionAdditionalDirectory(path: string): boolean {
+  const settings = loadSwarmSettings();
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new Error("Additional read directory path is required.");
+  }
+  const target = resolvePathLike(trimmed);
+  let removed = false;
+  const additionalDirectories = settings.permissions.additionalDirectories.filter((item) => {
+    const keep = resolvePathLike(item) !== target;
+    if (!keep) {
+      removed = true;
+    }
+    return keep;
+  });
+  saveSwarmSettings({
+    ...settings,
+    permissions: {
+      ...settings.permissions,
+      additionalDirectories
+    }
+  });
+  return removed;
 }
 
 export function setPluginEnabled(pluginId: string, enabled: boolean): void {
@@ -644,6 +703,27 @@ export function getProviderModels(provider: ProviderDefinition): string[] {
   return [...new Set([...Object.keys(provider.models), ...Object.keys(provider.discoveredModels ?? {})])].sort();
 }
 
+export function providerKnowsModel(provider: ProviderDefinition, model: string): boolean {
+  const knownModels = getProviderModels(provider);
+  return knownModels.length === 0 || knownModels.includes(model);
+}
+
+export function formatUnknownModelReason(provider: ProviderDefinition, model: string): string {
+  const knownModels = getProviderModels(provider);
+  const preview = knownModels.slice(0, 8).join(", ");
+  const more = knownModels.length > 8 ? `, ... (${knownModels.length} total)` : "";
+  const refreshHint = provider.modelListProtocol && provider.modelListProtocol !== "none"
+    ? ` Run "swarm providers refresh ${provider.id}" if the provider has newer models.`
+    : "";
+  return `Unknown model "${model}" for provider "${provider.id}". Known models: ${preview}${more}.${refreshHint}`;
+}
+
+export function formatModelReadinessProblems(readiness: ProviderReadiness[]): string[] {
+  return readiness
+    .filter((item) => !item.configured)
+    .map((item) => `${item.role ?? item.modelRef}: ${item.reason ?? "Not configured"}`);
+}
+
 export function getProviderApiKey(provider: ProviderDefinition, config = loadSwarmConfig()): string {
   return config.providerApiKeys[provider.id] || process.env[provider.apiKeyEnv] || "";
 }
@@ -681,11 +761,23 @@ export function getModelReadiness(
     };
   }
 
+  const knownModels = getProviderModels(resolved.provider);
+  if (!providerKnowsModel(resolved.provider, resolved.model)) {
+    return {
+      providerId: resolved.providerId,
+      modelRef,
+      configured: false,
+      reason: formatUnknownModelReason(resolved.provider, resolved.model),
+      knownModels
+    };
+  }
+
   if (!resolved.provider.apiKeyRequired) {
     return {
       providerId: resolved.providerId,
       modelRef,
-      configured: true
+      configured: true,
+      knownModels
     };
   }
 
@@ -694,7 +786,8 @@ export function getModelReadiness(
     providerId: resolved.providerId,
     modelRef,
     configured: Boolean(apiKey),
-    reason: apiKey ? undefined : `Missing API key for provider "${resolved.providerId}"`
+    reason: apiKey ? undefined : `Missing API key for provider "${resolved.providerId}"`,
+    knownModels
   };
 }
 
@@ -711,13 +804,17 @@ export function getSelectedModelReadiness(
   return entries.map(([role, modelRef]) => {
     if (!modelRef.trim()) {
       return {
+        role,
         providerId: "",
         modelRef: role,
         configured: false,
         reason: `${role[0].toUpperCase()}${role.slice(1)} model not set`
       };
     }
-    return getModelReadiness(modelRef, settings, config);
+    return {
+      ...getModelReadiness(modelRef, settings, config),
+      role
+    };
   });
 }
 
@@ -768,9 +865,94 @@ function readJsonIfExists(path: string): unknown {
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  renameSync(tempPath, path);
+  const nextText = `${JSON.stringify(value, null, 2)}\n`;
+  if (readTextIfExists(path) === nextText) {
+    cleanupStaleAtomicWriteTemps(path);
+    return;
+  }
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  writeFileSync(tempPath, nextText, "utf8");
+  try {
+    replaceFileWithRetry(tempPath, path, nextText);
+    cleanupStaleAtomicWriteTemps(path);
+  } catch (error) {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // Best effort cleanup for failed atomic writes.
+    }
+    throw error;
+  }
+}
+
+function replaceFileWithRetry(tempPath: string, path: string, nextText: string): void {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      renameSync(tempPath, path);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (readTextIfExists(path) === nextText) {
+        try {
+          unlinkSync(tempPath);
+        } catch {
+          // Best effort cleanup for a losing concurrent writer.
+        }
+        return;
+      }
+      if (!isRetryableAtomicWriteError(error) || attempt === 5) {
+        break;
+      }
+      sleepSync(15 * (attempt + 1));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+const STALE_ATOMIC_TEMP_FILE_AGE_MS = 5 * 60_000;
+
+function cleanupStaleAtomicWriteTemps(path: string): void {
+  const parentDir = dirname(path);
+  if (!existsSync(parentDir)) {
+    return;
+  }
+  const prefix = `${basename(path)}.`;
+  const now = Date.now();
+  for (const entry of readdirSync(parentDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix) || !entry.name.endsWith(".tmp")) {
+      continue;
+    }
+    const fullPath = resolve(parentDir, entry.name);
+    try {
+      const ageMs = now - statSync(fullPath).mtimeMs;
+      if (ageMs < STALE_ATOMIC_TEMP_FILE_AGE_MS) {
+        continue;
+      }
+      unlinkSync(fullPath);
+    } catch {
+      // Best effort cleanup for stale temp files that might still be busy.
+    }
+  }
+}
+
+function readTextIfExists(path: string): string | undefined {
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  return readFileSync(path, "utf8");
+}
+
+function isRetryableAtomicWriteError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  const code = String((error as { code?: unknown }).code ?? "");
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function deepMerge(...values: unknown[]): unknown {
@@ -794,6 +976,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function expandSettings(settings: SwarmSettings): SwarmSettings {
   const extensionSettings = settings.extensions ?? defaultSwarmSettings().extensions;
   const skillRoots = Array.isArray(extensionSettings.skills?.roots) ? extensionSettings.skills.roots : [];
+  const commandRoots = Array.isArray(extensionSettings.commands?.roots) ? extensionSettings.commands.roots : [];
   const pluginRoots = Array.isArray(extensionSettings.plugins?.roots) ? extensionSettings.plugins.roots : [];
   const mcpServers = isObject(extensionSettings.mcp?.servers) ? extensionSettings.mcp.servers : {};
   return {
@@ -811,6 +994,10 @@ function expandSettings(settings: SwarmSettings): SwarmSettings {
       skills: {
         ...extensionSettings.skills,
         roots: skillRoots.map((root) => expandPath(String(root)))
+      },
+      commands: {
+        ...extensionSettings.commands,
+        roots: commandRoots.map((root) => expandPath(String(root)))
       },
       plugins: {
         ...extensionSettings.plugins,
@@ -859,6 +1046,7 @@ function normalizeSwarmSettings(settings: SwarmSettings): SwarmSettings {
 
 function normalizeExtensionSettings(extensions: SwarmSettings["extensions"]): SwarmSettings["extensions"] {
   const loadProjectSkills = extensions.skills?.loadProjectSkills;
+  const loadProjectCommands = extensions.commands?.loadProjectCommands;
   const loadProjectPlugins = extensions.plugins?.loadProjectPlugins;
   return {
     capabilities: {
@@ -870,6 +1058,12 @@ function normalizeExtensionSettings(extensions: SwarmSettings["extensions"]): Sw
       loadProjectSkills: loadProjectSkills === "never" || loadProjectSkills === "always" ? loadProjectSkills : "trustedWorkspaces",
       roots: Array.isArray(extensions.skills?.roots) ? extensions.skills.roots.filter((root): root is string => typeof root === "string" && root.trim().length > 0) : [],
       maxSkills: positiveInteger(extensions.skills?.maxSkills, 100)
+    },
+    commands: {
+      enabled: extensions.commands?.enabled !== false,
+      loadProjectCommands: loadProjectCommands === "never" || loadProjectCommands === "always" ? loadProjectCommands : "trustedWorkspaces",
+      roots: Array.isArray(extensions.commands?.roots) ? extensions.commands.roots.filter((root): root is string => typeof root === "string" && root.trim().length > 0) : [],
+      maxCommands: positiveInteger(extensions.commands?.maxCommands, 100)
     },
     mcp: {
       enabled: extensions.mcp?.enabled === true,
@@ -955,6 +1149,37 @@ function normalizePermissions(permissions: SwarmSettings["permissions"]): SwarmS
   };
 }
 
+function assertSupportedModelSelection(settings: SwarmSettings): void {
+  const defaultProvider = settings.models.defaultProvider.trim();
+  if (defaultProvider && !settings.providers[defaultProvider]) {
+    throw new Error(`Unknown provider: ${defaultProvider}`);
+  }
+  const selections = [
+    ["planner", settings.models.planner],
+    ["worker", settings.models.worker],
+    ["aggregator", settings.models.aggregator]
+  ] as const;
+  for (const [role, modelRef] of selections) {
+    const trimmed = modelRef.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const resolved = resolveModelRef(trimmed, settings);
+    if (!resolved.providerId) {
+      throw new Error(`${role} model "${trimmed}" has no provider and no default provider is selected.`);
+    }
+    if (!resolved.model) {
+      throw new Error(`${role} model "${trimmed}" is missing a model name.`);
+    }
+    if (!resolved.provider) {
+      throw new Error(`${role} model "${trimmed}" references unknown provider "${resolved.providerId}".`);
+    }
+    if (!providerKnowsModel(resolved.provider, resolved.model)) {
+      throw new Error(`${role} model "${resolved.providerId}/${resolved.model}" is invalid. ${formatUnknownModelReason(resolved.provider, resolved.model)}`);
+    }
+  }
+}
+
 function normalizeModelRef(model: string, defaultProvider: string): string {
   const trimmed = model?.trim() ?? "";
   if (!trimmed || trimmed.includes("/") || !defaultProvider.trim()) {
@@ -993,6 +1218,23 @@ function expandPath(path: string): string {
     return resolve(homedir(), expanded.slice(2));
   }
   return resolve(expanded);
+}
+
+function resolvePathLike(path: string): string {
+  return resolve(expandPath(path));
+}
+
+function resolveExistingDirectory(path: string, label: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new Error(`${label} path is required.`);
+  }
+  const resolved = resolvePathLike(trimmed);
+  const info = statSync(resolved);
+  if (!info.isDirectory()) {
+    throw new Error(`${label} must be an existing directory: ${path}`);
+  }
+  return resolved;
 }
 
 function expandEnv(value: string): string {

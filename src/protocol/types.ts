@@ -278,6 +278,9 @@ export type TaskStateSnapshot = {
   required_capabilities: string[];
   dependencies: string[];
   assigned_to?: AgentAddress;
+  capability?: string;
+  write_policy?: "read_only" | "scoped_write" | "workspace_write";
+  file_scope?: string[];
   last_error?: string;
   updated_at: string;
 };
@@ -358,12 +361,89 @@ export type AgentResultPayload = {
   retryable?: boolean;
   recoverable?: boolean;
   recoverySuggestion?: "retry_same_agent" | "retry_different_agent" | "decompose_again" | "ask_human" | "abort_swarm";
+  toolRecoverySuggestion?: string;
+  sandbox?: unknown;
   data?: unknown;
   artifacts?: {
     path: string;
     type: string;
     summary?: string;
   }[];
+};
+
+export type WorkContractWorker = {
+  worker_id: string;
+  display_name: string;
+  role_title?: string;
+  status: "pending" | "running" | "completed" | "failed" | "stopped";
+  capability: string;
+  objective: string;
+  agent_spec_id?: string;
+  invocation_mode?: string;
+  handoff_id?: string;
+  write_policy?: "read_only" | "scoped_write" | "workspace_write";
+  file_scope: string[];
+  requested_by?: string;
+  blocked_reason?: string;
+  updated_at: string;
+};
+
+export type WorkContractHandoff = {
+  handoff_id: string;
+  worker_id: string;
+  source_agent: string;
+  target_agent_spec_id: string;
+  reason: string;
+  status: "active" | "returned" | "taken_back" | "failed";
+  write_policy: "read_only" | "scoped_write" | "workspace_write";
+  file_scope: string[];
+  updated_at: string;
+};
+
+export type WorkContractSummary = {
+  active_workers: number;
+  running_workers: number;
+  pending_workers: number;
+  resumable_workers: number;
+  active_handoffs: number;
+  read_only: number;
+  scoped_write: number;
+  workspace_write: number;
+  scoped_targets: string[];
+};
+
+export type TaskContractRecord = {
+  task_id: string;
+  parent_task_id?: string;
+  title: string;
+  status: SwarmTask["status"];
+  attempt: number;
+  capability?: string;
+  write_policy?: "read_only" | "scoped_write" | "workspace_write";
+  file_scope: string[];
+  dependencies: string[];
+  last_error?: string;
+  updated_at: string;
+};
+
+export type TaskContractSummary = {
+  total: number;
+  pending: number;
+  running: number;
+  blocked: number;
+  completed: number;
+  failed: number;
+  read_only: number;
+  scoped_write: number;
+  workspace_write: number;
+  scoped_targets: string[];
+};
+
+export type WorkContractSnapshot = {
+  summary: WorkContractSummary;
+  active_workers: WorkContractWorker[];
+  resumable_workers: WorkContractWorker[];
+  active_handoffs: WorkContractHandoff[];
 };
 
 export type WorkSnapshot = {
@@ -391,6 +471,11 @@ export type WorkSnapshot = {
   review?: ReviewResult;
   verification?: unknown;
   usage_summary: Record<string, number>;
+  task_contracts: {
+    summary: TaskContractSummary;
+    tasks: TaskContractRecord[];
+  };
+  work_contracts: WorkContractSnapshot;
   context_summary?: {
     entries: number;
     compactions: number;

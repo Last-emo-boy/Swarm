@@ -107,6 +107,13 @@ export class HandoffStore {
       .all(limit) as HandoffRow[];
     return rows.map(fromRow);
   }
+
+  listByParent(parentSessionId: string): HandoffSessionRecord[] {
+    const rows = this.database.db
+      .prepare("SELECT * FROM handoff_sessions WHERE parent_session_id = ? ORDER BY updated_at DESC")
+      .all(parentSessionId) as HandoffRow[];
+    return rows.map(fromRow);
+  }
 }
 
 function fromRow(row: HandoffRow): HandoffSessionRecord {

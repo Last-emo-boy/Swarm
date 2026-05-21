@@ -1,20 +1,39 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { extname, isAbsolute, relative, resolve } from "node:path";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
-import { createToolApprovalRequest, toolRequiresApproval } from "../tools/permissions.js";
+import { LOCAL_TOOL_SCHEMAS, localToolSchemaForModel, validateLocalToolActionInputs } from "../tools/tool-contracts.js";
+import { createToolApprovalRequest, decideToolPermission } from "../tools/permissions.js";
 import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
 import { OpenAIProvider, type PromptBlock } from "../providers/openai-provider.js";
 import type { SwarmSettings } from "../config/settings.js";
-import { RuntimeEvents, type SessionOutcome } from "./events.js";
+import { RuntimeEvents, type RuntimeAgentIdentity, type SessionOutcome } from "./events.js";
+import type { CheckpointSummary } from "./checkpoints.js";
 import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
 import { WorkerStateStore } from "../storage/worker-state-store.js";
-import { listAgentSpecs, type AgentInvocationRequest, type AgentSpecSource } from "./agent-specs.js";
+import { listAgentSpecs, type AgentInvocationRequest, type AgentSpec, type AgentSpecSource } from "./agent-specs.js";
 import { delegatedToolStatus, workerStatusFromExecutionStatus } from "./execution-status.js";
 import { SKILL_ACTIVATE_CAPABILITY_ID, SKILL_ACTIVATE_TOOL_NAME } from "../extensions/skills.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 import { renderHostEnvironmentPrompt } from "./host-context.js";
 import { applyToolResultBudget, createContentReplacementState, type ContentReplacementState } from "./tool-result-budget.js";
+import type { WorkspaceIndex } from "./workspace-index.js";
+import { workspaceIndexSummary } from "./workspace-index.js";
+import {
+  assertCapabilityAllowedBySandbox,
+  assertToolActionAllowedBySandbox,
+  formatSandboxFailureDetail,
+  sandboxDecisionFromError,
+  sandboxDecisionFromUnknown,
+  sandboxFailureSummary,
+  sandboxRecoverySuggestion,
+  isReadOnlySandboxAction,
+  type SandboxDecision,
+  type SandboxWritePolicy
+} from "./sandbox-policy.js";
+import { taskContractForToolAction } from "./tool-task-sandbox.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -43,7 +62,40 @@ type CodingLoopToolResult = {
   errors?: string[];
   errorCode?: string;
   recoverySuggestion?: string;
+  sandbox?: SandboxDecision;
 };
+
+type DeferredToolCatalogSummary = {
+  deferred_mcp_tools: number;
+  searchable_skills: number;
+  providers: Array<{ provider_id: string; count: number }>;
+  hint: string;
+};
+
+type ToolSearchMatch = {
+  action: string;
+  capabilityId: string;
+  kind: string;
+  name: string;
+  title?: string;
+  description: string;
+  providerId: string;
+  permissionName: string;
+  searchHint?: string;
+  readOnly?: boolean;
+  concurrencyClass?: ToolConcurrencyClass;
+  loadNextTurn: boolean;
+  activationName?: string;
+  score?: number;
+};
+
+export type ToolConcurrencyClass =
+  | "read_parallel"
+  | "delegate_parallel"
+  | "write_exclusive"
+  | "verify_exclusive"
+  | "background_process"
+  | "network_limited";
 
 export type CodingLoopFinalStatusInput = {
   stopRequested: boolean;
@@ -62,6 +114,11 @@ export type ToolFailureRecoveryStateInput = {
 export type CodingLoopFinalStatus = {
   status: ExecutionResult["status"];
   summary: string;
+};
+
+export type CodingLoopOutcomeSignals = {
+  changed_files: string[];
+  intermediate_artifacts: string[];
 };
 
 type LoopActivityPhase = Extract<Parameters<RuntimeEvents["emitEvent"]>[0], { type: "loop_activity" }>["phase"];
@@ -93,7 +150,7 @@ type LiveUserMessage = {
   createdAt: string;
 };
 
-type ControlDecision = {
+export type ControlDecision = {
   message_id: string;
   action: "continue_current" | "inject_next_turn" | "interrupt_and_redirect" | "ask_clarification";
   reason: string;
@@ -105,6 +162,7 @@ type CodingLoopOptions = {
   settings: SwarmSettings;
   provider: OpenAIProvider;
   events: RuntimeEvents;
+  checkpoint?: CheckpointSummary;
   approvalHandler?: ToolApprovalHandler;
   role?: "main" | "worker";
   parentSessionId?: string;
@@ -119,7 +177,9 @@ type CodingLoopOptions = {
   workerStore?: WorkerStateStore;
   toolReplacementStore?: ToolContentReplacementStore;
   initialContentReplacementState?: ContentReplacementState;
+  workspaceIndex?: WorkspaceIndex;
   invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
+  agentControl?: LocalToolContext["agentControl"];
   listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
   invokeCapability?: (
     capabilityId: string,
@@ -130,12 +190,19 @@ type CodingLoopOptions = {
       title?: string;
       allowDelegate?: boolean;
       source?: "coding_loop" | "gateway" | "runtime";
+      writePolicy?: SandboxWritePolicy;
+      fileScope?: string[];
     }
   ) => Promise<ToolResult>;
   durableContext?: (sessionId: string) => string | Promise<string>;
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
   agentInstructions?: string;
   allowedTools?: string[];
-  writePolicy?: "read_only" | "scoped_write" | "workspace_write";
+  disallowedTools?: string[];
+  writePolicy?: SandboxWritePolicy;
+  fileScope?: string[];
+  expectedSideEffects?: string;
   onWorkspaceChange?: (change: WorkspaceChangeMetadata) => void;
   onFileLock?: (event: FileLockEvent) => void;
   onSessionStart?: (sessionId: string, objective: string) => void;
@@ -155,14 +222,28 @@ const MODEL_OUTPUT_TOKENS_WORKER_LOOP = 6_000;
 const MODEL_OUTPUT_TOKENS_CONTROL = 1_200;
 const MODEL_OUTPUT_TOKENS_REPAIR = 1_500;
 const ACTIVITY_PREVIEW_LENGTH = 80;
+const TOOL_SEARCH_TOOL_NAME = "ToolSearch";
 const DEFAULT_TOOL_NAMES = [
   "Read",
   "Glob",
   "Grep",
+  "lsp.diagnostics",
+  "lsp.hover",
+  "lsp.definition",
+  "lsp.references",
+  "lsp.document_symbols",
+  "lsp.workspace_symbols",
+  "lsp.completion",
+  "lsp.code_actions",
+  "lsp.rename_preview",
+  "lsp.format",
   "Write",
   "Edit",
+  "file.delete",
   "NotebookEdit",
   "Bash",
+  "code.test",
+  "code.lint",
   "ProcessStart",
   "ProcessStatus",
   "ProcessList",
@@ -175,12 +256,17 @@ const DEFAULT_TOOL_NAMES = [
   "BlackboardWrite",
   "BlackboardSearch",
   "BlackboardRead",
-  "BlackboardList"
+  "BlackboardList",
+  "AgentList",
+  "AgentStatus",
+  "AgentStop",
+  "AgentContinue"
 ] as const;
 
 export class CodingAgentLoop {
   private readonly liveMessages: LiveUserMessage[] = [];
   private readonly controlDecisions: ControlDecision[] = [];
+  private readonly discoveredDynamicToolNames = new Set<string>();
   private nextLiveSeq = 1;
   private sessionId = "";
   private currentPhase = "idle";
@@ -191,9 +277,26 @@ export class CodingAgentLoop {
 
   constructor(private readonly options: CodingLoopOptions) {}
 
-  async submitUserMessage(content: string): Promise<ControlDecision> {
+  private activityAgentIdentity(): RuntimeAgentIdentity | undefined {
+    if (!this.options.workerId) {
+      return undefined;
+    }
+    const worker = this.options.workerStore?.get(this.options.workerId);
+    return {
+      worker_id: this.options.workerId,
+      agent_id: worker?.agent_spec_id ?? worker?.capability ?? this.options.workerId,
+      role: this.options.role ?? "worker",
+      capability: worker?.capability,
+      display_name: worker?.display_name,
+      role_title: worker?.role_title,
+      agent_spec_id: worker?.agent_spec_id,
+      invocation_mode: worker?.invocation_mode
+    };
+  }
+
+  async submitUserMessage(content: string, options: { requestId?: string } = {}): Promise<ControlDecision> {
     const message: LiveUserMessage = {
-      id: `live_${randomUUID()}`,
+      id: options.requestId ?? `live_${randomUUID()}`,
       seq: this.nextLiveSeq,
       content,
       createdAt: new Date().toISOString()
@@ -217,9 +320,9 @@ export class CodingAgentLoop {
     return decision;
   }
 
-  requestInterrupt(instruction: string): void {
+  requestInterrupt(instruction: string, options: { requestId?: string } = {}): ControlDecision {
     const message: LiveUserMessage = {
-      id: `live_${randomUUID()}`,
+      id: options.requestId ?? `live_${randomUUID()}`,
       seq: this.nextLiveSeq,
       content: instruction,
       createdAt: new Date().toISOString()
@@ -236,6 +339,7 @@ export class CodingAgentLoop {
     this.interruptRequested = true;
     this.options.events.emitEvent({ type: "live_message", id: message.id, session_id: this.sessionId || undefined, content: instruction, status: "applied" });
     this.options.events.emitEvent({ type: "control", ...decision });
+    return decision;
   }
 
   requestStop(reason: string): void {
@@ -298,7 +402,7 @@ export class CodingAgentLoop {
       }
       this.currentPhase = `turn_${turn}:thinking`;
       const turnTaskId = `${role === "worker" ? sessionId : "coding"}_turn_${turn}`;
-      this.emitActivity(sessionId, "thinking", `${role === "worker" ? "Worker" : "Swarm"} thinking turn ${turn}/${maxTurns}`, { turn, taskId: turnTaskId });
+      this.emitActivity(sessionId, "thinking", `${role === "worker" ? "Worker" : "Swarm"} is thinking`, { turn, maxTurns, taskId: turnTaskId });
       this.options.events.emitEvent({
         type: "task_attempt",
         session_id: sessionId,
@@ -307,12 +411,21 @@ export class CodingAgentLoop {
         attempt: turn,
         status: "started"
       });
+      let modelCapabilities: CapabilityDescriptor[] = [];
       try {
         const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
-        const modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
+        modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
         const durableContext = await this.options.durableContext?.(sessionId) ?? "";
-        const availableTools = allowedToolNames(this.options.allowedTools, delegateAvailable, modelCapabilities);
-        const dynamicToolSchemas = dynamicCapabilityToolSchemas(modelCapabilities);
+        const availableTools = allowedToolNames(
+          this.options.allowedTools,
+          this.options.disallowedTools,
+          delegateAvailable,
+          modelCapabilities,
+          this.discoveredDynamicToolNames,
+          this.options.writePolicy
+        );
+        const dynamicToolSchemas = dynamicCapabilityToolSchemas(modelCapabilities, this.discoveredDynamicToolNames);
+        const deferredToolCatalog = renderDeferredToolCatalog(modelCapabilities, this.discoveredDynamicToolNames);
         const budgetedToolResults = await applyToolResultBudget(compactToolResultHistory(toolResults), {
           sessionId,
           taskIdPrefix: turnTaskId,
@@ -326,10 +439,13 @@ export class CodingAgentLoop {
           role,
           workspace: this.options.workspace,
           delegateAvailable,
+          systemPrompt: this.options.systemPrompt,
+          appendSystemPrompt: this.options.appendSystemPrompt,
           agentInstructions: this.options.agentInstructions,
-          durableContext,
-          allowedTools: availableTools,
-          writePolicy: this.options.writePolicy
+          availableTools,
+          writePolicy: this.options.writePolicy,
+          expectedSideEffects: this.options.expectedSideEffects,
+          additionalReadDirectories: this.options.settings.permissions.additionalDirectories
         });
         const userPrompt = codingLoopUserPrompt({
           objective,
@@ -337,8 +453,11 @@ export class CodingAgentLoop {
           parentSessionId: this.options.parentSessionId,
           availableTools,
           dynamicToolSchemas,
+          deferredToolCatalog,
           settings: this.options.settings,
           workspace: this.options.workspace,
+          durableContext,
+          workspaceIndex: this.options.workspaceIndex,
           delegateAvailable,
           toolResults: budgetedToolResults,
           liveMessages: this.liveMessages,
@@ -366,6 +485,7 @@ export class CodingAgentLoop {
             taskId: turnTaskId,
             purpose: `${role}_coding_loop`
           },
+          responseFormat: "json_object",
           maxOutputTokens: role === "worker" ? MODEL_OUTPUT_TOKENS_WORKER_LOOP : MODEL_OUTPUT_TOKENS_MAIN_LOOP
         });
         lastResult = await parseCodingLoopModelResultWithRepair(modelText, objective, this.options.provider);
@@ -381,8 +501,159 @@ export class CodingAgentLoop {
         throw error;
       }
       this.lastResultSummary = lastResult.summary;
-      for (const file of lastResult.files_touched) {
-        changedFiles.add(file);
+      const workspaceCompletionGap = workspaceCompletionGapResult(lastResult, changedFiles, {
+        expectedSideEffects: this.options.expectedSideEffects,
+        writePolicy: this.options.writePolicy
+      });
+      if (workspaceCompletionGap) {
+        toolResults.push(workspaceCompletionGap);
+        this.options.events.emitEvent({
+          type: "tool_result",
+          session_id: sessionId,
+          task_id: workspaceCompletionGap.id,
+          title: "Verify workspace completion claim",
+          action: workspaceCompletionGap.action,
+          summary: workspaceCompletionGap.summary,
+          content: workspaceCompletionGap.content,
+          status: workspaceCompletionGap.status,
+          errorCode: workspaceCompletionGap.errorCode,
+          recoverySuggestion: workspaceCompletionGap.recoverySuggestion,
+          attempt: turn,
+          agent: this.activityAgentIdentity()
+        });
+        if (turn < maxTurns) {
+          lastResult = {
+            status: "continue",
+            summary: workspaceCompletionGap.summary,
+            message: workspaceCompletionGap.content ?? workspaceCompletionGap.summary,
+            tool_calls: [],
+            files_touched: [],
+            next_actions: ["Use file.write or file.edit to make the requested workspace change, then report only verified changes."]
+          };
+          this.emitActivity(sessionId, "turn_complete", `Needs workspace evidence: ${workspaceCompletionGap.summary}`, { turn, maxTurns, taskId: turnTaskId });
+          this.options.events.emitEvent({
+            type: "task_attempt",
+            session_id: sessionId,
+            task_id: turnTaskId,
+            title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
+            attempt: turn,
+            status: "completed"
+          });
+          if (this.options.emitProgress !== false) {
+            this.options.events.emitEvent({ type: "progress", completed: turn, total: maxTurns });
+          }
+          continue;
+        }
+        lastResult = {
+          status: "failed",
+          summary: workspaceCompletionGap.summary,
+          message: workspaceCompletionGap.content ?? workspaceCompletionGap.summary,
+          tool_calls: [],
+          files_touched: [],
+          next_actions: ["Retry with enough turns to perform the requested write through file.write or file.edit."]
+        };
+      }
+
+      const verificationCompletionGap = verificationCompletionGapResult(objective, lastResult, testsRun, toolResults);
+      if (verificationCompletionGap) {
+        toolResults.push(verificationCompletionGap);
+        this.options.events.emitEvent({
+          type: "tool_result",
+          session_id: sessionId,
+          task_id: verificationCompletionGap.id,
+          title: "Verify completion evidence",
+          action: verificationCompletionGap.action,
+          summary: verificationCompletionGap.summary,
+          content: verificationCompletionGap.content,
+          status: verificationCompletionGap.status,
+          errorCode: verificationCompletionGap.errorCode,
+          recoverySuggestion: verificationCompletionGap.recoverySuggestion,
+          attempt: turn,
+          agent: this.activityAgentIdentity()
+        });
+        if (turn < maxTurns) {
+          lastResult = {
+            status: "continue",
+            summary: verificationCompletionGap.summary,
+            message: verificationCompletionGap.content ?? verificationCompletionGap.summary,
+            tool_calls: [],
+            files_touched: [...changedFiles],
+            next_actions: [verificationCompletionGap.recoverySuggestion ?? "Run the required verification command or report a concrete blocker."]
+          };
+          this.emitActivity(sessionId, "turn_complete", `Needs verification evidence: ${verificationCompletionGap.summary}`, { turn, maxTurns, taskId: turnTaskId });
+          this.options.events.emitEvent({
+            type: "task_attempt",
+            session_id: sessionId,
+            task_id: turnTaskId,
+            title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
+            attempt: turn,
+            status: "completed"
+          });
+          if (this.options.emitProgress !== false) {
+            this.options.events.emitEvent({ type: "progress", completed: turn, total: maxTurns });
+          }
+          continue;
+        }
+        lastResult = {
+          status: "failed",
+          summary: verificationCompletionGap.summary,
+          message: verificationCompletionGap.content ?? verificationCompletionGap.summary,
+          tool_calls: [],
+          files_touched: [...changedFiles],
+          next_actions: [verificationCompletionGap.recoverySuggestion ?? "Retry with enough turns to run verification."]
+        };
+      }
+
+      const workspaceTransactionConflict = lastResult.status === "completed"
+        ? await workspaceTransactionConflictResult(this.options.workspace, changedFiles)
+        : undefined;
+      if (workspaceTransactionConflict) {
+        toolResults.push(workspaceTransactionConflict);
+        this.options.events.emitEvent({
+          type: "tool_result",
+          session_id: sessionId,
+          task_id: workspaceTransactionConflict.id,
+          title: "Inspect workspace transaction",
+          action: workspaceTransactionConflict.action,
+          summary: workspaceTransactionConflict.summary,
+          content: workspaceTransactionConflict.content,
+          status: workspaceTransactionConflict.status,
+          errorCode: workspaceTransactionConflict.errorCode,
+          recoverySuggestion: workspaceTransactionConflict.recoverySuggestion,
+          attempt: turn,
+          agent: this.activityAgentIdentity()
+        });
+        if (turn < maxTurns) {
+          lastResult = {
+            status: "continue",
+            summary: workspaceTransactionConflict.summary,
+            message: workspaceTransactionConflict.content ?? workspaceTransactionConflict.summary,
+            tool_calls: [],
+            files_touched: [...changedFiles],
+            next_actions: [workspaceTransactionConflict.recoverySuggestion ?? "Repair the detected workspace conflict before returning completed."]
+          };
+          this.emitActivity(sessionId, "turn_complete", `Needs transaction repair: ${workspaceTransactionConflict.summary}`, { turn, maxTurns, taskId: turnTaskId });
+          this.options.events.emitEvent({
+            type: "task_attempt",
+            session_id: sessionId,
+            task_id: turnTaskId,
+            title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
+            attempt: turn,
+            status: "completed"
+          });
+          if (this.options.emitProgress !== false) {
+            this.options.events.emitEvent({ type: "progress", completed: turn, total: maxTurns });
+          }
+          continue;
+        }
+        lastResult = {
+          status: "failed",
+          summary: workspaceTransactionConflict.summary,
+          message: workspaceTransactionConflict.content ?? workspaceTransactionConflict.summary,
+          tool_calls: [],
+          files_touched: [...changedFiles],
+          next_actions: [workspaceTransactionConflict.recoverySuggestion ?? "Repair the detected workspace conflict and retry."]
+        };
       }
 
       if (lastResult.status !== "continue" || lastResult.tool_calls.length === 0 || toolCallCount >= maxToolCalls) {
@@ -396,7 +667,7 @@ export class CodingAgentLoop {
             next_actions: ["Increase maxToolCalls or continue with a narrower objective."]
           };
         }
-        this.emitActivity(sessionId, "turn_complete", `Turn ${turn}/${maxTurns} complete: ${firstLine(lastResult.summary) || "no tools requested"}`, { turn, taskId: turnTaskId });
+        this.emitActivity(sessionId, "turn_complete", `Step complete: ${firstLine(lastResult.summary) || "no tools requested"}`, { turn, maxTurns, taskId: turnTaskId });
         this.options.events.emitEvent({
           type: "task_attempt",
           session_id: sessionId,
@@ -411,7 +682,12 @@ export class CodingAgentLoop {
         break;
       }
 
-      const batches = partitionToolCalls(lastResult.tool_calls);
+      const turnDiscoveredToolNames = new Set<string>();
+      const batches = partitionToolCalls(lastResult.tool_calls, {
+        agentSpecs: listAgentSpecs({ settings: this.options.settings, workspace: this.options.workspace }),
+        maxParallel: this.options.settings.runtime.maxParallelTasks
+      });
+      let stopToolExecutionForFeedback = false;
       for (const batch of batches) {
         if (toolCallCount >= maxToolCalls) {
           lastResult = {
@@ -444,7 +720,7 @@ export class CodingAgentLoop {
           const calls = batch.calls.slice(0, maxToolCalls - toolCallCount);
           this.emitActivity(sessionId, "running_tools", `Running ${calls.length} read-only tools: ${summarizeToolBatch(calls)}`, { turn, taskId: turnTaskId });
           const executed = await Promise.all(
-            calls.map((call) => this.executeToolCall(call, sessionId, turn))
+            calls.map((call) => this.executeToolCall(call, sessionId, turn, modelCapabilities, turnDiscoveredToolNames))
           );
           toolCallCount += executed.length;
           for (const item of executed) {
@@ -475,16 +751,27 @@ export class CodingAgentLoop {
               };
               break;
             }
-            const item = await this.executeToolCall(call, sessionId, turn);
+            const item = await this.executeToolCall(call, sessionId, turn, modelCapabilities, turnDiscoveredToolNames);
             toolCallCount += 1;
             toolResults.push(item.result);
             collectOutcome(item.result, changedFiles, testsRun, intermediateArtifacts);
+            if (item.result.status === "failed") {
+              stopToolExecutionForFeedback = true;
+              break;
+            }
           }
+        }
+        if (stopToolExecutionForFeedback) {
+          break;
         }
         if (this.interruptRequested) {
           this.interruptRequested = false;
           break;
         }
+      }
+
+      for (const toolName of turnDiscoveredToolNames) {
+        this.discoveredDynamicToolNames.add(toolName);
       }
 
       if (lastResult.status === "continue" && toolCallCount >= maxToolCalls) {
@@ -505,7 +792,7 @@ export class CodingAgentLoop {
         attempt: turn,
         status: lastResult.status === "failed" ? "failed" : "completed"
       });
-      this.emitActivity(sessionId, "turn_complete", `Turn ${turn}/${maxTurns} complete: ${firstLine(lastResult.summary) || "tools finished"}`, { turn, taskId: turnTaskId });
+      this.emitActivity(sessionId, "turn_complete", `Step complete: ${firstLine(lastResult.summary) || "tools finished"}`, { turn, maxTurns, taskId: turnTaskId });
       if (this.options.emitProgress !== false) {
         this.options.events.emitEvent({ type: "progress", completed: turn, total: maxTurns });
       }
@@ -530,7 +817,7 @@ export class CodingAgentLoop {
       final_summary: finalStatus.summary
     };
     if (this.options.emitFinal !== false) {
-      this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome, status: finalStatus.status });
+      this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome, status: finalStatus.status, checkpoint: this.options.checkpoint });
     }
     this.emitActivity(
       sessionId,
@@ -582,6 +869,7 @@ export class CodingAgentLoop {
         taskId: `control_${message.id}`,
         purpose: "coding_loop_control"
       },
+      responseFormat: "json_object",
       maxOutputTokens: MODEL_OUTPUT_TOKENS_CONTROL
     });
     const parsed = parseJsonObject(content);
@@ -599,17 +887,47 @@ export class CodingAgentLoop {
     };
   }
 
-  private async executeToolCall(call: CodingLoopToolCall, sessionId: string, turn?: number): Promise<{ result: CodingLoopToolResult }> {
+  private async executeToolCall(
+    call: CodingLoopToolCall,
+    sessionId: string,
+    turn: number | undefined,
+    modelCapabilities: CapabilityDescriptor[],
+    turnDiscoveredToolNames: Set<string>
+  ): Promise<{ result: CodingLoopToolResult }> {
     const id = call.id ?? `tool_${randomUUID()}`;
+    let actionName = typeof call.action === "string"
+      ? call.action
+      : typeof call.inputs?.action === "string"
+        ? call.inputs.action
+        : "unknown";
+    let taskContract: ReturnType<typeof taskContractForToolAction> | undefined;
     try {
-      const capabilityResult = await this.tryExecuteDynamicCapability(call, id, sessionId, turn);
+      assertRawToolAllowedByPolicy(call.action ?? call.inputs?.action, this.options.allowedTools, this.options.disallowedTools);
+      const toolSearchResult = await this.tryExecuteToolSearch(call, id, sessionId, turn, modelCapabilities, turnDiscoveredToolNames);
+      if (toolSearchResult) {
+        return toolSearchResult;
+      }
+      const capabilityResult = await this.tryExecuteDynamicCapability(call, id, sessionId, turn, modelCapabilities);
       if (capabilityResult) {
         return capabilityResult;
       }
       const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
+      actionName = action.type;
+      taskContract = taskContractForToolAction(action, {
+        writePolicy: this.options.writePolicy,
+        fileScope: this.options.fileScope
+      });
       if (this.options.allowedTools && !isToolAllowedForPersona(action.type, this.options.allowedTools)) {
-        throw new Error(`Tool action is not allowed for this agent persona: ${action.type}`);
+        throw new Error(`Tool action denied by run tool policy: ${action.type}`);
       }
+      if (this.options.disallowedTools && isToolDeniedByPolicy(action.type, this.options.disallowedTools)) {
+        throw new Error(`Tool action denied by run tool policy: ${action.type}`);
+      }
+      assertToolActionAllowedBySandbox(action, {
+        writePolicy: this.options.writePolicy,
+        workspace: this.options.workspace,
+        fileScope: this.options.fileScope
+      });
       this.emitActivity(sessionId, "running_tool", `Running ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
       if (this.options.invokeCapability) {
         const capabilityId = localCapabilityIdForAction(action.type);
@@ -621,16 +939,22 @@ export class CodingAgentLoop {
             taskId: id,
             title: call.reason ?? action.type,
             allowDelegate: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0,
-            source: "coding_loop"
+            source: "coding_loop",
+            writePolicy: this.options.writePolicy,
+            fileScope: this.options.fileScope
           }
         );
         return { result: codingLoopResultFromTool(id, action.type, rawResult) };
       }
-      if (toolRequiresApproval(action, this.options.settings, { workspace: this.options.workspace })) {
+      const permissionDecision = decideToolPermission(action, this.options.settings, { workspace: this.options.workspace });
+      if (permissionDecision.decision === "deny") {
+        throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${describeToolAction(action)}`);
+      }
+      if (permissionDecision.decision === "ask") {
         if (!this.options.approvalHandler) {
           throw new Error(`Tool action requires approval but no approval handler is available: ${action.type}`);
         }
-        const request = createToolApprovalRequest(action);
+        const request = createToolApprovalRequest(action, permissionDecision);
         request.session_id = sessionId;
         request.task_id = id;
         this.emitActivity(sessionId, "waiting_approval", `Waiting for approval: ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
@@ -651,6 +975,7 @@ export class CodingAgentLoop {
         serverWebSearch: (searchAction) => this.options.provider.webSearch(searchAction),
         onWorkspaceChange: this.options.onWorkspaceChange,
         onFileLock: this.options.onFileLock,
+        agentControl: this.options.agentControl,
         delegate: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0
           ? (action) => this.delegateWorker(action, sessionId, id)
           : undefined
@@ -680,27 +1005,29 @@ export class CodingAgentLoop {
         status: result.status,
         outputRef: prepared.outputRef,
         errorCode: rawResult.errorCode,
-        recoverySuggestion: rawResult.recoverySuggestion
+        recoverySuggestion: rawResult.recoverySuggestion,
+        write_policy: taskContract.write_policy,
+        file_scope: taskContract.file_scope,
+        sandbox: result.sandbox,
+        agent: this.activityAgentIdentity()
       });
       return { result };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const errorCode = classifyToolError(error);
-      const recoverySuggestion = recoverySuggestionForToolError(errorCode, reason);
-      const actionName = typeof call.action === "string"
-        ? call.action
-        : typeof call.inputs?.action === "string"
-          ? call.inputs.action
-          : "unknown";
+      const sandbox = sandboxDecisionFromError(error);
+      const summary = sandbox ? sandboxFailureSummary(sandbox) : reason;
+      const recoverySuggestion = recoverySuggestionForToolError(errorCode, reason, sandbox);
       const result: CodingLoopToolResult = {
         id,
         action: actionName,
         status: "failed",
-        summary: reason,
-        content: formatToolFailureContent(actionName, reason, errorCode, recoverySuggestion),
+        summary,
+        content: formatToolFailureContent(actionName, summary, errorCode, recoverySuggestion, sandbox),
         errors: [reason],
         errorCode,
-        recoverySuggestion
+        recoverySuggestion,
+        sandbox
       };
       this.options.events.emitEvent({
         type: "tool_result",
@@ -708,11 +1035,15 @@ export class CodingAgentLoop {
         task_id: id,
         title: call.reason ?? String(result.action),
         action: String(result.action),
-        summary: reason,
+        summary,
         content: result.content,
         status: "failed",
         errorCode: result.errorCode,
-        recoverySuggestion: result.recoverySuggestion
+        recoverySuggestion: result.recoverySuggestion,
+        write_policy: taskContract?.write_policy,
+        file_scope: taskContract?.file_scope,
+        sandbox: result.sandbox,
+        agent: this.activityAgentIdentity()
       });
       return { result };
     }
@@ -722,7 +1053,7 @@ export class CodingAgentLoop {
     sessionId: string,
     phase: LoopActivityPhase,
     message: string,
-    options: { turn?: number; tool?: string; taskId?: string } = {}
+    options: { turn?: number; maxTurns?: number; tool?: string; taskId?: string } = {}
   ): void {
     this.options.events.emitEvent({
       type: "loop_activity",
@@ -730,8 +1061,10 @@ export class CodingAgentLoop {
       phase,
       message,
       turn: options.turn,
+      max_turns: options.maxTurns,
       tool: options.tool,
-      task_id: options.taskId
+      task_id: options.taskId,
+      agent: this.activityAgentIdentity()
     });
   }
 
@@ -739,24 +1072,140 @@ export class CodingAgentLoop {
     call: CodingLoopToolCall,
     id: string,
     sessionId: string,
-    turn?: number
+    turn: number | undefined,
+    capabilities: CapabilityDescriptor[]
   ): Promise<{ result: CodingLoopToolResult } | undefined> {
     if (!this.options.invokeCapability || !isDynamicCapabilityAction(call.action)) {
       return undefined;
     }
     const action = call.action;
-    const capabilities = await this.options.listModelCapabilities?.() ?? [];
     const capability = capabilities.find((item) => dynamicCapabilityMatchesAction(item, action));
     if (!capability) {
       return undefined;
+    }
+    assertDynamicCapabilityAllowedByToolPolicy(capability, this.options.allowedTools, this.options.disallowedTools);
+    assertCapabilityAllowedBySandbox(capability, this.options.writePolicy);
+    if (!isDynamicCapabilityLoaded(capability, this.discoveredDynamicToolNames)) {
+      const recoverySuggestion = capability.kind === "mcp_tool"
+        ? `Use ToolSearch with a focused query such as ${JSON.stringify(capability.title ?? capability.name)} or ${JSON.stringify(capability.searchHint ?? capability.providerId)} first, then retry on the next turn.`
+        : "Use ToolSearch to discover the relevant capability first.";
+      const summary = `Tool ${capability.name} is deferred and not yet loaded.`;
+      const rawResult: ToolResult = {
+        action: capability.name,
+        status: "failed",
+        summary,
+        content: formatToolFailureContent(capability.name, summary, "TOOL_DEFERRED", recoverySuggestion),
+        errorCode: "TOOL_DEFERRED",
+        recoverySuggestion,
+        data: {
+          capability_id: capability.id,
+          provider_id: capability.providerId,
+          should_defer: capability.shouldDefer ?? false,
+          search_hint: capability.searchHint
+        }
+      };
+      const prepared = await prepareToolOutput(sessionId, id, rawResult, rawResult.content ?? rawResult.summary);
+      const result: CodingLoopToolResult = {
+        id,
+        action: capability.name,
+        status: "failed",
+        summary,
+        content: prepared.content,
+        outputRef: prepared.outputRef,
+        data: prepared.data,
+        errors: [summary],
+        errorCode: "TOOL_DEFERRED",
+        recoverySuggestion
+      };
+      this.options.events.emitEvent({
+        type: "tool_result",
+        session_id: sessionId,
+        task_id: id,
+        title: call.reason ?? capability.name,
+        action: capability.name,
+        summary,
+        content: result.content,
+        status: "failed",
+        outputRef: prepared.outputRef,
+        errorCode: result.errorCode,
+        recoverySuggestion: result.recoverySuggestion,
+        write_policy: this.options.writePolicy ?? (capability.readOnly ? "read_only" : undefined),
+        file_scope: this.options.fileScope,
+        sandbox: result.sandbox,
+        agent: this.activityAgentIdentity()
+      });
+      return { result };
     }
     this.emitActivity(sessionId, "running_tool", `Running ${capability.name}`, { turn, tool: capability.name, taskId: id });
     const rawResult = await this.options.invokeCapability(capability.id, call.inputs ?? {}, sessionId, {
       taskId: id,
       title: call.reason ?? capability.name,
-      source: "coding_loop"
+      source: "coding_loop",
+      writePolicy: this.options.writePolicy,
+      fileScope: this.options.fileScope
     });
     const result = codingLoopResultFromTool(id, capability.name, rawResult);
+    return { result };
+  }
+
+  private async tryExecuteToolSearch(
+    call: CodingLoopToolCall,
+    id: string,
+    sessionId: string,
+    turn: number | undefined,
+    capabilities: CapabilityDescriptor[],
+    turnDiscoveredToolNames: Set<string>
+  ): Promise<{ result: CodingLoopToolResult } | undefined> {
+    if (!isToolSearchAction(call.action)) {
+      return undefined;
+    }
+    const search = parseToolSearchInputs(call.inputs ?? {});
+    this.emitActivity(sessionId, "running_tool", `Searching deferred tools: ${previewActivityValue(search.query ?? "all")}`, { turn, tool: TOOL_SEARCH_TOOL_NAME, taskId: id });
+    const matches = searchDeferredCapabilities(capabilities, search, this.discoveredDynamicToolNames);
+    const loadedToolNames = matches
+      .filter((match) => match.kind === "mcp_tool" && match.loadNextTurn)
+      .map((match) => match.name);
+    for (const toolName of loadedToolNames) {
+      turnDiscoveredToolNames.add(toolName);
+    }
+    const rawResult: ToolResult = {
+      action: TOOL_SEARCH_TOOL_NAME,
+      status: "success",
+      summary: matches.length
+        ? `ToolSearch found ${matches.length} matching capabilities and loaded ${loadedToolNames.length} MCP tools for the next turn.`
+        : "ToolSearch found no matching deferred capabilities.",
+      content: renderToolSearchDetail(search, matches, loadedToolNames),
+      data: {
+        query: search.query ?? "",
+        limit: search.limit,
+        match_count: matches.length,
+        loaded_tool_names: loadedToolNames,
+        matches
+      }
+    };
+    const prepared = await prepareToolOutput(sessionId, id, rawResult, rawResult.content ?? rawResult.summary);
+    const result: CodingLoopToolResult = {
+      id,
+      action: TOOL_SEARCH_TOOL_NAME,
+      status: "success",
+      summary: rawResult.summary,
+      content: prepared.content,
+      outputRef: prepared.outputRef,
+      data: prepared.data
+    };
+    this.options.events.emitEvent({
+      type: "tool_result",
+      session_id: sessionId,
+      task_id: id,
+      title: call.reason ?? TOOL_SEARCH_TOOL_NAME,
+      action: TOOL_SEARCH_TOOL_NAME,
+      summary: rawResult.summary,
+      content: result.content,
+      status: "success",
+      outputRef: prepared.outputRef,
+      write_policy: "read_only",
+      agent: this.activityAgentIdentity()
+    });
     return { result };
   }
 
@@ -769,7 +1218,7 @@ export class CodingAgentLoop {
         task: action.task,
         context: action.context,
         preferred_agent_spec_id: action.preferred_agent_spec_id,
-        preferred_mode: action.preferred_mode,
+        preferred_mode: action.run_in_background ? "parallel" : action.preferred_mode,
         file_scope: action.file_scope,
         spawn_reason: `agent.delegate from ${parentTaskId}`
       });
@@ -808,7 +1257,24 @@ export class CodingAgentLoop {
       maxTurns: toolBudget.max_turns,
       maxToolCalls: toolBudget.max_tool_calls,
       emitFinal: false,
-      emitProgress: false
+      emitProgress: false,
+      disallowedTools: this.options.disallowedTools,
+      fileScope: action.file_scope,
+      onSessionStart: (workerSessionId) => {
+        const startedRecord = this.options.workerStore?.setResult({
+          worker_id: workerId,
+          status: "running",
+          worker_session_id: workerSessionId
+        });
+        if (startedRecord) {
+          this.options.events.emitEvent({
+            type: "worker",
+            worker: startedRecord,
+            status: startedRecord.status,
+            message: `Worker session ${workerSessionId} started.`
+          });
+        }
+      }
     });
     try {
       const result = await worker.run([
@@ -958,8 +1424,36 @@ function describeToolAction(action: ToolAction): string {
       return `package.info ${previewActivityValue(action.cwd ?? action.manifest ?? ".")}`;
     case "project.detect":
       return `project.detect ${previewActivityValue(action.root ?? ".")}`;
+    case "lsp.diagnostics":
+      return `lsp.diagnostics ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.hover":
+      return `lsp.hover ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.definition":
+      return `lsp.definition ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.references":
+      return `lsp.references ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.document_symbols":
+      return `lsp.document_symbols ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.workspace_symbols":
+      return `lsp.workspace_symbols ${previewActivityValue(action.query ?? ".")}`;
+    case "lsp.completion":
+      return `lsp.completion ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.code_actions":
+      return `lsp.code_actions ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.rename_preview":
+      return `lsp.rename_preview ${previewActivityValue(action.path ?? action.file ?? ".")}`;
+    case "lsp.format":
+      return `lsp.format ${previewActivityValue(action.path ?? action.file ?? ".")}`;
     case "agent.delegate":
       return `agent.delegate ${previewActivityValue(action.capability)}: ${previewActivityValue(action.task)}`;
+    case "agent.list":
+      return `agent.list ${previewActivityValue(action.parent_session_id ?? action.status ?? "workers")}`;
+    case "agent.status":
+      return `agent.status ${previewActivityValue(action.worker_id)}`;
+    case "agent.stop":
+      return `agent.stop ${previewActivityValue(action.worker_id)}`;
+    case "agent.continue":
+      return `agent.continue ${previewActivityValue(action.worker_id)}: ${previewActivityValue(action.message)}`;
   }
 }
 
@@ -974,37 +1468,53 @@ function codingLoopSystemPrompt(input: {
   role: "main" | "worker";
   workspace: string;
   delegateAvailable: boolean;
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
   agentInstructions?: string;
-  durableContext?: string;
-  allowedTools?: string[];
+  availableTools: string[];
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
+  expectedSideEffects?: string;
+  additionalReadDirectories?: string[];
 }): PromptBlock[] {
-  const tools = allowedToolNames(input.allowedTools, input.delegateAvailable).join(", ");
-  const staticInstructions = [
+  const tools = input.availableTools.join(", ");
+  const defaultBehaviorInstructions = [
     input.role === "worker"
       ? "You are a Swarm worker agent running inside the main Swarm controller."
       : "You are Swarm's default coding agent, a local coding CLI agent.",
     input.role === "worker"
       ? "You are not user-facing. Produce internal findings, edits, or verification for the main Swarm to synthesize."
       : "You are user-facing through the main Swarm conversation.",
-    "Work efficiently in a loop: inspect files, edit when needed, verify when useful, then answer concisely.",
+    "Work efficiently in a loop: inspect files, edit when needed, verify when useful, then answer concisely."
+  ].filter(Boolean).join(" ");
+  const behaviorInstructions = input.systemPrompt !== undefined ? input.systemPrompt : defaultBehaviorInstructions;
+  const runtimeProtocolInstructions = [
+    "You are running inside Swarm's local coding-loop protocol. These protocol rules keep the CLI tool bridge working even when the behavioral system prompt is customized.",
     "Return exactly one JSON object with keys: status, summary, message, files_touched, next_actions, tool_calls.",
     "status must be continue, completed, or failed.",
     "Use tool_calls when you need to act. Use [] when done.",
+    "status=continue must include at least one executable tool_call; when no tool is needed, use status=completed or status=failed.",
     "A failed tool result is feedback, not a global stop. Read the error, adjust inputs or command, and continue unless the task is truly blocked.",
     "If a shell command times out, retry with a narrower command or a larger timeoutMs when the command is still necessary.",
     "Use status=failed only when you cannot recover or continue after inspecting the latest tool results.",
     `Allowed tools: ${tools}.`,
-    renderHostEnvironmentPrompt(input.workspace),
+    "Some MCP tools are deferred to reduce prompt churn. Use ToolSearch to discover them first; discovered MCP schemas become available on the next turn.",
+    renderHostEnvironmentPrompt(input.workspace, input.additionalReadDirectories),
+    input.expectedSideEffects ? `Expected side effects: ${input.expectedSideEffects}.` : undefined,
+    expectsWorkspaceModification(input.expectedSideEffects) ? "This objective is expected to modify the workspace. Do not return completed until a write/edit tool result proves the requested change was made." : undefined,
     input.writePolicy ? `Write policy: ${input.writePolicy}. Never use tools outside this policy.` : undefined,
+    input.writePolicy === "read_only" ? "In read_only policy, code.test and code.lint are allowed verification commands; do not use write/edit tools or commands that intentionally modify source files." : undefined,
     "Read existing files before editing them. For edits, read the full file first.",
     "Prefer file.edit for existing files and file.write for new files. Do not write final reports unless requested.",
+    "Use file.delete for deleting workspace files or cleanup artifacts; do not use shell deletion commands such as rm, del, or Remove-Item for workspace cleanup.",
+    "Use code.test for npm test and CLI smoke verification. When running commands on Windows, prefer the cwd input instead of cd/&& shell chaining, and use PowerShell syntax unless explicitly invoking another shell.",
+    "Keep long verification commands to one or two tool_calls per turn so failures can be inspected before continuing.",
+    "Do not append cleanup deletion to shell or test commands; leave temporary smoke artifacts or delete them later with file.delete.",
     "For tool_calls, each item is {id, action, inputs, reason}. The action must match an allowed tool, and inputs must match the tool_schemas in the user payload.",
     input.delegateAvailable
       ? "You may dynamically upgrade the coding loop into an internal swarm by using Agent when the task naturally splits into independent roles, workstreams, or expert checks. The main Swarm remains responsible for user-facing synthesis and final decisions."
       : "Do not use Agent in this loop.",
     input.delegateAvailable && input.role === "main"
-      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, and file_scope when known. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns."
+      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, run_in_background, and file_scope when known. Use run_in_background=true or preferred_mode=parallel for independent side work that should not block the main agent. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns."
       : undefined,
     "Keep message grounded in actual tool results. Mention verification commands that were run.",
     input.role === "main"
@@ -1013,9 +1523,10 @@ function codingLoopSystemPrompt(input: {
     "Always obey the newest live user messages and control_decisions. If they redirect the task, stop pursuing the old target after the current safe boundary."
   ].filter(Boolean).join(" ");
   return [
-    { text: staticInstructions, cache: true },
-    ...(input.agentInstructions ? [{ text: input.agentInstructions, cache: false }] : []),
-    ...(input.durableContext ? [{ text: `Durable session context that must survive compaction:\n${input.durableContext}`, cache: false }] : [])
+    { text: behaviorInstructions, cache: true },
+    { text: runtimeProtocolInstructions, cache: true },
+    ...(input.appendSystemPrompt !== undefined ? [{ text: input.appendSystemPrompt, cache: true }] : []),
+    ...(input.agentInstructions ? [{ text: input.agentInstructions, cache: false }] : [])
   ];
 }
 
@@ -1025,8 +1536,11 @@ function codingLoopUserPrompt(input: {
   parentSessionId?: string;
   availableTools: string[];
   dynamicToolSchemas: Record<string, Record<string, unknown>>;
+  deferredToolCatalog?: DeferredToolCatalogSummary;
   settings: SwarmSettings;
   workspace: string;
+  durableContext?: string;
+  workspaceIndex?: WorkspaceIndex;
   delegateAvailable: boolean;
   toolResults: CodingLoopToolResult[];
   liveMessages: LiveUserMessage[];
@@ -1037,7 +1551,9 @@ function codingLoopUserPrompt(input: {
 }): PromptBlock[] {
   const stablePayload = {
     role: input.role,
+    workspace_index: input.workspaceIndex ? renderStableWorkspaceIndexForPrompt(input.workspaceIndex) : undefined,
     tool_schemas: renderToolSchemas(input.availableTools, input.dynamicToolSchemas),
+    tool_concurrency_classes: TOOL_CONCURRENCY_POLICY,
     available_agent_specs: input.role === "main" && input.delegateAvailable
       ? renderAvailableAgentSpecs({ settings: input.settings, workspace: input.workspace })
       : undefined,
@@ -1049,6 +1565,9 @@ function codingLoopUserPrompt(input: {
     objective: input.objective,
     role: input.role,
     parent_session_id: input.parentSessionId,
+    durable_session_context: input.durableContext || undefined,
+    workspace_state: input.workspaceIndex ? renderDynamicWorkspaceStateForPrompt(input.workspaceIndex) : undefined,
+    deferred_tool_catalog: input.deferredToolCatalog,
     swarm_runtime_state: input.role === "main" && input.delegateAvailable
       ? swarmRuntimeState(input.toolResults, input.turn)
       : undefined,
@@ -1062,9 +1581,64 @@ function codingLoopUserPrompt(input: {
     }
   };
   return [
-    { text: JSON.stringify(stablePayload, null, 2), cache: true },
-    { text: JSON.stringify(dynamicPayload, null, 2), cache: false }
+    { text: stableJsonStringify(stablePayload), cache: true },
+    { text: stableJsonStringify(dynamicPayload), cache: false }
   ];
+}
+
+function stableJsonStringify(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value), null, 2);
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortJsonValue(item));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => [key, sortJsonValue(value[key])])
+  );
+}
+
+function renderStableWorkspaceIndexForPrompt(index: WorkspaceIndex): Record<string, unknown> {
+  return {
+    summary: stableWorkspaceIndexSummary(index),
+    detected: index.detected,
+    package_manager: index.packageManager,
+    scripts: Object.fromEntries(Object.entries(index.scripts).slice(0, 20)),
+    counts: index.counts,
+    index_manifests: index.manifests
+  };
+}
+
+function renderDynamicWorkspaceStateForPrompt(index: WorkspaceIndex): Record<string, unknown> {
+  return {
+    summary: workspaceIndexSummary(index),
+    // keep paths relative to the workspace root while keeping volatile file state out of the cacheable prefix.
+    recent_files: index.recentFiles.slice(0, 20).map((file) => relative(index.root, file.path).replace(/\\/g, "/")),
+    git: index.git
+      ? {
+          branch: index.git.branch,
+          head: index.git.head?.slice(0, 12),
+          status: index.git.statusSummary,
+          dirty_files: index.git.dirtyFiles.slice(0, 20)
+        }
+      : undefined
+  };
+}
+
+function stableWorkspaceIndexSummary(index: WorkspaceIndex): string {
+  const detected = index.detected.length ? index.detected.join(", ") : "unknown";
+  const scripts = Object.keys(index.scripts).slice(0, 4);
+  return [
+    `detected=${detected}`,
+    `files=${index.counts.files}`,
+    `scripts=${scripts.length ? scripts.join(", ") : "(none)"}`
+  ].join(" | ");
 }
 
 function codingLoopCacheKey(input: {
@@ -1083,16 +1657,22 @@ function codingLoopCacheKey(input: {
 }
 
 function renderAvailableAgentSpecs(source: AgentSpecSource): Array<Record<string, unknown>> {
-  return listAgentSpecs(source).map((spec) => ({
+  return [...listAgentSpecs(source)].sort(compareAgentSpecsForPrompt).map((spec) => ({
     id: spec.id,
     role: spec.role,
     description: spec.description,
     when_to_use: spec.when_to_use,
-    capabilities: spec.capabilities,
+    capabilities: [...spec.capabilities].sort((left, right) => left.localeCompare(right)),
     write_policy: spec.write_policy,
     budget: spec.default_budget,
     output_contract: spec.output_contract
   }));
+}
+
+function compareAgentSpecsForPrompt(left: AgentSpec, right: AgentSpec): number {
+  return left.id.localeCompare(right.id) ||
+    left.role.localeCompare(right.role) ||
+    left.name.localeCompare(right.name);
 }
 
 function codingLoopDelegationPolicy(): Record<string, unknown> {
@@ -1124,7 +1704,7 @@ function codingLoopDelegationPolicy(): Record<string, unknown> {
       "researcher/call_subagent for parallel repo exploration and evidence gathering.",
       "reviewer or critic/call_subagent for independent checks.",
       "verifier/call_subagent after workspace changes.",
-      "coder/scoped_write only with file_scope.",
+      "coder/scoped_write only with file_scope, and parallel only when sibling file_scope values are concrete and non-overlapping.",
       "handoff only when a focused specialist should preserve context across several turns."
     ]
   };
@@ -1143,18 +1723,64 @@ function swarmRuntimeState(toolResults: CodingLoopToolResult[], turn: number): R
   };
 }
 
-function allowedToolNames(allowedTools: string[] | undefined, delegateAvailable: boolean, capabilities: CapabilityDescriptor[] = []): string[] {
-  const tools = allowedTools?.length ? allowedTools : [...DEFAULT_TOOL_NAMES];
-  const withDelegate = delegateAvailable && !tools.includes("Agent")
+function allowedToolNames(
+  allowedTools: string[] | undefined,
+  disallowedTools: string[] | undefined,
+  delegateAvailable: boolean,
+  capabilities: CapabilityDescriptor[] = [],
+  discoveredDynamicToolNames: Set<string> = new Set<string>(),
+  writePolicy?: SandboxWritePolicy
+): string[] {
+  const hasAllowList = Boolean(allowedTools?.length);
+  const tools = hasAllowList ? [...allowedTools!] : [...DEFAULT_TOOL_NAMES];
+  const withDelegate = !hasAllowList && delegateAvailable && !tools.includes("Agent")
     ? [...tools, "Agent"]
     : tools.filter((tool) => delegateAvailable || (tool !== "Agent" && tool !== "agent.delegate"));
-  if (allowedTools?.length) {
-    return withDelegate;
-  }
-  const dynamicTools = capabilities
-    .filter((capability) => (capability.kind === "mcp_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) && capability.modelVisible && capability.status !== "disabled")
+  const sandboxVisibleTools = withDelegate.filter((tool) => isToolVisibleInSandboxPrompt(tool, writePolicy));
+  const alwaysLoadedDynamicTools = capabilities
+    .filter((capability) => isVisibleActiveCapability(capability) && capability.alwaysLoad && isCapabilityAllowedByRunToolPolicy(capability, allowedTools, disallowedTools) && isCapabilityVisibleInSandboxPrompt(capability, writePolicy))
+    .sort(compareCapabilitiesForPrompt)
     .map((capability) => capability.name);
-  return [...new Set([...withDelegate, ...dynamicTools])];
+  const discoveredDynamicTools = capabilities
+    .filter((capability) => isVisibleMcpCapability(capability) && discoveredDynamicToolNames.has(capability.name) && isCapabilityAllowedByRunToolPolicy(capability, allowedTools, disallowedTools) && isCapabilityVisibleInSandboxPrompt(capability, writePolicy))
+    .sort(compareCapabilitiesForPrompt)
+    .map((capability) => capability.name);
+  let result = [...sandboxVisibleTools, ...alwaysLoadedDynamicTools, ...discoveredDynamicTools]
+    .filter((tool) => !isToolDeniedByPolicy(tool, disallowedTools));
+  if (!hasAllowList && !result.includes(TOOL_SEARCH_TOOL_NAME) && !isToolDeniedByPolicy(TOOL_SEARCH_TOOL_NAME, disallowedTools)) {
+    result.push(TOOL_SEARCH_TOOL_NAME);
+  } else if (hasAllowList && allowedTools!.some((tool) => toolNameMatches(tool, TOOL_SEARCH_TOOL_NAME)) && !result.includes(TOOL_SEARCH_TOOL_NAME) && !isToolDeniedByPolicy(TOOL_SEARCH_TOOL_NAME, disallowedTools)) {
+    result.push(TOOL_SEARCH_TOOL_NAME);
+  }
+  return sortToolNamesForPrompt([...new Set(result)]);
+}
+
+function sortToolNamesForPrompt(tools: string[]): string[] {
+  return [...tools].sort(compareToolNamesForPrompt);
+}
+
+function compareToolNamesForPrompt(left: string, right: string): number {
+  return toolPromptOrder(left) - toolPromptOrder(right) || left.localeCompare(right);
+}
+
+function toolPromptOrder(tool: string): number {
+  const index = DEFAULT_TOOL_NAMES.findIndex((candidate) => toolNameMatches(candidate, tool));
+  return index >= 0 ? index : DEFAULT_TOOL_NAMES.length;
+}
+
+function isToolVisibleInSandboxPrompt(tool: string, writePolicy?: SandboxWritePolicy): boolean {
+  if (writePolicy !== "read_only" || tool === TOOL_SEARCH_TOOL_NAME || tool === "tool.search") {
+    return true;
+  }
+  try {
+    return isReadOnlySandboxAction(normalizeToolAction({ action: tool }));
+  } catch {
+    return false;
+  }
+}
+
+function isCapabilityVisibleInSandboxPrompt(capability: CapabilityDescriptor, writePolicy?: SandboxWritePolicy): boolean {
+  return writePolicy !== "read_only" || capability.readOnly === true || capability.id === SKILL_ACTIVATE_CAPABILITY_ID;
 }
 
 function isToolAllowedForPersona(action: ToolAction["type"], allowedTools: string[]): boolean {
@@ -1170,6 +1796,78 @@ function isToolAllowedForPersona(action: ToolAction["type"], allowedTools: strin
   });
 }
 
+function assertRawToolAllowedByPolicy(rawAction: unknown, allowedTools?: string[], disallowedTools?: string[]): void {
+  if (typeof rawAction !== "string" || !rawAction.trim()) {
+    return;
+  }
+  if (allowedTools?.length && !isToolNameAllowedByPolicy(rawAction, allowedTools)) {
+    throw new Error(`Tool action denied by run tool policy: ${rawAction}`);
+  }
+  if (isToolDeniedByPolicy(rawAction, disallowedTools)) {
+    throw new Error(`Tool action denied by run tool policy: ${rawAction}`);
+  }
+}
+
+function assertDynamicCapabilityAllowedByToolPolicy(
+  capability: CapabilityDescriptor,
+  allowedTools?: string[],
+  disallowedTools?: string[]
+): void {
+  if (!isCapabilityAllowedByRunToolPolicy(capability, allowedTools, disallowedTools)) {
+    throw new Error(`Tool action denied by run tool policy: ${capability.name}`);
+  }
+}
+
+function isCapabilityAllowedByRunToolPolicy(
+  capability: CapabilityDescriptor,
+  allowedTools?: string[],
+  disallowedTools?: string[]
+): boolean {
+  if (allowedTools?.length && !capabilityToolNames(capability).some((name) => isToolNameAllowedByPolicy(name, allowedTools))) {
+    return false;
+  }
+  if (capabilityToolNames(capability).some((name) => isToolDeniedByPolicy(name, disallowedTools))) {
+    return false;
+  }
+  return true;
+}
+
+function capabilityToolNames(capability: CapabilityDescriptor): string[] {
+  return [
+    capability.name,
+    capability.id,
+    capability.permissionName,
+    capability.title ?? "",
+    capability.providerId
+  ].filter(Boolean);
+}
+
+function isToolNameAllowedByPolicy(toolName: string, allowedTools: string[]): boolean {
+  return allowedTools.some((allowed) => toolNameMatches(allowed, toolName));
+}
+
+function isToolDeniedByPolicy(toolName: string, disallowedTools: string[] | undefined): boolean {
+  return Boolean(disallowedTools?.some((denied) => toolNameMatches(denied, toolName)));
+}
+
+function toolNameMatches(pattern: string, toolName: string): boolean {
+  const left = pattern.trim();
+  const right = toolName.trim();
+  if (!left || !right) {
+    return false;
+  }
+  if (left === right || left.toLowerCase() === right.toLowerCase()) {
+    return true;
+  }
+  try {
+    const leftAction = normalizeToolAction({ action: left }).type;
+    const rightAction = normalizeToolAction({ action: right }).type;
+    return leftAction === rightAction;
+  } catch {
+    return false;
+  }
+}
+
 function localCapabilityIdForAction(action: ToolAction["type"]): string {
   const visibleNameByAction: Partial<Record<ToolAction["type"], string>> = {
     "file.read": "Read",
@@ -1178,6 +1876,7 @@ function localCapabilityIdForAction(action: ToolAction["type"]): string {
     "file.grep": "Grep",
     "file.write": "Write",
     "file.edit": "Edit",
+    "file.delete": "file.delete",
     "notebook.edit": "NotebookEdit",
     "shell.exec": "Bash",
     "process.start": "ProcessStart",
@@ -1193,6 +1892,20 @@ function localCapabilityIdForAction(action: ToolAction["type"]): string {
     "blackboard.search": "BlackboardSearch",
     "blackboard.read": "BlackboardRead",
     "blackboard.list": "BlackboardList",
+    "agent.list": "AgentList",
+    "agent.status": "AgentStatus",
+    "agent.stop": "AgentStop",
+    "agent.continue": "AgentContinue",
+    "lsp.diagnostics": "lsp_diagnostics",
+    "lsp.hover": "lsp_hover",
+    "lsp.definition": "lsp_definition",
+    "lsp.references": "lsp_references",
+    "lsp.document_symbols": "lsp_document_symbols",
+    "lsp.workspace_symbols": "lsp_workspace_symbols",
+    "lsp.completion": "lsp_completion",
+    "lsp.code_actions": "lsp_code_actions",
+    "lsp.rename_preview": "lsp_rename_preview",
+    "lsp.format": "lsp_format",
     "agent.delegate": "Agent"
   };
   return `local_tool.${visibleNameByAction[action] ?? action}`;
@@ -1202,6 +1915,31 @@ function isDynamicCapabilityAction(action: string | undefined): action is string
   return typeof action === "string" && (action.startsWith("mcp__") || action === SKILL_ACTIVATE_TOOL_NAME);
 }
 
+function isVisibleCapability(capability: CapabilityDescriptor): boolean {
+  return capability.modelVisible && capability.status !== "disabled";
+}
+
+function isVisibleMcpCapability(capability: CapabilityDescriptor): boolean {
+  return capability.kind === "mcp_tool" && isVisibleCapability(capability);
+}
+
+function isVisibleActiveCapability(capability: CapabilityDescriptor): boolean {
+  return (capability.kind === "mcp_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) && isVisibleCapability(capability);
+}
+
+function isDynamicCapabilityLoaded(capability: CapabilityDescriptor, discoveredDynamicToolNames: Set<string>): boolean {
+  if (!isVisibleActiveCapability(capability)) {
+    return false;
+  }
+  if (capability.alwaysLoad) {
+    return true;
+  }
+  if (capability.kind === "mcp_tool") {
+    return discoveredDynamicToolNames.has(capability.name);
+  }
+  return false;
+}
+
 function dynamicCapabilityMatchesAction(capability: CapabilityDescriptor, action: string): boolean {
   if (capability.kind === "mcp_tool") {
     return capability.name === action;
@@ -1209,18 +1947,25 @@ function dynamicCapabilityMatchesAction(capability: CapabilityDescriptor, action
   return capability.id === SKILL_ACTIVATE_CAPABILITY_ID && capability.name === action;
 }
 
-function dynamicCapabilityToolSchemas(capabilities: CapabilityDescriptor[]): Record<string, Record<string, unknown>> {
+function dynamicCapabilityToolSchemas(
+  capabilities: CapabilityDescriptor[],
+  discoveredDynamicToolNames: Set<string> = new Set<string>()
+): Record<string, Record<string, unknown>> {
   return Object.fromEntries(
     capabilities
-      .filter((capability) => (capability.kind === "mcp_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) && capability.modelVisible && capability.status !== "disabled")
+      .filter((capability) => isVisibleActiveCapability(capability) && (capability.alwaysLoad || discoveredDynamicToolNames.has(capability.name)))
+      .sort(compareCapabilitiesForPrompt)
       .map((capability) => [
         capability.name,
         {
           action: capability.name,
           description: capability.description,
           inputs: capability.inputSchema ?? { type: "object" },
+          input_schema: capability.inputSchema ?? { type: "object" },
           output: capability.outputSchema,
           risk_class: capability.riskClass,
+          read_only: capability.readOnly === true,
+          concurrency_class: capability.concurrencyClass,
           permission: capability.permissionName,
           provider: capability.providerId
         }
@@ -1228,250 +1973,222 @@ function dynamicCapabilityToolSchemas(capabilities: CapabilityDescriptor[]): Rec
   );
 }
 
+function compareCapabilitiesForPrompt(left: CapabilityDescriptor, right: CapabilityDescriptor): number {
+  return left.kind.localeCompare(right.kind) ||
+    left.providerId.localeCompare(right.providerId) ||
+    left.name.localeCompare(right.name) ||
+    left.id.localeCompare(right.id);
+}
+
 function renderToolSchemas(allowedTools: string[], dynamicSchemas: Record<string, Record<string, unknown>> = {}): Array<Record<string, unknown>> {
-  return allowedTools.map((tool) => dynamicSchemas[tool] ?? TOOL_SCHEMAS[tool] ?? {
-    action: tool,
-    inputs: { action: tool },
-    notes: "No detailed schema is registered for this tool."
+  return allowedTools.map((tool) => {
+    const dynamicSchema = dynamicSchemas[tool];
+    if (dynamicSchema) {
+      return dynamicSchema;
+    }
+    const localSchema = LOCAL_TOOL_SCHEMAS[tool];
+    if (localSchema) {
+      return localToolSchemaForModel(localSchema);
+    }
+    return {
+      action: tool,
+      inputs: { action: tool },
+      input_schema: {
+        type: "object",
+        properties: { action: { type: "string", description: tool } },
+        additionalProperties: true
+      },
+      notes: "No detailed schema is registered for this tool."
+    };
   });
 }
 
-const TOOL_SCHEMAS: Record<string, Record<string, unknown>> = {
-  "Read": {
-    action: "Read",
-    inputs: { file_path: "file path", offset: "optional line offset", limit: "optional line count", path: "compat path" },
-    notes: "Use a full Read before editing an existing file."
-  },
-  "LS": {
-    action: "LS",
-    inputs: { path: "directory path", root: "compat directory path", maxFiles: "optional number", maxDepth: "optional number" }
-  },
-  "Glob": {
-    action: "Glob",
-    inputs: { pattern: "glob pattern", path: "optional directory path" }
-  },
-  "Grep": {
-    action: "Grep",
-    inputs: { pattern: "regex pattern", path: "optional file or directory path", glob: "optional glob", output_mode: "content | files_with_matches | count", context: "optional number", head_limit: "optional number", multiline: "optional boolean" }
-  },
-  "Write": {
-    action: "Write",
-    inputs: { file_path: "workspace path", content: "complete file content", path: "compat path" },
-    notes: "Use for new files or complete replacement. Prefer Edit for existing files after a full Read."
-  },
-  "Edit": {
-    action: "Edit",
-    inputs: { file_path: "workspace path", old_string: "must match exactly once unless replace_all=true", new_string: "replacement", replace_all: "optional boolean", path: "compat path" }
-  },
-  "NotebookEdit": {
-    action: "NotebookEdit",
-    inputs: { notebook_path: "ipynb path", cell_id: "optional cell id", new_source: "cell source", cell_type: "code | markdown", edit_mode: "replace | insert | delete" }
-  },
-  "Bash": {
-    action: "Bash",
-    inputs: { command: "command string", timeout: "optional ms", description: "optional concise description", run_in_background: "boolean for persistent commands", cwd: "optional cwd", maxLogBytes: "optional background log cap" },
-    notes: "Use run_in_background=true or ProcessStart for servers, dev servers, watchers, and commands whose logs must be inspected later."
-  },
-  "ProcessStart": {
-    action: "ProcessStart",
-    inputs: { command: "persistent command string", cwd: "optional workspace-relative cwd", description: "short label", timeoutMs: "optional maximum lifetime in ms", maxLogBytes: "optional log cap in bytes" },
-    notes: "Starts a command in the background and returns processId plus logPath immediately. Use for backend servers, dev servers, and watchers."
-  },
-  "ProcessStatus": {
-    action: "ProcessStatus",
-    inputs: { processId: "optional process id; omit to list recent session processes", sessionId: "optional session id" }
-  },
-  "ProcessList": {
-    action: "ProcessList",
-    inputs: { sessionId: "optional session id", status: "optional running | completed | failed | stopped | unknown", limit: "optional number" }
-  },
-  "ProcessTail": {
-    action: "ProcessTail",
-    inputs: { processId: "process id", sessionId: "optional session id", lines: "optional line count", maxBytes: "optional byte cap" }
-  },
-  "ProcessGrep": {
-    action: "ProcessGrep",
-    inputs: { processId: "process id", sessionId: "optional session id", pattern: "regex or literal text", maxMatches: "optional number", contextLines: "optional number" }
-  },
-  "ProcessStop": {
-    action: "ProcessStop",
-    inputs: { processId: "process id", sessionId: "optional session id" },
-    notes: "Stops a running background process."
-  },
-  "exec": {
-    action: "exec",
-    inputs: { command: "command string", cwd: "optional workspace-relative cwd", timeoutMs: "optional ms", maxOutputBytes: "optional bytes" }
-  },
-  "WebSearch": {
-    action: "WebSearch",
-    inputs: { query: "search query", allowed_domains: "optional string[]", blocked_domains: "optional string[]" }
-  },
-  "WebFetch": {
-    action: "WebFetch",
-    inputs: { url: "http(s) URL", prompt: "what to extract from the page", timeoutMs: "optional ms", maxBytes: "optional bytes" }
-  },
-  "TodoWrite": {
-    action: "TodoWrite",
-    inputs: { todos: "array of {content:string,activeForm?:string,status:'pending'|'in_progress'|'completed'}" }
-  },
-  "BlackboardWrite": {
-    action: "BlackboardWrite",
-    inputs: { key: "stable dotted key", type: "plan | observation | evidence | result | critique | decision | artifact", value: "JSON-serializable value", visibility: "optional private | team | public", tags: "optional string[]" },
-    notes: "Write shared Swarm session state for other agents. Do not construct raw envelopes."
-  },
-  "BlackboardSearch": {
-    action: "BlackboardSearch",
-    inputs: { query: "optional text search", type: "optional entry type", tag: "optional tag", key_prefix: "optional key prefix", task_id: "optional task id", agent_id: "optional agent id", limit: "optional number" }
-  },
-  "BlackboardRead": {
-    action: "BlackboardRead",
-    inputs: { entry_id: "entry id", key: "entry key", limit: "optional number for key history" }
-  },
-  "BlackboardList": {
-    action: "BlackboardList",
-    inputs: { type: "optional entry type", tag: "optional tag", key_prefix: "optional key prefix", task_id: "optional task id", agent_id: "optional agent id", limit: "optional number" }
-  },
-  "Agent": {
-    action: "Agent",
-    inputs: { description: "short task description", prompt: "task for the agent", subagent_type: "optional agent type", model: "optional model", run_in_background: "reserved boolean", capability: "compat capability", task: "compat task", file_scope: "optional string[]" }
-  },
-  "file.read": {
-    action: "file.read",
-    inputs: {
-      action: "file.read",
-      path: "string path, or use paths",
-      paths: "optional string[] for multiple small files",
-      startLine: "optional 1-based line number",
-      endLine: "optional 1-based line number; -1 means EOF",
-      maxBytes: "optional byte budget"
-    },
-    notes: "Use a full file.read before editing an existing file."
-  },
-  "file.list": {
-    action: "file.list",
-    inputs: { action: "file.list", root: "directory path", maxFiles: "optional number", maxDepth: "optional number" }
-  },
-  "file.glob": {
-    action: "file.glob",
-    inputs: { action: "file.glob", root: "directory path", pattern: "glob pattern", maxResults: "optional number", maxDepth: "optional number" }
-  },
-  "file.grep": {
-    action: "file.grep",
-    inputs: { action: "file.grep", root: "file or directory path", pattern: "regex pattern", include: "optional glob", maxMatches: "optional number", contextLines: "optional number" }
-  },
-  "file.stat": {
-    action: "file.stat",
-    inputs: { action: "file.stat", path: "path" }
-  },
-  "file.write": {
-    action: "file.write",
-    inputs: { action: "file.write", path: "workspace path", content: "complete file content" },
-    notes: "Use for new files or complete replacement. Prefer file.edit for existing files after a full read."
-  },
-  "file.edit": {
-    action: "file.edit",
-    inputs: {
-      action: "file.edit",
-      path: "workspace path",
-      operation: "str_replace | insert",
-      oldText: "required for str_replace; must match exactly once",
-      newText: "replacement text for str_replace",
-      line: "1-based insertion line for insert",
-      content: "inserted text for insert"
-    }
-  },
-  "shell.exec": {
-    action: "shell.exec",
-    inputs: { action: "shell.exec", command: "command string", cwd: "optional workspace-relative cwd", timeoutMs: "optional ms", maxOutputBytes: "optional bytes", run_in_background: "optional boolean", description: "optional label", maxLogBytes: "optional bytes" }
-  },
-  "process.start": {
-    action: "process.start",
-    inputs: { action: "process.start", command: "persistent command string", cwd: "optional cwd", description: "short label", timeoutMs: "optional ms", maxLogBytes: "optional bytes" }
-  },
-  "process.status": {
-    action: "process.status",
-    inputs: { action: "process.status", processId: "optional process id", sessionId: "optional session id" }
-  },
-  "process.list": {
-    action: "process.list",
-    inputs: { action: "process.list", sessionId: "optional session id", status: "optional status", limit: "optional number" }
-  },
-  "process.tail": {
-    action: "process.tail",
-    inputs: { action: "process.tail", processId: "process id", sessionId: "optional session id", lines: "optional number", maxBytes: "optional bytes" }
-  },
-  "process.grep": {
-    action: "process.grep",
-    inputs: { action: "process.grep", processId: "process id", sessionId: "optional session id", pattern: "regex or literal", maxMatches: "optional number", contextLines: "optional number" }
-  },
-  "process.stop": {
-    action: "process.stop",
-    inputs: { action: "process.stop", processId: "process id", sessionId: "optional session id" }
-  },
-  "code.test": {
-    action: "code.test",
-    inputs: { action: "code.test", command: "test/check command string", cwd: "optional cwd", timeoutMs: "optional ms" }
-  },
-  "code.lint": {
-    action: "code.lint",
-    inputs: { action: "code.lint", root: "optional root", include: "optional glob" }
-  },
-  "git.status": {
-    action: "git.status",
-    inputs: { action: "git.status", cwd: "optional cwd" }
-  },
-  "git.diff": {
-    action: "git.diff",
-    inputs: { action: "git.diff", cwd: "optional cwd", staged: "optional boolean" }
-  },
-  "git.log": {
-    action: "git.log",
-    inputs: { action: "git.log", cwd: "optional cwd", maxCommits: "optional number" }
-  },
-  "web.search": {
-    action: "web.search",
-    inputs: { action: "web.search", query: "search query", allowed_domains: "optional string[]", blocked_domains: "optional string[]", maxUses: "optional number" }
-  },
-  "web.fetch": {
-    action: "web.fetch",
-    inputs: { action: "web.fetch", url: "http(s) URL", timeoutMs: "optional ms", maxBytes: "optional bytes" }
-  },
-  "todo.write": {
-    action: "todo.write",
-    inputs: {
-      action: "todo.write",
-      todos: "array of {content:string,status:'pending'|'in_progress'|'completed'}"
-    }
-  },
-  "blackboard.write": {
-    action: "blackboard.write",
-    inputs: { action: "blackboard.write", key: "stable dotted key", type: "entry type", value: "JSON value", visibility: "optional private | team | public", tags: "optional string[]" }
-  },
-  "blackboard.search": {
-    action: "blackboard.search",
-    inputs: { action: "blackboard.search", query: "optional text search", type: "optional entry type", tag: "optional tag", keyPrefix: "optional key prefix", taskId: "optional task id", agentId: "optional agent id", limit: "optional number" }
-  },
-  "blackboard.read": {
-    action: "blackboard.read",
-    inputs: { action: "blackboard.read", entryId: "entry id", key: "entry key", limit: "optional number" }
-  },
-  "blackboard.list": {
-    action: "blackboard.list",
-    inputs: { action: "blackboard.list", type: "optional entry type", tag: "optional tag", keyPrefix: "optional key prefix", taskId: "optional task id", agentId: "optional agent id", limit: "optional number" }
-  },
-  "agent.delegate": {
-    action: "agent.delegate",
-    inputs: {
-      action: "agent.delegate",
-      capability: "requested capability such as code.research, code.review, verify, architecture.design, bug.fix",
-      task: "bounded internal task for the specialist",
-      context: "optional concise context and evidence",
-      preferred_agent_spec_id: "optional agent spec id from available_agent_specs",
-      preferred_mode: "optional call_subagent | handoff | parallel",
-      file_scope: "optional string[]; required for scoped_write implementation delegation"
+function renderDeferredToolCatalog(capabilities: CapabilityDescriptor[], discoveredDynamicToolNames: Set<string>): DeferredToolCatalogSummary | undefined {
+  const deferredMcpTools = capabilities.filter((capability) => isVisibleMcpCapability(capability) && !discoveredDynamicToolNames.has(capability.name));
+  const searchableSkills = capabilities.filter((capability) => capability.kind === "skill" && capability.id !== SKILL_ACTIVATE_CAPABILITY_ID && capability.modelVisible && capability.status !== "disabled");
+  if (!deferredMcpTools.length && !searchableSkills.length) {
+    return undefined;
+  }
+  const providerCounts = new Map<string, number>();
+  for (const capability of deferredMcpTools) {
+    providerCounts.set(capability.providerId, (providerCounts.get(capability.providerId) ?? 0) + 1);
+  }
+  return {
+    deferred_mcp_tools: deferredMcpTools.length,
+    searchable_skills: searchableSkills.length,
+    providers: [...providerCounts.entries()]
+      .map(([provider_id, count]) => ({ provider_id, count }))
+      .sort((a, b) => b.count - a.count || a.provider_id.localeCompare(b.provider_id))
+      .slice(0, 12),
+    hint: "Use ToolSearch(query, limit) to discover deferred MCP tools or skill names. Deferred MCP schemas are loaded on the next turn after discovery."
+  };
+}
+
+function isToolSearchAction(action: string | undefined): action is string {
+  return typeof action === "string" && (action === TOOL_SEARCH_TOOL_NAME || action === "tool.search");
+}
+
+function parseToolSearchInputs(inputs: Record<string, unknown>): { query?: string; limit: number; kind?: string; provider?: string } {
+  const query = normalizeSearchText(inputs.query ?? inputs.search ?? inputs.q);
+  const limit = clampToolSearchLimit(inputs.limit ?? inputs.max_results ?? inputs.maxResults);
+  const kind = normalizeSearchText(inputs.kind);
+  const provider = normalizeSearchText(inputs.provider ?? inputs.provider_id ?? inputs.providerId);
+  return {
+    query: query || undefined,
+    limit,
+    kind: kind || undefined,
+    provider: provider || undefined
+  };
+}
+
+function searchDeferredCapabilities(
+  capabilities: CapabilityDescriptor[],
+  search: { query?: string; limit: number; kind?: string; provider?: string },
+  discoveredDynamicToolNames: Set<string>
+): ToolSearchMatch[] {
+  const candidates = capabilities
+    .filter((capability) => shouldIncludeInToolSearch(capability, search, discoveredDynamicToolNames))
+    .map((capability): ToolSearchMatch | undefined => {
+      const score = scoreToolSearchCapability(capability, search.query);
+      if (search.query && score === undefined) {
+        return undefined;
+      }
+      return {
+        action: capability.kind === "skill" ? SKILL_ACTIVATE_TOOL_NAME : capability.name,
+        capabilityId: capability.id,
+        kind: capability.kind,
+        name: capability.name,
+        title: capability.title,
+        description: capability.description,
+        providerId: capability.providerId,
+        permissionName: capability.permissionName,
+        searchHint: capability.searchHint,
+        readOnly: capability.readOnly,
+        concurrencyClass: capability.concurrencyClass,
+        loadNextTurn: capability.kind === "mcp_tool" && !discoveredDynamicToolNames.has(capability.name),
+        activationName: capability.kind === "skill" ? capability.name : undefined,
+        score
+      };
+    })
+    .filter((match): match is ToolSearchMatch => match !== undefined);
+  return candidates
+    .sort((a, b) => {
+      const scoreA = a.score ?? Number.POSITIVE_INFINITY;
+      const scoreB = b.score ?? Number.POSITIVE_INFINITY;
+      return scoreA - scoreB ||
+        kindPriorityForToolSearch(a.kind) - kindPriorityForToolSearch(b.kind) ||
+        a.providerId.localeCompare(b.providerId) ||
+        a.name.localeCompare(b.name);
+    })
+    .slice(0, search.limit);
+}
+
+function shouldIncludeInToolSearch(
+  capability: CapabilityDescriptor,
+  search: { query?: string; kind?: string; provider?: string },
+  discoveredDynamicToolNames: Set<string>
+): boolean {
+  if (!isVisibleCapability(capability)) {
+    return false;
+  }
+  if (capability.kind === "local_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) {
+    return false;
+  }
+  if (search.kind && capability.kind !== search.kind) {
+    return false;
+  }
+  if (search.provider) {
+    const provider = search.provider.toLowerCase();
+    const providerId = capability.providerId.toLowerCase();
+    const providerName = String(capability.metadata?.server_id ?? "").toLowerCase();
+    if (!providerId.includes(provider) && !providerName.includes(provider)) {
+      return false;
     }
   }
-};
+  if (capability.kind === "mcp_tool" && discoveredDynamicToolNames.has(capability.name)) {
+    return false;
+  }
+  if (capability.kind !== "mcp_tool" && capability.kind !== "skill") {
+    return false;
+  }
+  return true;
+}
+
+function scoreToolSearchCapability(capability: CapabilityDescriptor, query?: string): number | undefined {
+  if (!query) {
+    return 0;
+  }
+  const normalizedQuery = query.toLowerCase();
+  const fields = [
+    capability.name,
+    capability.title ?? "",
+    capability.permissionName,
+    capability.description,
+    capability.providerId,
+    capability.searchHint ?? "",
+    JSON.stringify(capability.metadata ?? {})
+  ].map((field) => field.toLowerCase());
+  if (fields.some((field) => field === normalizedQuery)) {
+    return 0;
+  }
+  if (fields.some((field) => field.startsWith(normalizedQuery))) {
+    return 1;
+  }
+  if (fields.some((field) => field.includes(normalizedQuery))) {
+    return 2;
+  }
+  return undefined;
+}
+
+function kindPriorityForToolSearch(kind: string): number {
+  if (kind === "mcp_tool") {
+    return 0;
+  }
+  if (kind === "skill") {
+    return 1;
+  }
+  return 2;
+}
+
+function renderToolSearchDetail(
+  search: { query?: string; limit: number; kind?: string; provider?: string },
+  matches: ToolSearchMatch[],
+  loadedToolNames: string[]
+): string {
+  const lines = [
+    `ToolSearch query=${JSON.stringify(search.query ?? "")} limit=${search.limit}${search.kind ? ` kind=${search.kind}` : ""}${search.provider ? ` provider=${search.provider}` : ""}`,
+    matches.length ? `Matches: ${matches.length}` : "Matches: none"
+  ];
+  if (loadedToolNames.length) {
+    lines.push(`Loaded for next turn: ${loadedToolNames.join(", ")}`);
+  }
+  for (const [index, match] of matches.entries()) {
+    lines.push(`${index + 1}. ${match.action}${match.loadNextTurn ? " (load next turn)" : ""}`);
+    lines.push(`   kind: ${match.kind}`);
+    lines.push(`   provider: ${match.providerId}`);
+    lines.push(`   title: ${previewActivityValue(match.title ?? match.name)}`);
+    lines.push(`   description: ${previewActivityValue(match.description)}`);
+    if (match.searchHint) {
+      lines.push(`   hint: ${previewActivityValue(match.searchHint)}`);
+    }
+    if (match.activationName) {
+      lines.push(`   activate with: skill.activate { name: ${JSON.stringify(match.activationName)} }`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function normalizeSearchText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function clampToolSearchLimit(value: unknown): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 8;
+  }
+  return Math.min(Math.floor(parsed), 12);
+}
 
 async function parseCodingLoopModelResultWithRepair(
   text: string,
@@ -1479,9 +2196,22 @@ async function parseCodingLoopModelResultWithRepair(
   provider: OpenAIProvider
 ): Promise<CodingLoopModelResult> {
   const parsed = parseCodingLoopModelResult(text);
+  const validationError = validateCodingLoopModelResult(parsed);
+  if (validationError) {
+    return repairCodingLoopModelResult(text, objective, provider, validationError);
+  }
   if (parsed.message !== text || parsed.tool_calls.length > 0 || parsed.status !== "continue") {
     return parsed;
   }
+  return repairCodingLoopModelResult(text, objective, provider);
+}
+
+async function repairCodingLoopModelResult(
+  text: string,
+  objective: string,
+  provider: OpenAIProvider,
+  validationError?: string
+): Promise<CodingLoopModelResult> {
   const repaired = await provider.generateText({
     model: provider.workerModel,
     system: [{
@@ -1490,18 +2220,32 @@ async function parseCodingLoopModelResultWithRepair(
         "Return exactly one valid JSON object and nothing else.",
         "The object must have keys: status, summary, message, files_touched, next_actions, tool_calls.",
         "status must be continue, completed, or failed.",
-        "tool_calls must be an array."
-      ].join(" "),
+        "tool_calls must be an array.",
+        "status=continue must include at least one executable tool_call; if no tool is needed, set status=completed or status=failed.",
+        "Every tool call must include a non-empty action string that matches an allowed tool.",
+        validationError ? `Validation error: ${validationError}` : undefined
+      ].filter(Boolean).join(" "),
       cache: true
     }],
     user: JSON.stringify({
       objective,
-      invalid_output: text
+      invalid_output: text,
+      validation_error: validationError
     }, null, 2),
     usage: { purpose: "coding_loop_json_repair" },
+    responseFormat: "json_object",
     maxOutputTokens: MODEL_OUTPUT_TOKENS_REPAIR
   });
-  return parseCodingLoopModelResult(repaired);
+  const parsed = parseCodingLoopModelResult(repaired);
+  const repairedValidationError = validateCodingLoopModelResult(parsed);
+  if (repairedValidationError) {
+    const safeFallback = completedResultFromRepairedBareContinue(parsed, repaired, repairedValidationError);
+    if (safeFallback) {
+      return safeFallback;
+    }
+    return invalidCodingLoopModelResult(repairedValidationError, repaired);
+  }
+  return parsed;
 }
 
 function parseCodingLoopModelResult(text: string): CodingLoopModelResult {
@@ -1534,40 +2278,648 @@ function parseToolCalls(value: unknown): CodingLoopToolCall[] {
       return {
         id: typeof item.id === "string" ? item.id : undefined,
         action: typeof item.action === "string" ? item.action : typeof item.type === "string" ? item.type : undefined,
-        inputs: isRecord(item.inputs) ? item.inputs : {},
+        inputs: toolCallInputs(item),
         reason: typeof item.reason === "string" ? item.reason : undefined
       };
     })
     .filter((item): item is CodingLoopToolCall => item !== undefined);
 }
 
-function partitionToolCalls(calls: CodingLoopToolCall[]): Array<{ concurrent: boolean; calls: CodingLoopToolCall[] }> {
-  const batches: Array<{ concurrent: boolean; calls: CodingLoopToolCall[] }> = [];
-  for (const call of calls) {
-    let concurrent = false;
+function toolCallInputs(item: Record<string, unknown>): Record<string, unknown> {
+  for (const key of ["inputs", "parameters", "arguments", "args"]) {
+    if (isRecord(item[key])) {
+      return item[key];
+    }
+  }
+  return flatToolCallInputs(item);
+}
+
+function flatToolCallInputs(item: Record<string, unknown>): Record<string, unknown> {
+  const inputs = { ...item };
+  delete inputs.id;
+  delete inputs.action;
+  delete inputs.type;
+  delete inputs.reason;
+  delete inputs.inputs;
+  delete inputs.parameters;
+  delete inputs.arguments;
+  delete inputs.args;
+  return inputs;
+}
+
+function workspaceCompletionGapResult(
+  result: CodingLoopModelResult,
+  changedFiles: Set<string>,
+  options: { expectedSideEffects?: string; writePolicy?: SandboxWritePolicy } = {}
+): CodingLoopToolResult | undefined {
+  if (result.status !== "completed") {
+    return undefined;
+  }
+  const claimedFiles = uniqueNonEmptyStrings(result.files_touched);
+  const unverifiedClaims = claimedFiles.filter((file) => !changedFiles.has(file));
+  if (options.writePolicy !== "read_only" && unverifiedClaims.length > 0) {
+    return {
+      id: `workspace_claim_unverified_${randomUUID()}`,
+      action: "workspace.verify",
+      status: "failed",
+      summary: `Unverified workspace change claim: ${unverifiedClaims.slice(0, 6).join(", ")}`,
+      content: [
+        `The model claimed changed files, but no successful write/edit tool result recorded those paths: ${unverifiedClaims.join(", ")}.`,
+        "Use file.write or file.edit to make the requested change before returning completed."
+      ].join("\n"),
+      errorCode: "UNVERIFIED_WORKSPACE_CHANGE",
+      recoverySuggestion: "Make the requested workspace change through file.write or file.edit, then report only paths confirmed by tool results."
+    };
+  }
+  if (expectsWorkspaceModification(options.expectedSideEffects) && changedFiles.size === 0) {
+    return {
+      id: `workspace_change_missing_${randomUUID()}`,
+      action: "workspace.verify",
+      status: "failed",
+      summary: "Expected workspace modification, but no files changed",
+      content: [
+        "The execution route expects this task to modify the workspace, but no successful write/edit tool result was recorded.",
+        "Do not claim the file was created or updated until a write/edit tool result proves it."
+      ].join("\n"),
+      errorCode: "WORKSPACE_CHANGE_MISSING",
+      recoverySuggestion: "Use file.write or file.edit for the requested workspace change, or return failed with a concrete blocker."
+    };
+  }
+  return undefined;
+}
+
+function verificationCompletionGapResult(
+  objective: string,
+  result: CodingLoopModelResult,
+  testsRun: Set<string>,
+  toolResults: CodingLoopToolResult[]
+): CodingLoopToolResult | undefined {
+  if (result.status !== "completed" || testsRun.size > 0) {
+    return undefined;
+  }
+  const finalText = `${result.summary}\n${result.message}\n${result.next_actions.join("\n")}`;
+  if (!expectsVerificationCommand(objective, finalText)) {
+    return undefined;
+  }
+  const hasVerificationToolAttempt = toolResults.some((toolResult) => isVerificationToolAction(toolResult.action));
+  if (hasVerificationToolAttempt && !claimsVerificationPassed(finalText)) {
+    return undefined;
+  }
+  return {
+    id: `verification_claim_unverified_${randomUUID()}`,
+    action: "verification.verify",
+    status: "failed",
+    summary: "Expected verification command evidence, but no check was recorded",
+    content: [
+      "The objective or final answer requires running verification, but no successful code.test/code.lint result was recorded.",
+      "Do not claim tests, lint, build, or verification passed from reasoning alone.",
+      "In read_only policy, use code.test or code.lint for verification commands. If no command is suitable, return a concrete verification gap instead of completed."
+    ].join("\n"),
+    errorCode: "UNVERIFIED_VERIFICATION_CLAIM",
+    recoverySuggestion: "Run the required verification via code.test/code.lint, or return failed/blocked with the exact reason verification cannot be performed."
+  };
+}
+
+function expectsVerificationCommand(objective: string, finalText: string): boolean {
+  if (claimsVerificationPassed(finalText)) {
+    return true;
+  }
+  return explicitlyRequestsVerificationCommand(objective);
+}
+
+function explicitlyRequestsVerificationCommand(text: string): boolean {
+  const actionableText = stripHistoricalVerificationEvidence(text);
+  const lowered = actionableText.toLowerCase();
+  const verificationTargets = "(?:test suite|tests?|lint|linter|typecheck|type check|build|checks|check command)";
+  const namedVerificationCommands = "(?:code\\.test|code\\.lint)|(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?(?:test|lint|build|check|typecheck)|(?:cargo|go|mvn|gradle)\\s+test|pytest";
+  if (
+    new RegExp(`\\b(run|execute|rerun|start|use)\\b[\\s\\S]{0,80}\\b${verificationTargets}\\b`).test(lowered)
+    || new RegExp(`\\b(run|execute|rerun|start|use)\\b[\\s\\S]{0,80}\\b(?:${namedVerificationCommands})\\b`).test(lowered)
+    || /\b(verification|verify)\s+command\b/.test(lowered)
+  ) {
+    return true;
+  }
+  return /(?:运行|执行|跑|重跑|重新运行)[\s\S]{0,40}(?:测试|单测|用例|验证|检查|构建|类型检查|lint|build|typecheck|npm test|npm run|pnpm|yarn)/.test(actionableText);
+}
+
+function stripHistoricalVerificationEvidence(text: string): string {
+  return text
+    .replace(/"tests_run"\s*:\s*\[[\s\S]*?\]/gi, "")
+    .replace(/\btests_run\b\s*[:=][^\r\n]+/gi, "")
+    .replace(/\bchecks_run\b\s*[:=][^\r\n]+/gi, "")
+    .replace(/\btests run\b\s*[:=][^\r\n]+/gi, "")
+    .replace(/\bchecks run\b\s*[:=][^\r\n]+/gi, "");
+}
+
+function claimsVerificationPassed(text: string): boolean {
+  const lowered = text.toLowerCase();
+  return /\b(tests?|lint|build|typecheck|checks?|verification)\s+(passed|succeeded|successful|green)\b/.test(lowered)
+    || /(测试|验证|检查|构建).*(通过|成功)|通过.*(测试|验证|检查|构建)/.test(text);
+}
+
+function isVerificationToolAction(action: string): boolean {
+  return ["code.test", "code.lint", "code.build", "shell.exec", "exec"].includes(action);
+}
+
+type WorkspaceTransactionIssue = {
+  kind: "semantic_conflict" | "formatting_risk";
+  file: string;
+  source: string;
+  selector: string;
+  firstLine: number;
+  secondLine: number;
+  overlappingProperties: string[];
+  summary: string;
+  detail: string;
+};
+
+type CssRuleRecord = {
+  selector: string;
+  normalizedSelector: string;
+  properties: Set<string>;
+  source: string;
+  line: number;
+};
+
+const CSS_TRANSACTION_EXTENSIONS = new Set([".css", ".html", ".htm"]);
+const CSS_TRANSACTION_PROPERTIES = new Set([
+  "animation",
+  "background",
+  "border-radius",
+  "content",
+  "filter",
+  "height",
+  "inset",
+  "left",
+  "opacity",
+  "position",
+  "right",
+  "top",
+  "transform",
+  "width",
+  "z-index"
+]);
+
+async function workspaceTransactionConflictResult(
+  workspace: string,
+  changedFiles: Set<string>
+): Promise<CodingLoopToolResult | undefined> {
+  if (changedFiles.size === 0) {
+    return undefined;
+  }
+
+  const issues: WorkspaceTransactionIssue[] = [];
+  for (const file of changedFiles) {
+    const absolutePath = resolveChangedWorkspacePath(workspace, file);
+    if (!absolutePath || !CSS_TRANSACTION_EXTENSIONS.has(extname(absolutePath).toLowerCase())) {
+      continue;
+    }
+    let content: string;
     try {
-      if (call.action?.startsWith("mcp__")) {
-        concurrent = false;
+      content = await readFile(absolutePath, "utf8");
+    } catch {
+      continue;
+    }
+    const displayFile = file.replace(/\\/g, "/");
+    issues.push(...inspectFormattingTransactionIssues(displayFile, absolutePath, content));
+    issues.push(...inspectCssTransactionConflicts(file.replace(/\\/g, "/"), absolutePath, content));
+    if (issues.length >= 3) {
+      break;
+    }
+  }
+
+  if (issues.length === 0) {
+    return undefined;
+  }
+
+  const first = issues[0];
+  const issueLines = issues.slice(0, 3).map((issue) => [
+    `- ${issue.summary}`,
+    `  ${issue.detail}`
+  ].join("\n"));
+  return {
+    id: `workspace_transaction_${randomUUID()}`,
+    action: "workspace.transaction",
+    status: "failed",
+    summary: first.kind === "formatting_risk"
+      ? `Workspace formatting risk in ${first.file}`
+      : `Potential semantic conflict in ${first.file}: ${first.selector}`,
+    content: [
+      "Swarm's workspace transaction inspector found a likely self-overwrite before accepting completion.",
+      ...issueLines,
+      "Repair the file, then return completed only after the duplicate rule is consolidated or split into distinct selectors."
+    ].join("\n"),
+    data: { issues },
+    errorCode: first.kind === "formatting_risk" ? "TRANSACTION_FORMATTING_RISK" : "TRANSACTION_SEMANTIC_CONFLICT",
+    recoverySuggestion: first.kind === "formatting_risk"
+      ? "Rewrite generated HTML/CSS/JS with stable line breaks and indentation before completion so reviews, diffs, and follow-up edits are reliable."
+      : "Consolidate duplicate global pseudo-element CSS rules, or use distinct elements/selectors so a later rule does not override the earlier visual layer."
+  };
+}
+
+function resolveChangedWorkspacePath(workspace: string, file: string): string | undefined {
+  const root = resolve(workspace);
+  const absolutePath = isAbsolute(file) ? resolve(file) : resolve(root, file);
+  const relativePath = relative(root, absolutePath);
+  if (relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))) {
+    return absolutePath;
+  }
+  return undefined;
+}
+
+function inspectCssTransactionConflicts(file: string, absolutePath: string, content: string): WorkspaceTransactionIssue[] {
+  const extension = extname(absolutePath).toLowerCase();
+  const sources = extension === ".css"
+    ? [{ name: file, css: content, startLine: 1 }]
+    : extractInlineCssSources(file, content);
+  return sources.flatMap((source) => inspectCssSourceForTransactionConflicts(file, source.name, source.css, source.startLine));
+}
+
+function inspectFormattingTransactionIssues(file: string, absolutePath: string, content: string): WorkspaceTransactionIssue[] {
+  const extension = extname(absolutePath).toLowerCase();
+  if (![".html", ".htm", ".css", ".js", ".ts", ".tsx", ".jsx"].includes(extension)) {
+    return [];
+  }
+  const lines = content.split(/\r?\n/);
+  const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
+  if (content.length < 8_000 || lines.length > 5 || longestLine < 4_000) {
+    return [];
+  }
+  return [{
+    kind: "formatting_risk",
+    file,
+    source: file,
+    selector: "file formatting",
+    firstLine: 1,
+    secondLine: 1,
+    overlappingProperties: [],
+    summary: `${file}:1 is a generated ${extension.slice(1)} file with ${content.length} bytes across ${lines.length} line(s)`,
+    detail: "Large single-line generated files make diffs, reviews, transaction checks, and follow-up edits unreliable."
+  }];
+}
+
+function extractInlineCssSources(file: string, content: string): Array<{ name: string; css: string; startLine: number }> {
+  const sources: Array<{ name: string; css: string; startLine: number }> = [];
+  const stylePattern = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = stylePattern.exec(content)) !== null) {
+    const fullMatch = match[0];
+    const css = match[1] ?? "";
+    const openTagEnd = fullMatch.indexOf(">") + 1;
+    const cssStart = match.index + Math.max(openTagEnd, 0);
+    sources.push({
+      name: `${file}<style#${sources.length + 1}>`,
+      css,
+      startLine: lineNumberAt(content, cssStart)
+    });
+  }
+  return sources;
+}
+
+function inspectCssSourceForTransactionConflicts(
+  file: string,
+  source: string,
+  css: string,
+  startLine: number
+): WorkspaceTransactionIssue[] {
+  const rules = parseCssRuleRecords(source, css, startLine);
+  const previousBySelector = new Map<string, CssRuleRecord[]>();
+  const issues: WorkspaceTransactionIssue[] = [];
+  for (const rule of rules) {
+    const previousRules = previousBySelector.get(rule.normalizedSelector) ?? [];
+    for (const previous of previousRules) {
+      const overlappingProperties = [...rule.properties]
+        .filter((property) => previous.properties.has(property) && CSS_TRANSACTION_PROPERTIES.has(property))
+        .sort();
+      if (isConflictingGlobalPseudoOverride(rule.normalizedSelector, overlappingProperties)) {
+        issues.push({
+          kind: "semantic_conflict",
+          file,
+          source,
+          selector: rule.selector,
+          firstLine: previous.line,
+          secondLine: rule.line,
+          overlappingProperties,
+          summary: `${source}:${rule.line} redefines ${rule.selector} from line ${previous.line}`,
+          detail: `Both rules set high-impact pseudo-element properties (${overlappingProperties.join(", ")}), so the later CSS rule can erase the earlier visual layer.`
+        });
+        break;
+      }
+    }
+    previousRules.push(rule);
+    previousBySelector.set(rule.normalizedSelector, previousRules);
+  }
+  return issues;
+}
+
+function parseCssRuleRecords(source: string, css: string, startLine: number): CssRuleRecord[] {
+  const withoutComments = maskCssComments(css);
+  const rules: CssRuleRecord[] = [];
+  const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = rulePattern.exec(withoutComments)) !== null) {
+    const selectorText = (match[1] ?? "").trim();
+    if (!selectorText || selectorText.startsWith("@") || selectorText.includes("@keyframes")) {
+      continue;
+    }
+    const properties = parseCssTransactionProperties(match[2] ?? "");
+    if (properties.size === 0) {
+      continue;
+    }
+    const line = startLine + lineNumberAt(withoutComments, match.index) - 1;
+    for (const selector of selectorText.split(",").map((item) => item.trim()).filter(Boolean)) {
+      rules.push({
+        selector,
+        normalizedSelector: normalizeCssSelector(selector),
+        properties,
+        source,
+        line
+      });
+    }
+  }
+  return rules;
+}
+
+function parseCssTransactionProperties(body: string): Set<string> {
+  const properties = new Set<string>();
+  for (const declaration of body.split(";")) {
+    const separator = declaration.indexOf(":");
+    if (separator < 1) {
+      continue;
+    }
+    const property = normalizeCssProperty(declaration.slice(0, separator));
+    if (property && CSS_TRANSACTION_PROPERTIES.has(property)) {
+      properties.add(property);
+    }
+  }
+  return properties;
+}
+
+function normalizeCssSelector(selector: string): string {
+  return selector.replace(/\s+/g, "").toLowerCase();
+}
+
+function normalizeCssProperty(property: string): string {
+  const normalized = property.trim().toLowerCase();
+  if (normalized === "background" || normalized.startsWith("background-")) {
+    return "background";
+  }
+  if (normalized === "animation" || normalized.startsWith("animation-")) {
+    return "animation";
+  }
+  if (normalized === "border-radius" || normalized.startsWith("border-") && normalized.endsWith("-radius")) {
+    return "border-radius";
+  }
+  return normalized;
+}
+
+function isConflictingGlobalPseudoOverride(selector: string, overlappingProperties: string[]): boolean {
+  if (!/^(?:body|html|:root)(?::before|::before|:after|::after)$/i.test(selector)) {
+    return false;
+  }
+  return overlappingProperties.length >= 2
+    || overlappingProperties.includes("content") && overlappingProperties.some((property) => property !== "content");
+}
+
+function maskCssComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\r\n]/g, " "));
+}
+
+function lineNumberAt(text: string, index: number): number {
+  let line = 1;
+  const end = Math.min(Math.max(index, 0), text.length);
+  for (let i = 0; i < end; i += 1) {
+    if (text.charCodeAt(i) === 10) {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+function expectsWorkspaceModification(expectedSideEffects: string | undefined): boolean {
+  return expectedSideEffects === "modify_workspace";
+}
+
+function uniqueNonEmptyStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function validateCodingLoopToolCalls(toolCalls: CodingLoopToolCall[]): string | undefined {
+  const invalid = toolCalls.find((call) => typeof call.action !== "string" || !call.action.trim());
+  if (invalid) {
+    return "tool_calls contained an empty or missing action value.";
+  }
+  const malformed = toolCalls
+    .map((call) => validateLocalToolCallInputs(call))
+    .find((message): message is string => Boolean(message));
+  if (malformed) {
+    return malformed;
+  }
+  return undefined;
+}
+
+function validateCodingLoopModelResult(result: CodingLoopModelResult): string | undefined {
+  if (result.status === "continue" && result.tool_calls.length === 0) {
+    return CONTINUE_WITHOUT_TOOL_CALLS_ERROR;
+  }
+  return validateCodingLoopToolCalls(result.tool_calls);
+}
+
+const CONTINUE_WITHOUT_TOOL_CALLS_ERROR = "status=continue requires at least one executable tool_call. Use status=completed or status=failed when no tool is needed.";
+
+function completedResultFromRepairedBareContinue(
+  result: CodingLoopModelResult,
+  repairedText: string,
+  validationError: string
+): CodingLoopModelResult | undefined {
+  if (validationError !== CONTINUE_WITHOUT_TOOL_CALLS_ERROR) {
+    return undefined;
+  }
+  const repaired = parseJsonObject(repairedText);
+  const hasMessage = typeof repaired.message === "string" && repaired.message.trim().length > 0;
+  const hasSummary = typeof repaired.summary === "string" && repaired.summary.trim().length > 0;
+  if (repaired.status !== "continue" || !Array.isArray(repaired.tool_calls) || repaired.tool_calls.length > 0 || (!hasMessage && !hasSummary)) {
+    return undefined;
+  }
+  return {
+    ...result,
+    status: "completed",
+    tool_calls: []
+  };
+}
+
+function validateLocalToolCallInputs(call: CodingLoopToolCall): string | undefined {
+  if (isToolSearchAction(call.action) || isDynamicCapabilityAction(call.action)) {
+    return undefined;
+  }
+  try {
+    const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
+    return validateLocalToolActionInputs(action);
+  } catch (error) {
+    return `tool_call ${call.id ?? call.action ?? "unknown"} has invalid inputs: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function invalidCodingLoopModelResult(validationError: string, text: string): CodingLoopModelResult {
+  return {
+    status: "failed",
+    message: [
+      `Swarm could not repair the model tool call JSON: ${validationError}`,
+      `Model output preview: ${truncateTextBytes(text, 2_000)}`
+    ].join("\n"),
+    summary: `Invalid model tool call JSON: ${validationError}`,
+    tool_calls: [],
+    files_touched: [],
+    next_actions: ["Retry the request or narrow it so the model emits valid tool_calls with explicit action names."]
+  };
+}
+
+function partitionToolCalls(
+  calls: CodingLoopToolCall[],
+  options: { agentSpecs?: AgentSpec[]; maxParallel?: number } = {}
+): Array<{ concurrent: boolean; concurrencyClass: ToolConcurrencyClass; calls: CodingLoopToolCall[] }> {
+  const batches: Array<{ concurrent: boolean; concurrencyClass: ToolConcurrencyClass; calls: CodingLoopToolCall[] }> = [];
+  const maxParallel = Math.max(1, options.maxParallel ?? calls.length);
+  for (const call of calls) {
+    let concurrencyClass: ToolConcurrencyClass = "write_exclusive";
+    try {
+      if (call.action === TOOL_SEARCH_TOOL_NAME || call.action === "tool.search") {
+        concurrencyClass = "read_parallel";
+      } else if (call.action?.startsWith("mcp__")) {
+        concurrencyClass = "network_limited";
       } else if (call.action === SKILL_ACTIVATE_TOOL_NAME) {
-        concurrent = false;
+        concurrencyClass = "write_exclusive";
       } else {
-        concurrent = isReadOnlyToolAction(normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action }));
+        concurrencyClass = classifyToolCallConcurrency(call, options.agentSpecs);
       }
     } catch {
-      concurrent = false;
+      concurrencyClass = "write_exclusive";
     }
+    const concurrent = concurrencyClass === "read_parallel" || concurrencyClass === "delegate_parallel";
     const last = batches[batches.length - 1];
-    if (concurrent && last?.concurrent) {
+    if (concurrent && canShareConcurrentBatch(last, call, concurrencyClass, options.agentSpecs ?? [], maxParallel)) {
       last.calls.push(call);
     } else {
-      batches.push({ concurrent, calls: [call] });
+      batches.push({ concurrent, concurrencyClass, calls: [call] });
     }
   }
   return batches;
 }
 
-function isReadOnlyToolAction(action: ToolAction): boolean {
-  return [
+function classifyToolCallConcurrency(call: CodingLoopToolCall, agentSpecs: AgentSpec[] = []): ToolConcurrencyClass {
+  const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
+  if (isParallelReadOnlyDelegateAction(action, agentSpecs)) {
+    return "read_parallel";
+  }
+  if (isParallelScopedWriteDelegateAction(action, agentSpecs)) {
+    return "delegate_parallel";
+  }
+  return classifyToolConcurrency(action);
+}
+
+function canShareConcurrentBatch(
+  last: { concurrent: boolean; concurrencyClass: ToolConcurrencyClass; calls: CodingLoopToolCall[] } | undefined,
+  call: CodingLoopToolCall,
+  concurrencyClass: ToolConcurrencyClass,
+  agentSpecs: AgentSpec[],
+  maxParallel: number
+): boolean {
+  if (!last?.concurrent || last.concurrencyClass !== concurrencyClass || last.calls.length >= maxParallel) {
+    return false;
+  }
+  if (concurrencyClass !== "delegate_parallel") {
+    return true;
+  }
+  return canBatchParallelScopedWriteDelegate(last.calls, call, agentSpecs);
+}
+
+function isParallelReadOnlyDelegateAction(action: ToolAction, agentSpecs: AgentSpec[]): boolean {
+  if (action.type !== "agent.delegate" || action.preferred_mode !== "parallel") {
+    return false;
+  }
+  const spec = findDelegateAgentSpec(action, agentSpecs);
+  return spec?.write_policy === "read_only";
+}
+
+function isParallelScopedWriteDelegateAction(
+  action: ToolAction,
+  agentSpecs: AgentSpec[]
+): action is Extract<ToolAction, { type: "agent.delegate" }> {
+  if (action.type !== "agent.delegate" || action.preferred_mode !== "parallel") {
+    return false;
+  }
+  const spec = findDelegateAgentSpec(action, agentSpecs);
+  return spec?.write_policy === "scoped_write" && parallelScopedWriteScope(action.file_scope) !== undefined;
+}
+
+function findDelegateAgentSpec(action: Extract<ToolAction, { type: "agent.delegate" }>, agentSpecs: AgentSpec[]): AgentSpec | undefined {
+  const preferredId = action.preferred_agent_spec_id?.trim();
+  if (preferredId) {
+    return agentSpecs.find((spec) => spec.id === preferredId);
+  }
+  const capability = action.capability.trim();
+  return agentSpecs.find((spec) => spec.id === capability);
+}
+
+function canBatchParallelScopedWriteDelegate(
+  existingCalls: CodingLoopToolCall[],
+  nextCall: CodingLoopToolCall,
+  agentSpecs: AgentSpec[]
+): boolean {
+  const nextScope = parallelScopedWriteScopeForCall(nextCall, agentSpecs);
+  if (!nextScope) {
+    return false;
+  }
+  for (const call of existingCalls) {
+    const existingScope = parallelScopedWriteScopeForCall(call, agentSpecs);
+    if (!existingScope || scopesOverlap(existingScope, nextScope)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function parallelScopedWriteScopeForCall(call: CodingLoopToolCall, agentSpecs: AgentSpec[]): string[] | undefined {
+  const action = normalizeToolAction({ ...(call.inputs ?? {}), action: call.action ?? call.inputs?.action });
+  if (!isParallelScopedWriteDelegateAction(action, agentSpecs)) {
+    return undefined;
+  }
+  return parallelScopedWriteScope(action.file_scope);
+}
+
+function parallelScopedWriteScope(fileScope: string[] | undefined): string[] | undefined {
+  if (!fileScope?.length) {
+    return undefined;
+  }
+  const normalized: string[] = [];
+  for (const item of fileScope) {
+    const candidate = normalizeParallelScopePath(item);
+    if (!candidate) {
+      return undefined;
+    }
+    normalized.push(candidate);
+  }
+  return [...new Set(normalized)];
+}
+
+function normalizeParallelScopePath(path: string): string | undefined {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+/g, "/").replace(/\/$/, "");
+  if (!normalized || normalized === "." || /[*?[\]{}!]/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function scopesOverlap(left: string[], right: string[]): boolean {
+  return left.some((leftPath) => right.some((rightPath) => pathScopesOverlap(leftPath, rightPath)));
+}
+
+function pathScopesOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function classifyToolConcurrency(action: ToolAction): ToolConcurrencyClass {
+  if ([
     "file.read",
     "file.list",
     "file.glob",
@@ -1580,13 +2932,40 @@ function isReadOnlyToolAction(action: ToolAction): boolean {
     "git.status",
     "git.diff",
     "git.log",
-    "web.search",
-    "web.fetch",
     "blackboard.read",
     "blackboard.search",
-    "blackboard.list"
-  ].includes(action.type);
+    "blackboard.list",
+    "agent.list",
+    "agent.status",
+    "process.status",
+    "process.list",
+    "process.tail",
+    "process.grep",
+    "ToolSearch",
+    "tool.search"
+  ].includes(action.type)) {
+    return "read_parallel";
+  }
+  if (action.type === "process.start") {
+    return "background_process";
+  }
+  if (action.type === "web.search" || action.type === "web.fetch") {
+    return "network_limited";
+  }
+  if (action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "shell.exec" || action.type === "exec" || action.type === "package.install") {
+    return "verify_exclusive";
+  }
+  return "write_exclusive";
 }
+
+const TOOL_CONCURRENCY_POLICY: Record<ToolConcurrencyClass, string[]> = {
+  read_parallel: ["Read", "Glob", "Grep", "file.stat", "package.info", "project.detect", "git.status", "git.diff", "ToolSearch", "tool.search", "Agent with preferred_mode=parallel and a read_only agent spec"],
+  delegate_parallel: ["Agent with preferred_mode=parallel and a scoped_write agent spec whose file_scope is concrete and non-overlapping with sibling delegates"],
+  write_exclusive: ["Write", "Edit", "NotebookEdit", "json.edit", "todo.write", "blackboard.write", "agent.delegate"],
+  verify_exclusive: ["Bash", "exec", "code.test", "code.lint", "code.build", "package.install"],
+  background_process: ["ProcessStart"],
+  network_limited: ["WebSearch", "WebFetch", "mcp__*"]
+};
 
 async function prepareToolOutput(
   sessionId: string,
@@ -1695,7 +3074,8 @@ function codingLoopResultFromTool(
     data: result.data ?? result.metadata,
     errors: result.errors,
     errorCode: result.errorCode,
-    recoverySuggestion: result.recoverySuggestion
+    recoverySuggestion: result.recoverySuggestion,
+    sandbox: sandboxDecisionFromUnknown(result.metadata?.sandbox ?? result.data)
   };
 }
 
@@ -1708,10 +3088,22 @@ function collectOutcome(
   if (result.outputRef) {
     intermediateArtifacts.add(result.outputRef);
   }
-  if (result.action === "code.test" || result.action === "code.lint") {
+  if (result.action === "code.test" || result.action === "code.lint" || result.action === "code.build") {
     testsRun.add(result.summary);
   }
-  collectPaths(result.data, changedFiles, intermediateArtifacts);
+  const signals = collectCodingLoopOutcomeSignals(result.data);
+  signals.changed_files.forEach((path) => changedFiles.add(path));
+  signals.intermediate_artifacts.forEach((path) => intermediateArtifacts.add(path));
+}
+
+export function collectCodingLoopOutcomeSignals(value: unknown): CodingLoopOutcomeSignals {
+  const changedFiles = new Set<string>();
+  const intermediateArtifacts = new Set<string>();
+  collectPaths(value, changedFiles, intermediateArtifacts);
+  return {
+    changed_files: [...changedFiles],
+    intermediate_artifacts: [...intermediateArtifacts]
+  };
 }
 
 function collectPaths(value: unknown, changedFiles: Set<string>, intermediateArtifacts: Set<string>): void {
@@ -1724,13 +3116,33 @@ function collectPaths(value: unknown, changedFiles: Set<string>, intermediateArt
   }
   const operation = typeof value.operation === "string" ? value.operation : "";
   const path = typeof value.path === "string" ? value.path : undefined;
-  if (path && ["create", "update", "edit"].includes(operation)) {
+  if (path && isWorkspaceMutationOperation(operation)) {
     changedFiles.add(path);
+  }
+  const change = value.change;
+  if (isRecord(change) && typeof change.path === "string") {
+    const changeOperation = typeof change.operation === "string" ? change.operation : "";
+    if (isWorkspaceMutationOperation(changeOperation)) {
+      changedFiles.add(change.path);
+    }
+  }
+  const destination = typeof value.destination === "string" ? value.destination : undefined;
+  if (destination && (operation === "move" || operation === "copy")) {
+    changedFiles.add(destination);
   }
   const outputRef = value.outputRef;
   if (isRecord(outputRef) && typeof outputRef.path === "string") {
     intermediateArtifacts.add(outputRef.path);
   }
+  Object.entries(value).forEach(([key, nested]) => {
+    if (key !== "outputRef") {
+      collectPaths(nested, changedFiles, intermediateArtifacts);
+    }
+  });
+}
+
+function isWorkspaceMutationOperation(operation: string): boolean {
+  return ["create", "update", "edit", "delete", "mkdir", "move", "copy", "set", "merge"].includes(operation);
 }
 
 export function summarizeCodingLoopFinalStatus(input: CodingLoopFinalStatusInput): CodingLoopFinalStatus {
@@ -1746,6 +3158,12 @@ export function summarizeCodingLoopFinalStatus(input: CodingLoopFinalStatusInput
     return {
       status: "failed",
       summary: [summary, "Budget exhausted before completion."].filter(Boolean).join(" ")
+    };
+  }
+  if (input.modelStatus === "continue") {
+    return {
+      status: "failed",
+      summary: [summary, "Model requested continuation without executable tool calls."].filter(Boolean).join(" ")
     };
   }
   if (input.unresolvedFailure && lastFailure) {
@@ -1789,11 +3207,13 @@ export function formatToolFailureContent(
   action: string,
   reason: string,
   errorCode?: string,
-  recoverySuggestion?: string
+  recoverySuggestion?: string,
+  sandbox?: SandboxDecision
 ): string {
   return [
     `ERROR: ${reason}`,
     errorCode ? `Error code: ${errorCode}` : undefined,
+    sandbox ? formatSandboxFailureDetail(sandbox) : undefined,
     recoverySuggestion ? `Recovery: ${recoverySuggestion}` : undefined,
     `Action: ${action}`
   ].filter(Boolean).join("\n");
@@ -1858,7 +3278,22 @@ function classifyToolError(error: unknown): string {
   return "TOOL_FAILED";
 }
 
-function recoverySuggestionForToolError(errorCode: string | undefined, message: string): string {
+function recoverySuggestionForToolError(errorCode: string | undefined, message: string, sandbox?: SandboxDecision): string {
+  if (sandbox?.decision === "deny") {
+    return sandboxRecoverySuggestion(sandbox);
+  }
+  if (/file\.edit str_replace requires exactly one match/i.test(message) || /file\.edit replace_all requires at least one match/i.test(message)) {
+    return "Re-read the target file or use file.grep to locate the current text, then retry file.edit with a unique oldText or set replaceAll only when all matches should change.";
+  }
+  if (/Refusing to modify .*after only reading lines/i.test(message) || /Refusing to modify existing file before reading it/i.test(message)) {
+    return "Read the full target file with file.read before retrying file.edit; partial reads are not enough for existing-file edits.";
+  }
+  if (/because it changed after the last read/i.test(message)) {
+    return "Re-read the target file to refresh the edit snapshot, then retry file.edit against the current content.";
+  }
+  if (errorCode === "TOOL_DEFERRED") {
+    return "Use ToolSearch with a focused query first, then retry on the next turn after the tool is loaded.";
+  }
   if (errorCode === "PERMISSION_DENIED") {
     return "Inspect the approval or permission rule, then retry with a narrower command or explicitly allow the action.";
   }

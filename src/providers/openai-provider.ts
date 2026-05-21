@@ -3,12 +3,15 @@ import OpenAI from "openai";
 import {
   MODEL_MAX_OUTPUT_TOKENS_DEFAULT,
   MODEL_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+  formatUnknownModelReason,
   getProviderApiKey,
-  getSelectedModelReadiness,
+  getModelReadiness,
   loadSwarmConfig,
   loadSwarmSettings,
+  providerKnowsModel,
   resolveModelRef,
   type ProviderDefinition,
+  type ProviderReadiness,
   type SwarmConfig,
   type SwarmSettings
 } from "../config/settings.js";
@@ -16,23 +19,34 @@ import type { ToolResult, WebSearchAction } from "../tools/types.js";
 
 const WEB_SEARCH_MAX_OUTPUT_TOKENS = 4_000;
 const MAX_CACHE_DIAGNOSTIC_SOURCES = 10;
-const MIN_CACHE_MISS_TOKENS = 2_000;
 const promptCachePolicies = new Map<string, PromptCachePolicy>();
 const promptCacheDiagnostics = new Map<string, PromptCacheDiagnosticState>();
 
 export class OpenAIProvider {
-  readonly model: string;
-  readonly workerModel: string;
-  readonly aggregatorModel: string;
-  private readonly settings: SwarmSettings;
-  private readonly config: SwarmConfig;
+  model: string;
+  workerModel: string;
+  aggregatorModel: string;
+  private settings: SwarmSettings;
+  private config: SwarmConfig;
   private readonly onUsage?: ProviderUsageHandler;
   private readonly geminiExplicitCaches = new Map<string, GeminiExplicitCache>();
+  private workspace: string;
 
-  constructor(options: { onUsage?: ProviderUsageHandler } = {}) {
-    this.settings = loadSwarmSettings();
-    this.config = loadSwarmConfig();
+  constructor(options: { onUsage?: ProviderUsageHandler; workspace?: string } = {}) {
     this.onUsage = options.onUsage;
+    this.workspace = options.workspace ?? process.cwd();
+    this.settings = loadSwarmSettings(this.workspace);
+    this.config = loadSwarmConfig();
+    this.model = "";
+    this.workerModel = "";
+    this.aggregatorModel = "";
+    this.reload(this.workspace);
+  }
+
+  reload(workspace = this.workspace): void {
+    this.workspace = workspace;
+    this.settings = loadSwarmSettings(workspace);
+    this.config = loadSwarmConfig();
     const envModel = nonEmptyEnv("SWARM_MODEL");
     this.model = envModel ?? this.settings.models.planner;
     this.workerModel = nonEmptyEnv("SWARM_WORKER_MODEL") ?? envModel ?? this.settings.models.worker;
@@ -40,7 +54,18 @@ export class OpenAIProvider {
   }
 
   get enabled(): boolean {
-    return getSelectedModelReadiness(this.settings, this.config).every((readiness) => readiness.configured);
+    return this.readiness().every((readiness) => readiness.configured);
+  }
+
+  readiness(): ProviderReadiness[] {
+    return ([
+      ["planner", this.model],
+      ["worker", this.workerModel],
+      ["aggregator", this.aggregatorModel]
+    ] as const).map(([role, modelRef]) => ({
+      ...getModelReadiness(modelRef, this.settings, this.config),
+      role
+    }));
   }
 
   async generateText(input: {
@@ -48,6 +73,7 @@ export class OpenAIProvider {
     user: PromptInput;
     model?: string;
     cache?: PromptCacheOptions;
+    responseFormat?: ProviderResponseFormat;
     maxOutputTokens?: number;
     usage?: ProviderUsageContext;
   }): Promise<string> {
@@ -127,17 +153,45 @@ export class OpenAIProvider {
       defaultHeaders: resolved.provider.headers
     });
     const startedAt = Date.now();
-    const response = await client.chat.completions.create({
+    const messages = [
+      { role: "system", content: prompt.systemText },
+      { role: "user", content: prompt.userText }
+    ];
+    const responseFormatParams = chatCompletionResponseFormatParams(resolved, input);
+    const requestBody: Record<string, unknown> = {
       model: resolved.model,
       max_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, input.maxOutputTokens),
       ...openAIPromptCacheParams(resolved, prompt, input.cache),
-      messages: [
-        { role: "system", content: prompt.systemText },
-        { role: "user", content: prompt.userText }
-      ]
-    } as never);
+      ...responseFormatParams,
+      messages
+    };
+    const response = await createChatCompletionWithResponseFormatFallback(
+      client,
+      requestBody,
+      responseFormatParams
+    );
     this.emitUsage(resolved, "generateText", input.usage, usageFromOpenAIResponse(response), prompt, startedAt);
-    return requireText(response.choices[0]?.message?.content ?? "", resolved);
+    const extracted = extractChatCompletionText(response);
+    if (!extracted.text.trim() && shouldRetryEmptyChatCompletion(resolved, input, response)) {
+      const retryResponse = await createChatCompletionWithResponseFormatFallback(
+        client,
+        {
+          ...requestBody,
+          messages: [
+            ...messages,
+            {
+              role: "user",
+              content: "Return the required JSON object now. Do not output whitespace, Markdown fences, or prose."
+            }
+          ]
+        },
+        responseFormatParams
+      );
+      this.emitUsage(resolved, "generateText", input.usage, usageFromOpenAIResponse(retryResponse), prompt, startedAt);
+      const retryExtracted = extractChatCompletionText(retryResponse);
+      return requireText(retryExtracted.text, resolved, retryExtracted.diagnostics);
+    }
+    return requireText(extracted.text, resolved, extracted.diagnostics);
   }
 
   private async generateWithAnthropic(
@@ -268,7 +322,7 @@ export class OpenAIProvider {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
       usageMetadata?: unknown;
     };
-    this.emitUsage(resolved, "generateText", input.usage, usageFromGemini(json), prompt, startedAt, cache ? "explicit" : "implicit");
+    this.emitUsage(resolved, "generateText", input.usage, usageFromGemini(json), prompt, startedAt, cache ? "gemini-explicit" : "gemini-implicit");
     return requireText(
       json.candidates?.[0]?.content?.parts
         ?.map((part) => part.text)
@@ -292,6 +346,9 @@ export class OpenAIProvider {
     if (!provider) {
       throw new Error(`Unknown provider "${providerId}" in model reference "${ref}"`);
     }
+    if (!providerKnowsModel(provider, model)) {
+      throw new Error(formatUnknownModelReason(provider, model));
+    }
     const apiKey = getProviderApiKey(provider, this.config);
     return { provider, providerId, model, apiKey };
   }
@@ -305,6 +362,7 @@ export class OpenAIProvider {
     startedAt: number,
     cacheMode = providerCacheMode(resolved)
   ): void {
+    const cacheStats = deriveProviderCacheStats(resolved, usage);
     this.onUsage?.({
       providerId: resolved.providerId,
       protocol: resolved.provider.protocol,
@@ -315,10 +373,11 @@ export class OpenAIProvider {
       cacheMode,
       promptCacheKey: prompt.cacheKey,
       promptCacheScope: promptCacheScope(resolved, prompt, context),
-      promptCacheDiagnostics: trackPromptCacheDiagnostics(resolved, prompt, context, usage),
+      promptCacheDiagnostics: trackPromptCacheDiagnostics(resolved, prompt, context, usage, cacheStats),
       cacheablePrefixTokensEstimate: estimateTokens(prompt.cacheablePrefixText),
       durationMs: Date.now() - startedAt,
-      ...usage
+      ...usage,
+      ...cacheStats
     });
   }
 
@@ -425,6 +484,11 @@ export type ProviderUsageReport = {
   totalTokens?: number;
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
+  providerReportedMissInputTokens?: number;
+  uncachedInputTokens?: number;
+  totalInputWithCacheTokens?: number;
+  cacheHitRate?: number;
+  cacheWriteRate?: number;
 };
 
 export type ProviderUsageHandler = (usage: ProviderUsageReport) => void;
@@ -434,9 +498,12 @@ type GenerateTextInput = {
   user: PromptInput;
   model?: string;
   cache?: PromptCacheOptions;
+  responseFormat?: ProviderResponseFormat;
   maxOutputTokens?: number;
   usage?: ProviderUsageContext;
 };
+
+type ProviderResponseFormat = "json_object";
 
 type PreparedPrompt = {
   systemBlocks: NormalizedPromptBlock[];
@@ -460,6 +527,9 @@ type PreparedPromptDiagnostics = {
   cacheableUserHash: string;
   toolSchemaHash: string;
   dynamicUserHash: string;
+  requestPrefixHash1024: string;
+  requestPrefixHash4096: string;
+  firstDynamicBlockIndex: number | null;
 };
 
 type PromptCachePolicy = {
@@ -483,6 +553,11 @@ export type PromptCacheDiagnostics = {
   };
   previous?: Partial<PromptCacheDiagnostics["current"]>;
   cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  totalInputWithCacheTokens?: number;
+  cacheHitRate?: number;
+  cacheWriteRate?: number;
+  minimumCacheableTokens: number;
 };
 
 type PromptCacheDiagnosticState = PromptCacheDiagnostics["current"] & {
@@ -500,6 +575,14 @@ type ProviderUsage = {
   totalTokens?: number;
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
+  providerReportedMissInputTokens?: number;
+};
+
+type ProviderCacheStats = {
+  uncachedInputTokens?: number;
+  totalInputWithCacheTokens?: number;
+  cacheHitRate?: number;
+  cacheWriteRate?: number;
 };
 
 type GeminiExplicitCache = {
@@ -529,8 +612,12 @@ function maxOutputTokensForResolvedModel(resolved: ResolvedModel, settings: Swar
 }
 
 function preparePrompt(input: GenerateTextInput): PreparedPrompt {
-  const systemBlocks = normalizePromptBlocks(input.system);
-  const userBlocks = normalizePromptBlocks(input.user);
+  const arranged = arrangePromptBlocksForStablePrefix(
+    normalizePromptBlocks(input.system),
+    normalizePromptBlocks(input.user)
+  );
+  const systemBlocks = arranged.systemBlocks;
+  const userBlocks = arranged.userBlocks;
   const systemText = joinPromptBlocks(systemBlocks);
   const userText = joinPromptBlocks(userBlocks);
   const cacheableSystemText = joinPromptBlocks(systemBlocks.filter((block) => block.cache));
@@ -542,7 +629,8 @@ function preparePrompt(input: GenerateTextInput): PreparedPrompt {
     : userText;
   const explicitKey = input.cache?.key?.trim();
   const cacheKey = explicitKey || (cacheablePrefixText ? `swarm:${stableHash(cacheablePrefixText).slice(0, 24)}` : "");
-  const toolSchemaHash = hashToolSchemaFromText(userText);
+  const toolSchemaHash = hashToolSchemaFromText(cacheableUserText || userText);
+  const requestPrefixText = requestPrefixBeforeDynamic(systemBlocks, userBlocks, arranged.firstDynamicBlockIndex);
   return {
     systemBlocks,
     userBlocks,
@@ -561,8 +649,48 @@ function preparePrompt(input: GenerateTextInput): PreparedPrompt {
       cacheableSystemHash: stableHash(cacheableSystemText),
       cacheableUserHash: stableHash(cacheableUserText),
       toolSchemaHash,
-      dynamicUserHash: stableHash(dynamicUserText)
+      dynamicUserHash: stableHash(dynamicUserText),
+      requestPrefixHash1024: prefixHashForEstimatedTokens(requestPrefixText, 1024),
+      requestPrefixHash4096: prefixHashForEstimatedTokens(requestPrefixText, 4096),
+      firstDynamicBlockIndex: arranged.firstDynamicBlockIndex
     }
+  };
+}
+
+function arrangePromptBlocksForStablePrefix(
+  systemBlocks: NormalizedPromptBlock[],
+  userBlocks: NormalizedPromptBlock[]
+): { systemBlocks: NormalizedPromptBlock[]; userBlocks: NormalizedPromptBlock[]; firstDynamicBlockIndex: number | null } {
+  const hasCacheableBlocks = [...systemBlocks, ...userBlocks].some((block) => block.cache);
+  if (!hasCacheableBlocks) {
+    return {
+      systemBlocks,
+      userBlocks,
+      firstDynamicBlockIndex: firstDynamicBlockIndex(systemBlocks, userBlocks)
+    };
+  }
+
+  const cacheableSystemBlocks = systemBlocks.filter((block) => block.cache);
+  const dynamicSystemText = joinPromptBlocks(systemBlocks.filter((block) => !block.cache));
+  const dynamicSystemBlocks: NormalizedPromptBlock[] = dynamicSystemText
+    ? [{
+        text: [
+          "Additional non-cacheable system context:",
+          dynamicSystemText
+        ].join("\n"),
+        cache: false
+      }]
+    : [];
+  const arrangedSystemBlocks = cacheableSystemBlocks;
+  const arrangedUserBlocks = [
+    ...userBlocks.filter((block) => block.cache),
+    ...dynamicSystemBlocks,
+    ...userBlocks.filter((block) => !block.cache)
+  ];
+  return {
+    systemBlocks: arrangedSystemBlocks,
+    userBlocks: arrangedUserBlocks,
+    firstDynamicBlockIndex: firstDynamicBlockIndex(arrangedSystemBlocks, arrangedUserBlocks)
   };
 }
 
@@ -577,6 +705,24 @@ function normalizePromptBlocks(input: PromptInput): NormalizedPromptBlock[] {
 
 function joinPromptBlocks(blocks: NormalizedPromptBlock[]): string {
   return blocks.map((block) => block.text).filter(Boolean).join("\n\n");
+}
+
+function firstDynamicBlockIndex(systemBlocks: NormalizedPromptBlock[], userBlocks: NormalizedPromptBlock[]): number | null {
+  const index = [...systemBlocks, ...userBlocks].findIndex((block) => !block.cache);
+  return index >= 0 ? index : null;
+}
+
+function requestPrefixBeforeDynamic(
+  systemBlocks: NormalizedPromptBlock[],
+  userBlocks: NormalizedPromptBlock[],
+  firstDynamicIndex: number | null
+): string {
+  const blocks = [...systemBlocks, ...userBlocks];
+  return joinPromptBlocks(firstDynamicIndex === null ? blocks : blocks.slice(0, firstDynamicIndex));
+}
+
+function prefixHashForEstimatedTokens(text: string, tokens: number): string {
+  return stableHash(text.slice(0, tokens * 4));
 }
 
 function lastCacheableIndex(blocks: NormalizedPromptBlock[]): number {
@@ -637,6 +783,42 @@ function openAIPromptCacheParams(
     prompt_cache_key: prompt.cacheKey,
     ...(retention === "24h" ? { prompt_cache_retention: "24h" } : {})
   };
+}
+
+function chatCompletionResponseFormatParams(
+  resolved: ResolvedModel,
+  input: GenerateTextInput
+): Record<string, unknown> {
+  if (input.responseFormat !== "json_object") {
+    return {};
+  }
+  if (resolved.providerId === "deepseek") {
+    return { response_format: { type: "json_object" } };
+  }
+  return { response_format: { type: "json_object" } };
+}
+
+async function createChatCompletionWithResponseFormatFallback(
+  client: OpenAI,
+  requestBody: Record<string, unknown>,
+  responseFormatParams: Record<string, unknown>
+): Promise<unknown> {
+  try {
+    return await client.chat.completions.create(requestBody as never);
+  } catch (error) {
+    if (Object.keys(responseFormatParams).length === 0 || !isUnsupportedResponseFormatError(error)) {
+      throw error;
+    }
+    const fallbackBody = { ...requestBody };
+    delete fallbackBody.response_format;
+    return client.chat.completions.create(fallbackBody as never);
+  }
+}
+
+function isUnsupportedResponseFormatError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /response[_ ]format|response_format|json_object/i.test(message) &&
+    /unsupported|unknown|invalid|not supported|unrecognized|extra fields not permitted/i.test(message);
 }
 
 function openAIPromptCacheRetention(options?: PromptCacheOptions): "in_memory" | "24h" {
@@ -720,10 +902,12 @@ function trackPromptCacheDiagnostics(
   resolved: ResolvedModel,
   prompt: PreparedPrompt,
   context: ProviderUsageContext | undefined,
-  usage: ProviderUsage
+  usage: ProviderUsage,
+  cacheStats: ProviderCacheStats
 ): PromptCacheDiagnostics {
   const policy = promptCachePolicy({ prompt });
   const scope = promptCacheScope(resolved, prompt, context);
+  const minimumCacheableTokens = minimumCacheableTokensForProvider(resolved);
   const current: PromptCacheDiagnostics["current"] = {
     ...prompt.diagnostics,
     cacheKey: prompt.cacheKey,
@@ -737,13 +921,16 @@ function trackPromptCacheDiagnostics(
   const changed = previous ? changedPromptCacheFields(previous, current) : [];
   const cacheableTokens = estimateTokens(prompt.cacheablePrefixText);
   const cachedInputTokens = usage.cachedInputTokens;
+  const providerCacheExpected = providerSupportsPromptCache(resolved) && promptCacheEnabled();
   const status: PromptCacheDiagnostics["status"] = !previous
     ? "new_scope"
     : changed.length > 0
       ? "changed"
-      : cacheableTokens < MIN_CACHE_MISS_TOKENS
-        ? "expected_empty_cache"
-        : (typeof cachedInputTokens === "number" && cachedInputTokens <= 0 ? "cache_miss" : "stable");
+      : typeof cachedInputTokens === "number" && cachedInputTokens > 0
+        ? "stable"
+        : cacheableTokens < minimumCacheableTokens
+          ? "expected_empty_cache"
+          : (providerCacheExpected && typeof cachedInputTokens === "number" && cachedInputTokens <= 0 ? "cache_miss" : "stable");
   promptCacheDiagnostics.set(scope, { ...current, seenAt: Date.now() });
   trimPromptCacheDiagnostics();
   return {
@@ -752,8 +939,61 @@ function trackPromptCacheDiagnostics(
     changed,
     current,
     previous: previous ? { ...previous } : undefined,
-    cachedInputTokens
+    cachedInputTokens,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    totalInputWithCacheTokens: cacheStats.totalInputWithCacheTokens,
+    cacheHitRate: cacheStats.cacheHitRate,
+    cacheWriteRate: cacheStats.cacheWriteRate,
+    minimumCacheableTokens
   };
+}
+
+function deriveProviderCacheStats(resolved: ResolvedModel, usage: ProviderUsage): ProviderCacheStats {
+  const totalInputWithCacheTokens = totalInputTokensWithCache(resolved, usage);
+  const cachedInputTokens = usage.cachedInputTokens;
+  const cacheCreationInputTokens = usage.cacheCreationInputTokens;
+  return {
+    totalInputWithCacheTokens,
+    uncachedInputTokens:
+      typeof totalInputWithCacheTokens === "number" && typeof cachedInputTokens === "number"
+        ? Math.max(0, totalInputWithCacheTokens - cachedInputTokens)
+        : undefined,
+    cacheHitRate:
+      typeof totalInputWithCacheTokens === "number" && totalInputWithCacheTokens > 0 && typeof cachedInputTokens === "number"
+        ? cachedInputTokens / totalInputWithCacheTokens
+        : undefined,
+    cacheWriteRate:
+      typeof totalInputWithCacheTokens === "number" && totalInputWithCacheTokens > 0 && typeof cacheCreationInputTokens === "number"
+        ? cacheCreationInputTokens / totalInputWithCacheTokens
+        : undefined
+  };
+}
+
+function totalInputTokensWithCache(resolved: ResolvedModel, usage: ProviderUsage): number | undefined {
+  const inputTokens = usage.inputTokens;
+  const cachedInputTokens = usage.cachedInputTokens;
+  const cacheCreationInputTokens = usage.cacheCreationInputTokens;
+  if (typeof cachedInputTokens === "number" && typeof usage.providerReportedMissInputTokens === "number") {
+    return cachedInputTokens + usage.providerReportedMissInputTokens;
+  }
+  if (resolved.provider.protocol === "anthropic-messages") {
+    return sumDefined(inputTokens, cachedInputTokens, cacheCreationInputTokens);
+  }
+  if (typeof inputTokens === "number") {
+    return inputTokens;
+  }
+  return sumDefined(cachedInputTokens, cacheCreationInputTokens);
+}
+
+function providerSupportsPromptCache(resolved: ResolvedModel): boolean {
+  return resolved.provider.protocol === "anthropic-messages" || isOfficialOpenAIProvider(resolved) || isOfficialGeminiProvider(resolved) || resolved.providerId === "deepseek";
+}
+
+function minimumCacheableTokensForProvider(resolved: ResolvedModel): number {
+  if (isOfficialGeminiProvider(resolved)) {
+    return geminiExplicitCacheMinTokens(resolved.model);
+  }
+  return 1024;
 }
 
 function changedPromptCacheFields(
@@ -761,11 +1001,13 @@ function changedPromptCacheFields(
   current: PromptCacheDiagnostics["current"]
 ): string[] {
   const fields = [
-    "systemHash",
     "cacheablePrefixHash",
     "cacheableSystemHash",
     "cacheableUserHash",
     "toolSchemaHash",
+    "requestPrefixHash1024",
+    "requestPrefixHash4096",
+    "firstDynamicBlockIndex",
     "cacheKey",
     "model",
     "protocol",
@@ -800,7 +1042,8 @@ function usageFromOpenAIResponse(response: unknown): ProviderUsage {
     inputTokens: promptTokens,
     outputTokens: completionTokens,
     totalTokens: numberField(usage, "total_tokens") ?? sumDefined(promptTokens, completionTokens),
-    cachedInputTokens: numberField(promptDetails, "cached_tokens")
+    cachedInputTokens: numberField(promptDetails, "cached_tokens") ?? numberField(usage, "prompt_cache_hit_tokens"),
+    providerReportedMissInputTokens: numberField(usage, "prompt_cache_miss_tokens")
   };
 }
 
@@ -996,10 +1239,11 @@ function uniqueLinks(links: WebSearchLink[]): WebSearchLink[] {
   return result.slice(0, 20);
 }
 
-function requireText(text: string, resolved: ResolvedModel): string {
+function requireText(text: string, resolved: ResolvedModel, diagnostics?: string): string {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error(`Provider "${resolved.providerId}" returned an empty response for model "${resolved.model}".`);
+    const suffix = diagnostics ? ` ${diagnostics}` : "";
+    throw new Error(`Provider "${resolved.providerId}" returned an empty response for model "${resolved.model}".${suffix}`);
   }
   return trimmed;
 }
@@ -1024,6 +1268,59 @@ function isHttpUrl(value: string): boolean {
 
 function escapeMarkdownLinkText(value: string): string {
   return value.replace(/[[\]]/g, "\\$&");
+}
+
+function extractChatCompletionText(response: unknown): { text: string; diagnostics: string } {
+  const choice = isRecord(response) && Array.isArray(response.choices) ? response.choices[0] : undefined;
+  const message = isRecord(choice) && isRecord(choice.message) ? choice.message : {};
+  const content = stringOrJoinedText(message.content);
+  const reasoningContent = typeof message.reasoning_content === "string" ? message.reasoning_content : "";
+  return {
+    text: content,
+    diagnostics: chatCompletionDiagnostics(choice, message, Boolean(reasoningContent.trim()))
+  };
+}
+
+function stringOrJoinedText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  return value
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      if (!isRecord(part)) {
+        return "";
+      }
+      return typeof part.text === "string"
+        ? part.text
+        : typeof part.content === "string"
+          ? part.content
+          : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function chatCompletionDiagnostics(choice: unknown, message: Record<string, unknown>, hasReasoningContent: boolean): string {
+  const finishReason = isRecord(choice) && typeof choice.finish_reason === "string" ? choice.finish_reason : "unknown";
+  const messageKeys = Object.keys(message).sort().join(",") || "none";
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
+  const refusal = typeof message.refusal === "string" && message.refusal.trim() ? " refusal=true" : "";
+  return `(finish_reason=${finishReason}; message_keys=${messageKeys}; tool_calls=${toolCalls}; reasoning_content=${hasReasoningContent ? "present" : "absent"};${refusal})`;
+}
+
+function shouldRetryEmptyChatCompletion(resolved: ResolvedModel, input: GenerateTextInput, response: unknown): boolean {
+  if (input.responseFormat !== "json_object" || resolved.providerId !== "deepseek") {
+    return false;
+  }
+  const choice = isRecord(response) && Array.isArray(response.choices) ? response.choices[0] : undefined;
+  const finishReason = isRecord(choice) && typeof choice.finish_reason === "string" ? choice.finish_reason : "";
+  return finishReason === "stop" || finishReason === "length";
 }
 
 function extractOutputText(response: unknown): string {

@@ -30,6 +30,14 @@ export class EnvelopeRouter extends EventEmitter {
   }
 
   async dispatch(envelope: SwarmEnvelope): Promise<void> {
+    if (envelope.idempotency_key) {
+      const existing = this.processedKeys.get(envelope.idempotency_key);
+      if (existing) {
+        this.events.emitEvent({ type: "log", level: "info", message: `Skipping duplicate envelope ${envelope.type} (idempotent, matched ${existing})` });
+        return;
+      }
+    }
+
     if (envelope.type === "swarm.init" || envelope.type === "swarm.join" || envelope.type === "swarm.leave" || envelope.type === "swarm.heartbeat" || envelope.type === "swarm.shutdown") {
       this.handleSwarmLifecycle(envelope);
       return;
@@ -103,14 +111,6 @@ export class EnvelopeRouter extends EventEmitter {
     if (envelope.type === "artifact.update") {
       this.handleArtifactUpdate(envelope);
       return;
-    }
-
-    if (envelope.idempotency_key) {
-      const existing = this.processedKeys.get(envelope.idempotency_key);
-      if (existing) {
-        this.events.emitEvent({ type: "log", level: "info", message: `Skipping duplicate envelope ${envelope.type} (idempotent, matched ${existing})` });
-        return;
-      }
     }
 
     this.record(envelope);
@@ -579,8 +579,13 @@ export class EnvelopeRouter extends EventEmitter {
     if (entryId || key) {
       return this.blackboard?.read(sessionId, { entryId, key, limit: positiveIntegerField(payload.limit) }) ?? [];
     }
+    const rawType = payload.type ?? payload.entryType ?? payload.entry_type;
+    const type = blackboardEntryType(rawType);
+    if (rawType !== undefined && !type) {
+      throw new Error("blackboard.read requires a valid payload.type when type is provided.");
+    }
     return this.blackboard?.query(sessionId, {
-      type: blackboardEntryType(payload.type ?? payload.entryType ?? payload.entry_type),
+      type,
       tag: stringField(payload.tag),
       keyPrefix: stringField(payload.key_prefix ?? payload.keyPrefix),
       taskId: stringField(payload.task_id ?? payload.taskId),

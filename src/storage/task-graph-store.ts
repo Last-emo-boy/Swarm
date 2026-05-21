@@ -43,6 +43,8 @@ export class TaskGraphStore {
     action: string;
     status: SwarmTask["status"];
     attempt?: number;
+    write_policy?: "read_only" | "scoped_write" | "workspace_write";
+    file_scope?: string[];
   }): TaskStateSnapshot {
     return this.taskStates.upsert({
       session_id: input.session_id,
@@ -59,6 +61,9 @@ export class TaskGraphStore {
         expected_output: { format: "text" },
         dependencies: []
       },
+      capability: input.action,
+      write_policy: input.write_policy,
+      file_scope: input.file_scope,
       status: input.status,
       attempt: input.attempt
     });

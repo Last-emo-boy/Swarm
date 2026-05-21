@@ -117,6 +117,10 @@ export class SkillProvider implements CapabilityProvider {
         modelVisible: record.trust !== "untrusted",
         userVisible: true,
         status: record.trust === "disabled" || record.trust === "untrusted" ? "disabled" : "available",
+        shouldDefer: true,
+        readOnly: true,
+        concurrencyClass: "read_parallel",
+        searchHint: `${record.displayName} ${record.description}`,
         diagnostics: record.diagnostics,
         metadata: {
           scope: record.scope,
@@ -147,9 +151,12 @@ export class SkillProvider implements CapabilityProvider {
       },
       riskClass: "r0",
       permissionName: "SkillActivate",
+      alwaysLoad: true,
       modelVisible: availableSkills.length > 0,
       userVisible: true,
       status: availableSkills.length ? "available" : "disabled",
+      readOnly: false,
+      concurrencyClass: "write_exclusive",
       metadata: {
         available_skills: availableSkills.map((skill) => skill.name)
       }

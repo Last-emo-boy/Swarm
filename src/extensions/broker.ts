@@ -1,10 +1,24 @@
 import { randomUUID } from "node:crypto";
 import type { SwarmSettings } from "../config/settings.js";
 import type { RiskClass } from "../protocol/types.js";
+import {
+  assertCapabilityAllowedBySandbox,
+  assertToolActionAllowedBySandbox,
+  formatSandboxFailureDetail,
+  sandboxDecisionFromError,
+  sandboxDecisionFromUnknown,
+  sandboxFailureSummary,
+  sandboxRecoverySuggestion,
+  type SandboxDecision,
+  type SandboxWritePolicy
+} from "../runtime/sandbox-policy.js";
+import { taskContractForToolAction } from "../runtime/tool-task-sandbox.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
-import { createToolApprovalRequest, riskClassForAction, toolRequiresApproval } from "../tools/permissions.js";
+import { createToolApprovalRequest, decideToolPermission, riskClassForAction } from "../tools/permissions.js";
 import type { AgentDelegateAction, LocalToolContext, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata, FileLockEvent } from "../tools/types.js";
+import { renderCustomCommandObjective } from "./custom-commands.js";
+import { renderPluginSlashCommandObjective } from "./plugins.js";
 import type { SkillScope } from "./skills.js";
 import { SKILL_ACTIVATE_CAPABILITY_ID } from "./skills.js";
 import type { CapabilityDescriptor } from "./types.js";
@@ -27,9 +41,13 @@ export type CapabilityBrokerInput = {
     outputRef?: string;
     errorCode?: string;
     recoverySuggestion?: string;
+    write_policy?: SandboxWritePolicy;
+    file_scope?: string[];
     capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass };
+    sandbox?: SandboxDecision;
   }) => void;
   delegate?: (action: AgentDelegateAction, sessionId: string, taskId: string) => Promise<ToolResult>;
+  agentControl?: LocalToolContext["agentControl"];
   onWorkspaceChange?: (sessionId: string | undefined, change: WorkspaceChangeMetadata) => void;
   onFileLock?: (event: FileLockEvent) => void;
   activateSkill: (name: string, sessionId?: string, reason?: string) => {
@@ -47,6 +65,23 @@ export type CapabilityBrokerInput = {
   };
   serverWebSearch?: LocalToolContext["serverWebSearch"];
   blackboard?: LocalToolContext["blackboard"];
+  materializeMcp?: (input: {
+    kind: "resource" | "prompt";
+    serverId: string;
+    nameOrUri: string;
+    result: unknown;
+    sessionId?: string;
+    args?: Record<string, string>;
+  }) => Promise<unknown>;
+  runSlashCommandObjective?: (
+    objective: string,
+    input: {
+      capability: CapabilityDescriptor;
+      args: Record<string, unknown>;
+      sessionId?: string;
+      taskId: string;
+    }
+  ) => Promise<ToolResult>;
 };
 
 export type CapabilityInvokeOptions = {
@@ -54,6 +89,8 @@ export type CapabilityInvokeOptions = {
   title?: string;
   allowDelegate?: boolean;
   source?: "coding_loop" | "gateway" | "runtime";
+  writePolicy?: SandboxWritePolicy;
+  fileScope?: string[];
 };
 
 const LONG_OUTPUT_THRESHOLD_BYTES = 32_000;
@@ -77,23 +114,32 @@ export class CapabilityBroker {
     let result: ToolResult;
     try {
       this.assertCapabilityUsable(capability);
+      this.assertSandboxAllowed(capability, args, sessionId, options);
       await this.ensureApproval(capability, args, sessionId, taskId, options);
       result = await this.invokeProviderCapability(capability, args, sessionId, taskId, options);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const sandbox = sandboxDecisionFromError(error);
+      const summary = sandbox ? sandboxFailureSummary(sandbox) : message;
+      const errorCode = sandbox ? "PERMISSION_DENIED" : "CAPABILITY_INVOKE_FAILED";
+      const recoverySuggestion = sandbox
+        ? sandboxRecoverySuggestion(sandbox)
+        : "Inspect the capability diagnostics, permissions, and provider status before retrying.";
       result = {
         action: capability.name,
         status: "failed",
-        summary: message,
+        summary,
+        content: formatCapabilityFailureContent(capability, summary, errorCode, recoverySuggestion, sandbox),
         errors: [message],
-        errorCode: "CAPABILITY_INVOKE_FAILED",
-        retryable: true,
+        errorCode,
+        retryable: !sandbox,
         recoverable: true,
-        recoverySuggestion: "Inspect the capability diagnostics, permissions, and provider status before retrying.",
+        recoverySuggestion,
         metadata: {
           capability_id: capability.id,
           provider_id: capability.providerId,
-          permission: capability.permissionName
+          permission: capability.permissionName,
+          ...(sandbox ? { sandbox } : {})
         }
       };
     }
@@ -115,6 +161,8 @@ export class CapabilityBroker {
         outputRef: prepared.outputRef
       }
     };
+    const sandbox = sandboxDecisionFromUnknown(normalized.metadata?.sandbox ?? normalized.data);
+    const taskContract = taskContractForCapability(capability, args, options);
     this.input.emitToolResult({
       session_id: sessionId,
       task_id: taskId,
@@ -126,9 +174,34 @@ export class CapabilityBroker {
       outputRef: normalized.outputRef,
       errorCode: normalized.errorCode,
       recoverySuggestion: normalized.recoverySuggestion,
-      capability: capabilityEvent(capability, riskClassForInvocation(capability, args))
+      write_policy: taskContract.write_policy,
+      file_scope: taskContract.file_scope,
+      capability: capabilityEvent(capability, riskClassForInvocation(capability, args)),
+      sandbox
     });
     return normalized;
+  }
+
+  private assertSandboxAllowed(
+    capability: CapabilityDescriptor,
+    args: Record<string, unknown>,
+    sessionId: string | undefined,
+    options: CapabilityInvokeOptions
+  ): void {
+    if (!options.writePolicy) {
+      return;
+    }
+    if (capability.kind === "local_tool" || capability.id.startsWith("local_tool.")) {
+      const actionName = localActionNameForCapability(capability);
+      const action = normalizeToolAction({ ...args, action: args.action ?? capability.name ?? actionName }, actionName);
+      assertToolActionAllowedBySandbox(action, {
+        writePolicy: options.writePolicy,
+        workspace: this.input.workspaceForSession(sessionId),
+        fileScope: options.fileScope
+      });
+      return;
+    }
+    assertCapabilityAllowedBySandbox(capability, options.writePolicy);
   }
 
   private async invokeProviderCapability(
@@ -149,6 +222,7 @@ export class CapabilityBroker {
         attempt: 0,
         serverWebSearch: this.input.serverWebSearch,
         blackboard: this.input.blackboard,
+        agentControl: this.input.agentControl,
         onWorkspaceChange: (change) => this.input.onWorkspaceChange?.(sessionId, change),
         onFileLock: this.input.onFileLock,
         delegate: options.allowDelegate && sessionId && this.input.delegate
@@ -162,11 +236,184 @@ export class CapabilityBroker {
       return this.input.capabilityPlane.callMcpTool(capability.id, args);
     }
 
+    if (capability.kind === "mcp_resource" || capability.id.startsWith("mcp_resource.")) {
+      return this.invokeMcpResource(capability, args, sessionId);
+    }
+
+    if (capability.kind === "mcp_prompt" || capability.id.startsWith("mcp_prompt.")) {
+      return this.invokeMcpPrompt(capability, args, sessionId);
+    }
+
     if (capability.id === SKILL_ACTIVATE_CAPABILITY_ID) {
       return this.invokeSkillActivation(args, sessionId);
     }
 
+    if (capability.kind === "skill" || capability.id.startsWith("skill.")) {
+      return this.invokeNamedSkill(capability, args, sessionId);
+    }
+
+    if (capability.kind === "agent_spec" || capability.id.startsWith("agent_spec.")) {
+      return this.invokeAgentSpec(capability, args, sessionId, taskId);
+    }
+
+    if (capability.kind === "slash_command") {
+      return this.invokeSlashCommand(capability, args, sessionId, taskId);
+    }
+
     throw new Error(`Capability invocation is not implemented for ${capability.id}`);
+  }
+
+  private async invokeSlashCommand(
+    capability: CapabilityDescriptor,
+    args: Record<string, unknown>,
+    sessionId: string | undefined,
+    taskId: string
+  ): Promise<ToolResult> {
+    if (!this.input.runSlashCommandObjective) {
+      return slashCommandNotInvokable(capability);
+    }
+    const rawArgs = slashCommandRawArgs(args);
+    const objective = this.renderSlashCommandObjective(capability, rawArgs);
+    if (!objective) {
+      return slashCommandNotInvokable(capability);
+    }
+    const result = await this.input.runSlashCommandObjective(objective, { capability, args, sessionId, taskId });
+    return {
+      ...result,
+      action: capability.name,
+      summary: result.summary || `Slash command completed: ${capability.name}`,
+      metadata: {
+        ...(result.metadata ?? {}),
+        slash_command: capability.name,
+        rendered_objective: objective
+      }
+    };
+  }
+
+  private renderSlashCommandObjective(capability: CapabilityDescriptor, rawArgs: string): string | undefined {
+    if (capability.id.startsWith("custom-command.")) {
+      const name = customCommandNameForCapability(capability);
+      const command = this.input.capabilityPlane.getCustomCommand(name);
+      return command ? renderCustomCommandObjective(command, rawArgs) : undefined;
+    }
+    if (capability.id.startsWith("plugin.") && capability.providerId.startsWith("plugin:")) {
+      const pluginId = capabilityStringMetadata(capability, "plugin_id") ?? capability.providerId.slice("plugin:".length);
+      const contributionId = pluginSlashContributionIdForCapability(capability);
+      const plugin = this.input.capabilityPlane.listPlugins().find((item) => item.id === pluginId);
+      const contribution = plugin?.contributions.find((item) => item.kind === "slash_command" && item.id === contributionId);
+      return plugin && contribution ? renderPluginSlashCommandObjective(plugin, contribution, rawArgs) : undefined;
+    }
+    return undefined;
+  }
+
+  private invokeNamedSkill(capability: CapabilityDescriptor, args: Record<string, unknown>, sessionId?: string): ToolResult {
+    return this.invokeSkillActivation({
+      name: capability.name,
+      reason: typeof args.reason === "string" ? args.reason : `capability invoke ${capability.id}`
+    }, sessionId);
+  }
+
+  private async invokeAgentSpec(
+    capability: CapabilityDescriptor,
+    args: Record<string, unknown>,
+    sessionId: string | undefined,
+    taskId: string
+  ): Promise<ToolResult> {
+    if (!this.input.delegate || !sessionId) {
+      return {
+        action: capability.name,
+        status: "failed",
+        summary: "Agent spec invocation requires an active parent session.",
+        errors: ["Missing session_id or delegate runtime."],
+        errorCode: "AGENT_SPEC_SESSION_REQUIRED",
+        retryable: false,
+        recoverable: true,
+        recoverySuggestion: "Create or resume a WorkSession, then invoke the agent spec with session_id."
+      };
+    }
+    const task = requiredStringArg(args, ["task", "prompt", "objective", "description"], "Agent spec invocation requires task or prompt.");
+    const context = optionalStringArg(args, ["context"]);
+    const runInBackground = args.run_in_background === true || args.runInBackground === true;
+    const preferredMode = runInBackground ? "parallel" : agentInvocationModeArg(args.mode ?? args.preferred_mode ?? args.invocation_mode);
+    const action: AgentDelegateAction = {
+      type: "agent.delegate",
+      capability: capability.name,
+      task,
+      context,
+      preferred_agent_spec_id: agentSpecIdForCapability(capability),
+      preferred_mode: preferredMode,
+      run_in_background: runInBackground,
+      file_scope: stringArrayArg(args.file_scope ?? args.fileScope ?? args.paths)
+    };
+    return this.input.delegate(action, sessionId, taskId);
+  }
+
+  private async invokeMcpResource(
+    capability: CapabilityDescriptor,
+    args: Record<string, unknown>,
+    sessionId?: string
+  ): Promise<ToolResult> {
+    const serverId = capabilityStringMetadata(capability, "server_id") ?? mcpServerIdFromProvider(capability.providerId);
+    const uri = stringArg(args, "uri") ?? capabilityStringMetadata(capability, "uri");
+    if (!serverId || !uri) {
+      throw new Error(`MCP resource capability is missing server_id or uri metadata: ${capability.id}`);
+    }
+    const raw = await this.input.capabilityPlane.readMcpResource(serverId, uri);
+    const materialized = await this.input.materializeMcp?.({
+      kind: "resource",
+      serverId,
+      nameOrUri: uri,
+      result: raw,
+      sessionId
+    }) ?? raw;
+    return {
+      action: capability.name,
+      status: "success",
+      summary: `MCP resource read: ${serverId}:${uri}`,
+      content: JSON.stringify(materialized, null, 2),
+      data: materialized,
+      metadata: {
+        server_id: serverId,
+        uri,
+        capability_id: capability.id,
+        materialized: Boolean(this.input.materializeMcp)
+      }
+    };
+  }
+
+  private async invokeMcpPrompt(
+    capability: CapabilityDescriptor,
+    args: Record<string, unknown>,
+    sessionId?: string
+  ): Promise<ToolResult> {
+    const serverId = capabilityStringMetadata(capability, "server_id") ?? mcpServerIdFromProvider(capability.providerId);
+    const name = stringArg(args, "name") ?? stringArg(args, "prompt") ?? stringArg(args, "prompt_name") ?? capabilityStringMetadata(capability, "prompt_name");
+    if (!serverId || !name) {
+      throw new Error(`MCP prompt capability is missing server_id or prompt_name metadata: ${capability.id}`);
+    }
+    const promptArgs = promptArguments(args);
+    const raw = await this.input.capabilityPlane.getMcpPrompt(serverId, name, promptArgs);
+    const materialized = await this.input.materializeMcp?.({
+      kind: "prompt",
+      serverId,
+      nameOrUri: name,
+      result: raw,
+      sessionId,
+      args: promptArgs
+    }) ?? raw;
+    return {
+      action: capability.name,
+      status: "success",
+      summary: `MCP prompt materialized: ${serverId}:${name}`,
+      content: JSON.stringify(materialized, null, 2),
+      data: materialized,
+      metadata: {
+        server_id: serverId,
+        prompt_name: name,
+        capability_id: capability.id,
+        materialized: Boolean(this.input.materializeMcp)
+      }
+    };
   }
 
   private async ensureApproval(
@@ -200,10 +447,14 @@ export class CapabilityBroker {
   ): ToolApprovalRequest | undefined {
     if (capability.kind === "local_tool" || capability.id.startsWith("local_tool.")) {
       const action = normalizeToolAction({ ...args, action: localActionNameForCapability(capability) });
-      if (!toolRequiresApproval(action, this.input.settings, { workspace: this.input.workspaceForSession(sessionId) })) {
+      const permissionDecision = decideToolPermission(action, this.input.settings, { workspace: this.input.workspaceForSession(sessionId) });
+      if (permissionDecision.decision === "deny") {
+        throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${capability.permissionName}`);
+      }
+      if (permissionDecision.decision !== "ask") {
         return undefined;
       }
-      const request = createToolApprovalRequest(action);
+      const request = createToolApprovalRequest(action, permissionDecision);
       return {
         ...request,
         session_id: sessionId,
@@ -300,6 +551,50 @@ export class CapabilityBroker {
   }
 }
 
+function taskContractForCapability(
+  capability: CapabilityDescriptor,
+  args: Record<string, unknown>,
+  options: CapabilityInvokeOptions
+): {
+  write_policy?: SandboxWritePolicy;
+  file_scope?: string[];
+} {
+  if (capability.kind === "local_tool" || capability.id.startsWith("local_tool.")) {
+    const actionName = localActionNameForCapability(capability);
+    try {
+      const action = normalizeToolAction({ ...args, action: args.action ?? capability.name ?? actionName }, actionName);
+      return taskContractForToolAction(action, {
+        writePolicy: options.writePolicy,
+        fileScope: options.fileScope
+      });
+    } catch {
+      // Fall through to capability-level contract.
+    }
+  }
+  if (options.writePolicy === "read_only" || capability.readOnly === true) {
+    return { write_policy: "read_only" };
+  }
+  if (options.writePolicy === "scoped_write") {
+    return {
+      write_policy: "scoped_write",
+      ...(options.fileScope?.length ? { file_scope: options.fileScope } : {})
+    };
+  }
+  if (options.writePolicy === "workspace_write") {
+    return {
+      write_policy: "workspace_write",
+      ...(options.fileScope?.length ? { file_scope: options.fileScope } : {})
+    };
+  }
+  if (options.fileScope?.length) {
+    return {
+      write_policy: "scoped_write",
+      file_scope: options.fileScope
+    };
+  }
+  return {};
+}
+
 export function capabilityRequiresApproval(capability: CapabilityDescriptor, settings: SwarmSettings): boolean {
   if (matchesCapabilityPermission(capability, settings.permissions.deny)) {
     throw new Error(`Capability denied by settings: ${capability.permissionName}`);
@@ -381,6 +676,50 @@ function localActionNameForCapability(capability: CapabilityDescriptor): string 
     : capability.id.replace(/^local_tool\./, "");
 }
 
+function agentSpecIdForCapability(capability: CapabilityDescriptor): string {
+  return capability.id.startsWith("agent_spec.")
+    ? capability.id.slice("agent_spec.".length)
+    : capability.name;
+}
+
+function slashCommandRawArgs(args: Record<string, unknown>): string {
+  return [
+    args.rawArgs,
+    args.raw_args,
+    args.arguments,
+    args.args,
+    args.input
+  ].find((value) => typeof value === "string" && value.trim()) as string | undefined ?? "";
+}
+
+function customCommandNameForCapability(capability: CapabilityDescriptor): string {
+  return capability.id.startsWith("custom-command.")
+    ? capability.id.slice("custom-command.".length)
+    : capability.name.replace(/^\//, "");
+}
+
+function pluginSlashContributionIdForCapability(capability: CapabilityDescriptor): string {
+  const metadataContribution = capabilityStringMetadata(capability, "contribution_id");
+  if (metadataContribution) {
+    return metadataContribution;
+  }
+  const parts = capability.id.split(".");
+  return parts[parts.length - 1] || capability.name.replace(/^\//, "");
+}
+
+function slashCommandNotInvokable(capability: CapabilityDescriptor): ToolResult {
+  return {
+    action: capability.name,
+    status: "failed",
+    summary: `Slash command capability is inspect-only: ${capability.name}`,
+    errors: [`No runtime executor is available for ${capability.id}.`],
+    errorCode: "SLASH_COMMAND_NOT_INVOKABLE",
+    retryable: false,
+    recoverable: true,
+    recoverySuggestion: "Use the command in the TUI, or invoke a custom/plugin slash command through a runtime that provides a slash objective executor."
+  };
+}
+
 function riskClassForInvocation(capability: CapabilityDescriptor, args: Record<string, unknown>): RiskClass {
   if (capability.kind !== "local_tool" && !capability.id.startsWith("local_tool.")) {
     return capability.riskClass;
@@ -390,6 +729,24 @@ function riskClassForInvocation(capability: CapabilityDescriptor, args: Record<s
   } catch {
     return capability.riskClass;
   }
+}
+
+function formatCapabilityFailureContent(
+  capability: CapabilityDescriptor,
+  summary: string,
+  errorCode: string,
+  recoverySuggestion: string,
+  sandbox?: SandboxDecision
+): string {
+  return [
+    `ERROR: ${summary}`,
+    `Error code: ${errorCode}`,
+    `Recovery: ${recoverySuggestion}`,
+    `Capability: ${capability.id}`,
+    `Provider: ${capability.providerId}`,
+    `Permission: ${capability.permissionName}`,
+    sandbox ? formatSandboxFailureDetail(sandbox) : undefined
+  ].filter(Boolean).join("\n");
 }
 
 async function prepareBrokerOutput(
@@ -470,7 +827,66 @@ function redactCapabilityArguments(value: unknown): unknown {
     /token|secret|password|api[_-]?key|authorization/i.test(key)
       ? "[redacted]"
       : redactCapabilityArguments(next)
-  ]));
+    ]));
+}
+
+function capabilityStringMetadata(capability: CapabilityDescriptor, key: string): string | undefined {
+  const value = capability.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function mcpServerIdFromProvider(providerId: string): string | undefined {
+  return providerId.startsWith("mcp:") ? providerId.slice("mcp:".length) : undefined;
+}
+
+function stringArg(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalStringArg(args: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringArg(args, key);
+    if (value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function requiredStringArg(args: Record<string, unknown>, keys: string[], message: string): string {
+  const value = optionalStringArg(args, keys);
+  if (!value) {
+    throw new Error(message);
+  }
+  return value;
+}
+
+function agentInvocationModeArg(value: unknown): AgentDelegateAction["preferred_mode"] {
+  return value === "handoff" || value === "parallel" || value === "call_subagent" ? value : undefined;
+}
+
+function stringArrayArg(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value.map((item) => String(item).trim()).filter(Boolean);
+  return items.length ? items : undefined;
+}
+
+function promptArguments(args: Record<string, unknown>): Record<string, string> | undefined {
+  const raw = isRecord(args.arguments)
+    ? args.arguments
+    : isRecord(args.args)
+      ? args.args
+      : undefined;
+  if (!raw) {
+    return undefined;
+  }
+  const entries = Object.entries(raw)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => [key, String(value)] as const);
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function truncateMiddle(content: string, maxBytes: number, totalBytes: number, totalLines: number, path: string): string {

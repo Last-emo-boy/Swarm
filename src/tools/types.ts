@@ -1,4 +1,16 @@
 import type { SwarmSettings } from "../config/settings.js";
+import type {
+  LspCodeActionsAction,
+  LspCompletionAction,
+  LspDefinitionAction,
+  LspDiagnosticsAction,
+  LspDocumentSymbolsAction,
+  LspFormatAction,
+  LspHoverAction,
+  LspReferencesAction,
+  LspRenamePreviewAction,
+  LspWorkspaceSymbolsAction
+} from "../lsp/types.js";
 import type { AgentAddress, BlackboardEntry, RiskClass } from "../protocol/types.js";
 
 export type FileReadAction = {
@@ -334,7 +346,32 @@ export type AgentDelegateAction = {
   context?: string;
   preferred_agent_spec_id?: string;
   preferred_mode?: "call_subagent" | "handoff" | "parallel";
+  run_in_background?: boolean;
   file_scope?: string[];
+};
+
+export type AgentListAction = {
+  type: "agent.list";
+  parent_session_id?: string;
+  status?: "pending" | "running" | "completed" | "failed" | "stopped";
+  limit?: number;
+};
+
+export type AgentStatusAction = {
+  type: "agent.status";
+  worker_id: string;
+};
+
+export type AgentStopAction = {
+  type: "agent.stop";
+  worker_id: string;
+};
+
+export type AgentContinueAction = {
+  type: "agent.continue";
+  worker_id: string;
+  message: string;
+  run_in_background?: boolean;
 };
 
 export type ToolAction =
@@ -380,7 +417,21 @@ export type ToolAction =
   | PackageInstallAction
   | PackageInfoAction
   | ProjectDetectAction
-  | AgentDelegateAction;
+  | LspDiagnosticsAction
+  | LspHoverAction
+  | LspDefinitionAction
+  | LspReferencesAction
+  | LspDocumentSymbolsAction
+  | LspWorkspaceSymbolsAction
+  | LspCompletionAction
+  | LspCodeActionsAction
+  | LspRenamePreviewAction
+  | LspFormatAction
+  | AgentDelegateAction
+  | AgentListAction
+  | AgentStatusAction
+  | AgentStopAction
+  | AgentContinueAction;
 
 export type LocalToolContext = {
   workspace: string;
@@ -389,6 +440,12 @@ export type LocalToolContext = {
   taskId?: string;
   attempt?: number;
   delegate?: (action: AgentDelegateAction) => Promise<ToolResult>;
+  agentControl?: {
+    list: (action: AgentListAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
+    status: (action: AgentStatusAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
+    stop: (action: AgentStopAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
+    continue: (action: AgentContinueAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
+  };
   serverWebSearch?: (action: WebSearchAction) => Promise<ToolResult>;
   blackboard?: {
     write: (action: BlackboardWriteAction, context: BlackboardToolContext) => Promise<BlackboardEntry> | BlackboardEntry;
@@ -400,6 +457,13 @@ export type LocalToolContext = {
   agent?: AgentAddress;
   onWorkspaceChange?: (change: WorkspaceChangeMetadata) => void;
   onFileLock?: (event: FileLockEvent) => void;
+};
+
+export type AgentControlToolContext = {
+  sessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: AgentAddress;
 };
 
 export type BlackboardToolContext = {
@@ -460,5 +524,11 @@ export type ToolApprovalRequest = {
   why_now: string;
   predicted_impact: string;
   rollback_plan: string;
+  permission_decision?: "allow" | "ask" | "deny";
+  permission_reason?: string;
+  permission_mode?: string;
+  permission_name?: string;
+  permission_rule?: string;
+  attention_note?: string;
   summary_diff?: string;
 };

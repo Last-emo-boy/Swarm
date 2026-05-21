@@ -125,6 +125,9 @@ export class SwarmDatabase {
         required_capabilities_json TEXT NOT NULL,
         dependencies_json TEXT NOT NULL,
         assigned_to_json TEXT,
+        capability TEXT,
+        write_policy TEXT,
+        file_scope_json TEXT,
         last_error TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (session_id, task_id)
@@ -308,6 +311,9 @@ export class SwarmDatabase {
     this.addColumnIfMissing("sessions", "parent_session_id", "TEXT");
     this.addColumnIfMissing("sessions", "workspace_lease_id", "TEXT");
     this.addColumnIfMissing("sessions", "final_outcome_json", "TEXT");
+    this.addColumnIfMissing("task_states", "capability", "TEXT");
+    this.addColumnIfMissing("task_states", "write_policy", "TEXT");
+    this.addColumnIfMissing("task_states", "file_scope_json", "TEXT");
     this.addColumnIfMissing("worker_states", "display_name", "TEXT");
     this.addColumnIfMissing("worker_states", "role_title", "TEXT");
     this.addColumnIfMissing("worker_states", "agent_spec_id", "TEXT");

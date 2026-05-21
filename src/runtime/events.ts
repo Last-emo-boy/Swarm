@@ -5,20 +5,42 @@ import type { WorkerRecord, WorkerStatus } from "../storage/worker-state-store.j
 import type { AgentSpawnDecision, AgentTaskPacket } from "./agent-specs.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { ProviderUsageReport } from "../providers/openai-provider.js";
+import type { SandboxDecision } from "./sandbox-policy.js";
+import type { CheckpointSummary } from "./checkpoints.js";
 
 export type SessionOutcome = WorkSessionOutcome;
+
+export type RuntimeAgentIdentity = {
+  worker_id?: string;
+  agent_id?: string;
+  role?: string;
+  capability?: string;
+  display_name?: string;
+  role_title?: string;
+  agent_spec_id?: string;
+  invocation_mode?: string;
+};
 
 export type RuntimeEvent =
   | { type: "log"; level: "info" | "warn" | "error"; message: string }
   | { type: "session"; session_id: string; status: SwarmSession["status"]; objective?: string; parent_session_id?: string }
   | { type: "controller"; id: string; action: string; reason: string; confidence?: number; instruction?: string; details?: Record<string, unknown> }
-  | { type: "queue"; operation: "enqueue" | "dequeue" | "clear"; id?: string; priority?: "now" | "next" | "later"; size: number }
+  | {
+      type: "queue";
+      queue: "control" | "worker_slots";
+      operation: "enqueue" | "dequeue" | "clear";
+      id?: string;
+      priority?: "now" | "next" | "later";
+      size: number;
+      session_id?: string;
+      message?: string;
+    }
   | { type: "worker"; worker: WorkerRecord; status: WorkerStatus; message?: string }
-  | { type: "agent_spawn_decision"; worker_id: string; decision: AgentSpawnDecision; task_packet: AgentTaskPacket }
+  | { type: "agent_spawn_decision"; worker_id: string; parent_session_id: string; decision: AgentSpawnDecision; task_packet: AgentTaskPacket }
   | { type: "agent_run_started"; worker: WorkerRecord; task_packet: AgentTaskPacket }
   | { type: "agent_run_completed"; worker: WorkerRecord; result: string }
   | { type: "handoff_started"; handoff: HandoffSessionRecord }
-  | { type: "handoff_message"; handoff_id: string; message: string }
+  | { type: "handoff_message"; session_id: string; handoff_id: string; worker_id?: string; message: string }
   | { type: "handoff_returned"; handoff: HandoffSessionRecord; result: string }
   | { type: "handoff_taken_back"; handoff: HandoffSessionRecord }
   | { type: "workspace_change"; session_id: string; change: WorkspaceChangeMetadata }
@@ -32,16 +54,30 @@ export type RuntimeEvent =
   | { type: "agent"; card: AgentCard }
   | { type: "envelope"; envelope: SwarmEnvelope }
   | { type: "plan"; session_id: string; plan: GeneratedPlan }
-  | { type: "task"; task_id: string; title: string; status: string }
+  | { type: "task"; session_id?: string; task_id: string; title: string; status: string; capability?: string; write_policy?: "read_only" | "scoped_write" | "workspace_write"; file_scope?: string[] }
   | { type: "task_attempt"; session_id?: string; task_id: string; title: string; attempt: number; status: "started" | "completed" | "failed" }
   | { type: "blackboard"; entry: BlackboardEntry }
   | { type: "approval"; request: ToolApprovalRequest; status: "pending" | "approved" | "denied" }
   | { type: "live_message"; id: string; session_id?: string; content: string; status: "received" | "processing" | "applied" }
   | { type: "control"; message_id: string; action: "continue_current" | "inject_next_turn" | "interrupt_and_redirect" | "ask_clarification"; reason: string; instruction: string }
-  | { type: "loop_activity"; session_id: string; phase: "thinking" | "running_tools" | "running_tool" | "waiting_approval" | "turn_complete" | "completed" | "failed" | "stopped"; message: string; turn?: number; tool?: string; task_id?: string }
-  | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped" }
+  | {
+      type: "loop_activity";
+      session_id: string;
+      phase: "thinking" | "running_tools" | "running_tool" | "waiting_approval" | "turn_complete" | "completed" | "failed" | "stopped";
+      message: string;
+      turn?: number;
+      max_turns?: number;
+      tool?: string;
+      task_id?: string;
+      status?: string;
+      summary?: string;
+      errorCode?: string;
+      recoverySuggestion?: string;
+      agent?: RuntimeAgentIdentity;
+    }
+  | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped"; checkpoint?: CheckpointSummary }
   | { type: "error"; message: string }
-  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass } }
+  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; write_policy?: "read_only" | "scoped_write" | "workspace_write"; file_scope?: string[]; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass }; sandbox?: SandboxDecision; agent?: RuntimeAgentIdentity }
   | { type: "provider_usage"; usage: ProviderUsageReport }
   | { type: "progress"; completed: number; total: number };
 

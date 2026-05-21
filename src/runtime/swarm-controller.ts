@@ -8,18 +8,22 @@ import type { ExecutionResult } from "./orchestrator.js";
 type ControllerInput = {
   kind: "run" | "live_message" | "worker_notification" | "interrupt";
   content: string;
+  requestId?: string;
+  resolve?: (decision: ControllerLiveDecision | undefined) => void;
+  reject?: (error: unknown) => void;
 };
 
 export type ControllerLiveDecision = {
+  message_id: string;
   action: "continue_current" | "inject_next_turn" | "interrupt_and_redirect" | "ask_clarification";
   reason: string;
   instruction: string;
 };
 
 export type SwarmControllerHandlers = {
-  executeRoute: (objective: string, route: ExecutionRoute) => Promise<ExecutionResult>;
-  handleLiveMessage: (content: string) => Promise<void>;
-  handleInterrupt: (content: string) => void;
+  executeRoute: (objective: string, route: ExecutionRoute, options: RunOptions) => Promise<ExecutionResult>;
+  handleLiveMessage: (content: string, requestId?: string) => Promise<ControllerLiveDecision | undefined>;
+  handleInterrupt: (content: string, requestId?: string) => ControllerLiveDecision | void;
 };
 
 export class SwarmController {
@@ -45,37 +49,44 @@ export class SwarmController {
         route
       }
     });
-    return this.handlers.executeRoute(objective, route);
+    return this.handlers.executeRoute(objective, route, options);
   }
 
-  async submitUserMessage(content: string, priority: QueuePriority = "next"): Promise<void> {
+  submitUserMessage(content: string, priority: QueuePriority = "next", requestId?: string): Promise<ControllerLiveDecision | undefined> {
+    const result = new Promise<ControllerLiveDecision | undefined>((resolve, reject) => {
+      const item = this.queue.enqueue({
+        id: `cmd_${randomUUID()}`,
+        value: { kind: "live_message", content, requestId, resolve, reject },
+        priority
+      });
+      this.events.emitEvent({ type: "queue", queue: "control", operation: "enqueue", id: item.id, priority: item.priority, size: this.queue.length });
+    });
+    void this.drain();
+    return result;
+  }
+
+  submitWorkerNotification(content: string, priority: QueuePriority = "later"): void {
     const item = this.queue.enqueue({
       id: `cmd_${randomUUID()}`,
-      value: { kind: "live_message", content },
+      value: { kind: "worker_notification", content },
       priority
     });
-    this.events.emitEvent({ type: "queue", operation: "enqueue", id: item.id, priority: item.priority, size: this.queue.length });
-    await this.drain();
+    this.events.emitEvent({ type: "queue", queue: "control", operation: "enqueue", id: item.id, priority: item.priority, size: this.queue.length });
+    void this.drain();
   }
 
-  interrupt(content: string): void {
+  interrupt(content: string, requestId?: string): void {
     const item = this.queue.enqueue({
       id: `cmd_${randomUUID()}`,
-      value: { kind: "interrupt", content },
+      value: { kind: "interrupt", content, requestId },
       priority: "now"
     });
-    this.events.emitEvent({ type: "queue", operation: "enqueue", id: item.id, priority: item.priority, size: this.queue.length });
+    this.events.emitEvent({ type: "queue", queue: "control", operation: "enqueue", id: item.id, priority: item.priority, size: this.queue.length });
     void this.drain();
   }
 
   enqueueWorkerNotification(content: string): void {
-    const item = this.queue.enqueue({
-      id: `cmd_${randomUUID()}`,
-      value: { kind: "worker_notification", content },
-      priority: "later"
-    });
-    this.events.emitEvent({ type: "queue", operation: "enqueue", id: item.id, priority: item.priority, size: this.queue.length });
-    void this.drain();
+    this.submitWorkerNotification(content);
   }
 
   private async drain(): Promise<void> {
@@ -89,13 +100,27 @@ export class SwarmController {
         if (!item) {
           break;
         }
-        this.events.emitEvent({ type: "queue", operation: "dequeue", id: item.id, priority: item.priority, size: this.queue.length });
-        if (item.value.kind === "interrupt") {
-          this.handlers.handleInterrupt(item.value.content);
-        } else if (item.value.kind === "live_message") {
-          await this.handlers.handleLiveMessage(item.value.content);
-        } else if (item.value.kind === "worker_notification") {
-          await this.handlers.handleLiveMessage(item.value.content);
+        this.events.emitEvent({ type: "queue", queue: "control", operation: "dequeue", id: item.id, priority: item.priority, size: this.queue.length });
+        try {
+          if (item.value.kind === "interrupt") {
+            const decision = this.handlers.handleInterrupt(item.value.content, item.value.requestId);
+            item.value.resolve?.(decision ?? undefined);
+          } else if (item.value.kind === "live_message") {
+            const decision = await this.handlers.handleLiveMessage(item.value.content, item.value.requestId);
+            item.value.resolve?.(decision);
+          } else if (item.value.kind === "worker_notification") {
+            const decision = await this.handlers.handleLiveMessage(item.value.content, item.value.requestId);
+            item.value.resolve?.(decision);
+          }
+        } catch (error) {
+          item.value.reject?.(error);
+          if (!item.value.reject) {
+            this.events.emitEvent({
+              type: "log",
+              level: "warn",
+              message: error instanceof Error ? error.message : String(error)
+            });
+          }
         }
       }
     } finally {

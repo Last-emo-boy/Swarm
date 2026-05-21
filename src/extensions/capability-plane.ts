@@ -6,6 +6,7 @@ import { McpClientProvider, type McpServerRecord } from "./mcp.js";
 import { PluginProvider, type PluginRecord } from "./plugins.js";
 import { SkillProvider, type ActivatedSkill, type SkillRecord } from "./skills.js";
 import { SlashCommandProvider } from "./slash-commands.js";
+import { CustomCommandProvider, type CustomCommandRecord } from "./custom-commands.js";
 import type {
   CapabilityDescriptor,
   CapabilityFilter,
@@ -17,13 +18,16 @@ export class CapabilityPlane {
   readonly skills: SkillProvider;
   readonly mcp: McpClientProvider;
   readonly plugins: PluginProvider;
+  readonly commands: CustomCommandProvider;
 
   constructor(readonly settings: SwarmSettings, readonly workspace: string) {
     this.skills = new SkillProvider({ settings, workspace });
     this.mcp = new McpClientProvider({ settings, workspace });
     this.plugins = new PluginProvider({ settings, workspace });
+    this.commands = new CustomCommandProvider({ settings, workspace });
     this.registry.register(new BuiltinLocalToolProvider());
     this.registry.register(new SlashCommandProvider());
+    this.registry.register(this.commands);
     this.registry.register(new AgentSpecProvider({ settings, workspace }));
     this.registry.register(this.skills);
     this.registry.register(this.mcp);
@@ -60,6 +64,14 @@ export class CapabilityPlane {
 
   listPlugins(): PluginRecord[] {
     return this.plugins.listPlugins();
+  }
+
+  listCustomCommands(): CustomCommandRecord[] {
+    return this.commands.listCommands();
+  }
+
+  getCustomCommand(name: string): CustomCommandRecord | undefined {
+    return this.commands.getCommand(name);
   }
 
   listMcpServers(): McpServerRecord[] {
@@ -166,7 +178,8 @@ function matchesCapabilityFilter(capability: CapabilityDescriptor, filter: Capab
       capability.title ?? "",
       capability.description,
       capability.providerId,
-      capability.permissionName
+      capability.permissionName,
+      capability.searchHint ?? ""
     ].join("\n").toLowerCase();
     return haystack.includes(query);
   }

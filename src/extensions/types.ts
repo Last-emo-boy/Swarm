@@ -27,6 +27,13 @@ export type CapabilityDiagnostic = {
   metadata?: Record<string, unknown>;
 };
 
+export type CapabilityConcurrencyClass =
+  | "read_parallel"
+  | "write_exclusive"
+  | "verify_exclusive"
+  | "background_process"
+  | "network_limited";
+
 export type CapabilityDescriptor = {
   id: string;
   kind: CapabilityKind;
@@ -44,6 +51,12 @@ export type CapabilityDescriptor = {
   userVisible: boolean;
   status?: "available" | "disabled" | "failed" | "pending";
   diagnostics?: CapabilityDiagnostic[];
+  alwaysLoad?: boolean;
+  shouldDefer?: boolean;
+  readOnly?: boolean;
+  concurrencyClass?: CapabilityConcurrencyClass;
+  maxResultBytes?: number;
+  searchHint?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -75,4 +88,3 @@ export type CapabilityProvider = {
   diagnostics?(): CapabilityDiagnostic[];
   dispose?(): void | Promise<void>;
 };
-

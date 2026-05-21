@@ -1,9 +1,19 @@
 import { OpenAIProvider } from "../providers/openai-provider.js";
 
 export type RunMode = "auto" | "chat" | "coding_loop" | "full_swarm";
+export type RunSandboxMode = "workspace-write" | "read-only";
 
 export type RunOptions = {
   mode?: RunMode;
+  maxTurns?: number;
+  maxToolCalls?: number;
+  sandboxMode?: RunSandboxMode;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  additionalReadDirectories?: string[];
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
+  skills?: string[];
 };
 
 type ConcreteRunMode = Exclude<RunMode, "auto">;
@@ -35,12 +45,18 @@ export async function routeExecution(
     return { mode: options.mode, reason: `forced:${options.mode}`, confidence: 1 };
   }
 
+  const fastRoute = fastRouteExecution(objective);
+  if (fastRoute) {
+    return fastRoute;
+  }
+
   try {
     const content = await provider.generateText({
       model: provider.workerModel,
       system: [{ text: routeSystemPrompt(), cache: true }],
       user: JSON.stringify(routeDecisionInput(objective), null, 2),
       usage: { purpose: "execution_router" },
+      responseFormat: "json_object",
       maxOutputTokens: ROUTER_MAX_OUTPUT_TOKENS
     });
     try {
@@ -64,6 +80,7 @@ export async function routeExecution(
           output_contract: routeOutputContract()
         }, null, 2),
         usage: { purpose: "execution_router_repair" },
+        responseFormat: "json_object",
         maxOutputTokens: ROUTER_REPAIR_MAX_OUTPUT_TOKENS
       });
       return applyStructuredRoutingPolicy(parseRoute(repaired));
@@ -71,6 +88,78 @@ export async function routeExecution(
   } catch (error) {
     return routeDecisionFallback(error);
   }
+}
+
+export function fastRouteExecution(objective: string): ExecutionRoute | undefined {
+  const normalized = objective.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const mentionsWorkspace = /\b(this repo|this repository|repo|repository|workspace|codebase|current project|package\.json|tsconfig|src\/|dist\/|file|files|directory|git|diff|build|test|lint|typecheck|smoke)\b/.test(normalized);
+  const genericMutation = /\b(add|apply|change|create|delete|edit|install|modify|patch|remove|rename|update|write)\b/.test(normalized);
+  const codeMutation = /\b(fix|implement|lint|refactor|run tests|test suite|typecheck|build|bug|patch)\b/.test(normalized);
+  const mutatesWorkspace = codeMutation || (mentionsWorkspace && genericMutation);
+  const asksForParallelism = /\b(agent swarm|subagent|sub-agent|subagents|multi-agent|multiple agents|team of agents|use a team|parallel agents|separate experts|independent workstreams|independent roles|reviewer agent|critic agent|architect agent)\b/.test(normalized);
+  const simpleQuestion = /^(what|who|when|where|why|how|explain|summarize|tell me|define|compare)\b/.test(normalized);
+
+  if (mutatesWorkspace) {
+    return {
+      mode: "coding_loop",
+      confidence: 0.95,
+      reason: "fast_route: workspace mutation or command execution should use the controlled local coding loop.",
+      requires_workspace: true,
+      expected_side_effects: normalized.includes("run") || normalized.includes("test") || normalized.includes("build") || normalized.includes("lint")
+        ? "run_commands"
+        : "modify_workspace",
+      needs_parallelism: false,
+      risk: "medium",
+      fallback_mode: "coding_loop"
+    };
+  }
+
+  if (simpleQuestion && !mentionsWorkspace && !asksForParallelism) {
+    return {
+      mode: "chat",
+      confidence: 0.92,
+      reason: "fast_route: simple question without required workspace access.",
+      requires_workspace: false,
+      expected_side_effects: "none",
+      needs_parallelism: false,
+      risk: "low",
+      fallback_mode: "chat"
+    };
+  }
+
+  if (asksForParallelism) {
+    return {
+      mode: "full_swarm",
+      confidence: 0.88,
+      reason: "fast_route: explicit independent multi-agent or team-style analysis request.",
+      requires_workspace: mentionsWorkspace,
+      expected_side_effects: mentionsWorkspace ? "read_workspace" : "none",
+      needs_parallelism: true,
+      parallelism_reason: "The user explicitly asked for multiple agents, roles, or parallel expert work.",
+      swarm_value: "Planner/worker/reviewer aggregation can coordinate independent read-only perspectives.",
+      risk: "low",
+      fallback_mode: "coding_loop"
+    };
+  }
+
+  if (mentionsWorkspace) {
+    return {
+      mode: "coding_loop",
+      confidence: 0.9,
+      reason: "fast_route: repository, file, command, or workspace context is likely required.",
+      requires_workspace: true,
+      expected_side_effects: "read_workspace",
+      needs_parallelism: false,
+      risk: "low",
+      fallback_mode: "coding_loop"
+    };
+  }
+
+  return undefined;
 }
 
 function routeSystemPrompt(): string {

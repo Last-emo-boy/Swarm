@@ -18,7 +18,16 @@ import {
   resolveShellCwd,
   resolveWritablePath
 } from "./permissions.js";
+import { ensureWorkspaceIndex } from "../runtime/workspace-index.js";
 import type { LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
+import {
+  GREP_FALLBACK_MAX_DEPTH,
+  GREP_FALLBACK_MAX_FILES,
+  grepLocalFilesWithRipgrep,
+  type GrepMatch,
+  type ShellCommandResult
+} from "./file-grep.js";
+import { runLspTool } from "../lsp/tools.js";
 
 const AGENT_TOOL_DEFAULT_CAPABILITY = "code.research";
 
@@ -37,23 +46,15 @@ type ReadSnapshot = {
   truncated: boolean;
 };
 
-type ShellCommandResult = {
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-  truncated: boolean;
-  error?: string;
-};
-
 const readSnapshots = new Map<string, ReadSnapshot>();
 const todoStates = new Map<string, Array<{ content: string; activeForm?: string; status: "pending" | "in_progress" | "completed" }>>();
 const writeLocks = new Map<string, { holder: string; acquiredAt: string }>();
 
 export function normalizeToolAction(inputs: Record<string, unknown>, capability?: string): ToolAction {
   const rawAction = String(inputs.action ?? capability ?? "").trim();
-  const action = normalizeActionName(rawAction);
+  const action = isRunCommandAlias(rawAction)
+    ? runCommandAliasTarget(inputs.command)
+    : normalizeActionName(rawAction);
   const isVisibleAgentAction = rawAction === "Agent" || rawAction === "Task";
   if (action === "file.read") {
     return {
@@ -409,14 +410,48 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       root: optionalStringInput(inputs.root ?? inputs.cwd ?? inputs.path)
     };
   }
+  if (isLspActionType(action)) {
+    return normalizeLspAction(action, inputs);
+  }
+  if (action === "agent.list") {
+    return {
+      type: "agent.list",
+      parent_session_id: optionalStringInput(inputs.parent_session_id ?? inputs.parentSessionId ?? inputs.session_id ?? inputs.sessionId),
+      status: agentWorkerStatusInput(inputs.status),
+      limit: numberInput(inputs.limit)
+    };
+  }
+  if (action === "agent.status") {
+    return {
+      type: "agent.status",
+      worker_id: requiredStringInput(inputs.worker_id ?? inputs.workerId ?? inputs.agent_id ?? inputs.agentId, "agent.status requires worker_id")
+    };
+  }
+  if (action === "agent.stop") {
+    return {
+      type: "agent.stop",
+      worker_id: requiredStringInput(inputs.worker_id ?? inputs.workerId ?? inputs.agent_id ?? inputs.agentId, "agent.stop requires worker_id")
+    };
+  }
+  if (action === "agent.continue") {
+    return {
+      type: "agent.continue",
+      worker_id: requiredStringInput(inputs.worker_id ?? inputs.workerId ?? inputs.agent_id ?? inputs.agentId, "agent.continue requires worker_id"),
+      message: requiredStringInput(inputs.message ?? inputs.prompt ?? inputs.instruction ?? inputs.task, "agent.continue requires message"),
+      run_in_background: booleanInput(inputs.runInBackground ?? inputs.run_in_background)
+    };
+  }
   if (action === "agent.delegate") {
+    const runInBackground = booleanInput(inputs.runInBackground ?? inputs.run_in_background);
+    const preferredMode = agentInvocationModeInput(inputs.preferred_mode ?? inputs.invocation_mode ?? inputs.mode);
     return {
       type: "agent.delegate",
       capability: requiredStringInput(inputs.capability ?? inputs.subagent_type ?? inputs.agent_type ?? (isVisibleAgentAction ? AGENT_TOOL_DEFAULT_CAPABILITY : undefined), "agent.delegate requires capability"),
       task: requiredStringInput(inputs.task ?? inputs.prompt ?? inputs.description ?? inputs.objective, "agent.delegate requires task"),
       context: optionalStringInput(inputs.context),
       preferred_agent_spec_id: optionalStringInput(inputs.preferred_agent_spec_id ?? inputs.agent_spec_id ?? inputs.agent ?? inputs.subagent_type),
-      preferred_mode: agentInvocationModeInput(inputs.preferred_mode ?? inputs.invocation_mode ?? inputs.mode),
+      preferred_mode: runInBackground === true ? "parallel" : preferredMode,
+      run_in_background: runInBackground,
       file_scope: stringArrayInput(inputs.file_scope ?? inputs.fileScope ?? inputs.paths)
     };
   }
@@ -585,11 +620,38 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
   if (action.type === "project.detect") {
     return detectProject(action, context);
   }
+  if (isLspToolAction(action)) {
+    return runLspTool(action, context);
+  }
   if (action.type === "agent.delegate") {
     if (!context.delegate) {
       throw new Error("agent.delegate is only available within a swarm agent process");
     }
     return context.delegate(action);
+  }
+  if (action.type === "agent.list") {
+    if (!context.agentControl) {
+      throw new Error("agent.list is only available within a swarm agent process");
+    }
+    return context.agentControl.list(action, agentControlToolContext(context));
+  }
+  if (action.type === "agent.status") {
+    if (!context.agentControl) {
+      throw new Error("agent.status is only available within a swarm agent process");
+    }
+    return context.agentControl.status(action, agentControlToolContext(context));
+  }
+  if (action.type === "agent.stop") {
+    if (!context.agentControl) {
+      throw new Error("agent.stop is only available within a swarm agent process");
+    }
+    return context.agentControl.stop(action, agentControlToolContext(context));
+  }
+  if (action.type === "agent.continue") {
+    if (!context.agentControl) {
+      throw new Error("agent.continue is only available within a swarm agent process");
+    }
+    return context.agentControl.continue(action, agentControlToolContext(context));
   }
   throw new Error(`Unsupported tool action: ${(action as ToolAction).type}`);
 }
@@ -811,12 +873,25 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
   const regex = compileSearchRegex(action.pattern);
   const maxMatches = Math.max(1, action.maxMatches ?? 100);
   const contextLines = Math.max(0, action.contextLines ?? 0);
+  const rgResult = await grepLocalFilesWithRipgrep({
+    root,
+    action,
+    context,
+    maxMatches,
+    contextLines,
+    runCommand: runDirectCommand,
+    displayPath,
+    isPathDenied
+  });
+  if (rgResult) {
+    return rgResult;
+  }
   const files = await collectFiles(root, context, {
-    maxFiles: 20_000,
-    maxDepth: 20,
+    maxFiles: GREP_FALLBACK_MAX_FILES,
+    maxDepth: GREP_FALLBACK_MAX_DEPTH,
     filter: (file) => !action.include || matchesGlob(file.display, action.include) || matchesGlob(basename(file.display), action.include)
   });
-  const matches: unknown[] = [];
+  const matches: GrepMatch[] = [];
   for (const file of files) {
     if (matches.length >= maxMatches) {
       break;
@@ -850,7 +925,11 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
     data: matches,
     metadata: {
       root: displayPath(root, context.workspace),
-      requestedRoot: action.root || "."
+      requestedRoot: action.root || ".",
+      engine: "js-fallback",
+      scannedFiles: files.length,
+      fileLimit: GREP_FALLBACK_MAX_FILES,
+      truncated: files.length >= GREP_FALLBACK_MAX_FILES
     }
   };
 }
@@ -1166,6 +1245,7 @@ async function deleteLocalPath(action: Extract<ToolAction, { type: "file.delete"
       summary: `deleted ${path}`,
       data: {
         path,
+        operation: "delete",
         targetType: fileTargetKind(targetInfo),
         change
       }
@@ -1705,6 +1785,20 @@ function blackboardToolContext(context: LocalToolContext): {
   return {
     sessionId: context.sessionId,
     blackboardSessionId: context.blackboardSessionId,
+    taskId: context.taskId,
+    attempt: context.attempt,
+    agent: context.agent
+  };
+}
+
+function agentControlToolContext(context: LocalToolContext): {
+  sessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: import("../protocol/types.js").AgentAddress;
+} {
+  return {
+    sessionId: context.sessionId,
     taskId: context.taskId,
     attempt: context.attempt,
     agent: context.agent
@@ -2267,7 +2361,13 @@ async function webSearch(action: Extract<ToolAction, { type: "web.search" }>, co
         fallbackErrors.push(error instanceof Error ? error.message : String(error));
         return [];
       });
-  const hits = filterSearchHits(dedupeSearchHits([...instant.hits, ...htmlHits]), allowedDomains, blockedDomains).slice(0, 10);
+  const bingHits = instant.hits.length + htmlHits.length >= 5
+    ? []
+    : await searchBingHtml(query).catch((error: unknown) => {
+        fallbackErrors.push(error instanceof Error ? error.message : String(error));
+        return [];
+      });
+  const hits = filterSearchHits(dedupeSearchHits([...instant.hits, ...htmlHits, ...bingHits]), allowedDomains, blockedDomains).slice(0, 10);
   const durationSeconds = (Date.now() - startedAt) / 1000;
   if (!instant.abstract && hits.length === 0 && fallbackErrors.length) {
     return {
@@ -2281,9 +2381,10 @@ async function webSearch(action: Extract<ToolAction, { type: "web.search" }>, co
       recoverySuggestion: recoverySuggestionForToolFailure(action.type, "NETWORK_ERROR", fallbackErrors.join("\n")),
       data: {
         query,
-        provider: "duckduckgo-fallback",
+        provider: "local-search-fallback",
         durationSeconds,
         fallbackReason,
+        fallbackErrors,
         allowed_domains: allowedDomains,
         blocked_domains: blockedDomains
       }
@@ -2304,9 +2405,10 @@ async function webSearch(action: Extract<ToolAction, { type: "web.search" }>, co
     content,
     data: {
       query,
-      provider: "duckduckgo-fallback",
+      provider: "local-search-fallback",
       durationSeconds,
       fallbackReason,
+      fallbackErrors,
       allowed_domains: allowedDomains,
       blocked_domains: blockedDomains,
       abstract: instant.abstract,
@@ -2368,6 +2470,41 @@ async function searchDuckDuckGoHtml(query: string): Promise<WebSearchHit[]> {
     hits.push({
       title: cleanHtml(match[2] ?? url),
       url
+    });
+  }
+  return hits;
+}
+
+async function searchBingHtml(query: string): Promise<WebSearchHit[]> {
+  const url = new URL("https://www.bing.com/search");
+  url.searchParams.set("q", query);
+  const response = await fetch(url, {
+    headers: {
+      "accept-language": "en-US,en;q=0.9",
+      "user-agent": "Mozilla/5.0 SwarmCLI/0.1 web.search"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Bing HTML search failed with HTTP ${response.status}`);
+  }
+  const html = await response.text();
+  const hits: WebSearchHit[] = [];
+  const itemPattern = /<li\b[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
+  for (const item of html.matchAll(itemPattern)) {
+    const block = item[1] ?? "";
+    const titleMatch = block.match(/<h2\b[^>]*>\s*<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>/i);
+    if (!titleMatch) {
+      continue;
+    }
+    const resultUrl = decodeBingUrl(decodeHtmlEntity(titleMatch[1] ?? ""));
+    if (!isHttpUrl(resultUrl)) {
+      continue;
+    }
+    const snippetMatch = block.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
+    hits.push({
+      title: cleanHtml(titleMatch[2] ?? resultUrl),
+      url: resultUrl,
+      snippet: snippetMatch ? cleanHtml(snippetMatch[1] ?? "") : undefined
     });
   }
   return hits;
@@ -2478,6 +2615,27 @@ function decodeDuckDuckGoUrl(value: string): string {
     const url = new URL(value, "https://duckduckgo.com");
     const uddg = url.searchParams.get("uddg");
     return uddg ? decodeURIComponent(uddg) : url.href;
+  } catch {
+    return value;
+  }
+}
+
+function decodeBingUrl(value: string): string {
+  try {
+    const url = new URL(value, "https://www.bing.com");
+    if (!/(\.|^)bing\.com$/i.test(url.hostname)) {
+      return url.href;
+    }
+    const encoded = url.searchParams.get("u");
+    if (!encoded) {
+      return url.href;
+    }
+    if (/^https?:\/\//i.test(encoded)) {
+      return decodeURIComponent(encoded);
+    }
+    const base64 = encoded.startsWith("a1") ? encoded.slice(2) : encoded;
+    const decoded = Buffer.from(base64.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    return /^https?:\/\//i.test(decoded) ? decoded : url.href;
   } catch {
     return value;
   }
@@ -2796,11 +2954,11 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
   const pkgJsonExists = await stat(resolve(root, "package.json")).then(() => true).catch(() => false);
   if (pkgJsonExists) {
     const raw = await readFile(resolve(root, "package.json"), "utf8");
-    const pkg = JSON.parse(raw) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(raw) as { scripts?: Record<string, string>; eslintConfig?: unknown };
     if (pkg.scripts?.lint) {
       commands.push(`npm run lint`);
-    } else {
-      commands.push(`npx eslint . --ext .ts,.tsx,.js,.jsx 2>&1 || true`);
+    } else if (pkg.eslintConfig || await hasEslintConfig(root)) {
+      commands.push(`npx eslint .`);
     }
   }
 
@@ -2846,6 +3004,26 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
   return aggregateLintResults(results);
 }
 
+async function hasEslintConfig(root: string): Promise<boolean> {
+  const candidates = [
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.json",
+    ".eslintrc.yaml",
+    ".eslintrc.yml"
+  ];
+  for (const candidate of candidates) {
+    if (await stat(resolve(root, candidate)).then(() => true).catch(() => false)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function aggregateLintResults(results: ToolResult[]): ToolResult {
   return {
     action: "code.lint",
@@ -2873,6 +3051,22 @@ async function executeGitStatus(action: Extract<ToolAction, { type: "git.status"
       content: `$ git status --porcelain --branch\nERROR: ${result.error}`,
       errors: [result.error],
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
+    };
+  }
+  if (isNotGitRepositoryResult(result)) {
+    return {
+      action: "git.status",
+      status: "success",
+      summary: "git status skipped: not a git repository",
+      content: [`$ git status --porcelain --branch`, result.stderr || result.stdout || "not a git repository"].join("\n"),
+      data: {
+        cwd: displayPath(cwd, context.workspace),
+        skipped: true,
+        reason: "not_git_repository",
+        staged: 0,
+        unstaged: 0,
+        files: []
+      }
     };
   }
 
@@ -2912,6 +3106,22 @@ async function executeGitDiff(action: Extract<ToolAction, { type: "git.diff" }>,
       metadata: { cwd: displayPath(cwd, context.workspace), error: result.error }
     };
   }
+  if (isNotGitRepositoryResult(result)) {
+    return {
+      action: "git.diff",
+      status: "success",
+      summary: "git diff skipped: not a git repository",
+      content: [`$ ${cmd}`, result.stderr || result.stdout || "not a git repository"].join("\n"),
+      data: {
+        cwd: displayPath(cwd, context.workspace),
+        skipped: true,
+        reason: "not_git_repository",
+        staged: action.staged ?? false,
+        bytes: 0,
+        truncated: result.truncated
+      }
+    };
+  }
 
   return {
     action: "git.diff",
@@ -2925,6 +3135,10 @@ async function executeGitDiff(action: Extract<ToolAction, { type: "git.diff" }>,
       truncated: result.truncated
     }
   };
+}
+
+function isNotGitRepositoryResult(result: ShellCommandResult): boolean {
+  return result.exitCode !== 0 && /not a git repository|not a git command|fatal:.*not.*git/i.test(`${result.stderr}\n${result.stdout}`);
 }
 
 async function executeGitLog(action: Extract<ToolAction, { type: "git.log" }>, context: LocalToolContext): Promise<ToolResult> {
@@ -3111,36 +3325,53 @@ async function readPackageInfo(action: Extract<ToolAction, { type: "package.info
 
 async function detectProject(action: Extract<ToolAction, { type: "project.detect" }>, context: LocalToolContext): Promise<ToolResult> {
   const root = resolveReadablePath(action.root ?? ".", context);
-  const probes = [
-    { file: "package.json", kind: "node" },
-    { file: "tsconfig.json", kind: "typescript" },
-    { file: "pyproject.toml", kind: "python" },
-    { file: "Cargo.toml", kind: "rust" },
-    { file: "go.mod", kind: "go" },
-    { file: "pom.xml", kind: "java-maven" },
-    { file: "build.gradle", kind: "java-gradle" }
+  const index = await ensureWorkspaceIndex(root).catch(() => undefined);
+  const manifestNames = [
+    "package.json",
+    "tsconfig.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle"
   ];
-  const matches: Array<{ file: string; kind: string }> = [];
-  for (const probe of probes) {
-    const fullPath = resolve(root, probe.file);
-    try {
-      assertReadableByDenyRules(fullPath, context);
-      const info = await stat(fullPath);
-      if (info.isFile()) {
-        matches.push({ file: displayPath(fullPath, context.workspace), kind: probe.kind });
-      }
-    } catch {
-      // Missing probe files are normal.
-    }
-  }
+  const matches = index
+    ? index.files
+        .filter((item) => manifestNames.some((name) => item.path.endsWith(name)))
+        .map((item) => {
+          const kind = item.path.endsWith("package.json")
+            ? "node"
+            : item.path.endsWith("tsconfig.json")
+              ? "typescript"
+              : item.path.endsWith("pyproject.toml")
+                ? "python"
+                : item.path.endsWith("Cargo.toml")
+                  ? "rust"
+                  : item.path.endsWith("go.mod")
+                    ? "go"
+                    : item.path.endsWith("pom.xml")
+                      ? "java-maven"
+                      : "java-gradle";
+          return { file: displayPath(resolve(root, item.path), context.workspace), kind };
+        })
+    : [];
   return {
     action: action.type,
     status: "success",
-    summary: matches.length ? `detected ${matches.map((item) => item.kind).join(", ")}` : "no known project manifests detected",
+    summary: matches.length ? `detected ${matches.map((item) => item.kind).join(", ")}${index ? " via workspace index" : ""}` : "no known project manifests detected",
     data: {
       root: displayPath(root, context.workspace),
+      index_hit: Boolean(index),
       kinds: [...new Set(matches.map((item) => item.kind))],
-      manifests: matches
+      manifests: matches,
+      workspace_index: index
+        ? {
+            detected: index.detected,
+            packageManager: index.packageManager,
+            files: index.files.length,
+            recentFiles: index.recentFiles.slice(0, 10).map((file) => displayPath(file.path, context.workspace))
+          }
+        : undefined
     }
   };
 }
@@ -3194,6 +3425,60 @@ async function runShellCommand(
     child.on("error", (error) => {
       clearTimeout(timer);
       finish({ error: error.message });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      finish({ exitCode: code, signal });
+    });
+  });
+}
+
+async function runDirectCommand(
+  command: string,
+  args: string[],
+  options: { cwd: string; timeoutMs: number; maxOutputBytes: number }
+): Promise<ShellCommandResult | undefined> {
+  return new Promise((resolvePromise) => {
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    let timedOut = false;
+    let settled = false;
+
+    const finish = (extra: { exitCode?: number | null; signal?: NodeJS.Signals | null; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise({ exitCode: extra.exitCode ?? null, signal: extra.signal ?? null, stdout, stderr, timedOut, truncated, error: extra.error });
+    };
+
+    const child = spawn(command, args, { cwd: options.cwd, env: process.env, windowsHide: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, options.timeoutMs);
+
+    const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      const current = stream === "stdout" ? stdout : stderr;
+      const next = current + text;
+      const nextBytes = Buffer.byteLength(next, "utf8");
+      if (nextBytes > options.maxOutputBytes) {
+        truncated = true;
+        const sliced = Buffer.from(next, "utf8").subarray(0, options.maxOutputBytes).toString("utf8");
+        if (stream === "stdout") stdout = sliced;
+        else stderr = sliced;
+      } else if (stream === "stdout") {
+        stdout = next;
+      } else {
+        stderr = next;
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolvePromise(undefined);
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
@@ -3325,6 +3610,9 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["Edit", "edit_file", "tool.file.edit", "file.edit"].includes(action)) {
     return "file.edit";
   }
+  if (["Delete", "delete_file", "tool.file.delete", "file.delete"].includes(action)) {
+    return "file.delete";
+  }
   if (["TodoWrite", "todo", "todo_write", "todo.write", "tool.todo.write"].includes(action)) {
     return "todo.write";
   }
@@ -3340,7 +3628,19 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["BlackboardList", "blackboard_list", "blackboard.list"].includes(action)) {
     return "blackboard.list";
   }
-  if (["Bash", "bash", "shell", "tool.shell.exec", "shell.exec"].includes(action)) {
+  if (["AgentList", "agent_list", "agent.list", "agents.list"].includes(action)) {
+    return "agent.list";
+  }
+  if (["AgentStatus", "agent_status", "agent.status", "worker.status"].includes(action)) {
+    return "agent.status";
+  }
+  if (["AgentStop", "agent_stop", "agent.stop", "worker.stop"].includes(action)) {
+    return "agent.stop";
+  }
+  if (["AgentContinue", "agent_continue", "agent.continue", "continue_agent", "worker.continue"].includes(action)) {
+    return "agent.continue";
+  }
+  if (["Bash", "bash", "shell", "Shell", "RunCommand", "run_command", "run.command", "command", "tool.shell.exec", "shell.exec"].includes(action)) {
     return "shell.exec";
   }
   if (["ProcessStart", "process_start", "process.start", "background.start"].includes(action)) {
@@ -3391,10 +3691,222 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["package_install", "package.install", "install"].includes(action)) {
     return "package.install";
   }
+  if (["lsp_diagnostics", "lsp.diagnostics", "LspDiagnostics"].includes(action)) {
+    return "lsp.diagnostics";
+  }
+  if (["lsp_hover", "lsp.hover", "LspHover"].includes(action)) {
+    return "lsp.hover";
+  }
+  if (["lsp_definition", "lsp.definition", "LspDefinition"].includes(action)) {
+    return "lsp.definition";
+  }
+  if (["lsp_references", "lsp.references", "LspReferences"].includes(action)) {
+    return "lsp.references";
+  }
+  if (["lsp_document_symbols", "lsp.document_symbols", "LspDocumentSymbols"].includes(action)) {
+    return "lsp.document_symbols";
+  }
+  if (["lsp_workspace_symbols", "lsp.workspace_symbols", "LspWorkspaceSymbols"].includes(action)) {
+    return "lsp.workspace_symbols";
+  }
+  if (["lsp_completion", "lsp.completion", "LspCompletion"].includes(action)) {
+    return "lsp.completion";
+  }
+  if (["lsp_code_actions", "lsp.code_actions", "LspCodeActions"].includes(action)) {
+    return "lsp.code_actions";
+  }
+  if (["lsp_rename_preview", "lsp.rename_preview", "LspRenamePreview"].includes(action)) {
+    return "lsp.rename_preview";
+  }
+  if (["lsp_format", "lsp.format", "LspFormat"].includes(action)) {
+    return "lsp.format";
+  }
   if (["Agent", "Task", "agent_delegate", "agent.delegate", "delegate"].includes(action)) {
     return "agent.delegate";
   }
   return action as ToolAction["type"];
+}
+
+function isRunCommandAlias(action: string): boolean {
+  return ["RunCommand", "run_command", "run.command", "command"].includes(action);
+}
+
+function runCommandAliasTarget(command: unknown): ToolAction["type"] {
+  return typeof command === "string" && looksLikeVerificationCommand(command)
+    ? "code.test"
+    : "shell.exec";
+}
+
+function looksLikeVerificationCommand(command: string): boolean {
+  return /\b(npm|pnpm|yarn)\s+(run\s+)?test\b/i.test(command)
+    || /\bnode(?:\.exe)?\b[\s\S]*(?:\btest\b|\bspec\b|src[\\/]+cli\.js)/i.test(command)
+    || /\b(smoke|verify|verification)\b/i.test(command);
+}
+
+function isLspActionType(action: ToolAction["type"]): action is Extract<ToolAction, { type: `lsp.${string}` }>["type"] {
+  return [
+    "lsp.diagnostics",
+    "lsp.hover",
+    "lsp.definition",
+    "lsp.references",
+    "lsp.document_symbols",
+    "lsp.workspace_symbols",
+    "lsp.completion",
+    "lsp.code_actions",
+    "lsp.rename_preview",
+    "lsp.format"
+  ].includes(action);
+}
+
+function isLspToolAction(action: ToolAction): action is Extract<ToolAction, { type: `lsp.${string}` }> {
+  return isLspActionType(action.type);
+}
+
+function normalizeLspAction(action: Extract<ToolAction, { type: `lsp.${string}` }>["type"], inputs: Record<string, unknown>): ToolAction {
+  const common = {
+    provider: optionalStringInput(inputs.provider ?? inputs.lspProvider ?? inputs.lsp_provider),
+    root: optionalStringInput(inputs.root ?? inputs.cwd),
+    timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
+    maxResults: numberInput(inputs.maxResults ?? inputs.max_results ?? inputs.maxItems ?? inputs.max_items ?? inputs.limit)
+  };
+  const fileInput = () => requiredStringInput(inputs.file ?? inputs.file_path ?? inputs.filePath ?? inputs.path, `${action} requires file`);
+  const optionalFileInput = () => optionalStringInput(inputs.file ?? inputs.file_path ?? inputs.filePath ?? inputs.path);
+  const document = () => ({
+    ...common,
+    path: fileInput(),
+    file: fileInput()
+  });
+  const lineInput = () => {
+    const line = numberInput(inputs.line);
+    if (line !== undefined) {
+      return line;
+    }
+    const zeroBased = numberInput(inputs.lineZeroBased ?? inputs.line_zero_based ?? inputs.line0 ?? inputs.lspLine ?? inputs.lsp_line);
+    return zeroBased === undefined ? 1 : zeroBased + 1;
+  };
+  const columnInput = () => {
+    const column = numberInput(inputs.column);
+    if (column !== undefined) {
+      return column;
+    }
+    const character = numberInput(inputs.character ?? inputs.ch);
+    return character === undefined ? 1 : character + 1;
+  };
+  const position = () => ({
+    ...document(),
+    line: lineInput(),
+    character: Math.max(0, columnInput() - 1),
+    column: columnInput()
+  });
+  if (action === "lsp.diagnostics") {
+    return {
+      type: action,
+      ...document(),
+      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines),
+      diagnosticsTimeoutMs: numberInput(inputs.diagnosticsTimeoutMs ?? inputs.diagnostics_timeout_ms)
+    };
+  }
+  if (action === "lsp.hover") {
+    return { type: action, ...position() };
+  }
+  if (action === "lsp.definition") {
+    return { type: action, ...position(), contextLines: numberInput(inputs.contextLines ?? inputs.context_lines) };
+  }
+  if (action === "lsp.references") {
+    return {
+      type: action,
+      ...position(),
+      includeDeclaration: inputs.includeDeclaration === false || inputs.include_declaration === false ? false : undefined,
+      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines)
+    };
+  }
+  if (action === "lsp.document_symbols") {
+    return { type: action, ...document() };
+  }
+  if (action === "lsp.workspace_symbols") {
+    return {
+      type: action,
+      ...common,
+      query: requiredStringInput(inputs.query, "lsp.workspace_symbols requires query")
+    };
+  }
+  if (action === "lsp.completion") {
+    return {
+      type: action,
+      ...position(),
+      triggerCharacter: optionalStringInput(inputs.triggerCharacter ?? inputs.trigger_character),
+      prefix: optionalStringInput(inputs.prefix)
+    };
+  }
+  if (action === "lsp.code_actions") {
+    const range = lspRangeInput(inputs);
+    return {
+      type: action,
+      ...document(),
+      line: numberInput(inputs.line),
+      character: Math.max(0, columnInput() - 1),
+      column: columnInput(),
+      range,
+      startLine: range?.start.line,
+      startCharacter: range ? Math.max(0, range.start.column - 1) : undefined,
+      endLine: range?.end.line,
+      endCharacter: range ? Math.max(0, range.end.column - 1) : undefined
+    };
+  }
+  if (action === "lsp.rename_preview") {
+    return {
+      type: action,
+      ...position(),
+      newName: requiredStringInput(inputs.newName ?? inputs.new_name, "lsp.rename_preview requires newName"),
+      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines)
+    };
+  }
+  return {
+    type: "lsp.format",
+    ...document(),
+    tabSize: numberInput(inputs.tabSize ?? inputs.tab_size),
+    insertSpaces: booleanInput(inputs.insertSpaces ?? inputs.insert_spaces)
+  };
+}
+
+function lspRangeInput(inputs: Record<string, unknown>): { start: { line: number; column: number }; end: { line: number; column: number } } | undefined {
+  const rawRange = inputs.range;
+  if (isRecord(rawRange) && isRecord(rawRange.start) && isRecord(rawRange.end)) {
+    return {
+      start: {
+        line: numberInput(rawRange.start.line) ?? 1,
+        column: lspColumnInput(rawRange.start.column, rawRange.start.character)
+      },
+      end: {
+        line: numberInput(rawRange.end.line) ?? 1,
+        column: lspColumnInput(rawRange.end.column, rawRange.end.character)
+      }
+    };
+  }
+  const startLine = numberInput(inputs.startLine ?? inputs.start_line);
+  const endLine = numberInput(inputs.endLine ?? inputs.end_line);
+  if (startLine === undefined && endLine === undefined) {
+    return undefined;
+  }
+  return {
+    start: {
+      line: startLine ?? endLine ?? 1,
+      column: lspColumnInput(inputs.startColumn ?? inputs.start_column, inputs.startCharacter ?? inputs.start_character)
+    },
+    end: {
+      line: endLine ?? startLine ?? 1,
+      column: lspColumnInput(inputs.endColumn ?? inputs.end_column, inputs.endCharacter ?? inputs.end_character)
+    }
+  };
+}
+
+function lspColumnInput(column: unknown, character: unknown): number {
+  const oneBased = numberInput(column);
+  if (oneBased !== undefined) {
+    return oneBased;
+  }
+  const zeroBased = numberInput(character);
+  return zeroBased === undefined ? 1 : zeroBased + 1;
 }
 
 function patchHunksInput(value: unknown): Array<{ oldText: string; newText: string }> {
@@ -3495,6 +4007,16 @@ function stringArrayInput(value: unknown): string[] | undefined {
 
 function agentInvocationModeInput(value: unknown): "call_subagent" | "handoff" | "parallel" | undefined {
   if (value === "call_subagent" || value === "handoff" || value === "parallel") {
+    return value;
+  }
+  if (value === "background" || value === "async" || value === "async_launched") {
+    return "parallel";
+  }
+  return undefined;
+}
+
+function agentWorkerStatusInput(value: unknown): "pending" | "running" | "completed" | "failed" | "stopped" | undefined {
+  if (value === "pending" || value === "running" || value === "completed" || value === "failed" || value === "stopped") {
     return value;
   }
   return undefined;

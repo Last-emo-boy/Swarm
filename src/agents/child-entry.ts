@@ -6,10 +6,28 @@ import { OpenAIProvider, type PromptBlock, type ProviderUsageReport } from "../p
 import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import type { AgentDelegateAction, BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, ToolAction, ToolResult, WebSearchAction } from "../tools/types.js";
+import { formatToolFailureContent } from "../runtime/coding-agent-loop.js";
 import { getDebugLogger, type DebugLogger } from "../runtime/debug-logger.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { renderHostEnvironmentPrompt } from "../runtime/host-context.js";
+import {
+  assertToolActionAllowedBySandbox,
+  sandboxDecisionFromError,
+  sandboxDecisionFromUnknown,
+  sandboxFailureSummary,
+  sandboxRecoverySuggestion,
+  type SandboxDecision,
+  type SandboxWritePolicy
+} from "../runtime/sandbox-policy.js";
 import { applyToolResultBudget, createContentReplacementState } from "../runtime/tool-result-budget.js";
+import {
+  buildWorkerToolProgressPayload,
+  parseWorkerLoopModelResult,
+  repairWorkerLoopModelResult,
+  validateWorkerLoopToolCalls,
+  type WorkerToolCall,
+  type WorkerToolResult
+} from "./worker-loop-contract.js";
 
 const spec = parseAgentSpec();
 const provider = new OpenAIProvider({ onUsage: (usage) => sendProviderUsage(usage) });
@@ -166,6 +184,7 @@ async function handleConsensusRequest(envelope: SwarmEnvelope): Promise<void> {
         taskId: envelope.task_id,
         purpose: "child_consensus"
       },
+      responseFormat: "json_object",
       maxOutputTokens: CHILD_CONTROL_MAX_OUTPUT_TOKENS
     });
     const parsed = parseJsonObject(modelText);
@@ -200,6 +219,7 @@ async function handleWorkerTask(envelope: SwarmEnvelope): Promise<void> {
   const payload = envelope.payload as {
     task?: { title?: string; description?: string; objective?: string; acceptance_criteria?: string[] };
     context?: BlackboardEntry[];
+    live_directives?: BlackboardEntry[];
   };
   const task = payload.task;
   debug?.debug("worker", `generating for "${task?.title ?? envelope.task_id ?? "?"}"`);
@@ -224,29 +244,7 @@ async function handleWorkerTask(envelope: SwarmEnvelope): Promise<void> {
 const MAX_WORKER_LOOP_TURNS = 6;
 const MAX_WORKER_TOOL_CALLS = 12;
 
-type WorkerToolCall = {
-  id?: string;
-  action?: string;
-  inputs?: Record<string, unknown>;
-  reason?: string;
-};
-
-type WorkerToolResult = {
-  id: string;
-  action: string;
-  reason?: string;
-  status?: string;
-  summary: string;
-  content?: string;
-  outputRef?: string;
-  data?: unknown;
-  errors?: unknown;
-  errorCode?: string;
-  retryable?: boolean;
-  recoverable?: boolean;
-};
-
-type WorkerLoopResult = ReturnType<typeof parseWorkerResult> & {
+type WorkerLoopResult = ReturnType<typeof parseWorkerLoopModelResult> & {
   loop_turns: number;
   tool_results: WorkerToolResult[];
 };
@@ -256,6 +254,7 @@ async function runWorkerLoop(
   payload: {
     task?: { title?: string; description?: string; objective?: string; acceptance_criteria?: string[] };
     context?: BlackboardEntry[];
+    live_directives?: BlackboardEntry[];
   }
 ): Promise<WorkerLoopResult> {
   const toolResults: WorkerToolResult[] = [];
@@ -265,7 +264,7 @@ async function runWorkerLoop(
     scopeId: spec.agent_id
   });
   let executedToolCalls = 0;
-  let lastParsed = parseWorkerResult("{}");
+  let lastParsed = parseWorkerLoopModelResult("{}");
 
   for (let turn = 1; turn <= MAX_WORKER_LOOP_TURNS; turn += 1) {
     const budgetedToolResults = await applyToolResultBudget(toolResults, {
@@ -279,32 +278,40 @@ async function runWorkerLoop(
     const content = await provider.generateText({
       model: provider.workerModel,
       system: workerLoopSystemPrompt(workspace),
-      user: JSON.stringify(
-        {
-          task: payload.task,
-          context: payload.context ?? [],
-          tool_results: budgetedToolResults,
-          loop: {
-            turn,
-            remaining_turns: MAX_WORKER_LOOP_TURNS - turn,
-            remaining_tool_calls: MAX_WORKER_TOOL_CALLS - executedToolCalls
-          }
-        },
-        null,
-        2
-      ),
-      cache: { key: `swarm:child-worker:${envelope.session_id ?? envelope.task_id ?? "unknown"}`, ttlSeconds: 3600 },
+      user: workerLoopUserPrompt({
+        task: payload.task,
+        liveDirectives: payload.live_directives ?? [],
+        context: payload.context ?? [],
+        toolResults: budgetedToolResults,
+        turn,
+        remainingTurns: MAX_WORKER_LOOP_TURNS - turn,
+        remainingToolCalls: MAX_WORKER_TOOL_CALLS - executedToolCalls
+      }),
+      cache: { key: childWorkerCacheKey(), ttlSeconds: 3600 },
       usage: {
         sessionId: envelope.session_id,
         taskId: envelope.task_id,
         purpose: "child_worker_loop"
       },
+      responseFormat: "json_object",
       maxOutputTokens: CHILD_WORKER_LOOP_MAX_OUTPUT_TOKENS
     });
 
-    const parsed = parseWorkerResult(content);
+    let parsed = parseWorkerLoopModelResult(content);
+    const validationError = validateWorkerLoopToolCalls(parsed.tool_calls);
+    if (validationError) {
+      parsed = await repairChildWorkerLoopModelResult({
+        originalText: content,
+        validationError,
+        envelope,
+        payload,
+        budgetedToolResults,
+        turn,
+        executedToolCalls
+      });
+    }
     lastParsed = parsed;
-    const toolCalls = parseWorkerToolCalls(content);
+    const toolCalls = parsed.tool_calls;
     if (toolCalls.length === 0 || executedToolCalls >= MAX_WORKER_TOOL_CALLS) {
       return { ...parsed, loop_turns: turn, tool_results: toolResults };
     }
@@ -316,11 +323,12 @@ async function runWorkerLoop(
       executedToolCalls += 1;
       const result = await executeWorkerToolCall(call, envelope);
       toolResults.push(result);
-      sendProgress(envelope, {
-        message: `Worker tool ${String(result.action ?? call.action ?? "unknown")} ${String(result.status ?? "completed")}`,
-        tool_calls_completed: executedToolCalls,
-        remaining_tool_calls: MAX_WORKER_TOOL_CALLS - executedToolCalls
-      });
+      sendProgress(envelope, buildWorkerToolProgressPayload({
+        call,
+        result,
+        toolCallsCompleted: executedToolCalls,
+        remainingToolCalls: MAX_WORKER_TOOL_CALLS - executedToolCalls
+      }));
     }
   }
 
@@ -335,22 +343,117 @@ async function runWorkerLoop(
 }
 
 function workerLoopSystemPrompt(workspace = process.cwd()): PromptBlock[] {
+  const settings = loadSwarmSettings(workspace);
   return [{
     text: [
       "You are a worker agent in a local Swarm coding CLI runtime.",
       "Complete only the assigned task using the supplied task, inputs, blackboard entries, and tool_results.",
+      "Live directives are operator messages that arrived after planning; obey the newest applicable directive and prefer it over stale task wording.",
       "Return exactly one JSON object. Do not use Markdown fences or prose outside JSON.",
       "The JSON object must contain keys: status, summary, details, files_touched, next_actions, tool_calls.",
       "status must be completed or failed. details must be Markdown for the user.",
       "tool_calls must be an array. Use it only when you need more evidence before completing.",
       "Allowed worker-loop tools: file.read, file.list, file.glob, file.grep, file.stat, git.status, git.diff, git.log, web.search, web.fetch, todo.write, BlackboardWrite, BlackboardSearch, BlackboardRead, BlackboardList.",
-      renderHostEnvironmentPrompt(workspace),
+      renderHostEnvironmentPrompt(workspace, settings.permissions.additionalDirectories),
       "Do not request Write, Edit, Bash, exec, package.install, code.test, code.lint, git.branch, Agent, or agent.delegate inside this loop.",
       "For todo.write, inputs.todos is an array of objects with content and status pending, in_progress, or completed.",
       "When you have enough evidence, return tool_calls: [] and a completed or failed result."
     ].join(" "),
     cache: true
   }];
+}
+
+function workerLoopUserPrompt(input: {
+  task?: { title?: string; description?: string; objective?: string; acceptance_criteria?: string[] };
+  liveDirectives: BlackboardEntry[];
+  context: BlackboardEntry[];
+  toolResults: WorkerToolResult[];
+  turn: number;
+  remainingTurns: number;
+  remainingToolCalls: number;
+}): PromptBlock[] {
+  return [
+    {
+      text: JSON.stringify({
+        worker_loop_contract: {
+          status_values: ["completed", "failed"],
+          required_keys: ["status", "summary", "details", "files_touched", "next_actions", "tool_calls"],
+          allowed_tools: [
+            "file.read",
+            "file.list",
+            "file.glob",
+            "file.grep",
+            "file.stat",
+            "git.status",
+            "git.diff",
+            "git.log",
+            "web.search",
+            "web.fetch",
+            "todo.write",
+            "BlackboardWrite",
+            "BlackboardSearch",
+            "BlackboardRead",
+            "BlackboardList"
+          ]
+        }
+      }, null, 2),
+      cache: true
+    },
+    {
+      text: JSON.stringify({
+        task: input.task,
+        live_directives: input.liveDirectives,
+        context: input.context,
+        tool_results: input.toolResults,
+        loop: {
+          turn: input.turn,
+          remaining_turns: input.remainingTurns,
+          remaining_tool_calls: input.remainingToolCalls
+        }
+      }, null, 2),
+      cache: false
+    }
+  ];
+}
+
+function childWorkerCacheKey(): string {
+  return `swarm:child-worker:${spec.agent_id}:${spec.role}`;
+}
+
+async function repairChildWorkerLoopModelResult(input: {
+  originalText: string;
+  validationError: string;
+  envelope: SwarmEnvelope;
+  payload: {
+    task?: { title?: string; description?: string; objective?: string; acceptance_criteria?: string[] };
+    context?: BlackboardEntry[];
+    live_directives?: BlackboardEntry[];
+  };
+  budgetedToolResults: unknown;
+  turn: number;
+  executedToolCalls: number;
+}): Promise<ReturnType<typeof parseWorkerLoopModelResult>> {
+  return repairWorkerLoopModelResult({
+    originalText: input.originalText,
+    validationError: input.validationError,
+    generateText: (request) => provider.generateText(request),
+    model: provider.workerModel,
+    task: input.payload.task,
+    context: [...(input.payload.live_directives ?? []), ...(input.payload.context ?? [])],
+    toolResults: input.budgetedToolResults,
+    loop: {
+      turn: input.turn,
+      remaining_turns: MAX_WORKER_LOOP_TURNS - input.turn,
+      remaining_tool_calls: MAX_WORKER_TOOL_CALLS - input.executedToolCalls
+    },
+    cacheKey: `swarm:child-worker-repair:${input.envelope.session_id ?? input.envelope.task_id ?? "unknown"}`,
+    usage: {
+      sessionId: input.envelope.session_id,
+      taskId: input.envelope.task_id,
+      purpose: "child_worker_loop_json_repair"
+    },
+    maxOutputTokens: CHILD_WORKER_LOOP_MAX_OUTPUT_TOKENS
+  });
 }
 
 async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelope): Promise<WorkerToolResult> {
@@ -383,6 +486,7 @@ async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelo
     };
     const result = await runLocalTool(action, toolContext);
     const prepared = await prepareToolOutput(envelope, result, renderToolResultDetail(result));
+    const sandbox = sandboxDecisionFromUnknown(result.metadata?.sandbox ?? result.data);
     return {
       id,
       action: action.type,
@@ -395,23 +499,30 @@ async function executeWorkerToolCall(call: WorkerToolCall, envelope: SwarmEnvelo
       errors: result.errors,
       errorCode: result.errorCode,
       retryable: result.retryable,
-      recoverable: result.recoverable
+      recoverable: result.recoverable,
+      recoverySuggestion: result.recoverySuggestion,
+      sandbox
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    const errorCode = classifyToolError(error);
+    const sandbox = sandboxDecisionFromError(error);
+    const actionName = workerToolActionName(call);
+    const summary = sandbox ? sandboxFailureSummary(sandbox) : reason;
+    const recoverySuggestion = recoverySuggestionForChildToolError(errorCode, reason, sandbox);
     return {
       id,
-      action: typeof call.action === "string"
-        ? call.action
-        : typeof call.inputs?.action === "string"
-          ? call.inputs.action
-          : "unknown",
+      action: actionName,
       status: "failed",
-      summary: reason,
+      summary,
+      content: formatToolFailureContent(actionName, summary, errorCode, recoverySuggestion, sandbox),
+      data: { error: reason, action: actionName, ...(sandbox ? { sandbox } : {}) },
       errors: [reason],
-      errorCode: classifyToolError(error),
-      retryable: false,
-      recoverable: true
+      errorCode,
+      retryable: isRetryableToolError(errorCode),
+      recoverable: true,
+      recoverySuggestion,
+      sandbox
     };
   }
 }
@@ -458,6 +569,7 @@ async function handleReview(envelope: SwarmEnvelope): Promise<void> {
       taskId: envelope.task_id,
       purpose: "child_review"
     },
+    responseFormat: "json_object",
     maxOutputTokens: CHILD_REVIEW_MAX_OUTPUT_TOKENS
   });
 
@@ -527,6 +639,12 @@ async function handleToolTask(envelope: SwarmEnvelope): Promise<void> {
     };
     const inputs = payload.inputs ?? {};
     const action = normalizeToolAction(inputs, payload.task?.required_capabilities?.[0] ?? envelope.intent);
+    const sandboxSettings = parseToolTaskSandboxSettings(inputs);
+    assertToolActionAllowedBySandbox(action, {
+      writePolicy: sandboxSettings.writePolicy,
+      workspace,
+      fileScope: sandboxSettings.fileScope
+    });
     const toolContext = {
       workspace,
       settings: loadSwarmSettings(workspace),
@@ -604,6 +722,7 @@ async function handleToolTask(envelope: SwarmEnvelope): Promise<void> {
     debug?.debug("tool", `result: ${result.summary}`);
     const detail = renderToolResultDetail(result);
     const prepared = await prepareToolOutput(envelope, result, detail);
+    const sandbox = sandboxDecisionFromUnknown(result.metadata?.sandbox ?? result.data);
     sendReply(envelope, "task.result", "tool.completed", {
       status: result.status === "failed" ? "failed" : "completed",
       summary: result.summary,
@@ -614,23 +733,30 @@ async function handleToolTask(envelope: SwarmEnvelope): Promise<void> {
       errors: result.errors,
       errorCode: result.errorCode,
       retryable: result.retryable,
-      recoverable: result.recoverable
+      recoverable: result.recoverable,
+      toolRecoverySuggestion: result.recoverySuggestion,
+      sandbox
     } satisfies AgentResultPayload);
     stopTimer?.();
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    const detail = error instanceof Error ? error.stack : undefined;
     const errorCode = classifyToolError(error);
-    debug?.error("tool", `failed: ${reason}`, { stack: detail });
+    const sandbox = sandboxDecisionFromError(error);
+    const summary = sandbox ? sandboxFailureSummary(sandbox) : reason;
+    const toolRecoverySuggestion = recoverySuggestionForChildToolError(errorCode, reason, sandbox);
+    const detail = formatToolFailureContent(toolTaskActionName(envelope), summary, errorCode, toolRecoverySuggestion, sandbox);
+    debug?.error("tool", `failed: ${reason}`, { stack: error instanceof Error ? error.stack : undefined });
     sendReply(envelope, "task.result", "tool.failed", {
       status: "failed",
-      summary: reason,
+      summary,
       content: detail,
       toolStatus: "failed",
       errors: [reason],
       errorCode,
       retryable: isRetryableToolError(errorCode),
-      data: { error: reason, action: (envelope.payload as { inputs?: Record<string, unknown> })?.inputs?.action }
+      data: { error: reason, action: toolTaskActionName(envelope), ...(sandbox ? { sandbox } : {}) },
+      toolRecoverySuggestion,
+      sandbox
     } satisfies AgentResultPayload);
   }
 }
@@ -1122,8 +1248,92 @@ function classifyToolError(error: unknown): string {
   return "TOOL_FAILED";
 }
 
+function recoverySuggestionForChildToolError(
+  errorCode: string | undefined,
+  message: string,
+  sandbox?: SandboxDecision
+): string {
+  if (sandbox?.decision === "deny") {
+    return sandboxRecoverySuggestion(sandbox);
+  }
+  if (errorCode === "PERMISSION_DENIED") {
+    return "Inspect the approval or permission rule, then retry with a narrower command or explicitly allow the action.";
+  }
+  if (errorCode === "FS_NOT_FOUND") {
+    return "Run file.list, file.glob, or git.status to confirm the path, then retry with the resolved workspace-relative path.";
+  }
+  if (errorCode === "INVALID_INPUT") {
+    return "Correct the tool arguments and retry; use file.read or tool context to build a more precise request.";
+  }
+  if (/timeout|timed out/i.test(message)) {
+    return "Retry with a longer timeout or a narrower command that produces less output.";
+  }
+  return "Inspect the tool output, adjust the command or inputs, and retry from the current workspace state.";
+}
+
 function isRetryableToolError(errorCode: string): boolean {
   return !["FS_NOT_FOUND", "INVALID_INPUT", "PERMISSION_DENIED"].includes(errorCode);
+}
+
+function workerToolActionName(call: WorkerToolCall): string {
+  return typeof call.action === "string"
+    ? call.action
+    : typeof call.inputs?.action === "string"
+      ? call.inputs.action
+      : "unknown";
+}
+
+function toolTaskActionName(envelope: SwarmEnvelope): string {
+  const payload = envelope.payload as { inputs?: Record<string, unknown> };
+  return typeof payload.inputs?.action === "string" ? payload.inputs.action : envelope.intent;
+}
+
+function parseToolTaskSandboxSettings(inputs: Record<string, unknown>): { writePolicy?: SandboxWritePolicy; fileScope?: string[] } {
+  const fileScope = parseToolTaskFileScope(inputs);
+  const writePolicy = parseToolTaskWritePolicy(inputs) ?? (fileScope?.length ? "scoped_write" : undefined);
+  return {
+    writePolicy,
+    fileScope
+  };
+}
+
+function parseToolTaskWritePolicy(inputs: Record<string, unknown>): SandboxWritePolicy | undefined {
+  if (inputs.read_only === true || inputs.readOnly === true) {
+    return "read_only";
+  }
+  const value = [inputs.write_policy, inputs.writePolicy, inputs.sandbox_mode, inputs.sandboxMode, inputs.sandbox]
+    .find((item) => typeof item === "string" && item.trim().length > 0);
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (value === "workspace_write" || value === "workspace-write") {
+    return "workspace_write";
+  }
+  if (value === "scoped_write" || value === "scoped-write") {
+    return "scoped_write";
+  }
+  if (value === "read_only" || value === "read-only" || value === "readonly") {
+    return "read_only";
+  }
+  throw new Error(`Invalid tool task sandbox mode: ${value}`);
+}
+
+function parseToolTaskFileScope(inputs: Record<string, unknown>): string[] | undefined {
+  const value = inputs.file_scope ?? inputs.fileScope;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("Tool task file_scope must be an array of non-empty strings.");
+  }
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (normalized.length !== value.length) {
+    throw new Error("Tool task file_scope must be an array of non-empty strings.");
+  }
+  return normalized;
 }
 
 function waitForReply(correlationId: string, timeoutMs: number): Promise<SwarmEnvelope | null> {
@@ -1209,45 +1419,6 @@ function parseJsonObject(text: string): Record<string, unknown> {
       return {};
     }
   }
-}
-
-function parseWorkerResult(text: string): {
-  status: "completed" | "failed";
-  summary: string;
-  details: string;
-  files_touched: string[];
-  next_actions: string[];
-} {
-  const parsed = parseJsonObject(text);
-  const details = typeof parsed.details === "string" && parsed.details.trim() ? parsed.details : text;
-  return {
-    status: parsed.status === "failed" ? "failed" : "completed",
-    summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim().slice(0, 240) : firstLine(details),
-    details,
-    files_touched: Array.isArray(parsed.files_touched) ? parsed.files_touched.map(String) : [],
-    next_actions: Array.isArray(parsed.next_actions) ? parsed.next_actions.map(String) : []
-  };
-}
-
-function parseWorkerToolCalls(text: string): WorkerToolCall[] {
-  const parsed = parseJsonObject(text);
-  if (!Array.isArray(parsed.tool_calls)) {
-    return [];
-  }
-  return parsed.tool_calls
-    .map((item): WorkerToolCall | undefined => {
-      if (!isRecord(item)) {
-        return undefined;
-      }
-      const rawInputs = item.inputs;
-      return {
-        id: typeof item.id === "string" ? item.id : undefined,
-        action: typeof item.action === "string" ? item.action : typeof item.type === "string" ? item.type : undefined,
-        inputs: isRecord(rawInputs) ? rawInputs : {},
-        reason: typeof item.reason === "string" ? item.reason : undefined
-      };
-    })
-    .filter((item): item is WorkerToolCall => item !== undefined);
 }
 
 function normalizeReviewIssues(value: unknown): ReviewResult["issues"] {

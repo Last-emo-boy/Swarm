@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from "./events.js";
+import type { RuntimeAgentIdentity, RuntimeEvent } from "./events.js";
 import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 
 type RouteLike = {
@@ -23,7 +23,7 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
     case "task_attempt":
       return `${statusIcon(event.status)} attempt ${event.attempt}: ${event.title || event.task_id}`;
     case "tool_result":
-      return `tool: ${event.action} [${event.status ?? "unknown"}] ${truncate(event.summary, 90)}${event.recoverySuggestion ? ` recovery=${truncate(event.recoverySuggestion, 70)}` : ""}`;
+      return `${formatAgentPrefix(event.agent)}tool: ${event.action} [${event.status ?? "unknown"}] ${truncate(event.summary, 90)}${formatSandboxSuffix(event)}${event.recoverySuggestion ? ` recovery=${truncate(event.recoverySuggestion, 70)}` : ""}`;
     case "provider_usage":
       return `usage: ${event.usage.providerId}/${event.usage.model} ${event.usage.purpose}`;
     case "progress":
@@ -35,21 +35,28 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
     case "agent":
       return `agent: ${event.card.agent_id} [${event.card.status}]`;
     case "approval":
-      return `approval: ${event.status} ${event.request.action} ${event.request.risk_class}/${event.request.risk}`;
+      return `approval: ${event.status}${formatApprovalRiskLabel(event.request)} ${event.request.action} ${event.request.risk_class}/${event.request.risk}${formatPermissionSuffix(event.request)}`;
     case "live_message":
       return `live: ${event.status} ${truncate(event.content, 70)}`;
     case "control":
       return `control: ${event.action} - ${truncate(event.reason, 90)}`;
     case "loop_activity":
-      return `activity: ${event.message}`;
+      return `activity: ${formatAgentPrefix(event.agent)}${event.message}`;
     case "controller":
       return formatControllerBrief(event);
     case "queue":
-      return `queue: ${event.operation} ${event.priority ?? ""} size=${event.size}`.trim();
+      return [
+        `queue:${event.queue}`,
+        event.operation,
+        event.id ? `id=${event.id}` : undefined,
+        event.priority ? `priority=${event.priority}` : undefined,
+        `size=${event.size}`,
+        event.message ? truncate(event.message, 90) : undefined
+      ].filter(Boolean).join(" ");
     case "worker":
       return `worker: ${formatWorkerBrief(event.worker)}${event.message ? ` - ${truncate(event.message, 70)}` : ""}`;
     case "agent_spawn_decision":
-      return `spawn: ${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} (${percent(event.decision.confidence)})`;
+      return `spawn: ${event.worker_id} parent=${event.parent_session_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} policy=${event.task_packet.write_policy} (${percent(event.decision.confidence)})`;
     case "agent_run_started":
       return `agent-run: ${workerDisplayLabel(event.worker)} started ${event.worker.agent_spec_id ?? event.worker.capability}`;
     case "agent_run_completed":
@@ -94,13 +101,13 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
     return `swarm: ${formatControllerBrief(event)}`;
   }
   if (event.type === "tool_result") {
-    return `tool: ${event.action} [${event.status ?? "unknown"}] ${event.summary}${event.recoverySuggestion ? ` recovery=${event.recoverySuggestion}` : ""}`;
+    return `${formatAgentPrefix(event.agent)}tool: ${event.action} [${event.status ?? "unknown"}] ${event.summary}${formatSandboxSuffix(event)}${event.recoverySuggestion ? ` recovery=${event.recoverySuggestion}` : ""}`;
   }
   if (event.type === "loop_activity") {
-    return `activity: ${event.message}`;
+    return `activity: ${formatAgentPrefix(event.agent)}${event.message}`;
   }
   if (event.type === "agent_spawn_decision") {
-    return `agent: spawn ${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} (${percent(event.decision.confidence)}) ${event.decision.reason}`;
+    return `agent: spawn ${event.worker_id} parent=${event.parent_session_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} policy=${event.task_packet.write_policy} (${percent(event.decision.confidence)}) ${event.decision.reason}`;
   }
   if (event.type === "agent_run_started") {
     return `agent: start ${workerDisplayLabel(event.worker)} ${event.worker.agent_spec_id ?? event.worker.capability}`;
@@ -110,6 +117,16 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
   }
   if (event.type === "worker") {
     return `worker: ${formatWorkerBrief(event.worker)}${event.message ? ` - ${event.message}` : ""}`;
+  }
+  if (event.type === "queue") {
+    return [
+      `queue:${event.queue}`,
+      event.operation,
+      event.id ? `id=${event.id}` : undefined,
+      event.priority ? `priority=${event.priority}` : undefined,
+      `size=${event.size}`,
+      event.message
+    ].filter(Boolean).join(" ");
   }
   if (event.type === "review_completed") {
     return `review: ${event.result.verdict} ${event.result.score} - ${event.result.summary}`;
@@ -121,7 +138,7 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
     return `final: ${event.status ?? "completed"}, ${event.outcome?.changed_files.length ?? 0} changed, ${event.outcome?.tests_run.length ?? 0} checks`;
   }
   if (event.type === "approval") {
-    return `approval: ${event.status} ${event.request.action} ${event.request.risk_class}/${event.request.risk} target=${event.request.target}`;
+    return `approval: ${event.status}${formatApprovalRiskLabel(event.request)} ${event.request.action} ${event.request.risk_class}/${event.request.risk} target=${event.request.target}${formatPermissionSuffix(event.request)}`;
   }
   return undefined;
 }
@@ -146,9 +163,11 @@ export function formatWorkerBrief(worker: WorkerRecord): string {
   const agent = worker.agent_spec_id
     ? `${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}`
     : worker.capability;
+  const policy = worker.task_packet?.write_policy ? ` policy=${worker.task_packet.write_policy}` : "";
   const scope = worker.file_scope.length ? ` scope=${worker.file_scope.join(",")}` : "";
+  const blocked = worker.blocked_reason ? ` blocked=${truncate(worker.blocked_reason, 80)}` : "";
   const result = worker.last_result ? ` - ${truncate(firstLine(worker.last_result), 80)}` : "";
-  return `${workerDisplayLabel(worker)} [${worker.status}] ${agent} (${worker.worker_id})${scope}${result}`;
+  return `${workerDisplayLabel(worker)} [${worker.status}] ${agent} (${worker.worker_id})${policy}${scope}${blocked}${result}`;
 }
 
 export function formatWorkerDetail(worker: WorkerRecord): string {
@@ -158,12 +177,14 @@ export function formatWorkerDetail(worker: WorkerRecord): string {
     worker.agent_spec_id ? `agent=${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}` : undefined,
     worker.handoff_id ? `handoff=${worker.handoff_id}` : undefined,
     `capability=${worker.capability}`,
+    worker.task_packet?.write_policy ? `policy=${worker.task_packet.write_policy}` : undefined,
     `parent=${worker.parent_session_id}`,
     worker.requested_by ? `requested_by=${worker.requested_by}` : undefined,
     worker.worker_session_id ? `session=${worker.worker_session_id}` : undefined,
     `budget=${worker.tool_budget.max_turns} turns/${worker.tool_budget.max_tool_calls} tools`,
     worker.file_scope.length ? `scope=${worker.file_scope.join(", ")}` : undefined,
     worker.spawn_reason ? `reason=${worker.spawn_reason}` : undefined,
+    worker.blocked_reason ? `blocked=${worker.blocked_reason}` : undefined,
     `objective=${worker.objective}`,
     worker.outcome ? `outcome=changed:${worker.outcome.changed_files.length} checks:${worker.outcome.tests_run.length}` : undefined,
     worker.last_result ? `last_result=${worker.last_result}` : undefined,
@@ -180,6 +201,73 @@ function formatControllerBrief(event: Extract<RuntimeEvent, { type: "controller"
   }
   const mode = typeof route.mode === "string" ? route.mode : event.action.replace(/^run_/, "");
   return `route: ${mode} (${percent(route.confidence)}) - ${truncate(String(route.reason ?? event.reason), 100)}`;
+}
+
+function formatAgentPrefix(agent: RuntimeAgentIdentity | undefined): string {
+  const label = formatRuntimeAgentLabel(agent);
+  return label ? `@${label} ` : "";
+}
+
+export function formatRuntimeAgentLabel(agent: RuntimeAgentIdentity | undefined): string | undefined {
+  if (!agent) {
+    return undefined;
+  }
+  const name = agent.display_name?.trim() || agent.agent_id || agent.worker_id || agent.agent_spec_id || agent.capability || agent.role;
+  if (!name) {
+    return undefined;
+  }
+  const role = agent.role_title?.trim();
+  return role ? `${name}/${role}` : name;
+}
+
+function formatPermissionSuffix(request: Extract<RuntimeEvent, { type: "approval" }>["request"]): string {
+  const parts = [
+    request.permission_name ? `permission=${request.permission_name}` : undefined,
+    request.permission_rule ? `rule=${request.permission_rule}` : undefined,
+    request.permission_reason ? `reason=${truncate(request.permission_reason, 70)}` : undefined
+  ].filter(Boolean);
+  return parts.length ? ` ${parts.join(" ")}` : "";
+}
+
+function formatApprovalRiskLabel(request: Extract<RuntimeEvent, { type: "approval" }>["request"]): string {
+  return request.risk === "shell" && request.risk_class === "r4" ? " destructive-shell" : "";
+}
+
+function formatSandboxSuffix(event: Extract<RuntimeEvent, { type: "tool_result" }>): string {
+  const hasTaskScope = Boolean(event.file_scope?.length);
+  const parts = [
+    event.write_policy ? `policy=${event.write_policy}` : undefined,
+    hasTaskScope ? `scope=${truncate(event.file_scope!.join(","), 70)}` : undefined
+  ];
+  if (event.sandbox) {
+    parts.push(
+      `sandbox=${event.sandbox.policy}/${event.sandbox.decision}${formatSandboxLabel(event.sandbox)}`,
+      event.sandbox.subject ? `subject=${event.sandbox.subject}` : undefined,
+      event.sandbox.decision === "deny" ? `reason=${truncate(event.sandbox.reason, 70)}` : undefined,
+      event.sandbox.targets?.length ? `targets=${truncate(event.sandbox.targets.join(","), 70)}` : undefined,
+      event.sandbox.file_scope?.length
+        ? `${hasTaskScope ? "sandbox_scope" : "scope"}=${truncate(event.sandbox.file_scope.join(","), 70)}`
+        : undefined
+    );
+  }
+  const filtered = parts.filter(Boolean);
+  return filtered.length ? ` ${filtered.join(" ")}` : "";
+}
+
+function formatSandboxLabel(sandbox: NonNullable<Extract<RuntimeEvent, { type: "tool_result" }>["sandbox"]>): string {
+  if (sandbox.decision !== "deny") {
+    return "";
+  }
+  if (sandbox.policy === "read_only") {
+    return "(read-only-block)";
+  }
+  if (sandbox.policy === "scoped_write" && sandbox.subject === "tool_action") {
+    return "(file-scope-block)";
+  }
+  if (sandbox.policy === "scoped_write" && sandbox.subject === "capability") {
+    return "(capability-block)";
+  }
+  return "";
 }
 
 function formatControllerDetail(event: Extract<RuntimeEvent, { type: "controller" }>): string {
@@ -200,11 +288,13 @@ function formatControllerDetail(event: Extract<RuntimeEvent, { type: "controller
 function formatSpawnDecisionDetail(event: Extract<RuntimeEvent, { type: "agent_spawn_decision" }>): string {
   return [
     `${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode} confidence=${percent(event.decision.confidence)}`,
+    `parent=${event.parent_session_id}`,
     `reason=${event.decision.reason}`,
     event.decision.display_name || event.decision.role_title
       ? `identity=${[event.decision.display_name, event.decision.role_title].filter(Boolean).join(" / ")}`
       : undefined,
     `objective=${event.task_packet.objective}`,
+    `policy=${event.task_packet.write_policy}`,
     event.task_packet.file_scope.length ? `scope=${event.task_packet.file_scope.join(", ")}` : undefined,
     `tools=${event.task_packet.allowed_tools.join(", ")}`
   ].filter(Boolean).join("\n");

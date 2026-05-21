@@ -7,6 +7,7 @@ export type HostEnvironmentContext = {
   arch: string;
   node_version: string;
   workspace: string;
+  additional_read_directories: string[];
   process_cwd: string;
   path_separator: string;
   path_list_separator: string;
@@ -15,7 +16,7 @@ export type HostEnvironmentContext = {
   command_guidance: string[];
 };
 
-export function hostEnvironmentContext(workspace = process.cwd()): HostEnvironmentContext {
+export function hostEnvironmentContext(workspace = process.cwd(), additionalReadDirectories: string[] = []): HostEnvironmentContext {
   const shell = hostShell();
   const isWindows = process.platform === "win32";
   return {
@@ -24,6 +25,7 @@ export function hostEnvironmentContext(workspace = process.cwd()): HostEnvironme
     arch: arch(),
     node_version: process.version,
     workspace,
+    additional_read_directories: [...new Set(additionalReadDirectories.map((path) => path.trim()).filter(Boolean))],
     process_cwd: process.cwd(),
     path_separator: sep,
     path_list_separator: delimiter,
@@ -46,8 +48,8 @@ export function hostEnvironmentContext(workspace = process.cwd()): HostEnvironme
   };
 }
 
-export function renderHostEnvironmentPrompt(workspace = process.cwd()): string {
-  const context = hostEnvironmentContext(workspace);
+export function renderHostEnvironmentPrompt(workspace = process.cwd(), additionalReadDirectories: string[] = []): string {
+  const context = hostEnvironmentContext(workspace, additionalReadDirectories);
   return [
     "Host environment for local tools:",
     `- OS: ${context.os}`,
@@ -55,13 +57,16 @@ export function renderHostEnvironmentPrompt(workspace = process.cwd()): string {
     `- arch: ${context.arch}`,
     `- node: ${context.node_version}`,
     `- workspace: ${context.workspace}`,
+    context.additional_read_directories.length
+      ? `- additional read-only directories: ${context.additional_read_directories.join(", ")}`
+      : undefined,
     `- process cwd: ${context.process_cwd}`,
     `- path separator: ${context.path_separator}`,
     `- path-list separator: ${context.path_list_separator}`,
     `- shell: ${context.shell}`,
     `- shell invocation: ${context.shell_invocation}`,
     ...context.command_guidance.map((item) => `- ${item}`)
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function hostShell(): string {

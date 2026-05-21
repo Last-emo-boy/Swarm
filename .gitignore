@@ -7,6 +7,8 @@ npm-debug.log*
 .env.local
 .DS_Store
 Thumbs.db
+.workflow/
 
 Swarm.md
 Symphony.md
+swarm_uiux_agent_optimization_roadmap.md

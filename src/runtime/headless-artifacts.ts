@@ -1,10 +1,49 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { RunMode } from "./execution-router.js";
+import type { RunMode, RunSandboxMode } from "./execution-router.js";
 import type { RuntimeEvent, SessionOutcome } from "./events.js";
 import type { ExecutionResult } from "./orchestrator.js";
+import type { ResultCard } from "./result-card.js";
+import { buildWorkRecordFromRuntimeEvent, buildWorkRunRecord, type WorkProtocolRecord } from "./work-protocol.js";
+import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-sandbox.js";
 
 const SWARM_VERSION = loadSwarmVersion();
+
+export type HeadlessPermissionMode = "ask" | "auto-edit" | "full-auto" | "yolo";
+export type HeadlessOperation = "run" | "resume" | "continue";
+export type HeadlessRunBudget = {
+  max_turns?: number;
+  max_tool_calls?: number;
+};
+export type HeadlessToolPolicy = {
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+};
+export type HeadlessPromptCustomization = {
+  system_prompt?: {
+    source: "inline" | "file";
+    bytes: number;
+  };
+  append_system_prompt?: {
+    source: "inline" | "file";
+    bytes: number;
+  };
+};
+export type HeadlessMcpConfig = {
+  strict?: boolean;
+  sources: Array<{
+    source: "file" | "json";
+    path?: string;
+    bytes: number;
+    server_ids: string[];
+  }>;
+};
+export type HeadlessResumePreflight = {
+  command: "resume" | "continue";
+  route: "stored_plan" | "coding_loop";
+  instruction: string;
+  detail: string;
+};
 
 export type CapturedRuntimeEvent = {
   at: string;
@@ -17,12 +56,73 @@ export type HeadlessRunArtifacts = {
   trajectory: HeadlessTrajectory;
 };
 
+export type HeadlessStreamRecord =
+  | {
+      schema_version: "swarm.headless.stream.v1";
+      type: "run_start";
+      at: string;
+      objective: string;
+      workspace: string;
+      mode: RunMode;
+      permission_mode?: HeadlessPermissionMode;
+      sandbox_mode?: RunSandboxMode;
+      operation?: HeadlessOperation;
+      resume_session_id?: string;
+      resume_preflight?: HeadlessResumePreflight;
+      budget?: HeadlessRunBudget;
+      tool_policy?: HeadlessToolPolicy;
+      additional_read_directories?: string[];
+      prompt_customization?: HeadlessPromptCustomization;
+      mcp_config?: HeadlessMcpConfig;
+      activated_skills?: string[];
+      work: WorkProtocolRecord;
+    }
+  | {
+      schema_version: "swarm.headless.stream.v1";
+      type: "runtime_event";
+      at: string;
+      event: RuntimeEvent;
+      work: WorkProtocolRecord;
+    }
+  | {
+      schema_version: "swarm.headless.stream.v1";
+      type: "run_signal";
+      at: string;
+      signal: NodeJS.Signals;
+      message: string;
+      session_id?: string;
+      resume_hint?: string;
+      work: WorkProtocolRecord;
+    }
+  | {
+      schema_version: "swarm.headless.stream.v1";
+      type: "run_end";
+      at: string;
+      status: "completed" | "failed" | "stopped";
+      session_id?: string;
+      duration_ms: number;
+      report: HeadlessRunReport;
+      resume_hint?: string;
+      work: WorkProtocolRecord;
+    };
+
 export type HeadlessRunReport = {
   schema_version: "swarm.headless.v1";
   swarm_version: string;
   objective: string;
   workspace: string;
   mode: RunMode;
+  permission_mode?: HeadlessPermissionMode;
+  sandbox_mode?: RunSandboxMode;
+  operation?: HeadlessOperation;
+  resume_session_id?: string;
+  resume_preflight?: HeadlessResumePreflight;
+  budget?: HeadlessRunBudget;
+  tool_policy?: HeadlessToolPolicy;
+  additional_read_directories?: string[];
+  prompt_customization?: HeadlessPromptCustomization;
+  mcp_config?: HeadlessMcpConfig;
+  activated_skills?: string[];
   started_at: string;
   ended_at: string;
   duration_ms: number;
@@ -32,6 +132,7 @@ export type HeadlessRunReport = {
     content: string;
     artifact_path?: string;
     outcome?: SessionOutcome;
+    result_card?: ResultCard;
   };
   telemetry: HeadlessTelemetry;
   artifacts: {
@@ -50,6 +151,16 @@ export type HeadlessTelemetry = {
   objective: string;
   workspace: string;
   mode: RunMode;
+  permission_mode?: HeadlessPermissionMode;
+  sandbox_mode?: RunSandboxMode;
+  operation?: HeadlessOperation;
+  resume_session_id?: string;
+  budget?: HeadlessRunBudget;
+  tool_policy?: HeadlessToolPolicy;
+  additional_read_directories?: string[];
+  prompt_customization?: HeadlessPromptCustomization;
+  mcp_config?: HeadlessMcpConfig;
+  activated_skills?: string[];
   started_at: string;
   ended_at: string;
   duration_ms: number;
@@ -83,6 +194,10 @@ export type HeadlessTelemetry = {
     output_tokens: number;
     cached_input_tokens: number;
     cache_creation_input_tokens: number;
+    uncached_input_tokens: number;
+    total_input_with_cache_tokens: number;
+    cache_hit_rate?: number;
+    cache_write_rate?: number;
     cacheable_prefix_estimate: number;
     prompt_cache_diagnostics: Record<string, number>;
   };
@@ -160,6 +275,17 @@ export function buildHeadlessRunArtifacts(input: {
   objective: string;
   workspace: string;
   mode: RunMode;
+  permissionMode?: HeadlessPermissionMode;
+  sandboxMode?: RunSandboxMode;
+  operation?: HeadlessOperation;
+  resumeSessionId?: string;
+  resumePreflight?: HeadlessResumePreflight;
+  budget?: HeadlessRunBudget;
+  toolPolicy?: HeadlessToolPolicy;
+  additionalReadDirectories?: string[];
+  promptCustomization?: HeadlessPromptCustomization;
+  mcpConfig?: HeadlessMcpConfig;
+  activatedSkills?: string[];
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -178,6 +304,17 @@ export function buildHeadlessRunArtifacts(input: {
     objective: input.objective,
     workspace: input.workspace,
     mode: input.mode,
+    permission_mode: input.permissionMode,
+    sandbox_mode: input.sandboxMode,
+    operation: input.operation,
+    resume_session_id: input.resumeSessionId,
+    resume_preflight: input.resumePreflight,
+    budget: input.budget,
+    tool_policy: input.toolPolicy,
+    additional_read_directories: input.additionalReadDirectories,
+    prompt_customization: input.promptCustomization,
+    mcp_config: input.mcpConfig,
+    activated_skills: input.activatedSkills,
     started_at: input.startedAt,
     ended_at: input.endedAt,
     duration_ms: input.durationMs,
@@ -195,7 +332,8 @@ export function buildHeadlessRunArtifacts(input: {
     report.result = {
       content: input.result.content,
       artifact_path: input.result.artifact_path,
-      outcome: input.result.outcome
+      outcome: input.result.outcome,
+      result_card: input.result.result_card
     };
   }
   if (input.error) {
@@ -203,6 +341,87 @@ export function buildHeadlessRunArtifacts(input: {
   }
 
   return { report, telemetry, trajectory };
+}
+
+export function buildHeadlessStreamRecord(
+  input:
+    | Omit<Extract<HeadlessStreamRecord, { type: "run_start" }>, "schema_version" | "work">
+    | Omit<Extract<HeadlessStreamRecord, { type: "runtime_event" }>, "schema_version" | "work">
+    | Omit<Extract<HeadlessStreamRecord, { type: "run_signal" }>, "schema_version" | "work">
+    | Omit<Extract<HeadlessStreamRecord, { type: "run_end" }>, "schema_version" | "work">
+): HeadlessStreamRecord {
+  const record = {
+    schema_version: "swarm.headless.stream.v1",
+    ...input
+  } as HeadlessStreamRecord;
+  if (record.work) {
+    return record;
+  }
+  return {
+    ...record,
+    work: buildWorkRecordForHeadlessStream(record)
+  } as HeadlessStreamRecord;
+}
+
+export function headlessStreamJson(record: HeadlessStreamRecord): string {
+  return JSON.stringify(stripUndefined(record));
+}
+
+function buildWorkRecordForHeadlessStream(record: HeadlessStreamRecord): WorkProtocolRecord {
+  if (record.type === "runtime_event") {
+    return buildWorkRecordFromRuntimeEvent(record.event, record.at);
+  }
+  if (record.type === "run_start") {
+    return buildWorkRunRecord({
+      at: record.at,
+      phase: "start",
+      objective: record.objective,
+      workspace: record.workspace,
+      mode: record.mode,
+      permissionMode: record.permission_mode,
+      sandboxMode: record.sandbox_mode,
+      toolPolicy: record.tool_policy,
+      additionalReadDirectories: record.additional_read_directories,
+      operation: record.operation,
+      resumeSessionId: record.resume_session_id
+    });
+  }
+  if (record.type === "run_signal") {
+    return buildWorkRunRecord({
+      at: record.at,
+      phase: "signal",
+      sessionId: record.session_id,
+      message: record.message
+    });
+  }
+  return buildWorkRunRecord({
+    at: record.at,
+    phase: "end",
+    sessionId: record.session_id,
+    status: record.status,
+    objective: record.report.objective,
+    workspace: record.report.workspace,
+    mode: record.report.mode,
+    permissionMode: record.report.permission_mode,
+    sandboxMode: record.report.sandbox_mode,
+    toolPolicy: record.report.tool_policy,
+    additionalReadDirectories: record.report.additional_read_directories,
+    operation: record.report.operation,
+    resumeSessionId: record.report.resume_session_id
+  });
+}
+
+export function resolveHeadlessSessionId(input: {
+  capturedEvents: CapturedRuntimeEvent[];
+  result?: ExecutionResult;
+}): string | undefined {
+  return input.result?.session_id ?? extractSessionId(input.capturedEvents);
+}
+
+export function buildHeadlessResumeHint(sessionId: string | undefined): string | undefined {
+  return sessionId
+    ? `Resume in the TUI with: swarm, then run /resume ${sessionId}`
+    : undefined;
 }
 
 export function writeJsonArtifact(path: string, value: unknown): string {
@@ -216,6 +435,16 @@ function buildHeadlessTelemetry(input: {
   objective: string;
   workspace: string;
   mode: RunMode;
+  permissionMode?: HeadlessPermissionMode;
+  sandboxMode?: RunSandboxMode;
+  operation?: HeadlessOperation;
+  resumeSessionId?: string;
+  budget?: HeadlessRunBudget;
+  toolPolicy?: HeadlessToolPolicy;
+  additionalReadDirectories?: string[];
+  promptCustomization?: HeadlessPromptCustomization;
+  mcpConfig?: HeadlessMcpConfig;
+  activatedSkills?: string[];
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -234,6 +463,8 @@ function buildHeadlessTelemetry(input: {
     outputTokens: 0,
     cachedInputTokens: 0,
     cacheCreationInputTokens: 0,
+    uncachedInputTokens: 0,
+    totalInputWithCacheTokens: 0,
     cacheablePrefixEstimate: 0
   };
   const toolResults = { total: 0, success: 0, partial: 0, failed: 0 };
@@ -274,6 +505,8 @@ function buildHeadlessTelemetry(input: {
       usageTotals.outputTokens += usage.outputTokens ?? 0;
       usageTotals.cachedInputTokens += usage.cachedInputTokens ?? 0;
       usageTotals.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
+      usageTotals.uncachedInputTokens += usage.uncachedInputTokens ?? 0;
+      usageTotals.totalInputWithCacheTokens += usage.totalInputWithCacheTokens ?? 0;
       usageTotals.cacheablePrefixEstimate += usage.cacheablePrefixTokensEstimate ?? 0;
       if (usage.promptCacheDiagnostics) {
         const status = usage.promptCacheDiagnostics.status;
@@ -299,6 +532,16 @@ function buildHeadlessTelemetry(input: {
     objective: input.objective,
     workspace: input.workspace,
     mode: input.mode,
+    permission_mode: input.permissionMode,
+    sandbox_mode: input.sandboxMode,
+    operation: input.operation,
+    resume_session_id: input.resumeSessionId,
+    budget: input.budget,
+    tool_policy: input.toolPolicy,
+    additional_read_directories: input.additionalReadDirectories,
+    prompt_customization: input.promptCustomization,
+    mcp_config: input.mcpConfig,
+    activated_skills: input.activatedSkills,
     started_at: input.startedAt,
     ended_at: input.endedAt,
     duration_ms: input.durationMs,
@@ -317,6 +560,14 @@ function buildHeadlessTelemetry(input: {
       output_tokens: usageTotals.outputTokens,
       cached_input_tokens: usageTotals.cachedInputTokens,
       cache_creation_input_tokens: usageTotals.cacheCreationInputTokens,
+      uncached_input_tokens: usageTotals.uncachedInputTokens,
+      total_input_with_cache_tokens: usageTotals.totalInputWithCacheTokens,
+      cache_hit_rate: usageTotals.totalInputWithCacheTokens > 0
+        ? usageTotals.cachedInputTokens / usageTotals.totalInputWithCacheTokens
+        : undefined,
+      cache_write_rate: usageTotals.totalInputWithCacheTokens > 0
+        ? usageTotals.cacheCreationInputTokens / usageTotals.totalInputWithCacheTokens
+        : undefined,
       cacheable_prefix_estimate: usageTotals.cacheablePrefixEstimate,
       prompt_cache_diagnostics: promptCacheDiagnostics
     },
@@ -330,6 +581,16 @@ function buildHeadlessTrajectory(input: {
   objective: string;
   workspace: string;
   mode: RunMode;
+  permissionMode?: HeadlessPermissionMode;
+  sandboxMode?: RunSandboxMode;
+  operation?: HeadlessOperation;
+  resumeSessionId?: string;
+  budget?: HeadlessRunBudget;
+  toolPolicy?: HeadlessToolPolicy;
+  additionalReadDirectories?: string[];
+  promptCustomization?: HeadlessPromptCustomization;
+  mcpConfig?: HeadlessMcpConfig;
+  activatedSkills?: string[];
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -371,13 +632,41 @@ function buildHeadlessTrajectory(input: {
         source: "system",
         message: `spawn ${event.worker_id} -> ${event.decision.agent_spec_id}/${event.decision.invocation_mode}`,
         extra: {
+          parent_session_id: event.parent_session_id,
           confidence: event.decision.confidence,
           reason: event.decision.reason,
           display_name: event.decision.display_name,
           role_title: event.decision.role_title,
           objective: event.task_packet.objective,
+          write_policy: event.task_packet.write_policy,
           file_scope: event.task_packet.file_scope,
           allowed_tools: event.task_packet.allowed_tools
+        }
+      });
+      continue;
+    }
+    if (event.type === "plan") {
+      steps.push({
+        step_id: stepId++,
+        timestamp,
+        source: "system",
+        message: `plan ${event.session_id}: ${event.plan.summary}`,
+        extra: {
+          objective: event.plan.objective,
+          intent: event.plan.intent,
+          tasks: event.plan.tasks.map((task) => {
+            const inputs = task.inputs && typeof task.inputs === "object" ? task.inputs : {};
+            return {
+              task_id: task.task_id,
+              title: task.title,
+              status: task.status,
+              required_capabilities: task.required_capabilities,
+              action: typeof inputs.action === "string" ? inputs.action : undefined,
+              write_policy: declaredToolTaskWritePolicy(inputs),
+              file_scope: declaredToolTaskFileScope(inputs)
+            };
+          }),
+          final_artifact: event.plan.final_artifact
         }
       });
       continue;
@@ -422,12 +711,16 @@ function buildHeadlessTrajectory(input: {
             title: event.title,
             status: event.status,
             attempt: event.attempt,
-            capability: event.capability
+            capability: event.capability,
+            write_policy: event.write_policy,
+            file_scope: event.file_scope
           },
           extra: {
             errorCode: event.errorCode,
             recoverySuggestion: event.recoverySuggestion,
-            outputRef: event.outputRef
+            outputRef: event.outputRef,
+            write_policy: event.write_policy,
+            file_scope: event.file_scope
           }
         }],
         observation: {
@@ -438,7 +731,9 @@ function buildHeadlessTrajectory(input: {
               status: event.status,
               errorCode: event.errorCode,
               recoverySuggestion: event.recoverySuggestion,
-              outputRef: event.outputRef
+              outputRef: event.outputRef,
+              write_policy: event.write_policy,
+              file_scope: event.file_scope
             }
           }]
         },
@@ -447,7 +742,9 @@ function buildHeadlessTrajectory(input: {
           title: event.title,
           task_id: event.task_id,
           status: event.status,
-          capability: event.capability
+          capability: event.capability,
+          write_policy: event.write_policy,
+          file_scope: event.file_scope
         }
       });
       continue;
@@ -494,6 +791,16 @@ function buildHeadlessTrajectory(input: {
       model_name: firstModel,
       extra: {
         mode: input.mode,
+        permission_mode: input.permissionMode,
+        sandbox_mode: input.sandboxMode,
+        operation: input.operation,
+        resume_session_id: input.resumeSessionId,
+        budget: input.budget,
+        tool_policy: input.toolPolicy,
+        additional_read_directories: input.additionalReadDirectories,
+        prompt_customization: input.promptCustomization,
+        mcp_config: input.mcpConfig,
+        activated_skills: input.activatedSkills,
         workspace: input.workspace,
         swarm_version: SWARM_VERSION
       }
@@ -516,6 +823,16 @@ function buildHeadlessTrajectory(input: {
     },
     extra: {
       mode: input.mode,
+      permission_mode: input.permissionMode,
+      sandbox_mode: input.sandboxMode,
+      operation: input.operation,
+      resume_session_id: input.resumeSessionId,
+      budget: input.budget,
+      tool_policy: input.toolPolicy,
+      additional_read_directories: input.additionalReadDirectories,
+      prompt_customization: input.promptCustomization,
+      mcp_config: input.mcpConfig,
+      activated_skills: input.activatedSkills,
       objective: input.objective,
       workspace: input.workspace,
       started_at: input.startedAt,
@@ -544,6 +861,9 @@ function extractSessionId(capturedEvents: CapturedRuntimeEvent[]): string | unde
     }
     if (event.type === "tool_result" && event.session_id) {
       return event.session_id;
+    }
+    if (event.type === "agent_spawn_decision") {
+      return event.parent_session_id;
     }
     if (event.type === "provider_usage" && event.usage.sessionId) {
       return event.usage.sessionId;

@@ -72,6 +72,13 @@ export class ApprovalStore {
     return row ? fromRow(row) : undefined;
   }
 
+  updateStatus(approvalId: string, status: ApprovalStatus): ApprovalRecord | undefined {
+    this.database.db
+      .prepare("UPDATE approvals SET status = ?, updated_at = ? WHERE approval_id = ?")
+      .run(status, new Date().toISOString(), approvalId);
+    return this.get(approvalId);
+  }
+
   list(sessionId?: string, limit = 50): ApprovalRecord[] {
     const rows = sessionId
       ? this.database.db
@@ -85,10 +92,11 @@ export class ApprovalStore {
 }
 
 function fromRow(row: ApprovalRow): ApprovalRecord {
+  const { challenge_json, ...rest } = row;
   return {
-    ...row,
-    session_id: row.session_id ?? undefined,
-    task_id: row.task_id ?? undefined,
-    challenge: JSON.parse(row.challenge_json) as ToolApprovalRequest
+    ...rest,
+    session_id: rest.session_id ?? undefined,
+    task_id: rest.task_id ?? undefined,
+    challenge: JSON.parse(challenge_json) as ToolApprovalRequest
   };
 }

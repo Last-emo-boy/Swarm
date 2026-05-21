@@ -32,6 +32,19 @@ export type McpServerRecord = {
   diagnostics: CapabilityDiagnostic[];
 };
 
+export type RuntimeMcpConfigSource = {
+  source: "file" | "json";
+  path?: string;
+  bytes: number;
+  servers: Record<string, McpServerSettings>;
+  serverIds: string[];
+};
+
+export type RuntimeMcpConfigOptions = {
+  sources: RuntimeMcpConfigSource[];
+  strict?: boolean;
+};
+
 type McpServerRuntime = {
   id: string;
   capabilityIdPart: string;
@@ -371,6 +384,11 @@ function mcpToolDescriptor(server: McpServerRuntime, tool: Tool): CapabilityDesc
     userVisible: true,
     status: server.status === "connected" ? "available" : server.status,
     diagnostics: server.diagnostics,
+    alwaysLoad: false,
+    shouldDefer: true,
+    readOnly,
+    concurrencyClass: "network_limited",
+    searchHint: `${server.id}:${tool.name}`,
     metadata: {
       server_id: server.id,
       tool_name: tool.name,
@@ -482,6 +500,11 @@ function normalizeMcpToolResult(serverId: string, toolName: string, result: Awai
 }
 
 function loadMcpServerSettings(settings: SwarmSettings, workspace: string): Record<string, McpServerSettings> {
+  if (settings.extensions.mcp.runtimeConfig?.strict) {
+    return {
+      ...settings.extensions.mcp.servers
+    };
+  }
   const projectConfig = readMcpJson(resolve(workspace, ".mcp.json"), projectMcpTrust(workspace));
   const pluginConfig = loadPluginMcpServerSettings(settings, workspace);
   return {
@@ -491,46 +514,142 @@ function loadMcpServerSettings(settings: SwarmSettings, workspace: string): Reco
   };
 }
 
+export function loadRuntimeMcpConfigSources(values: string[], baseDirectory = process.cwd()): RuntimeMcpConfigSource[] {
+  return values.map((value) => {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{")) {
+      const servers = parseMcpConfigJson(trimmed, resolve(baseDirectory));
+      return {
+        source: "json",
+        bytes: Buffer.byteLength(trimmed, "utf8"),
+        servers,
+        serverIds: Object.keys(servers).sort()
+      };
+    }
+    const path = resolve(value);
+    const servers = readMcpJson(path, "user", { required: true, strictErrors: true });
+    return {
+      source: "file",
+      path,
+      bytes: Buffer.byteLength(readFileSync(path, "utf8"), "utf8"),
+      servers,
+      serverIds: Object.keys(servers).sort()
+    };
+  });
+}
+
+export function applyRuntimeMcpConfig(settings: SwarmSettings, config: RuntimeMcpConfigOptions | undefined): SwarmSettings {
+  if (!config || (!config.sources.length && config.strict !== true)) {
+    return settings;
+  }
+  const runtimeServers = Object.assign({}, ...config.sources.map((source) => source.servers)) as Record<string, McpServerSettings>;
+  return {
+    ...settings,
+    extensions: {
+      ...settings.extensions,
+      mcp: {
+        ...settings.extensions.mcp,
+        enabled: true,
+        runtimeConfig: {
+          strict: config.strict === true,
+          paths: config.sources.flatMap((source) => source.path ? [source.path] : [])
+        },
+        servers: config.strict === true
+          ? runtimeServers
+          : {
+              ...settings.extensions.mcp.servers,
+              ...runtimeServers
+            }
+      }
+    }
+  };
+}
+
 function projectMcpTrust(workspace: string): McpServerSettings["trust"] {
   return isTrustedWorkspace(workspace) ? "workspace" : "project";
 }
 
-function readMcpJson(path: string, trust: McpServerSettings["trust"]): Record<string, McpServerSettings> {
+function readMcpJson(
+  path: string,
+  trust: McpServerSettings["trust"],
+  options: { required?: boolean; strictErrors?: boolean } = {}
+): Record<string, McpServerSettings> {
   if (!existsSync(path)) {
+    if (options.required) {
+      throw new Error(`MCP config file does not exist: ${path}`);
+    }
     return {};
   }
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { mcpServers?: Record<string, unknown>; servers?: Record<string, unknown> };
-    const servers = parsed.mcpServers ?? parsed.servers ?? {};
-    return Object.fromEntries(
-      Object.entries(servers)
-        .flatMap(([id, value]) => {
-          if (!isRecord(value)) {
-            return [];
-          }
-          return [[
-            id,
-            {
-              disabled: value.disabled === true || trust === "project",
-              transport: value.transport === "http" ? "http" : "stdio",
-              command: typeof value.command === "string" ? value.command : undefined,
-              args: Array.isArray(value.args) ? value.args.map(String) : [],
-              cwd: typeof value.cwd === "string" ? resolve(dirname(path), value.cwd) : undefined,
-              env: isStringRecord(value.env),
-              url: typeof value.url === "string" ? value.url : undefined,
-              headers: isStringRecord(value.headers),
-              trust,
-              exposeTools: value.exposeTools !== false,
-              exposeResources: value.exposeResources === true,
-              exposePrompts: value.exposePrompts === true,
-              timeoutMs: positiveInteger(value.timeoutMs, 30_000)
-            } satisfies McpServerSettings
-          ]];
-        })
-    );
-  } catch {
+    return parseMcpConfigObject(JSON.parse(readFileSync(path, "utf8")), {
+      baseDirectory: dirname(path),
+      trust
+    });
+  } catch (error) {
+    if (options.strictErrors) {
+      throw new Error(`Invalid MCP config file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return {};
   }
+}
+
+function parseMcpConfigJson(value: string, baseDirectory: string): Record<string, McpServerSettings> {
+  try {
+    return parseMcpConfigObject(JSON.parse(value), {
+      baseDirectory,
+      trust: "user"
+    });
+  } catch (error) {
+    throw new Error(`Invalid --mcp-config JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function parseMcpConfigObject(
+  parsed: unknown,
+  options: {
+    baseDirectory: string;
+    trust: McpServerSettings["trust"];
+  }
+): Record<string, McpServerSettings> {
+  if (!isRecord(parsed)) {
+    throw new Error("Expected a JSON object.");
+  }
+  const servers = parsed.mcpServers ?? parsed.servers ?? {};
+  if (!isRecord(servers)) {
+    throw new Error("Expected mcpServers or servers to be an object.");
+  }
+  return Object.fromEntries(
+    Object.entries(servers)
+      .flatMap(([id, value]) => {
+        if (!id.trim() || !isRecord(value)) {
+          return [];
+        }
+        const rawTransport = typeof value.transport === "string"
+          ? value.transport
+          : typeof value.type === "string"
+            ? value.type
+            : "stdio";
+        return [[
+          id,
+          {
+            disabled: value.disabled === true || options.trust === "project",
+            transport: rawTransport === "http" || rawTransport === "sse" ? "http" : "stdio",
+            command: typeof value.command === "string" ? value.command : undefined,
+            args: Array.isArray(value.args) ? value.args.map(String) : [],
+            cwd: typeof value.cwd === "string" ? resolve(options.baseDirectory, value.cwd) : undefined,
+            env: isStringRecord(value.env),
+            url: typeof value.url === "string" ? value.url : undefined,
+            headers: isStringRecord(value.headers),
+            trust: options.trust,
+            exposeTools: value.exposeTools !== false,
+            exposeResources: value.exposeResources === true,
+            exposePrompts: value.exposePrompts === true,
+            toolRiskOverrides: isRiskOverrideRecord(value.toolRiskOverrides),
+            timeoutMs: positiveInteger(value.timeoutMs, 30_000)
+          } satisfies McpServerSettings
+        ]];
+      })
+  );
 }
 
 function isTrustedWorkspace(workspace: string): boolean {
@@ -599,6 +718,16 @@ function isStringRecord(value: unknown): Record<string, string> | undefined {
     return undefined;
   }
   return Object.fromEntries(Object.entries(value).map(([key, next]) => [key, String(next)]));
+}
+
+function isRiskOverrideRecord(value: unknown): McpServerSettings["toolRiskOverrides"] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, risk]) => risk === "r0" || risk === "r1" || risk === "r2" || risk === "r3" || risk === "r4")
+  ) as McpServerSettings["toolRiskOverrides"];
 }
 
 function exposesLocalProcessRisk(server: McpServerRuntime, riskClass: CapabilityDescriptor["riskClass"]): boolean {

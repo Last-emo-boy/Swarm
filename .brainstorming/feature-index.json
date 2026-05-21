@@ -1,0 +1,71 @@
+{
+  "scope": "swarm-product-surface",
+  "source_roles": [
+    "product-manager",
+    "system-architect",
+    "test-strategist"
+  ],
+  "priorities": [
+    {
+      "rank": 1,
+      "phase": "immediate",
+      "id": "prompt-contract",
+      "title": "Prompt contract and prefix discipline",
+      "summary": "Keep stable instructions, tool definitions, and reusable context ahead of the variable tail.",
+      "why": "This is the highest leverage path for cache hit rate, latency, cost, and model consistency.",
+      "signals": ["prefix stability", "cache hit rate", "miss reason clarity"]
+    },
+    {
+      "rank": 2,
+      "phase": "immediate",
+      "id": "cache-diagnostics",
+      "title": "Cache diagnostics and regression gates",
+      "summary": "Expose cache key, cache mode, hit rate, and changed prefix fields in the operator flow.",
+      "why": "Operators need miss explanations at the same place they inspect runtime status.",
+      "signals": ["diagnostic visibility", "prefix regression coverage", "hit-rate trend"]
+    },
+    {
+      "rank": 3,
+      "phase": "immediate",
+      "id": "tui-simplification",
+      "title": "TUI simplification and inspector split",
+      "summary": "Keep the default surface conversation-first and push dense runtime detail into inspector views.",
+      "why": "The product must feel like a chat-first operator surface, not a kernel dashboard.",
+      "signals": ["narrow-terminal layout", "task/action/result visibility", "inspector separation"]
+    },
+    {
+      "rank": 4,
+      "phase": "next",
+      "id": "surface-boundaries",
+      "title": "Boundary hardening across Swarm, Symphony, and Gateway",
+      "summary": "Align naming, routing, and docs so each surface stays in its own lane.",
+      "why": "Boundary drift creates product confusion and makes Gateway look like a second UI.",
+      "signals": ["route clarity", "docs consistency", "surface naming"]
+    },
+    {
+      "rank": 5,
+      "phase": "next",
+      "id": "lsp-productization",
+      "title": "Narrow LSP productization",
+      "summary": "Keep the local semantic service focused on the operations the product already exposes.",
+      "why": "The LSP should support the operator surface, not grow into a broad language platform.",
+      "signals": ["route parity", "timeout behavior", "cancellation coverage"]
+    },
+    {
+      "rank": 6,
+      "phase": "deferred",
+      "id": "cross-surface-health",
+      "title": "Cross-surface health signals",
+      "summary": "Unify cache, TUI, Symphony, and LSP signals only after the main surface is stable.",
+      "why": "This is useful, but it should not distract from the core prompt and TUI work.",
+      "signals": ["operator status cohesion", "shared health view", "low-noise reporting"]
+    }
+  ],
+  "explicit_non_goals": [
+    "new distributed cache system",
+    "Gateway as primary UX",
+    "Symphony as interactive conversation UI",
+    "full IDE replacement",
+    "broad platform rewrite"
+  ]
+}
