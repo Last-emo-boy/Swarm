@@ -5,6 +5,8 @@ import type { ToolAction } from "./types.js";
 import {
   createToolApprovalRequest,
   decideToolPermission,
+  resolveReadablePath,
+  resolveShellCwd,
   riskClassForAction,
   toolRequiresApproval
 } from "./permissions.js";
@@ -170,6 +172,22 @@ test("createToolApprovalRequest includes r4 destructive shell permission evidenc
   assert.equal(request.permission_mode, "yolo");
   assert.equal(request.permission_name, "Bash");
   assert.equal(request.permission_reason, decision.reason);
+});
+
+test("workspace-relative paths with repeated workspace prefix resolve inside current workspace", () => {
+  const nestedWorkspace = `${workspace}\\fixtures\\repo\\.swarm\\local-tests\\case-a`;
+  const settings = defaultSwarmSettings();
+  settings.permissions.additionalDirectories = [];
+  const context = { workspace: nestedWorkspace, settings };
+
+  assert.equal(
+    resolveReadablePath(".swarm/local-tests/case-a/src/cart.js", context),
+    resolveReadablePath("src/cart.js", context)
+  );
+  assert.equal(
+    resolveShellCwd(".swarm/local-tests/case-a", context),
+    resolveShellCwd(".", context)
+  );
 });
 
 function settingsForMode(mode: PermissionMode): SwarmSettings {

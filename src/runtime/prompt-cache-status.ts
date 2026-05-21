@@ -20,7 +20,22 @@ export type PromptCacheRuntimeStatus = {
 };
 
 export type ResultCardPromptCacheStatus = Pick<PromptCacheRuntimeStatus,
-  "status" | "hitRate" | "writeRate" | "diagnostics"
+  | "status"
+  | "cacheMode"
+  | "providerId"
+  | "model"
+  | "purpose"
+  | "promptCacheKey"
+  | "promptCacheScope"
+  | "hitRate"
+  | "writeRate"
+  | "cachedInputTokens"
+  | "totalInputWithCacheTokens"
+  | "cacheCreationInputTokens"
+  | "cacheablePrefixTokensEstimate"
+  | "diagnostics"
+  | "changed"
+  | "minimumCacheableTokens"
 >;
 
 export function promptCacheStatusFromUsage(usage: ProviderUsageReport): PromptCacheRuntimeStatus {
@@ -56,9 +71,21 @@ export function resultCardCacheStatus(status: PromptCacheRuntimeStatus | undefin
   }
   return {
     status: status.status,
+    cacheMode: status.cacheMode,
+    providerId: status.providerId,
+    model: status.model,
+    purpose: status.purpose,
+    promptCacheKey: status.promptCacheKey,
+    promptCacheScope: status.promptCacheScope,
     hitRate: status.hitRate,
     writeRate: status.writeRate,
-    diagnostics: status.diagnostics
+    cachedInputTokens: status.cachedInputTokens,
+    totalInputWithCacheTokens: status.totalInputWithCacheTokens,
+    cacheCreationInputTokens: status.cacheCreationInputTokens,
+    cacheablePrefixTokensEstimate: status.cacheablePrefixTokensEstimate,
+    diagnostics: status.diagnostics,
+    changed: status.changed,
+    minimumCacheableTokens: status.minimumCacheableTokens
   };
 }
 

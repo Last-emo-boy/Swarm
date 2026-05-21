@@ -1247,7 +1247,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           ? `${namespace} slash commands.`
           : includeAdvanced
           ? "All slash commands."
-          : "Main slash commands. Use /help all for the full catalog.",
+          : "Slash command catalog. Use /help main for the concise main path or /help all for advanced commands.",
         detail,
         autoOpenDetail: includeAdvanced || Boolean(namespace)
       };

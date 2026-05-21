@@ -6,7 +6,7 @@ import test from "node:test";
 import type { AgentInvocationRequest, AgentTaskPacket } from "./agent-specs.js";
 import type { RuntimeEvent } from "./events.js";
 import { buildResultCardFromSnapshot } from "./result-card.js";
-import { SwarmRuntime } from "./runtime.js";
+import { postChangeExecutionStatus, SwarmRuntime } from "./runtime.js";
 import { createEnvelope } from "../protocol/envelope.js";
 import { buildSessionSnapshot, buildWorkspaceSnapshot } from "../server/session-view.js";
 import type { ReviewResult, SwarmPolicy, WorkItem } from "../protocol/types.js";
@@ -455,6 +455,76 @@ test("runtime post-change review and verification records deterministic executio
     runtime.dispose();
     fixture.close();
   }
+});
+
+test("post-change partial verification remains a completed run with warning evidence", () => {
+  assert.equal(postChangeExecutionStatus({
+    review: {
+      target_task_id: "coding_loop",
+      reviewer: { agent_id: "reviewer", role: "reviewer" },
+      verdict: "needs_revision",
+      score: 60,
+      issues: [{
+        severity: "low",
+        message: "Additional edge-case tests would improve confidence."
+      }],
+      summary: "Review approved the change with low-priority test coverage suggestions."
+    },
+    verification: {
+      status: "partial",
+      summary: "Verifier ran npm test successfully but noted non-blocking coverage gaps."
+    }
+  }), "completed");
+
+  assert.equal(postChangeExecutionStatus({
+    review: {
+      target_task_id: "coding_loop",
+      reviewer: { agent_id: "reviewer", role: "reviewer" },
+      verdict: "approve",
+      score: 95,
+      summary: "Review passed."
+    },
+    verification: {
+      status: "failed",
+      summary: "npm test failed."
+    }
+  }), "failed");
+
+  assert.equal(postChangeExecutionStatus({
+    review: {
+      target_task_id: "coding_loop",
+      reviewer: { agent_id: "reviewer", role: "reviewer" },
+      verdict: "reject",
+      score: 0,
+      issues: [{
+        severity: "high",
+        message: "Review Agent failed: budget exhausted after spawn powershell.exe ENOENT while collecting review evidence."
+      }],
+      summary: "Review Agent failed: Budget exhausted before completion."
+    },
+    verification: {
+      status: "success",
+      summary: "Verifier Agent completed: npm test passed."
+    }
+  }), "completed");
+
+  assert.equal(postChangeExecutionStatus({
+    review: {
+      target_task_id: "coding_loop",
+      reviewer: { agent_id: "reviewer", role: "reviewer" },
+      verdict: "reject",
+      score: 20,
+      issues: [{
+        severity: "high",
+        message: "Implementation returns the wrong result for discounted items."
+      }],
+      summary: "Reject: incorrect cart total."
+    },
+    verification: {
+      status: "success",
+      summary: "Verifier command passed only existing tests."
+    }
+  }), "failed");
 });
 
 function seedWorkSession(runtime: SwarmRuntime, fixture: Fixture): {

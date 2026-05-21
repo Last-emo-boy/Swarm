@@ -130,8 +130,7 @@ export function ChatInputArea({
         )}
         <Text>{PROMPT_POINTER}</Text>
         <Box flexGrow={1} flexShrink={1} flexDirection="column">
-          <InputLine
-            value={controllerState.current.input.value}
+          <InputLine value={controllerState.current.input.value}
             cursor={controllerState.current.input.cursor}
             placeholder={placeholder}
             maxRows={inputRowLimit}

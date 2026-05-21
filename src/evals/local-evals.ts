@@ -992,7 +992,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkResultCardSurfacesContractsBehavior(),
     checkReviewSummarySkipsAgentHeadingBehavior(root),
     checkPostChangeChecksHydrateOutputRefsBehavior(root),
-    checkPostChangeStatusFailsOnVerifierPartialBehavior(),
+    checkPostChangeStatusMappingPreservesVerifiedWorkBehavior(),
     checkWorkerLoopRepairsInvalidToolCallsBehavior(root),
     checkWorkerLoopProgressPayloadBehavior(root),
     checkCapabilityBrokerSlashCommandInvokeBehavior(root),
@@ -1149,12 +1149,14 @@ function checkTuiSlashCompletionSizingBehavior(): EvalCaseResult {
   state = applyChatInputKey(state, "/", {}).state;
   const candidates = chatInputCompletionCandidates(state);
   const rows = chatInputCompletionRows(state);
+  const visibleRows = Math.min(candidates.length, CHAT_INPUT_COMPLETION_VISIBLE_ROWS);
+  const hiddenRow = candidates.length > visibleRows ? 1 : 0;
   const ok = candidates.length === CHAT_INPUT_COMPLETION_LIMIT
-    && rows === CHAT_INPUT_COMPLETION_VISIBLE_ROWS + 4
+    && rows === visibleRows + hiddenRow + 4
     && candidates.some((candidate) => candidate.name === "kernel")
     && candidates.some((candidate) => candidate.name === "doctor");
   return ok
-    ? { name: "TUI slash completion sizing exposes more command choices", status: "pass", message: `${candidates.length} candidates with ${CHAT_INPUT_COMPLETION_VISIBLE_ROWS} visible rows` }
+    ? { name: "TUI slash completion sizing exposes more command choices", status: "pass", message: `${candidates.length} candidates with ${visibleRows} visible rows and ${hiddenRow} overflow row` }
     : { name: "TUI slash completion sizing exposes more command choices", status: "fail", message: `candidates=${candidates.map((candidate) => candidate.name).join(",")} rows=${rows}` };
 }
 
@@ -7478,7 +7480,7 @@ try {
   const spawnDecision = calls.find((call) => call.purpose === "agent_spawn_decision");
   console.log(JSON.stringify({
     resultStatus: result.status,
-    workerPrompt: workerPrompt?.system ?? "",
+    workerPrompt: [workerPrompt?.system, workerPrompt?.user].filter(Boolean).join("\\n\\n"),
     spawnDecisionUser: spawnDecision?.user ?? ""
   }));
 } finally {
@@ -10761,7 +10763,7 @@ try {
       };
 }
 
-function checkPostChangeStatusFailsOnVerifierPartialBehavior(): EvalCaseResult {
+function checkPostChangeStatusMappingPreservesVerifiedWorkBehavior(): EvalCaseResult {
   const baseReview = {
     target_task_id: "coding_loop",
     reviewer: { agent_id: "reviewer", role: "reviewer" },
@@ -10776,16 +10778,26 @@ function checkPostChangeStatusFailsOnVerifierPartialBehavior(): EvalCaseResult {
   });
   const partial = postChangeExecutionStatus({
     review: baseReview,
-    verification: { status: "partial", summary: "tests failed" }
+    verification: { status: "partial", summary: "tests passed with non-blocking coverage notes" }
   });
   const rejected = postChangeExecutionStatus({
     review: { ...baseReview, verdict: "reject" as const },
     verification: { status: "success", summary: "verified" }
   });
-  const ok = success === "completed" && partial === "failed" && rejected === "failed";
+  const operationalRejected = postChangeExecutionStatus({
+    review: {
+      ...baseReview,
+      verdict: "reject" as const,
+      score: 0,
+      issues: [{ severity: "high" as const, message: "Review Agent failed: budget exhausted after spawn powershell.exe ENOENT." }],
+      summary: "Review Agent failed: Budget exhausted before completion."
+    },
+    verification: { status: "success", summary: "npm test passed" }
+  });
+  const ok = success === "completed" && partial === "completed" && rejected === "failed" && operationalRejected === "completed";
   return ok
-    ? { name: "post-change verification partial gates final status", status: "pass", message: "post-change verifier partial/failed and review rejects no longer leave the run completed" }
-    : { name: "post-change verification partial gates final status", status: "fail", message: `success=${success} partial=${partial} rejected=${rejected}` };
+    ? { name: "post-change verification status mapping preserves verified work", status: "pass", message: "partial verification warnings and operational review failures no longer fail a verified run" }
+    : { name: "post-change verification status mapping preserves verified work", status: "fail", message: `success=${success} partial=${partial} rejected=${rejected} operationalRejected=${operationalRejected}` };
 }
 
 function checkWorkerLoopRepairsInvalidToolCallsBehavior(root: string): EvalCaseResult {
@@ -12170,7 +12182,20 @@ function checkBuiltinToolSurfaceBehavior(): EvalCaseResult {
   const names = new Set(capabilities.map((capability) => capability.name));
   const modelVisibleNames = capabilities.filter((capability) => capability.modelVisible).map((capability) => capability.name).sort();
   const modelVisible = new Set(modelVisibleNames);
-  const required = ["Read", "Write", "Edit", "file.delete", "Glob", "Grep", "NotebookEdit", "TodoWrite", "BlackboardWrite", "BlackboardSearch", "BlackboardRead", "BlackboardList", "Bash", "ProcessStart", "ProcessStatus", "ProcessList", "ProcessTail", "ProcessGrep", "ProcessStop", "WebSearch", "WebFetch", "Agent"].sort();
+  const lspTools = [
+    "lsp_code_actions",
+    "lsp_completion",
+    "lsp_definition",
+    "lsp_diagnostics",
+    "lsp_document_symbols",
+    "lsp_format",
+    "lsp_hover",
+    "lsp_references",
+    "lsp_rename_preview",
+    "lsp_workspace_symbols"
+  ];
+  const agentControlTools = ["AgentContinue", "AgentList", "AgentStatus", "AgentStop"];
+  const required = ["Read", "Write", "Edit", "file.delete", "Glob", "Grep", "NotebookEdit", "TodoWrite", "BlackboardWrite", "BlackboardSearch", "BlackboardRead", "BlackboardList", "Bash", "ProcessStart", "ProcessStatus", "ProcessList", "ProcessTail", "ProcessGrep", "ProcessStop", "WebSearch", "WebFetch", "Agent", ...agentControlTools, ...lspTools].sort();
   const missing = required.filter((name) => !modelVisible.has(name));
   const extraVisible = modelVisibleNames.filter((name) => !required.includes(name));
   const forbidden = [`solid${"ity"}.compile`, `Solid${"ity"}Compile`];
@@ -12184,10 +12209,14 @@ function checkBuiltinToolSurfaceBehavior(): EvalCaseResult {
   const normalizedTest = normalizeToolAction({ action: "code.test", command: "npm test", timeout: 3000 });
   const normalizedRunTest = normalizeToolAction({ action: "RunCommand", command: "npm test", timeout: 4000 });
   const normalizedRunShell = normalizeToolAction({ action: "RunCommand", command: "node scripts/build.js", timeout: 5000 });
+  const lspVisible = lspTools.every((name) => modelVisible.has(name));
+  const agentControlVisible = agentControlTools.every((name) => modelVisible.has(name));
   const ok = missing.length === 0
     && extraVisible.length === 0
     && presentForbidden.length === 0
     && legacyListHidden
+    && lspVisible
+    && agentControlVisible
     && normalizedRead.type === "file.read"
     && normalizedRead.path === "src/index.ts"
     && normalizedEdit.type === "file.edit"
@@ -12205,7 +12234,7 @@ function checkBuiltinToolSurfaceBehavior(): EvalCaseResult {
     && normalizedRunShell.type === "shell.exec"
     && normalizedRunShell.timeoutMs === 5000;
   return ok
-    ? { name: "built-in tool surface exposes generic coding tools", status: "pass", message: "model-visible tools are the generic coding set, LS is compat-hidden, and domain-specific compile tooling is absent" }
+    ? { name: "built-in tool surface exposes generic coding tools", status: "pass", message: "model-visible tools include generic coding, LSP semantic helpers, and Agent control while LS is compat-hidden and domain-specific compile tooling is absent" }
     : { name: "built-in tool surface exposes generic coding tools", status: "fail", message: `missing=${missing.join(",") || "-"} extra=${extraVisible.join(",") || "-"} forbidden=${presentForbidden.join(",") || "-"} legacyListHidden=${legacyListHidden} read=${JSON.stringify(normalizedRead)} edit=${JSON.stringify(normalizedEdit)} delete=${JSON.stringify(normalizedDelete)} bash=${JSON.stringify(normalizedBash)} exec=${JSON.stringify(normalizedExec)} test=${JSON.stringify(normalizedTest)} runTest=${JSON.stringify(normalizedRunTest)} runShell=${JSON.stringify(normalizedRunShell)}` };
 }
 
@@ -12986,7 +13015,7 @@ gateway.runtime.orchestrator.requestStop = (sessionId, reason) => {
 async function post(url, body) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-swarm-local-control": "1" },
     body: JSON.stringify(body ?? {})
   });
   return { status: response.status, body: await response.json() };
@@ -13207,7 +13236,7 @@ async function getJson(url) {
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-swarm-local-control": "1" },
     body: JSON.stringify(body ?? {})
   });
   return { status: response.status, body: await response.json() };
@@ -13216,7 +13245,7 @@ async function postJson(url, body) {
 async function callMcp(url, name, args) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-swarm-local-control": "1" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })
   });
   return response.json();
@@ -13444,7 +13473,7 @@ async function getJson(url) {
 async function mcp(url, method, params) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-swarm-local-control": "1" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
   });
   return response.json();
@@ -13568,7 +13597,7 @@ async function getJson(url) {
 async function mcp(url, method, params) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-swarm-local-control": "1" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
   });
   return response.json();

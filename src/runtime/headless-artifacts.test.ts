@@ -159,6 +159,54 @@ test("headless report and run_end stream preserve Review / Verification result-c
   assertFailedReviewCard(failedParsed.report.result?.result_card);
 });
 
+test("headless telemetry falls back to result-card prompt cache when usage events are absent", () => {
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Project prompt cache telemetry fallback",
+    workspace: WORKSPACE,
+    mode: "coding_loop",
+    permissionMode: "auto-edit",
+    sandboxMode: "workspace-write",
+    startedAt: STARTED_AT,
+    endedAt: ENDED_AT,
+    durationMs: 2_000,
+    capturedEvents: [],
+    result: {
+      session_id: "session-cache-fallback",
+      content: "Done",
+      status: "completed",
+      result_card: {
+        ...REVIEW_WARNING_RESULT_CARD,
+        sessionId: "session-cache-fallback",
+        cache: {
+          status: "stable",
+          cacheMode: "prefix-structured",
+          providerId: "deepseek",
+          model: "deepseek-v4-flash",
+          purpose: "worker_coding_loop",
+          promptCacheKey: "swarm:worker:stable:test",
+          cachedInputTokens: 5120,
+          totalInputWithCacheTokens: 9749,
+          cacheablePrefixTokensEstimate: 4184,
+          hitRate: 5120 / 9749,
+          diagnostics: "stable"
+        }
+      }
+    }
+  });
+
+  assert.equal(artifacts.telemetry.llm.calls, 1);
+  assert.deepEqual(artifacts.telemetry.llm.providers, ["deepseek"]);
+  assert.deepEqual(artifacts.telemetry.llm.models, ["deepseek-v4-flash"]);
+  assert.deepEqual(artifacts.telemetry.llm.purposes, ["worker_coding_loop"]);
+  assert.equal(artifacts.telemetry.llm.input_tokens, 9749);
+  assert.equal(artifacts.telemetry.llm.cached_input_tokens, 5120);
+  assert.equal(artifacts.telemetry.llm.total_input_with_cache_tokens, 9749);
+  assert.equal(artifacts.telemetry.llm.uncached_input_tokens, 4629);
+  assert.equal(artifacts.telemetry.llm.cacheable_prefix_estimate, 4184);
+  assert.equal(artifacts.telemetry.llm.cache_hit_rate, 5120 / 9749);
+  assert.deepEqual(artifacts.telemetry.llm.prompt_cache_diagnostics, { stable: 1 });
+});
+
 function assertPolicyMetadata(value: Record<string, unknown> | undefined): void {
   assert(value);
   assert.equal(value.sandbox_mode, "read-only");

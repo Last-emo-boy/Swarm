@@ -1565,7 +1565,7 @@ function codingLoopUserPrompt(input: {
     objective: input.objective,
     role: input.role,
     parent_session_id: input.parentSessionId,
-    durable_session_context: input.durableContext || undefined,
+    durable_session_context: input.durableContext ? `Durable session context:\n${input.durableContext}` : undefined,
     workspace_state: input.workspaceIndex ? renderDynamicWorkspaceStateForPrompt(input.workspaceIndex) : undefined,
     deferred_tool_catalog: input.deferredToolCatalog,
     swarm_runtime_state: input.role === "main" && input.delegateAvailable

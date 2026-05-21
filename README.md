@@ -428,8 +428,8 @@ paths are execution or automation entrypoints.
 | `/symphony [workflow_path]` | Inspect local Symphony scheduler/session status. |
 | `/symphony-run-once [workflow_path] [--max-turns N]` | Dispatch and execute one Symphony tick from the TUI. |
 
-By default `/help` opens the full catalog in a detail view, while `/help main`
-keeps the shorter summary. Slash completion still biases toward the main path
+By default `/help` opens the grouped slash-command catalog in a detail view,
+while `/help main` keeps the shorter summary. Slash completion still biases toward the main path
 until you type more of a command. Capability and extension surfaces also start
 with summaries; use `/capabilities all`, `/commands all`, `/skills all`,
 `/plugins all`, or `/mcp all` for the full advanced catalog.
@@ -508,14 +508,14 @@ visible instead of silently trusted.
 
 ### Layout
 
-When idle, the default TUI is the conversation surface with a pinned prompt.
+When idle, the TUI main pane acts as the Kernel operator surface while keeping
+the conversation and pinned prompt ready for the next objective.
 Use `/view` for focused Kernel panes such as Trace, Overview, Output, Sessions,
 Attempts, Activity, and Blackboard. Overview keeps the prompt surface quiet; the
 Activity pane summarizes workers, approvals, and background work without making
 agent internals the default view. The other panes expose the fuller local state
-when needed. The header and Kernel overview show the latest actual route
-selected by auto mode, such as `coding_loop` or `full_swarm`, with confidence
-and the router reason.
+when needed. The header and Kernel overview show the latest actual route selected by auto mode,
+such as `coding_loop` or `full_swarm`, with confidence and the router reason.
 
 The TUI creates a local Work Kernel session for the current chat state. Slash
 tool approvals and tool results are recorded against that session, so `/session`,

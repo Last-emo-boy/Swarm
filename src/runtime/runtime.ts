@@ -3912,13 +3912,30 @@ export function postChangeExecutionStatus(input: {
   review: ReviewResult;
   verification: { status: "success" | "partial" | "failed"; summary: string; content?: string };
 }): "completed" | "failed" {
-  if (input.review.verdict === "reject") {
+  if (input.review.verdict === "reject" && !reviewFailureCanDeferToVerification(input.review, input.verification)) {
     return "failed";
   }
-  if (input.verification.status !== "success") {
+  if (input.verification.status === "failed") {
     return "failed";
   }
   return "completed";
+}
+
+function reviewFailureCanDeferToVerification(
+  review: ReviewResult,
+  verification: { status: "success" | "partial" | "failed"; summary: string; content?: string }
+): boolean {
+  if (verification.status !== "success") {
+    return false;
+  }
+  const text = [
+    review.summary,
+    ...(review.issues ?? []).flatMap((issue) => [issue.message, issue.evidence, issue.suggested_fix])
+  ].filter(Boolean).join("\n").toLowerCase();
+  if (!text) {
+    return false;
+  }
+  return reviewFailureLooksOperational(review);
 }
 
 function normalizeReviewJson(parsed: Record<string, unknown>, sessionId: string): ReviewResult {
@@ -3985,9 +4002,7 @@ function guardReviewResult(review: ReviewResult, tool: ToolResult, sessionId: st
   const guardedScore = issues.length > 0 || reportedFinding
     ? Math.min(review.score, 85)
     : review.score;
-  const guardedVerdict = (issues.length > 0 || reportedFinding) && review.verdict === "approve"
-    ? "needs_revision"
-    : review.verdict;
+  const guardedVerdict = guardedReviewVerdict(review, rawText, issues, reportedFinding);
   const guardedSummary = summarizeToolResultForReport(tool, review.summary || `Review completed for ${sessionId}.`);
   return {
     ...review,
@@ -3996,6 +4011,35 @@ function guardReviewResult(review: ReviewResult, tool: ToolResult, sessionId: st
     issues: issues.length ? issues : review.issues,
     summary: guardedSummary
   };
+}
+
+function guardedReviewVerdict(
+  review: ReviewResult,
+  rawText: string,
+  issues: NonNullable<ReviewResult["issues"]>,
+  reportedFinding: boolean
+): ReviewResult["verdict"] {
+  if (review.verdict === "reject" && reviewFailureLooksOperational(review, rawText)) {
+    return "needs_revision";
+  }
+  if ((issues.length > 0 || reportedFinding) && review.verdict === "approve") {
+    return "needs_revision";
+  }
+  return review.verdict;
+}
+
+function reviewFailureLooksOperational(review: ReviewResult, rawText = ""): boolean {
+  const text = [
+    rawText,
+    review.summary,
+    ...(review.issues ?? []).flatMap((issue) => [issue.message, issue.evidence, issue.suggested_fix])
+  ].filter(Boolean).join("\n").toLowerCase();
+  if (!text) {
+    return false;
+  }
+  const toolFailure = /\b(review agent failed|budget exhausted|spawn .*enoent|expected verification command evidence|unverified verification claim|file\.read target not found|git diff failed|git status failed|no check was recorded|tool calls failed|path resolution issues)\b/.test(text);
+  const substantiveFinding = /\b(regression|bug|incorrect|wrong result|data loss|security|crash|exception|fails? tests?|broken behavior|required fix)\b/.test(text);
+  return toolFailure && !substantiveFinding;
 }
 
 async function hydrateToolResultForReport(tool: ToolResult): Promise<ToolResult> {

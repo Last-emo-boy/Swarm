@@ -514,6 +514,32 @@ function buildHeadlessTelemetry(input: {
       }
     }
   }
+  if (usageTotals.calls === 0) {
+    const cache = input.result?.result_card?.cache;
+    if (cache && (cache.providerId || cache.model || typeof cache.totalInputWithCacheTokens === "number" || typeof cache.cachedInputTokens === "number")) {
+      usageTotals.calls = 1;
+      if (cache.providerId) {
+        providerIds.add(cache.providerId);
+      }
+      if (cache.model) {
+        providerModels.add(cache.model);
+      }
+      if (cache.purpose) {
+        purposes.add(cache.purpose);
+      }
+      usageTotals.cachedInputTokens += cache.cachedInputTokens ?? 0;
+      usageTotals.cacheCreationInputTokens += cache.cacheCreationInputTokens ?? 0;
+      usageTotals.totalInputWithCacheTokens += cache.totalInputWithCacheTokens ?? 0;
+      usageTotals.inputTokens += cache.totalInputWithCacheTokens ?? 0;
+      usageTotals.uncachedInputTokens += typeof cache.totalInputWithCacheTokens === "number" && typeof cache.cachedInputTokens === "number"
+        ? Math.max(0, cache.totalInputWithCacheTokens - cache.cachedInputTokens)
+        : 0;
+      usageTotals.cacheablePrefixEstimate += cache.cacheablePrefixTokensEstimate ?? 0;
+      if (cache.status) {
+        promptCacheDiagnostics[cache.status] = (promptCacheDiagnostics[cache.status] ?? 0) + 1;
+      }
+    }
+  }
 
   const outcome = input.result?.outcome;
   const final = input.result ? {

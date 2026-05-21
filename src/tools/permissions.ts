@@ -344,7 +344,34 @@ function isInsidePath(path: string, root: string): boolean {
 }
 
 function resolveToolPath(path: string, workspace: string): string {
-  return isAbsolute(path) ? resolve(path) : resolve(workspace, path);
+  if (isAbsolute(path)) {
+    return resolve(path);
+  }
+  return resolve(workspace, trimRepeatedWorkspacePrefix(path, workspace));
+}
+
+function trimRepeatedWorkspacePrefix(path: string, workspace: string): string {
+  const normalizedPath = path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  const normalizedWorkspace = resolve(workspace).replace(/\\/g, "/");
+  const workspaceParts = normalizedWorkspace.split("/").filter(Boolean);
+  const pathParts = normalizedPath.split("/").filter(Boolean);
+
+  for (let start = 0; start < workspaceParts.length; start += 1) {
+    const suffix = workspaceParts.slice(start);
+    if (suffix.length < 2 || suffix.length > pathParts.length) {
+      continue;
+    }
+    if (suffix.every((part, index) => pathSegmentEquals(part, pathParts[index]))) {
+      return pathParts.slice(suffix.length).join("/") || ".";
+    }
+  }
+  return path;
+}
+
+function pathSegmentEquals(left: string, right: string): boolean {
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 function normalizePermissionMode(mode: SwarmSettings["permissions"]["defaultMode"]): PermissionMode {
