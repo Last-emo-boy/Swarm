@@ -26,6 +26,8 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
       return `${formatAgentPrefix(event.agent)}tool: ${event.action} [${event.status ?? "unknown"}] ${truncate(event.summary, 90)}${formatSandboxSuffix(event)}${event.recoverySuggestion ? ` recovery=${truncate(event.recoverySuggestion, 70)}` : ""}`;
     case "provider_usage":
       return `usage: ${event.usage.providerId}/${event.usage.model} ${event.usage.purpose}`;
+    case "tui_focus":
+      return `tui-focus: ${event.key_event} ${event.detail_reason} ${event.focus_before}->${event.focus_after} detail=${event.detail_before}->${event.detail_after} pane=${event.pane_before}->${event.pane_after} allowed=${event.allowed}`;
     case "progress":
       return `progress: ${event.completed}/${event.total}`;
     case "envelope":
@@ -53,6 +55,8 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
         `size=${event.size}`,
         event.message ? truncate(event.message, 90) : undefined
       ].filter(Boolean).join(" ");
+    case "budget":
+      return `budget: ${event.decision.action} ${event.decision.actor_id} pressure=${event.decision.pressure} scope=${event.decision.scope} ${truncate(event.decision.reason, 80)}`;
     case "worker":
       return `worker: ${formatWorkerBrief(event.worker)}${event.message ? ` - ${truncate(event.message, 70)}` : ""}`;
     case "agent_spawn_decision":
@@ -127,6 +131,9 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
       `size=${event.size}`,
       event.message
     ].filter(Boolean).join(" ");
+  }
+  if (event.type === "budget") {
+    return `budget: ${event.decision.action} actor=${event.decision.actor_id} pressure=${event.decision.pressure} scope=${event.decision.scope} reason=${event.decision.reason}`;
   }
   if (event.type === "review_completed") {
     return `review: ${event.result.verdict} ${event.result.score} - ${event.result.summary}`;

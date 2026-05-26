@@ -8,6 +8,7 @@ import type { ProviderUsageReport } from "../providers/openai-provider.js";
 import type { SandboxDecision } from "./sandbox-policy.js";
 import type { CheckpointSummary } from "./checkpoints.js";
 import type { RecoveryAdvice } from "./recovery.js";
+import type { BudgetDecision } from "./budget-governor.js";
 
 export type SessionOutcome = WorkSessionOutcome;
 
@@ -36,6 +37,7 @@ export type RuntimeEvent =
       session_id?: string;
       message?: string;
     }
+  | { type: "budget"; decision: BudgetDecision }
   | { type: "worker"; worker: WorkerRecord; status: WorkerStatus; message?: string }
   | { type: "agent_spawn_decision"; worker_id: string; parent_session_id: string; decision: AgentSpawnDecision; task_packet: AgentTaskPacket }
   | { type: "agent_run_started"; worker: WorkerRecord; task_packet: AgentTaskPacket }
@@ -52,6 +54,23 @@ export type RuntimeEvent =
   | { type: "verification_completed"; session_id: string; result: ToolResultSummary }
   | { type: "self_review"; summary: string; findings: string[]; recommendations: string[]; inspected: { logs: number; sessions: number; artifacts: number } }
   | { type: "eval_result"; name: string; status: "pass" | "fail"; message: string }
+  | {
+      type: "tui_focus";
+      key_event: "return" | "ctrl+o" | "escape" | "o" | "q" | "other";
+      focus_before: string;
+      focus_after: string;
+      detail_before: boolean;
+      detail_after: boolean;
+      detail_source?: "none" | "ai" | "command" | "task" | "event";
+      detail_reason: string;
+      allowed: boolean;
+      blocked_reason?: string;
+      pane_before: string;
+      pane_after: string;
+      route?: string;
+      session_id?: string;
+      action_id?: string;
+    }
   | { type: "agent"; card: AgentCard }
   | { type: "envelope"; envelope: SwarmEnvelope }
   | { type: "plan"; session_id: string; plan: GeneratedPlan }
@@ -79,7 +98,7 @@ export type RuntimeEvent =
     }
   | { type: "final"; session_id: string; content: string; artifact_path?: string; outcome?: SessionOutcome; status?: "completed" | "failed" | "stopped"; checkpoint?: CheckpointSummary }
   | { type: "error"; message: string }
-  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; recovery?: RecoveryAdvice; write_policy?: "read_only" | "scoped_write" | "workspace_write"; file_scope?: string[]; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass }; sandbox?: SandboxDecision; agent?: RuntimeAgentIdentity }
+  | { type: "tool_result"; session_id?: string; task_id: string; title: string; action: string; summary: string; content?: string; status?: "success" | "partial" | "failed"; outputRef?: string; attempt?: number; errorCode?: string; recoverySuggestion?: string; recovery?: RecoveryAdvice; metadata?: Record<string, unknown>; write_policy?: "read_only" | "scoped_write" | "workspace_write"; file_scope?: string[]; capability?: { id: string; providerId: string; permissionName: string; riskClass: RiskClass }; sandbox?: SandboxDecision; agent?: RuntimeAgentIdentity }
   | { type: "provider_usage"; usage: ProviderUsageReport }
   | { type: "progress"; completed: number; total: number };
 

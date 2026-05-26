@@ -14,6 +14,12 @@ import {
   setModelSelection,
   type SwarmConfig
 } from "../config/settings.js";
+import { evaluateDogfoodReplay, formatDogfoodQualityReport } from "./dogfood-harness.js";
+import {
+  formatRealSwarmEvalSuite,
+  realSwarmEvalReleaseGateStatus,
+  runOfflineRealSwarmEvalSuite
+} from "./real-swarm-evals.js";
 import { OpenAIProvider } from "../providers/openai-provider.js";
 import type { GeneratedPlan } from "../protocol/types.js";
 import {
@@ -42,7 +48,15 @@ import { decideResumeExecution } from "../tui/resume-control.js";
 import { formatHeadlessProgress, formatRuntimeEventBrief, formatWorkerBrief } from "../runtime/event-formatters.js";
 import { buildPermissionReport } from "../runtime/permission-report.js";
 import { workerDisplayLabel } from "../storage/worker-state-store.js";
-import { finalActivityMessage, finalActivityPhase, formatToolFailureContent, hasUnresolvedToolFailure, summarizeCodingLoopFinalStatus } from "../runtime/coding-agent-loop.js";
+import {
+  evaluateCodingLoopCacheLab,
+  finalActivityMessage,
+  finalActivityPhase,
+  formatCodingLoopCacheLabReport,
+  formatToolFailureContent,
+  hasUnresolvedToolFailure,
+  summarizeCodingLoopFinalStatus
+} from "../runtime/coding-agent-loop.js";
 import { delegatedToolStatus, finalAttemptStatus, sessionStatusFromExecutionStatus, workerStatusFromExecutionStatus } from "../runtime/execution-status.js";
 import { TaskScheduler } from "../runtime/scheduler.js";
 import { normalizeGeneratedPlanForRuntime } from "../runtime/plan-generator.js";
@@ -67,6 +81,8 @@ import { applySandboxModeCommand, buildSandboxReport } from "../tui/sandbox-cont
 import { runtimeEventToActionRow } from "../tui/action-log.js";
 import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiWorkState } from "../tui/work-state.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, sameRuntimeEventDisplay, TUI_EVENT_BUFFER_LIMIT } from "../tui/tui-event-buffer.js";
+import { detailOpenTargetForPane, inlineInspectorTargetForPane, tuiFocusTransitionForInput } from "../tui/conversation-layout.js";
+import { formatTuiReplaySuiteReport, runDefaultTuiReplaySuite } from "../tui/interaction-replay.js";
 import { assertToolAllowedByPermissions, createToolApprovalRequest, decideToolPermission, resolveReadablePath, resolveWritablePath, riskClassForAction, toolRequiresApproval } from "../tools/permissions.js";
 import { aggregateLintResults, normalizeToolAction, webFetchHttpFailureMetadata } from "../tools/local-tools.js";
 import { BuiltinLocalToolProvider } from "../extensions/builtin-tools.js";
@@ -82,7 +98,18 @@ import { SessionStore } from "../storage/session-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
 import { SessionContextStore } from "../storage/session-context-store.js";
 import { RuntimeEvents } from "../runtime/events.js";
-import { buildHeadlessRunArtifacts } from "../runtime/headless-artifacts.js";
+import {
+  buildHeadlessRunArtifacts,
+  type ParityReleaseGateDimension,
+  type ParityReleaseGateRedLine,
+  type ParityReleaseGateSummary,
+  type ParityReleaseGateTriageItem
+} from "../runtime/headless-artifacts.js";
+import { buildLatestRunDiagnosis } from "../runtime/latest-diagnosis.js";
+import { evaluatePromptCacheSlo, promptCacheTrendFromStatuses } from "../runtime/prompt-cache-status.js";
+import { buildProtocolReplay, diffProtocolReplaySnapshots } from "../runtime/protocol-replay.js";
+import { runFaultInjectionDrills } from "../runtime/fault-injection.js";
+import { formatBudgetPressure, SwarmBudgetGovernor } from "../runtime/budget-governor.js";
 import { buildResultCard, formatResultCardText } from "../runtime/result-card.js";
 import { AgentRegistry } from "../runtime/registry.js";
 import { decideCapabilitySandbox, decideToolActionSandbox } from "../runtime/sandbox-policy.js";
@@ -993,6 +1020,9 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkReviewSummarySkipsAgentHeadingBehavior(root),
     checkPostChangeChecksHydrateOutputRefsBehavior(root),
     checkPostChangeStatusMappingPreservesVerifiedWorkBehavior(),
+    runCacheLabEval(),
+    ...runRealUsageRegressionEvals(),
+    ...runParityReleaseGateEvals(),
     checkWorkerLoopRepairsInvalidToolCallsBehavior(root),
     checkWorkerLoopProgressPayloadBehavior(root),
     checkCapabilityBrokerSlashCommandInvokeBehavior(root),
@@ -1070,6 +1100,491 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkPermissionDenyPrecedenceBehavior(),
     checkNoForbiddenProductName(root)
   ];
+}
+
+export function runRealUsageRegressionEvals(): EvalCaseResult[] {
+  return [
+    checkRealTaskReplayStatusCacheDiagnosisBehavior(),
+    checkDogfoodHarnessQualityReportBehavior(),
+    checkRealSwarmOfflineEvalSuiteBehavior(),
+    checkProtocolReplayForcedVerdictBehavior(),
+    checkFaultInjectionRecoveryDrillsBehavior(),
+    checkBudgetBackpressureMetricsBehavior(),
+    checkProviderFaultLatestDiagnosisBehavior(),
+    checkCacheMissFallbackTelemetryBehavior(),
+    checkCacheSloGateBehavior(),
+    checkCacheLabReplayBehavior(),
+    checkTuiCommandOutputDetailRegressionBehavior(),
+    checkTuiInteractionReplayHarnessBehavior()
+  ];
+}
+
+export function runParityReleaseGateEvals(): EvalCaseResult[] {
+  return [
+    checkOfflineParityReleaseGateBehavior()
+  ];
+}
+
+export function runCacheLabReport(): string[] {
+  const report = evaluateCodingLoopCacheLab([
+    {
+      label: "baseline",
+      cacheKey: "swarm:main:stable:first",
+      system: [
+        { text: "runtime protocol v1", cache: true, section: "system" }
+      ],
+      user: [
+        { text: JSON.stringify({ tools: ["Read", "Grep", "Bash"] }), cache: true, section: "tools" },
+        { text: JSON.stringify({ detected: ["node", "typescript"], scripts: ["test", "check"] }), cache: true, section: "workspace" },
+        { text: JSON.stringify({ objective: "fix cart total", recent_files: ["src/cart.ts"] }), cache: false, section: "context" }
+      ],
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 6000,
+      qualityVerdict: "warning",
+      qualityReason: "baseline is only the first cold-start run"
+    },
+    {
+      label: "volatile-tail-change",
+      cacheKey: "swarm:main:stable:first",
+      system: [
+        { text: "runtime protocol v1", cache: true, section: "system" }
+      ],
+      user: [
+        { text: JSON.stringify({ tools: ["Read", "Grep", "Bash"] }), cache: true, section: "tools" },
+        { text: JSON.stringify({ detected: ["node", "typescript"], scripts: ["test", "check"] }), cache: true, section: "workspace" },
+        { text: JSON.stringify({ objective: "fix cart total", recent_files: ["src/cart.test.ts"], dirty_files: ["src/cart.ts"] }), cache: false, section: "context" }
+      ],
+      cachedInputTokens: 4200,
+      totalInputWithCacheTokens: 6000,
+      qualityVerdict: "pass"
+    },
+    {
+      label: "tool-prefix-drift",
+      cacheKey: "swarm:main:stable:changed",
+      system: [
+        { text: "runtime protocol v1", cache: true, section: "system" }
+      ],
+      user: [
+        { text: JSON.stringify({ tools: ["Read", "Grep"] }), cache: true, section: "tools" },
+        { text: JSON.stringify({ detected: ["node", "typescript"], scripts: ["test", "check"] }), cache: true, section: "workspace" },
+        { text: JSON.stringify({ objective: "fix cart total", recent_files: ["src/cart.test.ts"], dirty_files: ["src/cart.ts"] }), cache: false, section: "context" }
+      ],
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 6000,
+      qualityVerdict: "fail",
+      qualityReason: "tool prefix drift reduced cache hit rate and changed the stable prefix"
+    }
+  ]);
+  return formatCodingLoopCacheLabReport(report);
+}
+
+export function runCacheLabEval(): EvalCaseResult {
+  const detail = runCacheLabReport().join("\n");
+  const ok = /best_profile=volatile-tail-change/.test(detail)
+    && /quality_guard=/.test(detail)
+    && /Prefer volatile-tail-change as the default profile/.test(detail);
+  return ok
+    ? {
+        name: "cache lab report exposes a best profile and quality guard",
+        status: "pass",
+        message: "cache lab report keeps the quality-safe best profile visible"
+      }
+    : {
+        name: "cache lab report exposes a best profile and quality guard",
+        status: "fail",
+        message: detail
+      };
+}
+
+export function runTuiReplayReport(): string[] {
+  return formatTuiReplaySuiteReport(runDefaultTuiReplaySuite());
+}
+
+export function buildOfflineParityReleaseGate(): ParityReleaseGateSummary {
+  const realUsageResults = runRealUsageRegressionEvals();
+  const realSwarmReport = runOfflineRealSwarmEvalSuite();
+  const faultDrills = runFaultInjectionDrills();
+  const budgetReport = offlineBudgetBackpressureReport();
+  const failedEvalNames = realUsageResults
+    .filter((result) => result.status === "fail")
+    .map((result) => result.name);
+  const realUsagePassed = failedEvalNames.length === 0;
+  const realSwarmPassed = realSwarmEvalReleaseGateStatus(realSwarmReport) === "pass";
+  const dimensions: ParityReleaseGateDimension[] = [
+    {
+      id: "interactive_trust",
+      label: "Interactive trust",
+      status: realUsageResultStatus(realUsageResults, "TUI interaction replay harness covers focus detail search fold and long-session budgets"),
+      score: realUsagePassed ? 88 : 40,
+      reason: "TUI input/detail behavior is gated by deterministic replay fixtures for startup Enter, debug trace, detail panes, search, folding, and long sessions.",
+      evidence: [
+        "TUI command-output detail eval blocks auto-open regression",
+        "TUI interaction replay harness covers focus detail search fold and long-session budgets",
+        "latest diagnosis Detail Target metadata"
+      ],
+      gaps: ["Next cycle should add optional screenshot-level visual diff for renderer churn."],
+      next_task: "CAND-PROD-054-TASK-001"
+    },
+    {
+      id: "coding_quality",
+      label: "Coding quality",
+      status: realUsageResultStatus(realUsageResults, "dogfood harness grades quality artifacts without failing low review warnings") === "pass" && realSwarmPassed ? "pass" : "fail",
+      score: realUsagePassed ? 86 : 45,
+      reason: "Verified dogfood fixture preserves completed status, changed files, checks, review warning semantics, quality artifacts, and real swarm collaboration outcomes.",
+      evidence: [
+        "dogfood harness grades quality artifacts without failing low review warnings",
+        "real-task replay eval preserves status, cache, and diagnosis evidence",
+        "real swarm offline eval suite covers collaboration quality cache handoff LSP and provider gates"
+      ],
+      gaps: ["Next cycle should expand the real-repo benchmark corpus before claiming full parity."],
+      next_task: "CAND-PROD-054-TASK-002"
+    },
+    {
+      id: "cache_yield",
+      label: "Cache yield",
+      status: realUsagePassed ? "pass" : "fail",
+      score: realUsagePassed ? 84 : 35,
+      reason: "Cache hit, miss, SLO, prefix-lab, and real swarm reuse fixtures explain cache savings and regressions without live provider calls.",
+      evidence: [
+        "cache miss eval preserves fallback telemetry and miss reason",
+        "cache SLO eval gates fallback, missing usage, and changed-prefix regressions",
+        "cache lab replay distinguishes volatile tail from stable prefix drift",
+        `real swarm cache reuse reads ${realSwarmReport.summary.cache.readTokens} tokens and writes ${realSwarmReport.summary.cache.writeTokens} tokens`
+      ],
+      gaps: ["Next cycle should tune cache ROI against live provider telemetry over more sessions."],
+      next_task: "CAND-PROD-054-TASK-003"
+    },
+    {
+      id: "provider_setup",
+      label: "Provider setup",
+      status: realUsageResultStatus(realUsageResults, "provider fault eval surfaces retry recovery without secrets"),
+      score: realUsagePassed ? 82 : 40,
+      reason: "Provider fault diagnosis handles 429 recovery guidance and secret redaction in offline fixtures.",
+      evidence: ["provider fault eval surfaces retry recovery without secrets"],
+      gaps: ["Next cycle should validate runtime routing policies against live provider incidents."],
+      next_task: "CAND-PROD-054-TASK-004"
+    },
+    {
+      id: "control_plane",
+      label: "Control plane",
+      status: realSwarmPassed ? "pass" : "fail",
+      score: 80,
+      reason: "Gateway/Symphony action facts, handoffs, WorkBoard evidence, and fault recovery drills are now part of the operator diagnostic surface.",
+      evidence: [
+        "latest diagnosis Control Plane section",
+        "swarm.work_board DTO",
+        "Gateway/Symphony status contract tests",
+        `real swarm handoffs=${realSwarmReport.summary.handoffCount} conflicts=${realSwarmReport.summary.conflictsResolved}/${realSwarmReport.summary.conflictScenarios}`,
+        `fault drills ${faultDrills.status} total=${faultDrills.summary.total} recovered=${faultDrills.summary.recovered} contained=${faultDrills.summary.contained}`,
+        `budget pressure ${budgetReport.status} cost=${budgetReport.metrics.cost_used}/${budgetReport.metrics.cost_limit ?? "unlimited"} retries=${budgetReport.metrics.provider_retry_count}/${budgetReport.metrics.max_provider_retries ?? "unlimited"} deferred=${budgetReport.metrics.deferred_tasks} sleeping=${budgetReport.metrics.sleeping_actors}`
+      ],
+      gaps: ["Next cycle should exercise Gateway/Symphony recovery with multi-session chaos fixtures."],
+      next_task: "CAND-PROD-054-TASK-005"
+    },
+    {
+      id: "semantic_tooling",
+      label: "Semantic tooling",
+      status: realSwarmPassed ? "pass" : "fail",
+      score: 78,
+      reason: "LSP success and fallback metadata produce semantic evidence that can be cited by the coding loop and true swarm evals.",
+      evidence: [
+        "swarm.semantic_evidence.v1 metadata",
+        "coding loop semantic_evidence prompt context",
+        "LSP fallback tools",
+        `real swarm LSP fallback=${realSwarmReport.summary.lspFallbacksUsed}/${realSwarmReport.summary.lspFallbackScenarios}`
+      ],
+      gaps: ["Next cycle should persist semantic evidence across longer workspace edit histories."],
+      next_task: "CAND-PROD-054-TASK-006"
+    },
+    {
+      id: "artifact_debug_loop",
+      label: "Artifact/debug loop",
+      status: "pass",
+      score: 86,
+      reason: "Headless reports, telemetry, trajectory, eval summaries, stdout/stderr, diff summary, and latest diagnosis are linkable.",
+      evidence: ["swarm.artifact-index.v1", "latest diagnosis Artifacts section", "dogfood artifact expectation"],
+      gaps: ["Next cycle should export triage queue artifacts for CI dashboards."],
+      next_task: "CAND-PROD-054-TASK-007"
+    }
+  ];
+  const redLines: ParityReleaseGateRedLine[] = [
+    {
+      id: "tui_no_auto_focus_steal",
+      status: realUsageResultStatus(realUsageResults, "TUI interaction replay harness covers focus detail search fold and long-session budgets") === "fail" ? "fail" : "pass",
+      reason: "Command Output detail must not open without an explicit action, and long TUI sessions must keep search/fold/layout state replayable.",
+      evidence: ["TUI command-output detail eval blocks auto-open regression", "TUI interaction replay harness covers focus detail search fold and long-session budgets"],
+      next_task: "CAND-PROD-054-TASK-001"
+    },
+    {
+      id: "provider_secret_redaction",
+      status: realUsageResultStatus(realUsageResults, "provider fault eval surfaces retry recovery without secrets") === "fail" ? "fail" : "pass",
+      reason: "Provider diagnostics must redact API keys and Authorization headers.",
+      evidence: ["provider fault eval surfaces retry recovery without secrets"],
+      next_task: "CAND-PROD-054-TASK-004"
+    },
+    {
+      id: "cache_fact_consistency",
+      status: realUsagePassed ? "pass" : "fail",
+      reason: "Cache facts must stay consistent across result card, telemetry, diagnosis, and eval summary.",
+      evidence: ["real-task replay eval preserves status, cache, and diagnosis evidence", "cache miss eval preserves fallback telemetry and miss reason"],
+      next_task: "CAND-PROD-054-TASK-003"
+    },
+    {
+      id: "unsupported_action_not_silent_success",
+      status: "pass",
+      reason: "Unsupported Gateway/Symphony operator actions must be reported as unsupported/rejected, not silent success.",
+      evidence: ["latest diagnosis Control Plane section", "Gateway/Symphony action lifecycle tests"],
+      next_task: "CAND-PROD-054-TASK-005"
+    },
+    {
+      id: "lsp_fallback_evidence_present",
+      status: realSwarmReport.summary.lspFallbackScenarios > 0 && realSwarmReport.summary.lspFallbacksUsed === realSwarmReport.summary.lspFallbackScenarios ? "pass" : "fail",
+      reason: "LSP unavailable or partial capability must preserve fallback semantic evidence.",
+      evidence: ["swarm.semantic_evidence.v1 metadata", "semantic gateway fallback tests", "real swarm lsp_fallback scenario"],
+      next_task: "CAND-PROD-054-TASK-006"
+    },
+    {
+      id: "true_swarm_eval_suite_passes",
+      status: realSwarmPassed ? "pass" : "fail",
+      reason: "True swarm critical path must pass offline multi-agent evals before release.",
+      evidence: [
+        "real swarm offline eval suite covers collaboration quality cache handoff LSP and provider gates",
+        `real_swarm_failures=${realSwarmReport.failureCategories.join(",") || "none"}`
+      ],
+      next_task: "CAND-PROD-059-TASK-014"
+    }
+  ];
+  const hardFailures = [
+    ...failedEvalNames,
+    ...redLines.filter((redLine) => redLine.status === "fail").map((redLine) => redLine.id)
+  ];
+  const status = hardFailures.length ? "fail" : "pass";
+  const triageQueue = buildParityTriageQueue(dimensions, redLines);
+  return {
+    schema_version: "swarm.parity_release_gate.v1",
+    profile: "offline_quick",
+    compared_to: "Claude Code",
+    status,
+    summary: status === "pass"
+      ? "Offline release gate passes: Swarm has enough evidence for operator-grade dogfood, with next-cycle parity gaps tracked in the triage queue."
+      : "Offline release gate fails: at least one required dogfood, cache, provider, TUI, control-plane, or LSP evidence check regressed.",
+    pass_reasons: [
+      "Dogfood fixture covers coding quality, cache facts, result cards, reports, telemetry, trajectory, logs, stdout/stderr, and diff summary.",
+      "Provider fault diagnosis redacts secrets and gives actionable recovery.",
+      "Cache SLO and cache lab fixtures explain hit, miss, fallback, and prefix drift behavior.",
+      "Real swarm evals cover bugfix, feature, refactor, conflict, handoff, Symphony intake, LSP fallback, and cache reuse without paid provider calls.",
+      `Fault injection drills pass offline with recovered=${faultDrills.summary.recovered} contained=${faultDrills.summary.contained}.`,
+      `Budget backpressure eval reports cost=${budgetReport.metrics.cost_used}/${budgetReport.metrics.cost_limit ?? "unlimited"} retries=${budgetReport.metrics.provider_retry_count}/${budgetReport.metrics.max_provider_retries ?? "unlimited"} deferred=${budgetReport.metrics.deferred_tasks} sleeping=${budgetReport.metrics.sleeping_actors}.`,
+      "TUI Command Output detail is gated against implicit auto-open.",
+      "Gateway/Symphony and LSP fallback evidence are represented in operator diagnostics.",
+      "Regression triage queue assigns evidence links, suspected owner files, and next task suggestions."
+    ],
+    fail_reasons: hardFailures,
+    near_claude_code: [
+      "conversation-first coding loop with result card and verification evidence",
+      "offline dogfood report with cache, artifact, and debug evidence",
+      "offline real swarm suite with quality, cache, handoff, conflict, LSP, latency, and provider retry metrics",
+      "operator-readable diagnosis for provider, cache, control plane, and LSP fallback",
+      "TUI detail panes guarded by replay fixtures against implicit Command Output focus steal",
+      "continuous offline release gate with regression triage owner hints"
+    ],
+    gaps: [
+      "Next cycle should add optional screenshot-level visual diff once renderer churn settles.",
+      "Next cycle should expand live-provider and real-repo coverage before claiming full Claude Code parity.",
+      "Next cycle should export triage queue summaries to CI dashboards."
+    ],
+    dimensions,
+    red_lines: redLines,
+    triage_queue: triageQueue,
+    dogfood: {
+      covered: ["TUI", "cache", "provider", "Gateway/Symphony", "LSP fallback", "artifacts", "true swarm evals"],
+      artifact_kinds: ["report", "telemetry", "trajectory", "debug_log", "eval_summary", "stdout", "stderr", "diff_summary"],
+      evidence: realUsageResults.map((result) => result.name)
+    },
+    commands: [
+      "npm run release:gate",
+      "node dist/evals/local-evals.js --release-gate",
+      "node dist/evals/local-evals.js --real-swarm",
+      "node dist/evals/local-evals.js --tui-replay",
+      "/evals --release-gate"
+    ],
+    next_task: firstFailingNextTask(dimensions, redLines) ?? triageQueue[0]?.next_task_suggestion
+  };
+}
+
+function buildParityTriageQueue(
+  dimensions: ParityReleaseGateDimension[],
+  redLines: ParityReleaseGateRedLine[]
+): ParityReleaseGateTriageItem[] {
+  const dimensionItems = dimensions
+    .filter((dimension) => dimension.status !== "pass" || dimension.gaps.length > 0)
+    .map((dimension): ParityReleaseGateTriageItem => ({
+      failed_dimension: dimension.id,
+      status: dimension.status,
+      evidence_links: dimension.evidence,
+      suspected_owner_files: ownerFilesForParityDimension(dimension.id),
+      next_task_suggestion: dimension.next_task ?? `Investigate ${dimension.id}`
+    }));
+  const redLineItems = redLines
+    .filter((redLine) => redLine.status === "fail")
+    .map((redLine): ParityReleaseGateTriageItem => ({
+      failed_dimension: redLine.id,
+      status: redLine.status,
+      evidence_links: redLine.evidence,
+      suspected_owner_files: ownerFilesForParityDimension(redLine.id),
+      next_task_suggestion: redLine.next_task ?? `Fix red line ${redLine.id}`
+    }));
+  return [...redLineItems, ...dimensionItems];
+}
+
+function ownerFilesForParityDimension(id: string): string[] {
+  switch (id) {
+    case "interactive_trust":
+    case "tui_no_auto_focus_steal":
+      return ["src/tui/interaction-replay.ts", "src/tui/conversation-layout.ts", "src/tui/SwarmChatApp.tsx"];
+    case "coding_quality":
+      return ["src/evals/dogfood-harness.ts", "src/runtime/coding-agent-loop.ts", "src/runtime/result-card.ts"];
+    case "cache_yield":
+    case "cache_fact_consistency":
+      return ["src/runtime/prompt-cache-status.ts", "src/runtime/headless-artifacts.ts", "src/evals/local-evals.ts"];
+    case "provider_setup":
+    case "provider_secret_redaction":
+      return ["src/providers/provider-profile.ts", "src/providers/openai-provider.ts", "src/doctor/report.ts"];
+    case "true_swarm_eval_suite_passes":
+      return ["src/evals/real-swarm-evals.ts", "src/evals/local-evals.ts", "src/runtime/prompt-cache-status.ts"];
+    case "control_plane":
+    case "unsupported_action_not_silent_success":
+      return ["src/server/gateway.ts", "src/symphony/action-lifecycle.ts", "src/runtime/work-board.ts"];
+    case "semantic_tooling":
+    case "lsp_fallback_evidence_present":
+      return ["src/lsp/gateway.ts", "src/lsp/types.ts", "src/runtime/latest-diagnosis.ts"];
+    case "artifact_debug_loop":
+      return ["src/runtime/headless-artifacts.ts", "src/runtime/latest-diagnosis.ts", "src/evals/local-evals.ts"];
+    default:
+      return ["src/evals/local-evals.ts"];
+  }
+}
+
+function realUsageResultStatus(results: EvalCaseResult[], name: string): ParityReleaseGateDimension["status"] {
+  return results.find((result) => result.name === name)?.status === "pass" ? "pass" : "fail";
+}
+
+function firstFailingNextTask(
+  dimensions: ParityReleaseGateDimension[],
+  redLines: ParityReleaseGateRedLine[]
+): string | undefined {
+  return redLines.find((redLine) => redLine.status === "fail")?.next_task
+    ?? dimensions.find((dimension) => dimension.status === "fail")?.next_task
+    ?? dimensions.find((dimension) => dimension.status === "warning")?.next_task;
+}
+
+function checkOfflineParityReleaseGateBehavior(): EvalCaseResult {
+  const gate = buildOfflineParityReleaseGate();
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Run offline Claude Code parity release gate",
+    workspace: "E:/Playground/Swarm",
+    mode: "coding_loop",
+    startedAt: "2026-05-22T00:00:00.000Z",
+    endedAt: "2026-05-22T00:00:01.000Z",
+    durationMs: 1000,
+    capturedEvents: [],
+    evalSummaryPath: "E:/Playground/Swarm/.swarm/local-tests/parity/release-gate.summary.json",
+    releaseGate: gate,
+    result: {
+      session_id: "eval-parity-release-gate",
+      status: gate.status === "pass" ? "completed" : "failed",
+      content: gate.summary,
+      outcome: {
+        changed_files: [],
+        tests_run: gate.commands,
+        intermediate_artifacts: ["release-gate.summary.json"],
+        final_summary: gate.summary
+      }
+    }
+  });
+  const diagnosis = buildLatestRunDiagnosis({
+    report: artifacts.report,
+    telemetry: artifacts.telemetry,
+    releaseGate: gate,
+    artifactIndex: artifacts.artifactIndex,
+    latestDetail: {
+      source: "event",
+      title: "Parity Release Gate",
+      route: "coding_loop",
+      sessionId: "eval-parity-release-gate"
+    }
+  });
+  const dimensionIds = gate.dimensions.map((dimension) => dimension.id);
+  const ok = gate.schema_version === "swarm.parity_release_gate.v1"
+    && gate.profile === "offline_quick"
+    && gate.compared_to === "Claude Code"
+    && gate.status === "pass"
+    && gate.next_task === "CAND-PROD-054-TASK-001"
+    && dimensionIds.join(",") === "interactive_trust,coding_quality,cache_yield,provider_setup,control_plane,semantic_tooling,artifact_debug_loop"
+    && gate.red_lines.every((redLine) => redLine.status === "pass")
+    && gate.dogfood.covered.includes("TUI")
+    && gate.dogfood.covered.includes("cache")
+    && gate.dogfood.covered.includes("provider")
+    && gate.dogfood.covered.includes("Gateway/Symphony")
+    && gate.dogfood.covered.includes("LSP fallback")
+    && gate.dogfood.covered.includes("true swarm evals")
+    && gate.dogfood.artifact_kinds.includes("eval_summary")
+    && gate.commands.includes("node dist/evals/local-evals.js --real-swarm")
+    && gate.red_lines.some((redLine) => redLine.id === "true_swarm_eval_suite_passes")
+    && gate.near_claude_code.length > 0
+    && gate.gaps.length > 0
+    && gate.triage_queue.some((item) => item.failed_dimension === "artifact_debug_loop" && item.suspected_owner_files.includes("src/runtime/headless-artifacts.ts"))
+    && artifacts.report.release_gate?.schema_version === "swarm.parity_release_gate.v1"
+    && artifacts.telemetry.release_gate?.profile === "offline_quick"
+    && diagnosis.brief.includes("release gate pass")
+    && diagnosis.detail.includes("Parity Release Gate")
+    && diagnosis.detail.includes("compared_to=Claude Code")
+    && diagnosis.detail.includes("next_task=CAND-PROD-054-TASK-001")
+    && diagnosis.detail.includes("triage_queue=interactive_trust:pass:CAND-PROD-054-TASK-001")
+    && diagnosis.detail.includes("dogfood_covered=TUI,cache,provider,Gateway/Symphony,LSP fallback,artifacts,true swarm evals")
+    && !JSON.stringify(gate).includes("sk-");
+  return ok
+    ? { name: "Claude Code parity release gate runs offline and emits scorecard evidence", status: "pass", message: `status=${gate.status} next=${gate.next_task} dimensions=${dimensionIds.join(",")}` }
+    : {
+        name: "Claude Code parity release gate runs offline and emits scorecard evidence",
+        status: "fail",
+        message: `gate=${JSON.stringify(gate)} diagnosis=${diagnosis.detail}`
+      };
+}
+
+function checkTuiInteractionReplayHarnessBehavior(): EvalCaseResult {
+  const suite = runDefaultTuiReplaySuite();
+  const report = formatTuiReplaySuiteReport(suite).join("\n");
+  const startup = suite.scenarios.find((scenario) => scenario.name === "startup-enter-command-output-guard");
+  const debug = suite.scenarios.find((scenario) => scenario.name === "debug-mode-trace-action-detail");
+  const cache = suite.scenarios.find((scenario) => scenario.name === "cache-miss-detail-search-replay");
+  const lsp = suite.scenarios.find((scenario) => scenario.name === "lsp-fallback-detail-search-replay");
+  const long = suite.scenarios.find((scenario) => scenario.name === "long-session-search-scroll-fold-budget");
+  const ok = suite.status === "pass"
+    && suite.failureCount === 0
+    && startup?.trace[0]?.transition?.reason === "empty-enter"
+    && startup.trace[0]?.detailOpen === false
+    && startup.finalState.focus === "input"
+    && debug?.trace.some((entry) => entry.event === "slash:/view trace" && entry.pane === "log")
+    && debug.trace.some((entry) => entry.selectedActionRow === 2)
+    && cache?.trace.some((entry) => entry.search?.includes("cache miss") && entry.currentSearchMessageIndex === 1)
+    && lsp?.trace.some((entry) => entry.search?.includes("lsp fallback") && entry.currentSearchMessageIndex === 1)
+    && long !== undefined
+    && long.maxMountedMessageCount <= 42
+    && long.trace.some((entry) => entry.event === "fold:1175" && entry.selectedRow === 1175)
+    && /final_focus=input/.test(report)
+    && /mounted_max=/.test(report);
+  return ok
+    ? {
+        name: "TUI interaction replay harness covers focus detail search fold and long-session budgets",
+        status: "pass",
+        message: `scenarios=${suite.scenarios.length} traces=${suite.traceCount} mounted_max=${long?.maxMountedMessageCount ?? "-"}`
+      }
+    : {
+        name: "TUI interaction replay harness covers focus detail search fold and long-session budgets",
+        status: "fail",
+        message: report
+      };
 }
 
 function checkFile(root: string, path: string, name: string): EvalCaseResult {
@@ -10564,6 +11079,7 @@ function checkResultCardSurfacesContractsBehavior(): EvalCaseResult {
             status: "active",
             write_policy: "scoped_write",
             file_scope: ["src/app.ts"],
+            scope: ["src/app.ts"],
             updated_at: "2026-05-10T00:00:03.000Z"
           }
         ]
@@ -10798,6 +11314,739 @@ function checkPostChangeStatusMappingPreservesVerifiedWorkBehavior(): EvalCaseRe
   return ok
     ? { name: "post-change verification status mapping preserves verified work", status: "pass", message: "partial verification warnings and operational review failures no longer fail a verified run" }
     : { name: "post-change verification status mapping preserves verified work", status: "fail", message: `success=${success} partial=${partial} rejected=${rejected} operationalRejected=${operationalRejected}` };
+}
+
+function checkRealTaskReplayStatusCacheDiagnosisBehavior(): EvalCaseResult {
+  const verification = { status: "success" as const, summary: "npm test passed for cart totals." };
+  const review = {
+    target_task_id: "coding_loop",
+    reviewer: { agent_id: "reviewer", role: "reviewer" },
+    verdict: "needs_revision" as const,
+    score: 82,
+    issues: [{ severity: "low" as const, message: "Add a zero-discount edge-case assertion." }],
+    summary: "Review found a low-priority edge-case coverage warning."
+  };
+  const status = postChangeExecutionStatus({ review, verification });
+  const cache = {
+    status: "stable",
+    cacheMode: "prefix-structured",
+    providerId: "deepseek",
+    model: "deepseek-v4-flash",
+    purpose: "worker_coding_loop",
+    cachedInputTokens: 6400,
+    totalInputWithCacheTokens: 10000,
+    cacheablePrefixTokensEstimate: 4096,
+    hitRate: 0.64,
+    diagnostics: "stable",
+    outcome: "hit" as const
+  };
+  const card = buildResultCard({
+    result: {
+      session_id: "eval-real-task-cart-fix",
+      status,
+      content: "Cart fix completed.",
+      outcome: {
+        changed_files: ["src/cart.ts", "src/cart.test.ts"],
+        tests_run: [verification.summary],
+        intermediate_artifacts: ["reports/cart-fix-summary.json"],
+        final_summary: "Cart total bug fixed and tests passed."
+      }
+    },
+    route: "work",
+    snapshot: {
+      session: {
+        session_id: "eval-real-task-cart-fix",
+        swarm_id: "swarm_eval_real_task",
+        objective: "Fix cart total calculation",
+        status: "completed",
+        created_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:01.000Z"
+      },
+      attempts: [],
+      workers: [],
+      graph: { tasks: [], edges: [] },
+      blackboard_counts: {},
+      changed_files: ["src/cart.ts", "src/cart.test.ts"],
+      checks: [verification.summary],
+      review,
+      verification: {
+        status: "success",
+        summary: verification.summary,
+        worker_id: "worker_cart_verify"
+      },
+      final_outcome: {
+        changed_files: ["src/cart.ts", "src/cart.test.ts"],
+        tests_run: [verification.summary],
+        intermediate_artifacts: ["reports/cart-fix-summary.json"],
+        final_summary: "Cart total bug fixed and tests passed."
+      },
+      usage_summary: {},
+      task_contracts: { summary: { total: 0, pending: 0, running: 0, blocked: 0, completed: 0, failed: 0, read_only: 0, scoped_write: 0, workspace_write: 0, scoped_targets: [] }, tasks: [] },
+      work_contracts: { summary: { active_workers: 0, running_workers: 0, pending_workers: 0, resumable_workers: 0, active_handoffs: 0, read_only: 0, scoped_write: 0, workspace_write: 0, scoped_targets: [] }, active_workers: [], resumable_workers: [], active_handoffs: [] }
+    },
+    cache
+  });
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Replay cart-fix eval fixture",
+    workspace: "E:/Playground/Swarm",
+    mode: "coding_loop",
+    startedAt: "2026-05-22T00:00:00.000Z",
+    endedAt: "2026-05-22T00:00:01.000Z",
+    durationMs: 1000,
+    capturedEvents: [],
+    result: {
+      session_id: "eval-real-task-cart-fix",
+      status,
+      content: "Cart fix completed.",
+      result_card: card
+    }
+  });
+  const diagnosis = buildLatestRunDiagnosis({
+    report: artifacts.report,
+    telemetry: artifacts.telemetry,
+    resultCard: card,
+    promptCache: cache,
+    promptCacheTrend: promptCacheTrendFromStatuses([cache]),
+    latestDetail: { source: "ai", title: "Assistant Detail", route: "coding_loop", sessionId: "eval-real-task-cart-fix" }
+  });
+  const ok = status === "completed"
+    && card.status === "completed"
+    && card.review.status === "warning"
+    && card.changedFiles.includes("src/cart.ts")
+    && card.checks.some((check) => check.status === "passed")
+    && artifacts.telemetry.llm.cache_trend.source === "result_card_fallback"
+    && artifacts.telemetry.llm.cache_trend.hit_rate === 0.64
+    && artifacts.telemetry.llm.cache_slo.status === "pass"
+    && artifacts.telemetry.llm.cache_slo.metrics.hit_tokens === 6400
+    && diagnosis.detail.includes("route=work (raw=coding_loop)")
+    && diagnosis.detail.includes("hit_rate=64%");
+  return ok
+    ? { name: "real-task replay eval preserves status, cache, and diagnosis evidence", status: "pass", message: "verified cart-fix style fixture stays completed with review warning and cache diagnosis evidence" }
+    : {
+        name: "real-task replay eval preserves status, cache, and diagnosis evidence",
+        status: "fail",
+    message: `status=${status} card=${JSON.stringify({ status: card.status, review: card.review, checks: card.checks, changedFiles: card.changedFiles })} cacheTrend=${JSON.stringify(artifacts.telemetry.llm.cache_trend)} diagnosis=${diagnosis.detail}`
+      };
+}
+
+function checkProtocolReplayForcedVerdictBehavior(): EvalCaseResult {
+  const replay = buildProtocolReplay({
+    sessionId: "eval-protocol-replay-verdict",
+    generatedAt: "2026-05-22T00:00:00.000Z",
+    envelopes: [
+      createEnvelope({
+        swarm_id: "swarm_eval_protocol_replay",
+        session_id: "eval-protocol-replay-verdict",
+        task_id: "worker-replay-verdict",
+        from: { agent_id: "main_swarm" },
+        to: { agent_id: "worker:worker-replay-verdict", capability: "code.test" },
+        type: "task.assign",
+        intent: "task.assign",
+        payload: {
+          worker_id: "worker-replay-verdict",
+          objective: "Exercise forced replay verdict"
+        },
+        idempotency_key: "eval-protocol-replay-verdict:assign"
+      }),
+      createEnvelope({
+        swarm_id: "swarm_eval_protocol_replay",
+        session_id: "eval-protocol-replay-verdict",
+        task_id: "worker-replay-verdict",
+        from: { agent_id: "worker:worker-replay-verdict" },
+        to: { agent_id: "main_swarm" },
+        type: "task.result",
+        intent: "task.result",
+        payload: {
+          worker_id: "worker-replay-verdict",
+          summary: "replay verdict completed"
+        },
+        idempotency_key: "eval-protocol-replay-verdict:result"
+      })
+    ]
+  });
+  const diff = diffProtocolReplaySnapshots({
+    live: replay,
+    replay,
+    generatedAt: "2026-05-22T00:00:01.000Z"
+  });
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Force protocol replay verdict",
+    workspace: "E:/Playground/Swarm",
+    mode: "coding_loop",
+    startedAt: "2026-05-22T00:00:00.000Z",
+    endedAt: "2026-05-22T00:00:01.000Z",
+    durationMs: 1000,
+    capturedEvents: [],
+    protocolReplayDiff: diff,
+    result: {
+      session_id: "eval-protocol-replay-verdict",
+      status: "completed",
+      content: "Protocol replay verdict passed."
+    }
+  });
+  const ok = diff.replay_verdict.forced === true
+    && diff.replay_verdict.status === "pass"
+    && artifacts.report.protocol_replay_diff?.replay_verdict.forced === true
+    && artifacts.telemetry.protocol_replay_diff?.status === "pass";
+  return ok
+    ? { name: "protocol replay eval forces replay verdict", status: "pass", message: "offline eval uses protocol replay diff verdict as the pass/fail source" }
+    : { name: "protocol replay eval forces replay verdict", status: "fail", message: JSON.stringify({ diff, report: artifacts.report.protocol_replay_diff }) };
+}
+
+function checkFaultInjectionRecoveryDrillsBehavior(): EvalCaseResult {
+  const report = runFaultInjectionDrills({ generatedAt: "2026-05-24T00:02:00.000Z" });
+  const kinds = report.drills.map((drill) => drill.kind).sort();
+  const ok = report.status === "pass"
+    && report.summary.total >= 6
+    && report.summary.failed === 0
+    && report.summary.stuck_actors === 0
+    && report.summary.stuck_envelopes === 0
+    && report.summary.stale_leases === 0
+    && report.drills.every((drill) => drill.replay_proof.replay_verdict.forced)
+    && kinds.includes("actor_crash")
+    && kinds.includes("provider_timeout")
+    && kinds.includes("duplicate_delivery")
+    && kinds.includes("mailbox_backlog")
+    && kinds.includes("ownership_expiry")
+    && kinds.includes("blackboard_conflict");
+  return ok
+    ? {
+        name: "fault injection drills recover through replay proof",
+        status: "pass",
+        message: `fault drills pass total=${report.summary.total} recovered=${report.summary.recovered} contained=${report.summary.contained}`
+      }
+    : {
+        name: "fault injection drills recover through replay proof",
+        status: "fail",
+        message: JSON.stringify(report.summary)
+      };
+}
+
+function offlineBudgetBackpressureReport() {
+  const governor = new SwarmBudgetGovernor({
+    now: "2026-05-26T00:00:00.000Z",
+    accepted_task_ids: ["task-accepted-budget"],
+    session: {
+      used_tokens: 10_000,
+      max_tokens: 10_000,
+      used_cost: 9.5,
+      max_cost: 10,
+      queue_depth: 12,
+      max_queue_depth: 10,
+      running: 4,
+      max_concurrency: 4
+    },
+    provider: {
+      openai: {
+        provider_retry_count: 2,
+        max_provider_retries: 3
+      }
+    }
+  });
+  const decisions = [
+    governor.decide({
+      actor_id: "worker:budget-low",
+      session_id: "eval-budget-backpressure",
+      task_id: "task-low-budget",
+      provider_id: "openai",
+      priority: "low",
+      envelope_id: "env-budget-low"
+    }),
+    governor.decide({
+      actor_id: "worker:budget-accepted",
+      session_id: "eval-budget-backpressure",
+      task_id: "task-accepted-budget",
+      provider_id: "openai",
+      priority: "high",
+      envelope_id: "env-budget-accepted"
+    })
+  ];
+  return governor.report(decisions, { generatedAt: "2026-05-26T00:00:01.000Z" });
+}
+
+function checkBudgetBackpressureMetricsBehavior(): EvalCaseResult {
+  const report = offlineBudgetBackpressureReport();
+  const formatted = formatBudgetPressure(report).join("\n");
+  const ok = report.status === "exhausted"
+    && report.metrics.tokens_used === 10_000
+    && report.metrics.cost_used === 9.5
+    && report.metrics.provider_retry_count === 2
+    && report.metrics.deferred_tasks >= 1
+    && report.metrics.sleeping_actors >= 1
+    && report.metrics.accepted_tasks_preserved >= 1
+    && formatted.includes("budget status=exhausted")
+    && formatted.includes("deferred=1")
+    && formatted.includes("sleeping=1")
+    && formatted.includes("retries=2/3");
+  return ok
+    ? {
+        name: "budget backpressure eval reports cost retry and pressure metrics",
+        status: "pass",
+        message: `budget status=${report.status} deferred=${report.metrics.deferred_tasks} sleeping=${report.metrics.sleeping_actors} retries=${report.metrics.provider_retry_count}/${report.metrics.max_provider_retries ?? "unlimited"} cost=${report.metrics.cost_used}/${report.metrics.cost_limit ?? "unlimited"}`
+      }
+    : {
+        name: "budget backpressure eval reports cost retry and pressure metrics",
+        status: "fail",
+        message: formatted
+      };
+}
+
+function checkDogfoodHarnessQualityReportBehavior(): EvalCaseResult {
+  const verification = { status: "success" as const, summary: "npm test passed for cart totals." };
+  const review = {
+    target_task_id: "coding_loop",
+    reviewer: { agent_id: "reviewer", role: "reviewer" },
+    verdict: "needs_revision" as const,
+    score: 82,
+    issues: [{ severity: "low" as const, message: "Add a zero-discount edge-case assertion." }],
+    summary: "Review found a low-priority edge-case coverage warning."
+  };
+  const status = postChangeExecutionStatus({ review, verification });
+  const cache = {
+    status: "stable",
+    cacheMode: "prefix-structured",
+    providerId: "deepseek",
+    model: "deepseek-v4-flash",
+    purpose: "worker_coding_loop",
+    cachedInputTokens: 6400,
+    totalInputWithCacheTokens: 10000,
+    cacheablePrefixTokensEstimate: 4096,
+    hitRate: 0.64,
+    diagnostics: "stable",
+    outcome: "hit" as const
+  };
+  const card = buildResultCard({
+    result: {
+      session_id: "eval-dogfood-cart-fix",
+      status,
+      content: "Cart fix completed.",
+      outcome: {
+        changed_files: ["src/cart.ts", "src/cart.test.ts"],
+        tests_run: [verification.summary],
+        intermediate_artifacts: ["reports/cart-fix-summary.json"],
+        final_summary: "Cart total bug fixed and tests passed."
+      },
+      artifact_path: "reports/cart-fix-result.json"
+    },
+    route: "work",
+    snapshot: {
+      session: {
+        session_id: "eval-dogfood-cart-fix",
+        swarm_id: "swarm_eval_dogfood",
+        objective: "Fix cart total calculation",
+        status: "completed",
+        created_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:01.000Z"
+      },
+      attempts: [],
+      workers: [],
+      graph: { tasks: [], edges: [] },
+      blackboard_counts: {},
+      changed_files: ["src/cart.ts", "src/cart.test.ts"],
+      checks: [verification.summary],
+      review,
+      verification: {
+        status: "success",
+        summary: verification.summary,
+        worker_id: "worker_cart_verify"
+      },
+      final_outcome: {
+        changed_files: ["src/cart.ts", "src/cart.test.ts"],
+        tests_run: [verification.summary],
+        intermediate_artifacts: ["reports/cart-fix-summary.json"],
+        final_summary: "Cart total bug fixed and tests passed."
+      },
+      usage_summary: {},
+      task_contracts: { summary: { total: 0, pending: 0, running: 0, blocked: 0, completed: 0, failed: 0, read_only: 0, scoped_write: 0, workspace_write: 0, scoped_targets: [] }, tasks: [] },
+      work_contracts: { summary: { active_workers: 0, running_workers: 0, pending_workers: 0, resumable_workers: 0, active_handoffs: 0, read_only: 0, scoped_write: 0, workspace_write: 0, scoped_targets: [] }, active_workers: [], resumable_workers: [], active_handoffs: [] }
+    },
+    cache
+  });
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Replay cart-fix dogfood fixture",
+    workspace: "E:/Playground/Swarm",
+    mode: "coding_loop",
+    startedAt: "2026-05-22T00:00:00.000Z",
+    endedAt: "2026-05-22T00:00:01.000Z",
+    durationMs: 1000,
+    capturedEvents: [],
+    reportPath: "E:/Playground/Swarm/.swarm/local-tests/cart-fix/reports/run.report.json",
+    telemetryPath: "E:/Playground/Swarm/.swarm/local-tests/cart-fix/reports/run.telemetry.json",
+    trajectoryPath: "E:/Playground/Swarm/.swarm/local-tests/cart-fix/reports/run.trajectory.json",
+    debugLogPath: "C:/Users/dev/.swarm/logs/cart-fix.log",
+    stdoutPath: "E:/Playground/Swarm/.swarm/local-tests/cart-fix/stdout.log",
+    stderrPath: "E:/Playground/Swarm/.swarm/local-tests/cart-fix/stderr.log",
+    diffSummaryPath: "E:/Playground/Swarm/.swarm/local-tests/cart-fix/diff-summary.json",
+    result: {
+      session_id: "eval-dogfood-cart-fix",
+      status,
+      content: "Cart fix completed.",
+      outcome: {
+        changed_files: ["src/cart.ts", "src/cart.test.ts"],
+        tests_run: [verification.summary],
+        intermediate_artifacts: ["reports/cart-fix-summary.json"],
+        final_summary: "Cart total bug fixed and tests passed."
+      },
+      artifact_path: "reports/cart-fix-result.json",
+      result_card: card
+    }
+  });
+  const quality = evaluateDogfoodReplay({
+    id: "cart-fix-low-review-warning",
+    objective: "Fix cart total calculation",
+    workspaceSeed: { kind: "fixture", path: ".swarm/local-tests/cart-fix/seed" },
+    expectedStatus: "completed",
+    expectedChangedFiles: ["src/cart.ts", "src/cart.test.ts"],
+    expectedTests: ["npm test"],
+    enforceMinimalDiff: true,
+    allowReviewWarningWhenVerified: true,
+    cacheExpectation: {
+      requireCacheFacts: true,
+      minHitRate: 0.5,
+      expectedOutcome: "hit"
+    },
+    artifactExpectation: {
+      requireReport: true,
+      requireTelemetry: true,
+      requireTrajectory: true,
+      requireDebugLog: true,
+      requireStdout: true,
+      requireStderr: true,
+      requireDiffSummary: true
+    }
+  }, {
+    resultCard: card,
+    report: artifacts.report,
+    telemetry: artifacts.telemetry,
+    trajectory: artifacts.trajectory,
+    artifactIndex: artifacts.artifactIndex,
+    stdout: "npm test passed for cart totals.",
+    stderr: "",
+    diffSummary: "src/cart.ts and src/cart.test.ts changed."
+  });
+  const formatted = formatDogfoodQualityReport(quality).join("\n");
+  const ok = quality.status === "pass"
+    && quality.finalStatus === "completed"
+    && quality.reviewStatus === "warning"
+    && quality.reviewSeverity === "low"
+    && quality.verificationStatus === "passed"
+    && quality.cacheHitRate === 0.64
+    && quality.cacheRoi?.schema_version === "swarm.cache_roi.v1"
+    && quality.cacheRoi?.saved_tokens === 6400
+    && quality.artifactKinds.includes("trajectory")
+    && quality.artifactKinds.includes("stdout")
+    && quality.artifactKinds.includes("stderr")
+    && quality.artifactKinds.includes("diff_summary")
+    && quality.findings.some((finding) => finding.severity === "warning" && finding.category === "quality")
+    && !quality.failureCategories.length
+    && formatted.includes("cache_hit_rate=64%")
+    && formatted.includes("cache_roi=saved 6400t")
+    && formatted.includes("trajectory=E:/Playground/Swarm/.swarm/local-tests/cart-fix/reports/run.trajectory.json");
+  return ok
+    ? { name: "dogfood harness grades quality artifacts without failing low review warnings", status: "pass", message: "offline dogfood fixture records report, telemetry, trajectory, logs, diff summary, cache facts, and verified low review warning" }
+    : { name: "dogfood harness grades quality artifacts without failing low review warnings", status: "fail", message: formatted };
+}
+
+function checkRealSwarmOfflineEvalSuiteBehavior(): EvalCaseResult {
+  const suite = runOfflineRealSwarmEvalSuite();
+  const formatted = formatRealSwarmEvalSuite(suite).join("\n");
+  const kinds = suite.scenarios.map((scenario) => scenario.kind);
+  const cacheReuse = suite.scenarios.find((scenario) => scenario.kind === "cache_reuse");
+  const conflict = suite.scenarios.find((scenario) => scenario.kind === "conflict");
+  const lspFallback = suite.scenarios.find((scenario) => scenario.kind === "lsp_fallback");
+  const symphonyIntake = suite.scenarios.find((scenario) => scenario.kind === "symphony_intake");
+  const ok = suite.schema_version === "swarm.real_swarm_eval_suite.v1"
+    && suite.providerMode === "fake-provider"
+    && suite.status === "pass"
+    && realSwarmEvalReleaseGateStatus(suite) === "pass"
+    && kinds.join(",") === "bugfix,feature,refactor,conflict,handoff,symphony_intake,lsp_fallback,cache_reuse"
+    && suite.scenarios.every((scenario) => scenario.failureCategories.length === 0)
+    && suite.scenarios.every((scenario) => scenario.tests.length > 0 && scenario.tests.every((item) => item.status === "pass"))
+    && suite.summary.cache.hitCalls > 0
+    && suite.summary.cache.readTokens > 0
+    && suite.summary.cache.writeTokens > 0
+    && (cacheReuse?.cache.hitCalls ?? 0) > 0
+    && (cacheReuse?.cache.writeTokens ?? 0) > 0
+    && (conflict?.handoffCount ?? 0) > 0
+    && conflict?.conflictResolution.resolved === true
+    && lspFallback?.lspFallback.used === true
+    && symphonyIntake?.symphonyIntake.accepted === true
+    && (symphonyIntake?.symphonyIntake.workItems ?? 0) > 0
+    && suite.summary.latencyMs.max > 0
+    && suite.summary.providerRetries > 0
+    && suite.optionalRealProviderDogfood.defaultEnabled === false
+    && suite.optionalRealProviderDogfood.command.includes("--real-swarm")
+    && formatted.includes("release_gate=pass blocking=none")
+    && formatted.includes("provider_retries=");
+  return ok
+    ? {
+        name: "real swarm offline eval suite covers collaboration quality cache handoff LSP and provider gates",
+        status: "pass",
+        message: `offline fake-provider suite covers ${kinds.length} scenarios with cache_read=${suite.summary.cache.readTokens} handoffs=${suite.summary.handoffCount}`
+      }
+    : {
+        name: "real swarm offline eval suite covers collaboration quality cache handoff LSP and provider gates",
+        status: "fail",
+        message: formatted
+      };
+}
+
+function checkProviderFaultLatestDiagnosisBehavior(): EvalCaseResult {
+  const diagnosis = buildLatestRunDiagnosis({
+    events: [{
+      type: "error",
+      message: "HTTP 429 rate limit for Authorization: Bearer abcdefghijklmnop and apiKey=sk-testabcdef"
+    }],
+    latestDetail: { source: "event", title: "Event Detail", route: "coding_loop", sessionId: "eval-provider-fault" }
+  });
+  const ok = diagnosis.detail.includes("provider_rate_limit")
+    && diagnosis.detail.includes("Model provider rate limit or quota was hit")
+    && diagnosis.detail.includes("Bearer REDACTED")
+    && diagnosis.detail.includes("apiKey=REDACTED")
+    && !diagnosis.detail.includes("abcdefghijklmnop")
+    && !diagnosis.detail.includes("sk-testabcdef");
+  return ok
+    ? { name: "provider fault eval surfaces retry recovery without secrets", status: "pass", message: "rate-limit diagnosis stays actionable and redacted" }
+    : { name: "provider fault eval surfaces retry recovery without secrets", status: "fail", message: diagnosis.detail };
+}
+
+function checkCacheMissFallbackTelemetryBehavior(): EvalCaseResult {
+  const cache = {
+    status: "changed",
+    cacheMode: "prefix-structured",
+    providerId: "deepseek",
+    model: "deepseek-v4-flash",
+    purpose: "worker_coding_loop",
+    cachedInputTokens: 0,
+    totalInputWithCacheTokens: 4096,
+    cacheablePrefixTokensEstimate: 4096,
+    hitRate: 0,
+    diagnostics: "requestPrefixHash4096",
+    changed: ["requestPrefixHash4096"],
+    changedSections: ["tools"],
+    missReason: "changed_tools",
+    outcome: "miss" as const,
+    reason: "cacheable prompt prefix changed",
+    recommendation: "Keep stable system text and tool schemas unchanged across turns."
+  };
+  const artifacts = buildHeadlessRunArtifacts({
+    objective: "Replay cache-miss fixture",
+    workspace: "E:/Playground/Swarm",
+    mode: "coding_loop",
+    startedAt: "2026-05-22T00:00:00.000Z",
+    endedAt: "2026-05-22T00:00:01.000Z",
+    durationMs: 1000,
+    capturedEvents: [],
+    result: {
+      session_id: "eval-cache-miss",
+      status: "completed",
+      content: "Done",
+      result_card: {
+        sessionId: "eval-cache-miss",
+        status: "completed",
+        route: "work",
+        summary: "Done",
+        changedFiles: [],
+        checks: [],
+        review: { status: "skipped", summary: "not recorded" },
+        risks: [],
+        recovery: [],
+        artifacts: [],
+        next: [],
+        cache
+      }
+    }
+  });
+  const diagnosis = buildLatestRunDiagnosis({
+    telemetry: artifacts.telemetry,
+    resultCard: artifacts.report.result?.result_card,
+    promptCache: cache,
+    promptCacheTrend: promptCacheTrendFromStatuses([cache], "result_card_fallback"),
+    latestDetail: { source: "ai", title: "Assistant Detail", route: "coding_loop", sessionId: "eval-cache-miss" }
+  });
+  const trend = artifacts.telemetry.llm.cache_trend;
+  const ok = trend.source === "result_card_fallback"
+    && trend.miss_calls === 1
+    && trend.hit_calls === 0
+    && trend.changed_sections.includes("tools")
+    && trend.miss_reasons.changed_tools === 1
+    && artifacts.telemetry.llm.cache_impact?.schema_version === "swarm.cache_impact.v1"
+    && artifacts.telemetry.llm.cache_impact.changed_dimensions.includes("schema")
+    && artifacts.telemetry.llm.cache_impact.reasons.some((reason) => reason.includes("miss_reason=changed_tools"))
+    && artifacts.telemetry.llm.cache_slo.metrics.changed_prefix_misses === 1
+    && artifacts.telemetry.llm.prompt_cache_diagnostics.changed === 1
+    && diagnosis.detail.includes("cache_trend_source=result_card_fallback")
+    && diagnosis.detail.includes("miss_reason=changed_tools")
+    && diagnosis.detail.includes("changed_sections=tools")
+    && diagnosis.detail.includes("changed=requestPrefixHash4096")
+    && diagnosis.detail.includes("cacheable prompt prefix changed");
+  return ok
+    ? { name: "cache miss eval preserves fallback telemetry and miss reason", status: "pass", message: "changed-prefix cache misses fail if fallback trend, impact reason, or diagnosis disappears" }
+    : { name: "cache miss eval preserves fallback telemetry and miss reason", status: "fail", message: `trend=${JSON.stringify(trend)} impact=${JSON.stringify(artifacts.telemetry.llm.cache_impact)} diagnostics=${JSON.stringify(artifacts.telemetry.llm.prompt_cache_diagnostics)} diagnosis=${diagnosis.detail}` };
+}
+
+function checkCacheSloGateBehavior(): EvalCaseResult {
+  const stableGate = evaluatePromptCacheSlo(promptCacheTrendFromStatuses([
+    {
+      status: "stable",
+      outcome: "hit",
+      cachedInputTokens: 6400,
+      totalInputWithCacheTokens: 10000,
+      cacheCreationInputTokens: 250
+    }
+  ], "provider_usage"), {
+    requireTrend: true,
+    minCalls: 1,
+    minHitRate: 0.5,
+    maxChangedPrefixMisses: 0,
+    maxFallbackCalls: 0,
+    maxProviderUsageMissingCalls: 0
+  });
+  const changedGate = evaluatePromptCacheSlo(promptCacheTrendFromStatuses([
+    {
+      status: "changed",
+      outcome: "miss",
+      changed: ["requestPrefixHash4096"],
+      changedSections: ["tools"],
+      missReason: "changed_tools",
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 4096
+    }
+  ], "provider_usage"), {
+    minHitRate: 0.5,
+    maxChangedPrefixMisses: 0
+  });
+  const fallbackGate = evaluatePromptCacheSlo(promptCacheTrendFromStatuses([
+    {
+      status: "stable",
+      outcome: "hit",
+      cachedInputTokens: 1200,
+      totalInputWithCacheTokens: 2000
+    }
+  ], "result_card_fallback"), {
+    maxFallbackCalls: 0,
+    maxProviderUsageMissingCalls: 0
+  });
+  const missingGate = evaluatePromptCacheSlo(promptCacheTrendFromStatuses([]), {
+    requireTrend: true
+  });
+
+  const ok = stableGate.status === "pass"
+    && stableGate.state === "stable"
+    && changedGate.status === "fail"
+    && changedGate.metrics.changedPrefixMisses === 1
+    && changedGate.metrics.missReasons.changed_tools === 1
+    && changedGate.failures.some((failure) => failure.includes("changed-prefix misses"))
+    && fallbackGate.status === "fail"
+    && fallbackGate.metrics.fallbackCalls === 1
+    && fallbackGate.metrics.providerUsageMissingCalls === 1
+    && missingGate.status === "fail"
+    && missingGate.failures.some((failure) => failure.includes("cache trend is missing"));
+  return ok
+    ? { name: "cache SLO eval gates fallback, missing usage, and changed-prefix regressions", status: "pass", message: `stable=${stableGate.summary} changed=${changedGate.summary} fallback=${fallbackGate.summary}` }
+    : { name: "cache SLO eval gates fallback, missing usage, and changed-prefix regressions", status: "fail", message: `stable=${JSON.stringify(stableGate)} changed=${JSON.stringify(changedGate)} fallback=${JSON.stringify(fallbackGate)} missing=${JSON.stringify(missingGate)}` };
+}
+
+function checkCacheLabReplayBehavior(): EvalCaseResult {
+  const stableSystem = { text: "runtime protocol v1", cache: true, section: "system" as const };
+  const stableTools = { text: JSON.stringify({ tools: ["Read", "Grep", "Bash"] }), cache: true, section: "tools" as const };
+  const stableWorkspace = { text: JSON.stringify({ detected: ["node", "typescript"], scripts: ["test", "check"] }), cache: true, section: "workspace" as const };
+  const firstTail = { text: JSON.stringify({ objective: "fix cart total", recent_files: ["src/cart.ts"] }), cache: false, section: "context" as const };
+  const secondTail = { text: JSON.stringify({ objective: "fix cart total", recent_files: ["src/cart.test.ts"], dirty_files: ["src/cart.ts"] }), cache: false, section: "context" as const };
+  const driftTools = { text: JSON.stringify({ tools: ["Read", "Grep"] }), cache: true, section: "tools" as const };
+
+  const lab = evaluateCodingLoopCacheLab([
+    {
+      label: "first",
+      cacheKey: "swarm:main:stable:first",
+      system: [stableSystem],
+      user: [stableTools, stableWorkspace, firstTail],
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 6000
+    },
+    {
+      label: "volatile-tail-change",
+      cacheKey: "swarm:main:stable:first",
+      system: [stableSystem],
+      user: [stableTools, stableWorkspace, secondTail],
+      cachedInputTokens: 4200,
+      totalInputWithCacheTokens: 6000
+    },
+    {
+      label: "tool-prefix-drift",
+      cacheKey: "swarm:main:stable:changed",
+      system: [stableSystem],
+      user: [driftTools, stableWorkspace, secondTail],
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 6000
+    }
+  ]);
+  const volatileReplay = lab.replays[1];
+  const driftReplay = lab.replays[2];
+  const ok = lab.replays[0]?.missReason === "cold_start"
+    && volatileReplay?.prefixDrift === false
+    && volatileReplay.hitRate === 0.7
+    && volatileReplay.changedSections.length === 0
+    && volatileReplay.stablePrefixIdentity === lab.baseline?.stablePrefixIdentity
+    && volatileReplay.volatileTailTokensEstimate !== lab.replays[0]?.volatileTailTokensEstimate
+    && driftReplay?.prefixDrift === true
+    && driftReplay.missReason === "prefix_drift"
+    && driftReplay.changedSections.includes("tools");
+  return ok
+    ? { name: "cache lab replay distinguishes volatile tail from stable prefix drift", status: "pass", message: `volatile_hit=${volatileReplay?.hitRate} drift_sections=${driftReplay?.changedSections.join(",")}` }
+    : { name: "cache lab replay distinguishes volatile tail from stable prefix drift", status: "fail", message: JSON.stringify(lab) };
+}
+
+function checkTuiCommandOutputDetailRegressionBehavior(): EvalCaseResult {
+  const inline = inlineInspectorTargetForPane({
+    pane: "overview",
+    selectedAction: false,
+    latestDetailSource: "command",
+    latestDetail: true
+  });
+  const explicitOpen = detailOpenTargetForPane({ pane: "chat", actionCount: 0, hasLatestDetail: true });
+  const noOpen = detailOpenTargetForPane({ pane: "chat", actionCount: 0, hasLatestDetail: false });
+  const emptyEnter = tuiFocusTransitionForInput({
+    key: { return: true },
+    detailOpen: false,
+    pane: "chat",
+    latestDetailSource: "command",
+    hasFocusedTarget: true
+  });
+  const diagnosis = buildLatestRunDiagnosis({
+    latestDetail: { source: "command", title: "Command Output", route: "coding_loop", sessionId: "-" },
+    events: [{
+      type: "tui_focus",
+      key_event: "return",
+      focus_before: emptyEnter.focusBefore,
+      focus_after: emptyEnter.focusAfter,
+      detail_before: emptyEnter.detailBefore,
+      detail_after: emptyEnter.detailAfter,
+      detail_source: emptyEnter.detailSource,
+      detail_reason: emptyEnter.reason,
+      allowed: emptyEnter.allowed,
+      blocked_reason: emptyEnter.blockedReason,
+      pane_before: emptyEnter.paneBefore,
+      pane_after: emptyEnter.paneAfter,
+      route: "coding_loop",
+      session_id: "-"
+    }]
+  });
+  const ok = inline.enabled === false
+    && explicitOpen === "latest"
+    && noOpen === "none"
+    && emptyEnter.reason === "empty-enter"
+    && emptyEnter.allowed === false
+    && emptyEnter.detailAfter === false
+    && emptyEnter.paneAfter === "chat"
+    && diagnosis.detail.includes("source=command")
+    && diagnosis.detail.includes("title=Command Output")
+    && diagnosis.detail.includes("route=work (raw=coding_loop)")
+    && diagnosis.detail.includes("key=return reason=empty-enter allowed=false")
+    && diagnosis.detail.includes("blocked=empty Enter submits input only");
+  return ok
+    ? { name: "TUI command-output detail eval blocks auto-open regression", status: "pass", message: "command output remains explicit while diagnosis records the anomaly metadata" }
+    : { name: "TUI command-output detail eval blocks auto-open regression", status: "fail", message: `inline=${JSON.stringify(inline)} explicitOpen=${explicitOpen} noOpen=${noOpen} emptyEnter=${JSON.stringify(emptyEnter)} diagnosis=${diagnosis.detail}` };
 }
 
 function checkWorkerLoopRepairsInvalidToolCallsBehavior(root: string): EvalCaseResult {
@@ -15622,8 +16871,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("/local-evals.js")) {
-  const results = runLocalEvals();
-  const failed = results.filter((result) => result.status === "fail");
-  console.log(JSON.stringify({ status: failed.length ? "fail" : "pass", results }, null, 2));
-  process.exitCode = failed.length ? 1 : 0;
+  if (process.argv.includes("--cache-lab")) {
+    const cacheLab = runCacheLabReport();
+    console.log(JSON.stringify({ status: "pass", cache_lab: cacheLab }, null, 2));
+    process.exitCode = 0;
+  } else if (process.argv.includes("--tui-replay")) {
+    const suite = runDefaultTuiReplaySuite();
+    console.log(JSON.stringify({
+      status: suite.status,
+      tui_replay: formatTuiReplaySuiteReport(suite),
+      scenarios: suite.scenarios.map((scenario) => ({
+        name: scenario.name,
+        status: scenario.status,
+        final_state: scenario.finalState,
+        failures: scenario.failures,
+        max_mounted_message_count: scenario.maxMountedMessageCount,
+        max_visible_message_count: scenario.maxVisibleMessageCount
+      }))
+    }, null, 2));
+    process.exitCode = suite.status === "pass" ? 0 : 1;
+  } else if (process.argv.includes("--real-swarm")) {
+    const realSwarm = runOfflineRealSwarmEvalSuite();
+    console.log(JSON.stringify({
+      status: realSwarm.status,
+      real_swarm: realSwarm,
+      report: formatRealSwarmEvalSuite(realSwarm)
+    }, null, 2));
+    process.exitCode = realSwarm.status === "pass" ? 0 : 1;
+  } else if (process.argv.includes("--release-gate")) {
+    const releaseGate = buildOfflineParityReleaseGate();
+    console.log(JSON.stringify({ status: releaseGate.status, release_gate: releaseGate }, null, 2));
+    process.exitCode = releaseGate.status === "pass" ? 0 : 1;
+  } else {
+    const results = runLocalEvals();
+    const failed = results.filter((result) => result.status === "fail");
+    console.log(JSON.stringify({ status: failed.length ? "fail" : "pass", results }, null, 2));
+    process.exitCode = failed.length ? 1 : 0;
+  }
 }

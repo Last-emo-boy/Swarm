@@ -1,8 +1,15 @@
 import type { RuntimeEvent } from "../runtime/events.js";
 import { formatRuntimeEventBrief, formatWorkerBrief, formatWorkerDetail } from "../runtime/event-formatters.js";
-import { formatRecoveryAdviceInline } from "../runtime/recovery.js";
+import { formatRecoveryAdviceInline, redactSensitive } from "../runtime/recovery.js";
 import { buildWorkRecordFromRuntimeEvent, type WorkProtocolRecord } from "../runtime/work-protocol.js";
 import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "../runtime/tool-task-sandbox.js";
+import {
+  buildProtocolDebugTimeline,
+  filterProtocolTimeline,
+  type ProtocolTimelineEvent,
+  type ProtocolTimelineFilter
+} from "../runtime/protocol-debug-timeline.js";
+import { statusBadge } from "./theme.js";
 
 export type ActionLogMessage = {
   role: "user" | "assistant" | "system";
@@ -12,6 +19,28 @@ export type ActionLogMessage = {
 };
 
 export type TuiActionStatus = "info" | "running" | "pending" | "success" | "warning" | "error";
+export type TuiActionFacet =
+  | "message"
+  | "tool"
+  | "worker"
+  | "cache"
+  | "gateway"
+  | "lsp"
+  | "artifact"
+  | "approval"
+  | "protocol"
+  | "review"
+  | "recovery"
+  | "failure"
+  | "warning"
+  | "budget"
+  | "result";
+
+export type TuiActionDeepLink = {
+  kind: "session" | "task" | "output" | "artifact" | "report" | "trajectory" | "log" | "diagnosis" | "gateway" | "lsp";
+  label: string;
+  target: string;
+};
 
 export type TuiActionRow = {
   id: string;
@@ -21,6 +50,9 @@ export type TuiActionRow = {
   summary?: string;
   meta?: string;
   details: string[];
+  facets?: TuiActionFacet[];
+  deepLinks?: TuiActionDeepLink[];
+  copySummary?: string;
 };
 
 export function buildActionLogRows(input: {
@@ -33,20 +65,68 @@ export function buildActionLogRows(input: {
   ];
 }
 
+export function buildProtocolTimelineActionRows(input: {
+  events: RuntimeEvent[];
+  filter?: ProtocolTimelineFilter;
+  limit?: number;
+}): TuiActionRow[] {
+  const capturedEvents = input.events.map((event, index) => ({
+    at: new Date(index).toISOString(),
+    event
+  }));
+  const timeline = buildProtocolDebugTimeline({ capturedEvents, limit: input.limit });
+  return filterProtocolTimeline(timeline.events, input.filter).map(protocolTimelineEventToActionRow);
+}
+
+export function protocolTimelineEventToActionRow(event: ProtocolTimelineEvent, index: number): TuiActionRow {
+  const status: TuiActionStatus = event.severity === "error" ? "error" : event.severity === "warning" ? "warning" : "info";
+  return enrichActionRow({
+    id: `protocol:${index}:${event.timeline_id}`,
+    kind: `protocol:${event.category}`,
+    status,
+    title: `Protocol ${event.category}`,
+    summary: event.summary,
+    meta: [
+      event.correlation_id ? `correlation=${event.correlation_id}` : undefined,
+      event.actor_id ? `actor=${event.actor_id}` : undefined,
+      event.task_id ? `task=${event.task_id}` : undefined,
+      event.envelope_id ? `envelope=${event.envelope_id}` : undefined
+    ].filter((line): line is string => Boolean(line)).join(" "),
+    facets: ["protocol", event.category === "cache" ? "cache" : undefined, event.category === "capability" ? "tool" : undefined].filter((facet): facet is TuiActionFacet => Boolean(facet)),
+    deepLinks: [
+      event.session_id ? { kind: "session", label: `session:${shortLinkLabel(event.session_id)}`, target: event.session_id } : undefined,
+      event.task_id ? { kind: "task", label: `task:${shortLinkLabel(event.task_id)}`, target: event.task_id } : undefined,
+      event.correlation_id ? { kind: "diagnosis", label: `diagnosis:${shortLinkLabel(event.correlation_id)}`, target: `/debug timeline correlation:${event.correlation_id}` } : undefined
+    ].filter((link): link is TuiActionDeepLink => Boolean(link)),
+    details: compactLines(
+      `at=${event.at}`,
+      `category=${event.category}`,
+      `severity=${event.severity}`,
+      `source=${event.source}`,
+      event.session_id ? `session=${event.session_id}` : undefined,
+      event.actor_id ? `actor=${event.actor_id}` : undefined,
+      event.task_id ? `task=${event.task_id}` : undefined,
+      event.correlation_id ? `correlation=${event.correlation_id}` : undefined,
+      event.envelope_id ? `envelope=${event.envelope_id}` : undefined,
+      event.metadata ? `metadata=${safeJson(event.metadata)}` : undefined
+    )
+  });
+}
+
 export function messageToActionRow(message: ActionLogMessage, index: number): TuiActionRow {
   const title = message.role === "assistant"
     ? "Assistant response"
     : message.role === "user"
       ? "User request"
       : "System";
-  return {
+  return enrichActionRow({
     id: `message:${index}:${message.role}:${message.brief}`,
     kind: `message:${message.role}`,
     status: message.role === "assistant" ? "success" : message.role === "user" ? "pending" : "info",
     title,
     summary: message.brief,
     details: compactLines(message.preview, message.detail)
-  };
+  });
 }
 
 export function runtimeEventToActionRow(event: RuntimeEvent, index: number): TuiActionRow {
@@ -55,7 +135,7 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
   // Keep successful tool calls compact in the trace. Full stdout/stderr still lives
   // behind Enter/Ctrl+O via the explicit tool_result row below.
   if (workRow && !(event.type === "tool_result" && work.kind === "task")) {
-    return workRow;
+    return enrichActionRow(workRow, event);
   }
 
   switch (event.type) {
@@ -106,6 +186,28 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
           event.session_id ? `session=${event.session_id}` : undefined,
           event.id ? `id=${event.id}` : undefined,
           event.message
+        )
+      );
+
+    case "budget":
+      return row(
+        event,
+        index,
+        "budget",
+        event.decision.pressure === "exhausted" || event.decision.pressure === "critical" ? "warning" : "info",
+        `Budget ${event.decision.action}`,
+        `${event.decision.actor_id} pressure=${event.decision.pressure}`,
+        compactLines(
+          `session=${event.decision.session_id}`,
+          event.decision.task_id ? `task=${event.decision.task_id}` : undefined,
+          event.decision.provider_id ? `provider=${event.decision.provider_id}` : undefined,
+          event.decision.envelope_id ? `envelope=${event.decision.envelope_id}` : undefined,
+          `scope=${event.decision.scope}`,
+          `preserve_ownership=${event.decision.preserve_ownership}`,
+          event.decision.retry_after_ms ? `retry_after=${event.decision.retry_after_ms}` : undefined,
+          event.decision.sleep_until ? `sleep_until=${event.decision.sleep_until}` : undefined,
+          `reason=${event.decision.reason}`,
+          `metrics=${safeJson(event.decision.metrics)}`
         )
       );
 
@@ -285,6 +387,29 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
     case "eval_result":
       return row(event, index, "eval", event.status === "pass" ? "success" : "error", `Eval ${event.status}`, event.name, compactLines(event.message));
 
+    case "tui_focus":
+      return row(
+        event,
+        index,
+        "focus",
+        event.allowed ? "info" : "info",
+        `TUI focus ${event.detail_reason}`,
+        `${event.key_event} ${event.focus_before}->${event.focus_after}`,
+        compactLines(
+          `key=${event.key_event}`,
+          `focus=${event.focus_before}->${event.focus_after}`,
+          `detail=${event.detail_before}->${event.detail_after}`,
+          event.detail_source ? `source=${event.detail_source}` : undefined,
+          `pane=${event.pane_before}->${event.pane_after}`,
+          `allowed=${event.allowed}`,
+          event.blocked_reason ? `blocked=${event.blocked_reason}` : undefined,
+          event.route ? `route=${event.route}` : undefined,
+          event.session_id ? `session=${event.session_id}` : undefined,
+          event.action_id ? `action=${event.action_id}` : undefined,
+          "diagnosis=/debug latest"
+        )
+      );
+
     case "agent":
       return row(
         event,
@@ -423,6 +548,10 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
         `Tool ${event.action}`,
         event.summary,
         compactLines(
+          event.errorCode ? `error=${event.errorCode}` : undefined,
+          event.recoverySuggestion ? `recovery=${event.recoverySuggestion}` : undefined,
+          event.recovery ? `recovery_detail=${formatRecoveryAdviceInline(event.recovery)}` : undefined,
+          event.status === "failed" || event.recovery || event.recoverySuggestion ? "diagnosis=/debug latest" : undefined,
           event.title ? `title=${event.title}` : undefined,
           event.session_id ? `session=${event.session_id}` : undefined,
           event.agent ? `agent=${agentIdentityLabel(event.agent)}` : undefined,
@@ -430,9 +559,6 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
           `task=${event.task_id}`,
           event.attempt ? `attempt=${event.attempt}` : undefined,
           event.outputRef ? `output=${event.outputRef}` : undefined,
-          event.errorCode ? `error=${event.errorCode}` : undefined,
-          event.recoverySuggestion ? `recovery=${event.recoverySuggestion}` : undefined,
-          event.recovery ? `recovery_detail=${formatRecoveryAdviceInline(event.recovery)}` : undefined,
           event.write_policy ? `policy=${event.write_policy}` : undefined,
           event.file_scope?.length ? `scope=${event.file_scope.join(",")}` : undefined,
           event.sandbox ? `sandbox=${event.sandbox.policy}/${event.sandbox.decision} ${event.sandbox.reason}` : undefined,
@@ -492,6 +618,10 @@ export function workProtocolToActionRow(
         details: compactLines(
           work.session_id ? `session=${work.session_id}` : undefined,
           `task=${work.task_id}`,
+          work.error_code ? `error=${work.error_code}` : undefined,
+          work.recovery_suggestion ? `recovery=${work.recovery_suggestion}` : undefined,
+          work.recovery ? `recovery_detail=${formatRecoveryAdviceInline(work.recovery)}` : undefined,
+          work.error_code || work.recovery_suggestion || work.recovery || work.phase === "failed" ? "diagnosis=/debug latest" : undefined,
           work.title !== work.summary ? `title=${work.title}` : undefined,
           work.attempt ? `attempt=${work.attempt}` : undefined,
           work.agent_label ? `agent=${work.agent_label}` : undefined,
@@ -510,9 +640,6 @@ export function workProtocolToActionRow(
           work.target_agent_spec_id ? `target=${work.target_agent_spec_id}` : undefined,
           work.output_contract ? `output=${work.output_contract}` : undefined,
           work.output_ref ? `output_ref=${work.output_ref}` : undefined,
-          work.error_code ? `error=${work.error_code}` : undefined,
-          work.recovery_suggestion ? `recovery=${work.recovery_suggestion}` : undefined,
-          work.recovery ? `recovery_detail=${formatRecoveryAdviceInline(work.recovery)}` : undefined,
           work.sandbox ? `sandbox=${work.sandbox.policy}/${work.sandbox.status} ${work.sandbox.reason}` : undefined,
           work.sandbox?.targets?.length ? `targets=${work.sandbox.targets.join(", ")}` : undefined,
           work.sandbox?.file_scope?.length
@@ -537,10 +664,18 @@ export function workProtocolToActionRow(
         summary: `${work.action} ${work.risk_class}/${work.risk}: ${work.summary}`,
         meta: work.schema_version,
         details: compactLines(
+          `target=${work.target}`,
+          approvalDetail(event, "why"),
+          approvalDetail(event, "attention"),
+          approvalDetail(event, "impact"),
+          approvalDetail(event, "rollback"),
+          work.status === "pending" ? "next=approve or deny after checking target, impact, and rollback" : undefined,
+          `approval=${work.approval_id}`,
           work.session_id ? `session=${work.session_id}` : undefined,
           work.task_id ? `task=${work.task_id}` : undefined,
-          `approval=${work.approval_id}`,
-          `target=${work.target}`,
+          work.permission_name ? `permission=${work.permission_name}` : undefined,
+          work.permission_rule ? `rule=${work.permission_rule}` : undefined,
+          work.permission_reason ? `reason=${work.permission_reason}` : undefined,
           event ? `runtime=${safeJson(event)}` : undefined
         )
       };
@@ -615,6 +750,7 @@ export function workProtocolToActionRow(
           work.error_code ? `error=${work.error_code}` : undefined,
           work.recovery_suggestion ? `recovery=${work.recovery_suggestion}` : undefined,
           work.recovery ? `recovery_detail=${formatRecoveryAdviceInline(work.recovery)}` : undefined,
+          work.error_code || work.recovery_suggestion || work.recovery || work.phase === "failed" ? "diagnosis=/debug latest" : undefined,
           event ? `runtime=${safeJson(event)}` : undefined
         )
       };
@@ -650,7 +786,7 @@ function row(
   summary?: string,
   details: string[] = []
 ): TuiActionRow {
-  return {
+  return enrichActionRow({
     id: `${index}:${event.type}:${formatRuntimeEventBrief(event)}`,
     kind,
     status,
@@ -658,7 +794,212 @@ function row(
     summary,
     meta: event.type,
     details
+  }, event);
+}
+
+function enrichActionRow(row: TuiActionRow, event?: RuntimeEvent): TuiActionRow {
+  const details = row.details.map((detail) => redactSensitive(detail));
+  const summary = row.summary === undefined ? undefined : redactSensitive(row.summary);
+  const title = redactSensitive(row.title);
+  const meta = row.meta === undefined ? undefined : redactSensitive(row.meta);
+  const normalized: TuiActionRow = {
+    ...row,
+    title,
+    ...(summary !== undefined ? { summary } : {}),
+    ...(meta !== undefined ? { meta } : {}),
+    details
   };
+  const facets = uniqueFacets([
+    ...(row.facets ?? []),
+    ...inferActionFacets(normalized, event)
+  ]);
+  const deepLinks = uniqueDeepLinks([
+    ...(row.deepLinks ?? []),
+    ...inferActionDeepLinks(normalized, event)
+  ]);
+  return {
+    ...normalized,
+    facets,
+    deepLinks,
+    copySummary: actionCopySummary(normalized, facets, deepLinks)
+  };
+}
+
+export function renderActionRowDetail(row: TuiActionRow | undefined): string {
+  if (!row) {
+    return "No action selected.";
+  }
+  return [
+    `${statusBadge(row.status)} ${row.title}`,
+    row.summary ? `summary: ${row.summary}` : undefined,
+    row.meta ? `meta: ${row.meta}` : undefined,
+    `kind: ${row.kind}`,
+    row.facets?.length ? `facets: ${row.facets.join(",")}` : undefined,
+    row.deepLinks?.length ? [
+      "",
+      "Links",
+      ...row.deepLinks.map((link) => `link:${link.kind}=${link.target}`)
+    ].join("\n") : undefined,
+    row.copySummary ? [
+      "",
+      "Copy Summary",
+      row.copySummary
+    ].join("\n") : undefined,
+    "",
+    ...(row.details.length ? row.details : ["No additional details."])
+  ].filter((line): line is string => typeof line === "string").map(redactSensitive).join("\n");
+}
+
+function inferActionFacets(row: TuiActionRow, event?: RuntimeEvent): TuiActionFacet[] {
+  const text = actionSearchText(row, event).toLowerCase();
+  const facets: TuiActionFacet[] = [];
+  if (row.kind.startsWith("message:")) facets.push("message");
+  if (row.kind.includes("tool") || /\b(action|tool|output_ref|output)=/u.test(text)) facets.push("tool");
+  if (row.kind.includes("worker") || row.kind.includes("agent") || row.kind.includes("handoff") || /\b(worker|agent|agent_spec)=/u.test(text)) facets.push("worker");
+  if (row.kind.includes("permission") || row.kind.includes("approval") || /\bapproval=|approve|permission/u.test(text)) facets.push("approval");
+  if (row.kind.includes("review") || /\breview\b/u.test(text)) facets.push("review");
+  if (row.kind === "final" || row.title.toLowerCase().startsWith("final ") || /\b(result|changed=|checks=)\b/u.test(text)) facets.push("result");
+  if (row.status === "error" || /\b(error|failed|failure)\b/u.test(text)) facets.push("failure");
+  if (row.kind.includes("budget") || /\b(budget|pressure=|deferred_tasks|sleeping_actors)\b/u.test(text)) facets.push("budget");
+  if (row.status === "warning" || /\b(warn|warning|critical|exhausted|degraded|partial|blocked)\b/u.test(text)) facets.push("warning");
+  if (/\b(recovery|retry|next action|diagnosis=\/debug latest)\b/u.test(text)) facets.push("recovery");
+  if (/\b(cache|prompt_cache|cache_miss|cache_hit|cached_input_tokens|prefix_drift)\b/u.test(text)) facets.push("cache");
+  if (/\b(lsp|lsp\.|lsp_|semantic-ready|fallback_reason|fallback_reasons)\b/u.test(text)) facets.push("lsp");
+  if (/\b(gateway|symphony|live_control|operator action|not_supported)\b/u.test(text)) facets.push("gateway");
+  if (/\b(artifact|artifacts|output|output_ref|report|trajectory|log)=/u.test(text)) facets.push("artifact");
+  return facets;
+}
+
+function inferActionDeepLinks(row: TuiActionRow, event?: RuntimeEvent): TuiActionDeepLink[] {
+  const lines = [
+    ...(row.meta ? [`meta=${row.meta}`] : []),
+    ...(row.summary ? [`summary=${row.summary}`] : []),
+    ...row.details
+  ];
+  const links: TuiActionDeepLink[] = [];
+  for (const line of lines) {
+    const [key, rawValue] = keyValueLine(line);
+    if (!key || !rawValue) {
+      continue;
+    }
+    const values = splitLinkValues(rawValue);
+    for (const value of values) {
+      const kind = deepLinkKind(key, value);
+      if (!kind) {
+        continue;
+      }
+      links.push({
+        kind,
+        label: `${kind}:${shortLinkLabel(value)}`,
+        target: redactSensitive(value)
+      });
+    }
+  }
+  if (row.details.some((detail) => detail.includes("diagnosis=/debug latest"))) {
+    links.push({ kind: "diagnosis", label: "diagnosis:/debug latest", target: "/debug latest" });
+  }
+  if (event?.type === "provider_usage") {
+    links.push({
+      kind: "diagnosis",
+      label: "diagnosis:/debug cache",
+      target: "/debug cache"
+    });
+  }
+  if (event?.type === "control") {
+    links.push({
+      kind: "gateway",
+      label: `gateway:${shortLinkLabel(event.message_id)}`,
+      target: redactSensitive(event.message_id)
+    });
+  }
+  return links;
+}
+
+function actionCopySummary(
+  row: TuiActionRow,
+  facets: readonly TuiActionFacet[],
+  deepLinks: readonly TuiActionDeepLink[]
+): string {
+  return [
+    `${row.status.toUpperCase()} ${row.title}`,
+    row.summary ? `summary: ${row.summary}` : undefined,
+    `kind: ${row.kind}`,
+    facets.length ? `facets: ${facets.join(",")}` : undefined,
+    ...deepLinks.slice(0, 6).map((link) => `link:${link.kind}=${link.target}`)
+  ].filter((line): line is string => Boolean(line)).map(redactSensitive).join("\n");
+}
+
+function keyValueLine(line: string): [string | undefined, string | undefined] {
+  const match = line.match(/^([a-zA-Z0-9_.-]+)=(.+)$/u);
+  if (!match) {
+    return [undefined, undefined];
+  }
+  return [match[1]?.toLowerCase(), match[2]?.trim()];
+}
+
+function splitLinkValues(value: string): string[] {
+  return value
+    .split(/,\s*/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function deepLinkKind(key: string, value: string): TuiActionDeepLink["kind"] | undefined {
+  if (key === "session" || key === "session_id" || key === "worker_session" || key === "parent" || key === "resume") return "session";
+  if (key === "task" || key === "target_task") return "task";
+  if (key === "output" || key === "output_ref") return "output";
+  if (key === "artifact" || key === "artifacts") return artifactDeepLinkKind(value);
+  if (key === "log") return "log";
+  if (key === "report") return "report";
+  if (key === "trajectory") return "trajectory";
+  if (key === "diagnosis") return "diagnosis";
+  if (key === "gateway" || key === "live_control") return "gateway";
+  if (key === "lsp" || key === "capability") return /\blsp[._-]/iu.test(value) ? "lsp" : undefined;
+  return undefined;
+}
+
+function artifactDeepLinkKind(value: string): TuiActionDeepLink["kind"] {
+  const lower = value.toLowerCase();
+  if (lower.includes("report")) return "report";
+  if (lower.includes("trajectory")) return "trajectory";
+  if (lower.endsWith(".log") || lower.includes("/logs/") || lower.includes("\\logs\\")) return "log";
+  return "artifact";
+}
+
+function shortLinkLabel(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  const tail = normalized.split("/").filter(Boolean).at(-1) ?? normalized;
+  return tail.length > 40 ? `${tail.slice(0, 37)}...` : tail;
+}
+
+function uniqueFacets(facets: readonly TuiActionFacet[]): TuiActionFacet[] {
+  return [...new Set(facets)];
+}
+
+function uniqueDeepLinks(links: readonly TuiActionDeepLink[]): TuiActionDeepLink[] {
+  const seen = new Set<string>();
+  const result: TuiActionDeepLink[] = [];
+  for (const link of links) {
+    const key = `${link.kind}:${link.target}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(link);
+  }
+  return result;
+}
+
+function actionSearchText(row: TuiActionRow, event?: RuntimeEvent): string {
+  return [
+    row.kind,
+    row.status,
+    row.title,
+    row.summary,
+    row.meta,
+    ...row.details,
+    event?.type
+  ].filter(Boolean).join("\n");
 }
 
 function compactLines(...items: Array<string | undefined>): string[] {
@@ -671,6 +1012,25 @@ function compactLines(...items: Array<string | undefined>): string[] {
       .map((line) => line.trimEnd())
       .filter((line) => line.trim().length > 0);
   });
+}
+
+function approvalDetail(
+  event: RuntimeEvent | undefined,
+  field: "why" | "attention" | "impact" | "rollback"
+): string | undefined {
+  if (event?.type !== "approval") {
+    return undefined;
+  }
+  switch (field) {
+    case "why":
+      return `why=${event.request.why_now}`;
+    case "attention":
+      return event.request.attention_note ? `attention=${event.request.attention_note}` : undefined;
+    case "impact":
+      return `impact=${event.request.predicted_impact}`;
+    case "rollback":
+      return `rollback=${event.request.rollback_plan}`;
+  }
 }
 
 function formatPlanTask(
