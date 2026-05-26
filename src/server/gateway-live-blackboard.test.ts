@@ -48,6 +48,52 @@ test("Gateway live-control Blackboard projection reaches replay, resume, preflig
     assert.equal(duplicate.body.duplicate, true);
     assert.equal(duplicate.body.control?.message_id, requestId);
 
+    const trace = server.runtime.traceStore.list(session.session_id);
+    const sourceEnvelope = trace.find((item) =>
+      item.type === "user.message" &&
+      item.intent === "source.user.message" &&
+      item.correlation_id === requestId
+    );
+    assert(sourceEnvelope, "missing Gateway source adapter user.message envelope");
+    assert.equal(sourceEnvelope.from.agent_id, "source.gateway");
+    assert.equal((sourceEnvelope.payload as { schema_version?: string }).schema_version, "swarm.source_adapter.user_message.v1");
+    assert.equal((sourceEnvelope.payload as { source?: string }).source, "gateway");
+    assert.equal((sourceEnvelope.payload as { source_id?: string }).source_id, "http");
+    assert.equal((sourceEnvelope.payload as { content?: string }).content, content);
+    assert.equal((sourceEnvelope.payload as { trust_level?: string }).trust_level, "trusted");
+    assert.equal((sourceEnvelope.payload as { route?: string }).route, "/v1/sessions/session-gateway-live-blackboard/interrupt");
+    assert.equal(sourceEnvelope.idempotency_key, "source:gateway:user.message:live-blackboard-interrupt-001");
+    const sourceAcks = trace.filter((item) =>
+      item.type === "ack" &&
+      item.intent === "user.message.ack" &&
+      item.reply_to === sourceEnvelope.id
+    );
+    assert.equal(sourceAcks.length, 1);
+
+    const gatewayEnvelope = trace.find((item) =>
+      item.intent === "gateway.live.interrupt" &&
+      item.correlation_id === requestId
+    );
+    assert(gatewayEnvelope, "missing Gateway live interrupt envelope");
+    assert.equal(gatewayEnvelope.from.agent_id, "gateway.local");
+    assert.equal(gatewayEnvelope.type, "task.cancel");
+    assert.equal(gatewayEnvelope.auth?.actor, "gateway.local.control");
+    assert(gatewayEnvelope.auth?.scopes?.includes("gateway.live.interrupt"));
+    assert.equal((gatewayEnvelope.payload as { request_id?: string }).request_id, requestId);
+    assert.equal((gatewayEnvelope.payload as { duplicate?: boolean }).duplicate, false);
+    const deliveries = server.runtime.envelopeDeliveryStore.list({
+      sessionId: session.session_id,
+      envelopeId: gatewayEnvelope.id
+    });
+    assert(deliveries.some((delivery) =>
+      delivery.status === "delivered" &&
+      delivery.recipient_agent_id === "main_swarm"
+    ));
+    const gatewayActor = server.runtime.agentActorStore.get("gateway.local");
+    assert.equal(gatewayActor?.kind, "gateway");
+    assert.equal(gatewayActor?.heartbeat_state, "fresh");
+    assert.equal(gatewayActor?.current_session_id, session.session_id);
+
     const blackboard = await readJson<BlackboardPayload>(
       `${started.url}/v1/sessions/${encodeURIComponent(session.session_id)}/blackboard`
     );
@@ -101,6 +147,15 @@ test("Gateway live-control Blackboard projection reaches replay, resume, preflig
     assert.equal(sessionView.session_id, session.session_id);
     assert.equal(sessionView.work_snapshot.session.session_id, session.session_id);
     assert.equal(sessionView.work_snapshot.blackboard_counts.decision, 1);
+    const protocolGateway = sessionView.swarm_protocol.actors.find((actor) => actor.actor_id === "gateway.local");
+    assert(protocolGateway, "session swarm_protocol should include gateway.local actor");
+    assert.equal(protocolGateway.kind, "gateway");
+    assert.equal(protocolGateway.mailbox.outbox_total >= 1, true);
+    assert.equal(sessionView.swarm_protocol.mailbox.recent_messages.some((message) =>
+      message.envelope_id === gatewayEnvelope.id &&
+      message.direction === "outbox" &&
+      message.from_agent_id === "gateway.local"
+    ), true);
   } finally {
     await server.stop();
     fixture.close();
@@ -146,6 +201,22 @@ type ReplayPayload = {
 type SessionViewPayload = {
   session_id: string;
   work_snapshot: WorkSnapshot;
+  swarm_protocol: {
+    actors: Array<{
+      actor_id: string;
+      kind: string;
+      mailbox: {
+        outbox_total: number;
+      };
+    }>;
+    mailbox: {
+      recent_messages: Array<{
+        envelope_id: string;
+        direction: "inbox" | "outbox";
+        from_agent_id?: string;
+      }>;
+    };
+  };
 };
 
 function createFixture(): Fixture {

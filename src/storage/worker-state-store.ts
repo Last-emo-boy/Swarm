@@ -1,5 +1,6 @@
 import type { SessionOutcome } from "../runtime/events.js";
 import type { AgentInvocationMode, AgentTaskPacket } from "../runtime/agent-specs.js";
+import type { AgentActorStore } from "./agent-actor-store.js";
 import type { SwarmDatabase } from "./database.js";
 
 export type WorkerStatus = "pending" | "running" | "completed" | "failed" | "stopped";
@@ -66,7 +67,7 @@ type WorkerRow = {
 };
 
 export class WorkerStateStore {
-  constructor(private readonly database: SwarmDatabase) {}
+  constructor(private readonly database: SwarmDatabase, private readonly actors?: AgentActorStore) {}
 
   create(input: {
     worker_id: string;
@@ -160,6 +161,7 @@ export class WorkerStateStore {
         record.created_at,
         record.updated_at
       );
+    this.actors?.projectWorker(record);
     return record;
   }
 
@@ -211,6 +213,7 @@ export class WorkerStateStore {
         next.change_refs ? JSON.stringify(next.change_refs) : null,
         next.worker_id
       );
+    this.actors?.projectWorker(next);
     return next;
   }
 

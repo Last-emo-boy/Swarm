@@ -12,6 +12,8 @@ import {
   type SandboxDecision,
   type SandboxWritePolicy
 } from "../runtime/sandbox-policy.js";
+import { attachApprovalGovernance, shouldRecordGovernanceEvidence } from "../runtime/safety-governance.js";
+import type { ApprovalGovernanceEvidence } from "../runtime/safety-governance.js";
 import { taskContractForToolAction } from "../runtime/tool-task-sandbox.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
@@ -30,6 +32,7 @@ export type CapabilityBrokerInput = {
   workspaceForSession: (sessionId?: string) => string;
   approvalHandler?: (request: ToolApprovalRequest) => Promise<boolean>;
   emitApproval: (request: ToolApprovalRequest, status: "pending" | "approved" | "denied") => void;
+  emitGovernance?: (governance: ApprovalGovernanceEvidence) => void;
   emitToolResult: (event: {
     session_id?: string;
     task_id: string;
@@ -139,6 +142,9 @@ export class CapabilityBroker {
           capability_id: capability.id,
           provider_id: capability.providerId,
           permission: capability.permissionName,
+          participant_id: capabilityStringMetadata(capability, "participant_id") ?? participantIdForCapability(capability),
+          capability_lease: capabilityLeaseEvidence(capability, options),
+          envelope_evidence: capabilityEnvelopeEvidence(capability, sessionId, taskId, options),
           ...(sandbox ? { sandbox } : {})
         }
       };
@@ -158,6 +164,9 @@ export class CapabilityBroker {
         provider_id: capability.providerId,
         permission: capability.permissionName,
         source: options.source ?? "runtime",
+        participant_id: capabilityStringMetadata(capability, "participant_id") ?? participantIdForCapability(capability),
+        capability_lease: capabilityLeaseEvidence(capability, options),
+        envelope_evidence: capabilityEnvelopeEvidence(capability, sessionId, taskId, options),
         outputRef: prepared.outputRef
       }
     };
@@ -427,6 +436,14 @@ export class CapabilityBroker {
     if (!request) {
       return;
     }
+    if (request.governance && shouldRecordGovernanceEvidence(request) && request.permission_decision === "allow") {
+      if (this.input.emitGovernance) {
+        this.input.emitGovernance(request.governance);
+      } else {
+        this.input.emitApproval(request, "approved");
+      }
+      return;
+    }
     if (!this.input.approvalHandler) {
       throw new Error(`Capability requires approval but no approval handler is available: ${capability.permissionName}`);
     }
@@ -452,10 +469,31 @@ export class CapabilityBroker {
         throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${capability.permissionName}`);
       }
       if (permissionDecision.decision !== "ask") {
-        return undefined;
+        const evidenceRequest = createToolApprovalRequest(action, permissionDecision);
+        if (!shouldRecordGovernanceEvidence(evidenceRequest)) {
+          return undefined;
+        }
+        const request = {
+          ...evidenceRequest,
+          session_id: sessionId,
+          task_id: taskId,
+          detail: [
+            evidenceRequest.detail,
+            "",
+            `Capability: ${capability.id}`,
+            `Provider: ${capability.providerId}`,
+            `Permission: ${capability.permissionName}`,
+            `Source: ${source}`
+          ].join("\n")
+        };
+        return attachApprovalGovernance(request, {
+          status: "evidence",
+          decision_source: `capability.${source}`,
+          actor_id: source === "gateway" ? "gateway.local" : "main_swarm"
+        });
       }
       const request = createToolApprovalRequest(action, permissionDecision);
-      return {
+      return attachApprovalGovernance({
         ...request,
         session_id: sessionId,
         task_id: taskId,
@@ -467,10 +505,28 @@ export class CapabilityBroker {
           `Permission: ${capability.permissionName}`,
           `Source: ${source}`
         ].join("\n")
-      };
+      }, {
+        status: "requested",
+        decision_source: `capability.${source}`,
+        actor_id: source === "gateway" ? "gateway.local" : "main_swarm"
+      });
     }
     if (!capabilityRequiresApproval(capability, this.input.settings)) {
-      return undefined;
+      if (!["yolo", "full-auto", "auto"].includes(this.input.settings.permissions.defaultMode) || capability.riskClass === "r0") {
+        return undefined;
+      }
+      const request: ToolApprovalRequest = {
+        ...createCapabilityApprovalRequest(capability, args, sessionId, taskId, source),
+        permission_decision: "allow",
+        permission_reason: `Allowed by ${this.input.settings.permissions.defaultMode} permission mode with governance evidence.`,
+        permission_mode: this.input.settings.permissions.defaultMode,
+        permission_name: capability.permissionName
+      };
+      return attachApprovalGovernance(request, {
+        status: "evidence",
+        decision_source: `capability.${source}`,
+        actor_id: source === "gateway" ? "gateway.local" : "main_swarm"
+      });
     }
     return createCapabilityApprovalRequest(capability, args, sessionId, taskId, source);
   }
@@ -617,7 +673,7 @@ export function createCapabilityApprovalRequest(
   taskId: string,
   source: string
 ): ToolApprovalRequest {
-  return {
+  return attachApprovalGovernance({
     id: `approval_${randomUUID()}`,
     session_id: sessionId,
     task_id: taskId,
@@ -639,7 +695,11 @@ export function createCapabilityApprovalRequest(
     why_now: `Swarm needs ${capability.name} to continue the current task.`,
     predicted_impact: predictedCapabilityImpact(capability),
     rollback_plan: rollbackPlanForCapability(capability)
-  };
+  }, {
+    status: "requested",
+    decision_source: `capability.${source}`,
+    actor_id: source === "gateway" ? "gateway.local" : "main_swarm"
+  });
 }
 
 export function matchesCapabilityPermission(capability: CapabilityDescriptor, rules: string[]): boolean {
@@ -833,6 +893,57 @@ function redactCapabilityArguments(value: unknown): unknown {
 function capabilityStringMetadata(capability: CapabilityDescriptor, key: string): string | undefined {
   const value = capability.metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function participantIdForCapability(capability: CapabilityDescriptor): string {
+  if (capability.providerId.startsWith("mcp:")) {
+    return `capability:mcp:${capability.providerId.slice("mcp:".length)}`;
+  }
+  if (capability.providerId.startsWith("lsp:")) {
+    return `capability:lsp:${capability.providerId.slice("lsp:".length)}`;
+  }
+  if (capability.kind === "skill" && capability.id !== SKILL_ACTIVATE_CAPABILITY_ID) {
+    return `capability:skill:${capability.name}`;
+  }
+  return `capability:${capability.providerId}`;
+}
+
+function capabilityLeaseEvidence(
+  capability: CapabilityDescriptor,
+  options: CapabilityInvokeOptions
+): Record<string, unknown> {
+  return {
+    required: capability.kind !== "local_tool",
+    capability: capability.id,
+    provider_id: capability.providerId,
+    permission: capability.permissionName,
+    source: options.source ?? "runtime",
+    write_policy: options.writePolicy,
+    file_scope: options.fileScope,
+    reason: capability.kind === "local_tool"
+      ? "Local tools are still gated by run tool policy, permissions, and sandbox policy."
+      : "External and durable-context capability calls require capability-plane mediation and recorded lease evidence."
+  };
+}
+
+function capabilityEnvelopeEvidence(
+  capability: CapabilityDescriptor,
+  sessionId: string | undefined,
+  taskId: string,
+  options: CapabilityInvokeOptions
+): Record<string, unknown> {
+  return {
+    schema_version: "swarm.capability_envelope_evidence.v1",
+    actor_id: options.source === "gateway" ? "gateway.local" : options.source === "coding_loop" ? "main_swarm" : "runtime",
+    session_id: sessionId,
+    task_id: taskId,
+    capability_id: capability.id,
+    provider_id: capability.providerId,
+    participant_id: capabilityStringMetadata(capability, "participant_id") ?? participantIdForCapability(capability),
+    source: options.source ?? "runtime",
+    envelope_type: "task.progress",
+    intent: "capability.invoke"
+  };
 }
 
 function mcpServerIdFromProvider(providerId: string): string | undefined {

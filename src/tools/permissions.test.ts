@@ -173,6 +173,9 @@ test("createToolApprovalRequest includes r4 destructive shell permission evidenc
   assert.equal(request.permission_mode, "yolo");
   assert.equal(request.permission_name, "Bash");
   assert.equal(request.permission_reason, decision.reason);
+  assert.equal(request.governance?.permission_mode, "yolo");
+  assert.equal(request.governance?.scope.actions.includes("shell.exec"), true);
+  assert.match(request.governance?.yolo_evidence ?? "", /Yolo permission mode/);
 });
 
 test("workspace-relative paths with repeated workspace prefix resolve inside current workspace", () => {

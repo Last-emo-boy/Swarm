@@ -1,5 +1,6 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ui.js";
+import { visualTokenColor } from "../theme.js";
 
 export function ConversationLogo(props: {
   version?: string;
@@ -12,11 +13,11 @@ export function ConversationLogo(props: {
   const model = props.model?.trim() || "model not configured";
   return (
     <Box flexDirection="column" alignItems="center" width="100%" marginBottom={1}>
-      <Box borderStyle="round" borderColor="cyan" paddingX={1} paddingY={compact ? 0 : 1} alignItems="center" flexDirection="column">
-        <Text color="cyan" bold>
+      <Box borderStyle="round" borderColor={visualTokenColor("brand.focus")} paddingX={1} paddingY={compact ? 0 : 1} alignItems="center" flexDirection="column">
+        <Text color={visualTokenColor("brand.focus")} bold>
           {compact ? "Symphony Swarm" : "Symphony Swarm"}
         </Text>
-        {!compact && <Text color="cyan">Local Agent OS</Text>}
+        {!compact && <Text color={visualTokenColor("role.swarm")}>Local Agent OS</Text>}
         <Text dimColor>
           {props.version ? `v${props.version} · ` : ""}{model}
         </Text>

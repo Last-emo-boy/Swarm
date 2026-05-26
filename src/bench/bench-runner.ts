@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import React, { useEffect, useRef, useState } from "react";
-import { render } from "ink";
+import { Box, Text, render } from "../tui/ui.js";
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import { SwarmRuntime } from "../runtime/runtime.js";
@@ -121,7 +121,7 @@ export function listBenchSuites(): BenchSuite[] {
     },
     {
       name: "tui-render",
-      description: "Measure the Ink TUI render loop and basic interaction latency.",
+      description: "Measure the DOM TUI renderer loop and basic interaction latency.",
       steps: [{ objective: "Render the default Swarm TUI surface and measure its render responsiveness.", kind: "tui" }]
     }
   ];
@@ -307,12 +307,10 @@ function deriveCacheHitRate(telemetry: HeadlessTelemetry): number | undefined {
 }
 
 async function runTuiRenderBenchmark(workspace: string): Promise<TuiBenchMetrics> {
-  const [ink, { ConversationFullscreenLayout }, { ConversationFirstPane }] = await Promise.all([
-    import("ink"),
+  const [{ ConversationFullscreenLayout }, { ConversationFirstPane }] = await Promise.all([
     import("../tui/components/ConversationFullscreenLayout.js"),
     import("../tui/components/ConversationFirstPane.js")
   ]);
-  const { Box, Text } = ink;
   const samples: number[] = [];
   const startedAt = Date.now();
   let settle!: () => void;
@@ -371,9 +369,12 @@ async function runTuiRenderBenchmark(workspace: string): Promise<TuiBenchMetrics
   }
 
   const sink = new PassThrough() as unknown as NodeJS.WriteStream;
-  const app = ink.render(React.createElement(Harness), {
+  const app = render(React.createElement(Harness), {
     stdout: sink,
-    stderr: sink
+    stderr: sink,
+    columns: 96,
+    rows: 28,
+    patchConsole: false
   });
   await Promise.race([
     settled,

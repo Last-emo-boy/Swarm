@@ -1,3 +1,5 @@
+import { appendDetailShortcut } from "./shortcuts.js";
+
 export type ResumeCommand = "resume" | "continue";
 export type ResumeExecutionRoute = "stored_plan" | "coding_loop";
 export type ResumeCommandResult = {
@@ -30,7 +32,10 @@ export function buildResumeCommandResult(input: {
   detail: string;
 }): ResumeCommandResult {
   return {
-    brief: `${input.command === "continue" ? "Continue" : "Resume"} started for ${input.sessionId}${input.route === "stored_plan" ? " from stored plan" : " through local coding loop"}. Ctrl+O for preflight.`,
+    brief: appendDetailShortcut(
+      `${input.command === "continue" ? "Continue" : "Resume"} started for ${input.sessionId}${input.route === "stored_plan" ? " from stored plan" : " through local coding loop"}`,
+      "preflight"
+    ),
     detail: input.detail
   };
 }

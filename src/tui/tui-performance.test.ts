@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import React from "react";
 import {
   conversationBottomRows,
   conversationInputCapacity,
@@ -12,6 +13,9 @@ import {
   buildVirtualConversationLayout,
   createConversationRenderCache
 } from "./components/VirtualConversationList.js";
+import { Box } from "./renderer/components/Box.js";
+import { Text } from "./renderer/components/Text.js";
+import { createTuiRoot } from "./renderer/root.js";
 import {
   buildTranscriptSearchIndex,
   currentTranscriptSearchMatch,
@@ -67,9 +71,32 @@ test("virtual transcript performance gate catches full remount regressions on ap
     cache
   });
 
-  assert.equal(appended.transcript.at(-1)?.text, "fresh appended tail");
+  assert.match(appended.transcript.at(-1)?.text ?? "", /fresh appended tail$/);
   assert.equal(cache.stats().misses, 1);
   assert(cache.stats().hits >= messages.length, "append should reuse cached message layouts");
+});
+
+test("renderer frame output exposes damage and repaint cost metrics", () => {
+  const root = createTuiRoot({ columns: 24, rows: 4 });
+  root.render(React.createElement(Box, null, React.createElement(Text, null, "cache hit")));
+  const first = root.getFrame();
+  assert(first?.metadata.output);
+  assert.equal(first.metadata.output.fullReset, true);
+  assert.equal(first.metadata.output.changedRows, 4);
+  assert.equal(first.metadata.output.scannedRows, 4);
+  assert.equal(first.metadata.output.damageArea, 24 * 4);
+  assert(first.metadata.output.patchOps > 0);
+  assert(first.timing.totalMs >= 0);
+
+  root.rerender(React.createElement(Box, null, React.createElement(Text, null, "cache miss")));
+  const second = root.getFrame();
+  assert(second?.metadata.output);
+  assert.equal(second.metadata.output.fullReset, false);
+  assert.equal(second.metadata.output.changedRows, 1);
+  assert(second.metadata.output.scannedRows <= 1);
+  assert(second.metadata.output.damageArea <= 24);
+  assert(second.timing.paintMs >= 0);
+  root.unmount();
 });
 
 test("long-session search jumps to offscreen matches without mounting the whole transcript", () => {
@@ -108,6 +135,67 @@ test("long-session search jumps to offscreen matches without mounting the whole 
 
   assert(layout.transcript.some((line) => line.messageIndex === 25 && line.selected));
   assert(layout.mountedMessageCount < 30);
+});
+
+test("virtual transcript preserves inspector handoff targets for priority rows", () => {
+  const messages = longConversationMessages(80);
+  messages[12] = {
+    role: "system",
+    kind: "approval",
+    status: "pending",
+    brief: "pending: approve scoped file edit"
+  };
+  messages[24] = {
+    role: "system",
+    kind: "tool_result",
+    status: "error",
+    brief: "file.edit failed"
+  };
+  messages[36] = {
+    role: "system",
+    kind: "progress",
+    status: "warning",
+    brief: "Recovery: retry with a narrower patch"
+  };
+  messages[48] = {
+    role: "system",
+    kind: "progress",
+    status: "warning",
+    brief: "Review warning: possible regression"
+  };
+  messages[78] = {
+    role: "assistant",
+    kind: "progress",
+    status: "success",
+    title: "Agent completed",
+    brief: "Finished the focused fix"
+  };
+
+  const layout = buildVirtualConversationLayout({
+    messages,
+    rows: 10,
+    columns: 96,
+    scrollOffset: 0,
+    overscanRows: 1
+  });
+  const byDebugName = new Map(layout.inspectorHandoffTargets.map((target) => [target.debugName, target]));
+
+  assert.equal(byDebugName.get("message:12:approval")?.visible, false);
+  assert.equal(byDebugName.get("message:24:failure")?.mounted, false);
+  assert.equal(byDebugName.get("message:36:recovery")?.reason, "recovery");
+  assert.equal(byDebugName.get("message:48:review")?.reason, "review");
+  assert.equal(byDebugName.get("message:78:result")?.visible, true);
+  assert.equal(byDebugName.get("message:78:result")?.mounted, true);
+  for (const target of [
+    byDebugName.get("message:12:approval"),
+    byDebugName.get("message:24:failure"),
+    byDebugName.get("message:36:recovery"),
+    byDebugName.get("message:48:review"),
+    byDebugName.get("message:78:result")
+  ]) {
+    assert(target);
+    assert(target.lineEnd > target.lineStart);
+  }
 });
 
 test("expanded fold rows update virtual height without losing cache isolation", () => {

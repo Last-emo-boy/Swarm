@@ -1,9 +1,22 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, resolveTuiRendererMode } from "../ui.js";
 import type { ToolApprovalRequest } from "../../tools/types.js";
-import { approvalRiskToken, compactValue, sectionLabel, statusBadge, toneColor } from "../theme.js";
+import { approvalInputDecision, type ApprovalInputKey } from "../approval-input.js";
+import { shortcutHint } from "../shortcuts.js";
+import { approvalRiskToken, compactValue, resolveTuiColor, sectionLabel, toneColor, visualTokenColor, type TuiColorRef } from "../theme.js";
+import { StatusIcon } from "./StatusIcon.js";
 
-export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.ReactElement {
+export type ApprovalOverlayDecision = {
+  approved: boolean;
+  rememberForSession: boolean;
+};
+
+const OVERLAY_DIVIDER_WIDTH = 72;
+
+export function ApprovalOverlay(props: {
+  request: ToolApprovalRequest;
+  onDecision?: (decision: ApprovalOverlayDecision) => void;
+}): React.ReactElement {
   const request = props.request;
   const detailLines = request.detail.split(/\r?\n/).filter((line) => line.trim()).slice(0, 4);
   const previewLines = request.summary_diff?.split(/\r?\n/).slice(0, 6) ?? [];
@@ -13,22 +26,39 @@ export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.
       : undefined);
   const riskToken = approvalRiskToken({ risk: request.risk, riskClass: request.risk_class });
   const reviewFocus = approvalReviewFocus(request);
+  const rendererInputProps = resolveTuiRendererMode() === "dom-renderer" && props.onDecision
+    ? ({
+      focusable: true,
+      onKeydown: (event: { input?: string; key?: ApprovalInputKey; preventDefault: () => void }) => {
+        const decision = approvalInputDecision(event.input ?? "", event.key ?? {});
+        if (!decision.handled) {
+          return;
+        }
+        event.preventDefault();
+        props.onDecision?.({
+          approved: decision.approved,
+          rememberForSession: decision.rememberForSession
+        });
+      }
+    } as never)
+    : {};
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={toneColor(riskToken.tone)} paddingX={1} marginTop={1} width="100%">
-      <Text color="yellow" bold wrap="truncate">
-        {statusBadge("pending")} {sectionLabel("Decision")} <Text color="gray">Y approve once | S allow target | N deny | Esc cancel</Text>
+    <Box {...rendererInputProps} flexDirection="column" paddingX={1} marginTop={1} width="100%">
+      <ApprovalOverlayHeader tone={riskToken.tone} />
+      <Text wrap="truncate">
+        <StatusIcon status="pending" label="badge" withSpace />
+        <Text color={resolveTuiColor("status.pending")} bold>{sectionLabel("Decision")} </Text>
+        <Text color={visualTokenColor("text.muted")}>{shortcutHint(["approval.approve_once", "approval.allow_target", "approval.deny", "approval.cancel"])}</Text>
       </Text>
-      <Text color={toneColor(riskToken.tone)} bold wrap="truncate">
-        {riskToken.badge} {riskToken.label} {request.action}
-      </Text>
-      <Text wrap="wrap">
-        <Text color="cyan">{sectionLabel("Target")} </Text>
-        <Text>{compactValue(request.target, 140)}</Text>
-      </Text>
-      <Text color={toneColor(riskToken.tone)} wrap="wrap">
-        {request.summary}
-      </Text>
-      {attentionNote ? <Text color="red" bold wrap="truncate">{attentionNote}</Text> : null}
+      <ApprovalRiskRow
+        badge={riskToken.badge}
+        label={riskToken.label}
+        action={request.action}
+        tone={riskToken.tone}
+        target={request.target}
+      />
+      <ApprovalDetail label="Summary" value={request.summary} tone={riskToken.tone === "danger" ? "status.danger" : undefined} />
+      {attentionNote ? <ApprovalDetail label="Attention" value={attentionNote} tone="status.danger" strong /> : null}
       <ApprovalDetail label="Review" value={reviewFocus} />
       <ApprovalDetail label="Why" value={request.why_now} />
       {request.permission_reason ? (
@@ -40,14 +70,24 @@ export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.
       {request.permission_rule ? (
         <ApprovalDetail label="Rule" value={request.permission_rule} muted />
       ) : null}
-      <ApprovalDetail label="Impact" value={request.predicted_impact} tone={riskToken.tone === "danger" ? "red" : undefined} />
+      {request.governance ? (
+        <ApprovalDetail
+          label="Governance"
+          value={`actor=${request.governance.actor_binding.actor_id} scope=${request.governance.scope.target} ttl=${request.governance.ttl_ms}ms expires=${request.governance.expires_at}`}
+          muted
+        />
+      ) : null}
+      <ApprovalDetail label="Impact" value={request.predicted_impact} tone={riskToken.tone === "danger" ? "status.danger" : undefined} />
       <ApprovalDetail label="Rollback" value={request.rollback_plan} />
       {detailLines.map((line, index) => (
-        <Text key={`${index}-${line}`} color="gray" wrap="truncate">  {line}</Text>
+        <Text key={`${index}-${line}`} color={visualTokenColor("text.muted")} wrap="truncate">  {line}</Text>
       ))}
       {previewLines.length ? (
         <Box flexDirection="column">
-          <Text color="cyan" bold>{sectionLabel("Preview")}</Text>
+          <Text wrap="truncate">
+            <Text color={visualTokenColor("role.tool")} bold>{sectionLabel("Preview")}</Text>
+            <Text color={visualTokenColor("text.muted")}> {"─".repeat(72)}</Text>
+          </Text>
           {previewLines.map((line, index) => (
             <Text key={`${index}-${line}`} wrap="truncate">{line}</Text>
           ))}
@@ -57,16 +97,43 @@ export function ApprovalOverlay(props: { request: ToolApprovalRequest }): React.
   );
 }
 
+function ApprovalOverlayHeader({ tone }: { tone: ReturnType<typeof approvalRiskToken>["tone"] }): React.ReactElement {
+  return (
+    <Text color={toneColor(tone)} wrap="truncate">
+      {"─".repeat(OVERLAY_DIVIDER_WIDTH)}
+    </Text>
+  );
+}
+
+function ApprovalRiskRow(props: {
+  badge: string;
+  label: string;
+  action: string;
+  tone: ReturnType<typeof approvalRiskToken>["tone"];
+  target: string;
+}): React.ReactElement {
+  return (
+    <Text wrap="truncate">
+      <Text color={toneColor(props.tone)} bold>{props.badge} {props.label}</Text>
+      <Text color={visualTokenColor("text.primary")}> {props.action}</Text>
+      <Text color={visualTokenColor("text.muted")}> · </Text>
+      <Text color={visualTokenColor("role.gateway")}>{sectionLabel("Target")} </Text>
+      <Text color={visualTokenColor("text.primary")}>{compactValue(props.target, 96)}</Text>
+    </Text>
+  );
+}
+
 function ApprovalDetail(props: {
   label: string;
   value: string;
   muted?: boolean;
-  tone?: "red" | "yellow" | "cyan" | "gray";
+  tone?: TuiColorRef;
+  strong?: boolean;
 }): React.ReactElement {
   return (
     <Text wrap="wrap">
-      <Text color="cyan">{sectionLabel(props.label)} </Text>
-      <Text color={props.tone ?? (props.muted ? "gray" : undefined)}>{props.value}</Text>
+      <Text color={visualTokenColor("text.muted")}>{sectionLabel(props.label)} </Text>
+      <Text color={resolveTuiColor(props.tone ?? (props.muted ? "text.muted" : undefined))} bold={props.strong}>{props.value}</Text>
     </Text>
   );
 }

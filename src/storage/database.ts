@@ -80,6 +80,10 @@ export class SwarmDatabase {
         from_json TEXT NOT NULL,
         to_json TEXT NOT NULL,
         payload_json TEXT NOT NULL,
+        auth_json TEXT,
+        routing_json TEXT,
+        priority TEXT,
+        ttl_ms INTEGER,
         trace_id TEXT,
         span_id TEXT,
         parent_span_id TEXT,
@@ -87,6 +91,88 @@ export class SwarmDatabase {
         reply_to TEXT,
         correlation_id TEXT,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS envelope_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        envelope_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        swarm_id TEXT NOT NULL,
+        task_id TEXT,
+        type TEXT NOT NULL,
+        intent TEXT NOT NULL,
+        from_agent_id TEXT,
+        recipient_key TEXT NOT NULL,
+        recipient_agent_id TEXT,
+        recipient_role TEXT,
+        recipient_capability TEXT,
+        status TEXT NOT NULL,
+        correlation_id TEXT,
+        reply_to TEXT,
+        idempotency_key TEXT,
+        attempt INTEGER,
+        queued_at TEXT NOT NULL,
+        delivered_at TEXT,
+        acked_at TEXT,
+        failed_at TEXT,
+        expired_at TEXT,
+        superseded_at TEXT,
+        error TEXT,
+        last_response_envelope_id TEXT,
+        metadata_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_actors (
+        actor_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        load_json TEXT NOT NULL,
+        reliability_json TEXT,
+        current_task_id TEXT,
+        current_worker_id TEXT,
+        current_session_id TEXT,
+        current_ownership_json TEXT,
+        heartbeat_state TEXT NOT NULL,
+        last_heartbeat_at TEXT,
+        last_seen_at TEXT NOT NULL,
+        registered_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_memory_entries (
+        memory_id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        session_id TEXT,
+        task_id TEXT,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        trusted_tools_json TEXT NOT NULL,
+        source_envelope_id TEXT NOT NULL,
+        correlation_id TEXT,
+        retention_policy TEXT NOT NULL,
+        pinned INTEGER NOT NULL,
+        frozen INTEGER NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_memory_state (
+        actor_id TEXT PRIMARY KEY,
+        profile_summary TEXT NOT NULL,
+        cache_stable_summary TEXT NOT NULL,
+        cache_stable_summary_hash TEXT NOT NULL,
+        frozen INTEGER NOT NULL,
+        cleared_at TEXT,
+        last_learned_at TEXT,
+        last_compacted_at TEXT,
+        updated_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS blackboard_entries (
@@ -101,6 +187,7 @@ export class SwarmDatabase {
         visibility TEXT NOT NULL,
         version INTEGER NOT NULL,
         tags_json TEXT,
+        metadata_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT
       );
@@ -109,6 +196,31 @@ export class SwarmDatabase {
         key TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         holder_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS blackboard_events (
+        event_id TEXT PRIMARY KEY,
+        swarm_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        task_id TEXT,
+        key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        actor_json TEXT NOT NULL,
+        source_envelope_id TEXT,
+        correlation_id TEXT,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS blackboard_subscriptions (
+        subscription_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        subscriber_json TEXT NOT NULL,
+        filter_json TEXT NOT NULL,
+        source_envelope_id TEXT,
+        correlation_id TEXT,
         created_at TEXT NOT NULL,
         expires_at TEXT
       );
@@ -268,6 +380,22 @@ export class SwarmDatabase {
         target_agent_spec_id TEXT NOT NULL,
         reason TEXT NOT NULL,
         status TEXT NOT NULL,
+        protocol_status TEXT NOT NULL DEFAULT 'requested',
+        requester_agent_id TEXT,
+        owner_agent_id TEXT,
+        scope_json TEXT,
+        lease_ttl_ms INTEGER,
+        lease_expires_at TEXT,
+        deadline_at TEXT,
+        accepted_at TEXT,
+        last_checkpoint_json TEXT,
+        return_contract_json TEXT,
+        conflict_reason TEXT,
+        request_envelope_id TEXT,
+        accept_envelope_id TEXT,
+        return_envelope_id TEXT,
+        take_back_envelope_id TEXT,
+        last_envelope_id TEXT,
         task_packet_json TEXT NOT NULL,
         result TEXT,
         created_at TEXT NOT NULL,
@@ -292,6 +420,40 @@ export class SwarmDatabase {
       CREATE INDEX IF NOT EXISTS idx_symphony_claims_work_item
         ON symphony_claims(work_item_key, workflow_path);
 
+      CREATE INDEX IF NOT EXISTS idx_envelope_deliveries_session
+        ON envelope_deliveries(session_id, queued_at);
+      CREATE INDEX IF NOT EXISTS idx_envelope_deliveries_envelope
+        ON envelope_deliveries(envelope_id);
+      CREATE INDEX IF NOT EXISTS idx_envelope_deliveries_status
+        ON envelope_deliveries(status, queued_at);
+      CREATE INDEX IF NOT EXISTS idx_envelope_deliveries_agent
+        ON envelope_deliveries(recipient_agent_id, from_agent_id);
+
+      CREATE INDEX IF NOT EXISTS idx_agent_actors_kind_status
+        ON agent_actors(kind, status);
+      CREATE INDEX IF NOT EXISTS idx_agent_actors_heartbeat
+        ON agent_actors(heartbeat_state, last_heartbeat_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_actors_current
+        ON agent_actors(current_session_id, current_task_id, current_worker_id);
+
+      CREATE INDEX IF NOT EXISTS idx_agent_memory_entries_actor_created
+        ON agent_memory_entries(actor_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_memory_entries_source
+        ON agent_memory_entries(source_envelope_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_memory_entries_session
+        ON agent_memory_entries(session_id, task_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_memory_state_updated
+        ON agent_memory_state(updated_at);
+
+      CREATE INDEX IF NOT EXISTS idx_blackboard_entries_session_key
+        ON blackboard_entries(session_id, key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_blackboard_events_session_key
+        ON blackboard_events(session_id, key, created_at);
+      CREATE INDEX IF NOT EXISTS idx_blackboard_events_source
+        ON blackboard_events(source_envelope_id);
+      CREATE INDEX IF NOT EXISTS idx_blackboard_subscriptions_session
+        ON blackboard_subscriptions(session_id, created_at);
+
       CREATE INDEX IF NOT EXISTS idx_session_context_entries_session
         ON session_context_entries(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_session_compactions_session
@@ -304,9 +466,14 @@ export class SwarmDatabase {
     this.addColumnIfMissing("envelopes", "trace_id", "TEXT");
     this.addColumnIfMissing("envelopes", "span_id", "TEXT");
     this.addColumnIfMissing("envelopes", "parent_span_id", "TEXT");
+    this.addColumnIfMissing("envelopes", "auth_json", "TEXT");
+    this.addColumnIfMissing("envelopes", "routing_json", "TEXT");
+    this.addColumnIfMissing("envelopes", "priority", "TEXT");
+    this.addColumnIfMissing("envelopes", "ttl_ms", "INTEGER");
     this.addColumnIfMissing("envelopes", "idempotency_key", "TEXT");
     this.addColumnIfMissing("envelopes", "reply_to", "TEXT");
     this.addColumnIfMissing("envelopes", "correlation_id", "TEXT");
+    this.addColumnIfMissing("blackboard_entries", "metadata_json", "TEXT");
     this.addColumnIfMissing("sessions", "source_json", "TEXT");
     this.addColumnIfMissing("sessions", "parent_session_id", "TEXT");
     this.addColumnIfMissing("sessions", "workspace_lease_id", "TEXT");
@@ -328,6 +495,22 @@ export class SwarmDatabase {
     this.addColumnIfMissing("worker_states", "last_review_json", "TEXT");
     this.addColumnIfMissing("worker_states", "last_verification_json", "TEXT");
     this.addColumnIfMissing("worker_states", "change_refs_json", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "protocol_status", "TEXT NOT NULL DEFAULT 'requested'");
+    this.addColumnIfMissing("handoff_sessions", "requester_agent_id", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "owner_agent_id", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "scope_json", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "lease_ttl_ms", "INTEGER");
+    this.addColumnIfMissing("handoff_sessions", "lease_expires_at", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "deadline_at", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "accepted_at", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "last_checkpoint_json", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "return_contract_json", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "conflict_reason", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "request_envelope_id", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "accept_envelope_id", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "return_envelope_id", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "take_back_envelope_id", "TEXT");
+    this.addColumnIfMissing("handoff_sessions", "last_envelope_id", "TEXT");
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {

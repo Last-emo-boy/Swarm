@@ -16,6 +16,13 @@ Current release-readiness is intentionally local and evidence-bounded:
 - ASP is verified for local envelope/router, execution-routing behavior, and
   the bounded local child-process transport seam. Broader distributed transport
   hardening remains a planned follow-on slice.
+- Evidence-backed local Swarm v2 collaboration now covers local actor identity,
+  mailbox delivery, task/handoff ownership, blackboard collaboration,
+  Gateway/Symphony/LSP participants, protocol timeline diagnostics, real swarm
+  offline evals, and legacy direct-path audit.
+- Cross-host distributed network execution, complex consensus beyond local
+  protocol fixtures, and external provider dogfood remain deferred or optional
+  boundaries, not completed Work Kernel claims.
 
 The coverage source of truth is
 `.workflow/specs/work-kernel-docs-coverage-matrix.md`; the current product audit
@@ -612,6 +619,12 @@ only considered fully backed when it has both a source anchor and a focused test
 anchor. Rows marked `implemented-unverified`, `implemented+partial-test`,
 `partial`, or `deferred` should drive the next Maestro iteration before the docs
 claim stronger completion.
+
+The CAND-PROD-059 row is the claim gate for evidence-backed local Swarm v2
+collaboration. It anchors the local actor/mailbox/ownership/blackboard/source
+adapter surface, `/swarm` workbench, protocol timeline, real swarm offline eval,
+and legacy direct-path audit. It does not upgrade cross-host distributed network
+execution, complex consensus, or external provider dogfood.
 
 Checkpoint/resume evidence is bounded to the current local surfaces. The CLI/TUI
 checkpoint commands, resume report, Gateway event stream helpers, and the

@@ -1,54 +1,178 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { getSelectedModelReadiness, hasUsableModelConfiguration, loadSwarmConfig, loadSwarmSettings } from "./config/settings.js";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultSwarmConfig, defaultSwarmSettings, getSwarmPaths } from "./config/settings.js";
+import { summarizeMcpCatalog } from "./extensions/catalog-summary.js";
+import { mcpSettingsSnapshot } from "./extensions/mcp-report.js";
+import { skillSettingsSnapshot } from "./extensions/skill-report.js";
+import { buildProviderProfiles, formatProviderProfiles } from "./providers/provider-profile.js";
+import { loadSwarmVersion } from "./runtime/headless-artifacts.js";
+import { SwarmRuntime } from "./runtime/runtime.js";
+import { resolveTuiRendererMode } from "./tui/ui.js";
 
-const settings = loadSwarmSettings();
-const config = loadSwarmConfig();
-const readiness = getSelectedModelReadiness(settings, config);
+export type InstallSmokeStatus = "pass" | "fail";
 
-if (!hasUsableModelConfiguration(settings, config)) {
-  console.log("No usable model provider configured; skipping live swarm E2E smoke.");
-  for (const item of readiness) {
-    console.log(`${item.modelRef}: ${item.configured ? "configured" : item.reason}`);
+export type InstallSmokeCheck = {
+  id: string;
+  status: InstallSmokeStatus;
+  detail: string;
+};
+
+export type InstallSmokeResult = {
+  schema_version: "swarm.install_smoke.v1";
+  status: InstallSmokeStatus;
+  version: string;
+  cwd: string;
+  package_root: string;
+  swarm_home: string;
+  checks: InstallSmokeCheck[];
+};
+
+export async function runInstallSmoke(input: { swarmHome?: string } = {}): Promise<InstallSmokeResult> {
+  const previousHome = process.env.SWARM_HOME;
+  const smokeHome = resolve(input.swarmHome ?? join(tmpdir(), `swarm-install-smoke-${process.pid}-${Date.now()}`));
+  mkdirSync(smokeHome, { recursive: true });
+  process.env.SWARM_HOME = smokeHome;
+  writeSmokeConfig(smokeHome);
+
+  const runtime = new SwarmRuntime({
+    workspace: process.cwd(),
+    databasePath: join(smokeHome, "state", "swarm.db")
+  });
+  const checks: InstallSmokeCheck[] = [];
+  try {
+    const paths = getSwarmPaths();
+    checks.push(check("bin-entry", process.argv[1]?.length ? existsSync(resolve(process.argv[1])) : true, `entry=${process.argv[1] ?? "programmatic"}`));
+    checks.push(check("version", /^\d+\.\d+\.\d+/.test(loadSwarmVersion()), `version=${loadSwarmVersion()}`));
+    checks.push(check("default-renderer", resolveTuiRendererMode("legacy") === "dom-renderer", "legacy/auto inputs resolve to dom-renderer."));
+
+    const skills = runtime.listSkills();
+    const skillSummary = runtime.listSkills().length
+      ? `${skills.length} skills: ${skills.slice(0, 5).map((skill) => skill.name).join(",")}`
+      : "0 skills";
+    checks.push(check("skills-default-catalog", skills.length >= 5 && skills.some((skill) => skill.name === "repo-auditor"), skillSummary));
+    checks.push(check("skills-runtime-summary", skillSettingsSnapshot(runtime).enabled && skills.length > 0, "skills enabled with active catalog."));
+
+    const mcpSummary = summarizeMcpCatalog(runtime.listMcpServers(), mcpSettingsSnapshot(runtime));
+    checks.push(check("mcp-disabled-summary", mcpSummary.runtime?.state === "disabled", `state=${mcpSummary.runtime?.state ?? "missing"}`));
+
+    const providerText = formatProviderProfiles(buildProviderProfiles({
+      settings: runtime.settings,
+      config: defaultSwarmConfig()
+    })).join("\n");
+    checks.push(check("provider-profile-redaction", !/sk-[A-Za-z0-9]/.test(providerText), "provider profile output does not include raw sk-* secrets."));
+
+    checks.push(check("docs-links", docsExist(), "README and TUI renderer/product specs are present."));
+  } finally {
+    runtime.dispose();
+    if (previousHome === undefined) {
+      delete process.env.SWARM_HOME;
+    } else {
+      process.env.SWARM_HOME = previousHome;
+    }
+    if (!input.swarmHome) {
+      rmSync(smokeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   }
-  process.exit(0);
+
+  const status = checks.every((item) => item.status === "pass") ? "pass" : "fail";
+  return {
+    schema_version: "swarm.install_smoke.v1",
+    status,
+    version: loadSwarmVersion(),
+    cwd: process.cwd(),
+    package_root: packageRoot(),
+    swarm_home: smokeHome,
+    checks
+  };
 }
 
-const smokeHome = resolve(process.cwd(), ".swarm", "smoke-home");
-mkdirSync(smokeHome, { recursive: true });
-const smokeSettings = structuredClone(settings);
-smokeSettings.permissions.defaultMode = "full-auto";
-smokeSettings.permissions.deny = [];
-smokeSettings.runtime.taskTimeoutMs = Math.max(smokeSettings.runtime.taskTimeoutMs, 300_000);
-writeFileSync(resolve(smokeHome, "settings.json"), `${JSON.stringify(smokeSettings, null, 2)}\n`, "utf8");
-writeFileSync(resolve(smokeHome, "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
-process.env.SWARM_HOME = smokeHome;
+function writeSmokeConfig(home: string): void {
+  mkdirSync(join(home, "state"), { recursive: true });
+  const settings = defaultSwarmSettings({
+    ...getSwarmPaths(),
+    home,
+    settingsPath: join(home, "settings.json"),
+    configPath: join(home, "config.json"),
+    stateDir: join(home, "state"),
+    sessionsDir: join(home, "sessions"),
+    artifactsDir: join(home, "artifacts"),
+    logsDir: join(home, "logs"),
+    cacheDir: join(home, "cache"),
+    agentsDir: join(home, "agents"),
+    commandsDir: join(home, "commands"),
+    skillsDir: join(home, "skills"),
+    pluginsDir: join(home, "plugins"),
+    projectsDir: join(home, "projects")
+  });
+  settings.models.defaultProvider = "local-test";
+  settings.models.planner = "local-test/model";
+  settings.models.worker = "local-test/model";
+  settings.models.aggregator = "local-test/model";
+  settings.enabledProviders = ["local-test"];
+  settings.providers["local-test"] = {
+    id: "local-test",
+    name: "Local Test Provider",
+    protocol: "openai-chat-completions",
+    baseURL: "http://127.0.0.1/v1",
+    modelListProtocol: "none",
+    apiKeyEnv: "LOCAL_TEST_API_KEY",
+    apiKeyRequired: false,
+    auth: "none",
+    models: {
+      model: { name: "Local Test Model", default: true }
+    }
+  };
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  writeFileSync(join(home, "config.json"), `${JSON.stringify(defaultSwarmConfig(), null, 2)}\n`, "utf8");
+}
 
-const { SwarmRuntime } = await import("./runtime/runtime.js");
-const runtime = new SwarmRuntime({
-  databasePath: ".swarm/smoke.db",
-  workspace: process.cwd(),
-  approvalHandler: async () => true
-});
+function docsExist(): boolean {
+  return [
+    "README.md",
+    "docs/TUI_RENDERER.md",
+    "docs/TUI_PRODUCT_SPEC.md"
+  ].every((path) => {
+    const target = resolve(packageRoot(), path);
+    return existsSync(target) && readFileSync(target, "utf8").trim().length > 0;
+  });
+}
 
-runtime.events.onEvent((event) => {
-  if (event.type === "final") {
-    console.log(`FINAL ${event.session_id} ${event.artifact_path ?? ""}`);
-  }
-  if (event.type === "error") {
-    console.error(event.message);
-  }
-});
+function packageRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..");
+}
 
-try {
-  const planned = await runtime.createPlan(
-    "Read the current workspace and produce a concise implementation status summary for the Agent Swarm Protocol CLI."
-  );
-  const result = await runtime.execute(planned);
-  console.log(result.content.slice(0, 500));
-  runtime.dispose();
-} catch (error) {
-  runtime.dispose();
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-  process.exitCode = 1;
+function check(id: string, passed: boolean, detail: string): InstallSmokeCheck {
+  return { id, status: passed ? "pass" : "fail", detail };
+}
+
+export function formatInstallSmokeResult(result: InstallSmokeResult): string {
+  return [
+    `Swarm install smoke: ${result.status}`,
+    `schema=${result.schema_version}`,
+    `version=${result.version}`,
+    `cwd=${result.cwd}`,
+    `package_root=${result.package_root}`,
+    `swarm_home=${result.swarm_home}`,
+    "",
+    ...result.checks.map((item) => `${item.status.toUpperCase()} ${item.id}: ${item.detail}`)
+  ].join("\n");
+}
+
+function isDirectCli(): boolean {
+  const invoked = process.argv[1];
+  return Boolean(invoked && pathToFileURL(resolve(invoked)).href === import.meta.url);
+}
+
+if (isDirectCli()) {
+  runInstallSmoke().then((result) => {
+    console.log(formatInstallSmokeResult(result));
+    if (result.status !== "pass") {
+      process.exitCode = 1;
+    }
+  }, (error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exitCode = 1;
+  });
 }

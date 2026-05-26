@@ -4,11 +4,15 @@ import { formatCompactIdleRows, formatKernelStatusView } from "./SwarmChatApp.js
 import { compactWorkSnapshotLines, formatWorkSnapshot } from "./work-snapshot-display.js";
 import { applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiWorkState } from "./work-state.js";
 import type { RuntimeEvent } from "../runtime/events.js";
+import { liveControlProjection } from "../runtime/live-control-status.js";
 import { SWARM_WORK_PROTOCOL_VERSION, type WorkProtocolRecord } from "../runtime/work-protocol.js";
+import { buildWorkBoardFromSnapshots } from "../runtime/work-board.js";
 import type { WorkSnapshot, WorkspaceLease, RunAttempt, SwarmSession } from "../protocol/types.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
+import type { AgentActorRecord, AgentMailboxMessage, AgentMailboxProjection } from "../storage/agent-actor-store.js";
+import type { AgentMemoryProjection } from "../storage/agent-memory-store.js";
 import type { SymphonyStatus } from "../symphony/status.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 import type { LspStatusReport } from "../lsp/manager.js";
@@ -56,6 +60,14 @@ test("kernel status formatter covers sessions, attempts, leases, approvals, hand
   assert.match(detail, /session-1 \[running\].*Ship operator surface/);
   assert.match(detail, /Last Session Snapshot/);
   assert.match(detail, /workspace=.* boundary=workspace/);
+  assert.match(detail, /Work Board/);
+  assert.match(detail, /sessions=1 active=1 workers=2 active_workers=1 resumable=1 tasks=1 claims=2 blocked=1 failed=0 checks=1 artifacts=1/);
+  assert.match(detail, /next=warning claim:handoff:handoff-1/);
+  assert.match(detail, /Swarm Surface/);
+  assert.match(detail, /participants=1 active=1 stale=0 inbox_pending=0 outbox_pending=1 ownership=2 negotiations=0 squads=0 conflicts=0/);
+  assert.match(detail, /worker:kernel-1 \[worker\/busy\/fresh\].*task=task-1 worker=worker-1/);
+  assert.match(detail, /owner=actor_task:task-1 \[busy\] agent=worker:kernel-1/);
+  assert.match(detail, /owner=handoff:handoff-1 \[accepted\] agent=worker:worker-1 env=env_handoff_kernel/);
   assert.match(detail, /Recent Attempts/);
   assert.match(detail, /tool_call task-1 \[completed\] #1/);
   assert.match(detail, /Workspace Leases/);
@@ -66,11 +78,12 @@ test("kernel status formatter covers sessions, attempts, leases, approvals, hand
   assert.match(detail, /approval-1 \[pending\] r1\/write file.write src\/allowed.txt/);
   assert.match(detail, /Handoffs/);
   assert.match(detail, /handoff-1 \[active\] main_swarm -> reviewer Review scoped write/);
-  assert.match(detail, /Symphony/);
-  assert.match(detail, /sessions=2 running=1 retrying=1 capacity=1\/3/);
-  assert.match(detail, /daemons=daemon-1:running:ticks=4/);
-  assert.match(detail, /symphony-session \[running\] SYM-1/);
-  assert.match(detail, /lsp=unknown severity=info/);
+    assert.match(detail, /Symphony/);
+    assert.match(detail, /sessions=2 running=1 retrying=1 capacity=1\/3/);
+    assert.match(detail, /live_control=retrying severity=warning/);
+    assert.match(detail, /daemons=daemon-1:running:ticks=4/);
+    assert.match(detail, /symphony-session \[running\] live=running\/info SYM-1/);
+  assert.match(detail, /lsp=unknown value=NO PROVIDER tone=muted severity=info/);
   assert.match(detail, /Blackboard/);
   assert.match(detail, /decision\/operator \[decision\] tags=p3,tui/);
   assert.match(detail, /Recent Events/);
@@ -95,7 +108,7 @@ test("kernel status formatter derives LSP service health from live status report
     events: []
   });
 
-  assert.match(detail, /lsp=unavailable severity=warning/);
+  assert.match(detail, /lsp=not-configured value=NO PROVIDER tone=warning severity=warning/);
 });
 
 test("work snapshot formatters expose operator kernel contract detail without Ink rendering", () => {
@@ -233,6 +246,32 @@ function kernelRuntimeFixture(): {
     type: string;
     tags?: string[];
   }>;
+  getWorkspacePath(): string;
+  artifactStore: {
+    list(sessionId: string): Array<{
+      artifact_id: string;
+      session_id: string;
+      path: string;
+      type: string;
+      summary?: string;
+      created_at?: string;
+    }>;
+  };
+  sessionStore: {
+    listRecent(limit?: number): Array<SwarmSession & { workspace_lease_id?: string | null }>;
+  };
+  workspaceLeaseStore: {
+    get(leaseId: string): WorkspaceLease | undefined;
+    getBySession(sessionId: string): WorkspaceLease | undefined;
+  };
+  agentActorStore: {
+    list(input?: { now?: string }): AgentActorRecord[];
+    mailbox(actorId: string): AgentMailboxProjection;
+    listMailboxMessages(actorId: string, direction: "inbox" | "outbox", options?: { limit?: number }): AgentMailboxMessage[];
+  };
+  agentMemoryStore: {
+    project(actorId: string): AgentMemoryProjection;
+  };
   getWorkSnapshot(sessionId: string): WorkSnapshot;
 } {
   return {
@@ -249,7 +288,129 @@ function kernelRuntimeFixture(): {
       type: "decision",
       tags: ["p3", "tui"]
     }],
+    getWorkspacePath: () => "E:/tmp/root/workspace",
+    artifactStore: {
+      list: (sessionId) => [{
+        artifact_id: "artifact-1",
+        session_id: sessionId,
+        path: "reports/work-board.md",
+        type: "report",
+        summary: "Work board fixture",
+        created_at: "2026-05-12T00:09:00.000Z"
+      }]
+    },
+    sessionStore: {
+      listRecent: () => [{ ...sessionRecord(), workspace_lease_id: "lease-1" }]
+    },
+    workspaceLeaseStore: {
+      get: () => workspaceLease(),
+      getBySession: () => workspaceLease()
+    },
+    agentActorStore: {
+      list: () => [agentActorRecord()],
+      mailbox: () => agentMailboxProjection(),
+      listMailboxMessages: (_actorId, direction) => direction === "inbox" ? [agentInboxMessage()] : [agentOutboxMessage()]
+    },
+    agentMemoryStore: {
+      project: (actorId) => agentMemoryProjection(actorId)
+    },
     getWorkSnapshot: () => workSnapshotFixture()
+  };
+}
+
+function agentActorRecord(): AgentActorRecord {
+  return {
+    actor_id: "worker:kernel-1",
+    kind: "worker",
+    name: "Kernel Worker",
+    role: "coder",
+    status: "busy",
+    capabilities: ["file.write"],
+    load: { running_tasks: 1, max_tasks: 2 },
+    current_task_id: "task-1",
+    current_worker_id: "worker-1",
+    current_session_id: "session-1",
+    current_ownership: { kind: "task", task_id: "task-1" },
+    heartbeat_state: "fresh",
+    last_heartbeat_at: "2026-05-12T00:10:00.000Z",
+    last_seen_at: "2026-05-12T00:10:00.000Z",
+    registered_at: "2026-05-12T00:05:00.000Z",
+    updated_at: "2026-05-12T00:10:00.000Z",
+    metadata: {}
+  };
+}
+
+function agentMailboxProjection(): AgentMailboxProjection {
+  return {
+    actor_id: "worker:kernel-1",
+    inbox_total: 1,
+    inbox_pending: 0,
+    inbox_delivered: 0,
+    inbox_acked: 1,
+    inbox_failed: 0,
+    outbox_total: 1,
+    outbox_pending: 1,
+    outbox_delivered: 0,
+    outbox_acked: 0,
+    outbox_failed: 0,
+    current_task_id: "task-1",
+    current_worker_id: "worker-1",
+    current_session_id: "session-1"
+  };
+}
+
+function agentInboxMessage(): AgentMailboxMessage {
+  return {
+    delivery_id: "delivery-kernel-inbox",
+    envelope_id: "env_task_assign_kernel",
+    direction: "inbox",
+    session_id: "session-1",
+    swarm_id: "swarm-1",
+    task_id: "task-1",
+    type: "task.assign",
+    intent: "Assign kernel task",
+    status: "acked",
+    from_agent_id: "main_swarm",
+    recipient_agent_id: "worker:kernel-1",
+    queued_at: "2026-05-12T00:05:00.000Z",
+    acked_at: "2026-05-12T00:05:01.000Z"
+  };
+}
+
+function agentOutboxMessage(): AgentMailboxMessage {
+  return {
+    delivery_id: "delivery-kernel-outbox",
+    envelope_id: "env_task_progress_kernel",
+    direction: "outbox",
+    session_id: "session-1",
+    swarm_id: "swarm-1",
+    task_id: "task-1",
+    type: "task.progress",
+    intent: "Report kernel progress",
+    status: "queued",
+    from_agent_id: "worker:kernel-1",
+    recipient_agent_id: "main_swarm",
+    queued_at: "2026-05-12T00:06:00.000Z"
+  };
+}
+
+function agentMemoryProjection(actorId: string): AgentMemoryProjection {
+  return {
+    actor_id: actorId,
+    profile_summary: "",
+    cache_stable_summary: "Recent task experience:\n- Kernel status rendered swarm memory.",
+    cache_stable_summary_hash: "amx:kernel123456",
+    frozen: false,
+    last_learned_at: "2026-05-12T00:06:00.000Z",
+    last_compacted_at: "2026-05-12T00:06:00.000Z",
+    updated_at: "2026-05-12T00:06:00.000Z",
+    metadata: {},
+    health: "active",
+    entries: 1,
+    recent_tasks: ["Kernel status rendered swarm memory."],
+    learned_constraints: [],
+    failure_patterns: [],
+    trusted_tools: []
   };
 }
 
@@ -369,12 +530,15 @@ function workSnapshotFixture(): WorkSnapshot {
         status: "active",
         write_policy: "scoped_write",
         file_scope: ["docs/PRD.md"],
+        scope: ["docs/PRD.md"],
         updated_at: "2026-05-12T00:07:00.000Z"
       }]
     },
     context_summary: {
       entries: 2,
       compactions: 1,
+      health: "compacted",
+      last_compacted_at: "2026-05-12T00:09:00.000Z",
       latest_compaction: {
         compaction_id: "cmp-1",
         pre_tokens: 1000,
@@ -504,6 +668,9 @@ function handoffRecord(handoffId: string): HandoffSessionRecord {
     target_agent_spec_id: "reviewer",
     reason: "Review scoped write",
     status: "active",
+    protocol_status: "accepted",
+    owner_agent_id: "worker:worker-1",
+    last_envelope_id: "env_handoff_kernel",
     task_packet: {
       objective: "Review scoped file",
       agent_spec_id: "reviewer",
@@ -564,6 +731,14 @@ function approvalRecord(): ApprovalRecord {
 }
 
 function symphonyStatusFixture(): SymphonyStatus {
+  const workBoard = buildWorkBoardFromSnapshots({
+    scope: {
+      kind: "symphony",
+      workspace_path: "E:/tmp/root/workspace"
+    },
+    snapshots: [workSnapshotFixture()],
+    generatedAt: "2026-05-12T00:12:00.000Z"
+  });
   return {
     workflow: {
       ok: true,
@@ -598,7 +773,13 @@ function symphonyStatusFixture(): SymphonyStatus {
         },
         workspace_path: "E:/tmp/symphony",
         started_at: "2026-05-12T00:12:00.000Z",
-        status: "running"
+        status: "running",
+        live_control: liveControlProjection({
+          status: "running",
+          source: "symphony.session",
+          summary: "symphony.session symphony-session: running",
+          legacyStatus: "running"
+        })
       }],
       retrying: [{
         key: "fake:SYM-2",
@@ -612,7 +793,12 @@ function symphonyStatusFixture(): SymphonyStatus {
         },
         attempt: 2,
         due_at: "2026-05-12T00:30:00.000Z",
-        error: "retry"
+        error: "retry",
+        live_control: liveControlProjection({
+          status: "retrying",
+          source: "symphony.retry",
+          summary: "symphony retry fake:SYM-2 attempt=2"
+        })
       }],
       capacity: {
         max_concurrent: 3,
@@ -620,6 +806,12 @@ function symphonyStatusFixture(): SymphonyStatus {
         available: 2
       }
     },
+    live_control: liveControlProjection({
+      status: "retrying",
+      source: "symphony",
+      summary: "symphony sessions=2 running=1 retrying=1"
+    }),
+    work_board: workBoard,
     sessions: []
   };
 }

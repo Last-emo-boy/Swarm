@@ -118,3 +118,41 @@ test("scroll window includes pending range so virtual rows do not blank during d
   });
 });
 
+test("viewportTop is tracked separately from scroll window content bounds", () => {
+  const scroll = createScrollBoxController({
+    scrollHeight: 80,
+    viewportHeight: 12,
+    viewportTop: 4
+  });
+
+  scroll.scrollTo(20);
+  assert.equal(scroll.getViewportTop(), 4);
+  assert.equal(scroll.getSnapshot().viewportTop, 4);
+  assert.deepEqual(scroll.getWindow(0), {
+    start: 20,
+    end: 32,
+    committedStart: 20,
+    committedEnd: 32,
+    pendingStart: 20,
+    pendingEnd: 32,
+    hiddenAbove: 20,
+    hiddenBelow: 48,
+    atTop: false,
+    atBottom: false
+  });
+
+  scroll.setMetrics({ viewportTop: 9, viewportHeight: 16 });
+  assert.equal(scroll.getViewportTop(), 9);
+  assert.deepEqual(scroll.getWindow(0), {
+    start: 20,
+    end: 36,
+    committedStart: 20,
+    committedEnd: 36,
+    pendingStart: 20,
+    pendingEnd: 36,
+    hiddenAbove: 20,
+    hiddenBelow: 44,
+    atTop: false,
+    atBottom: false
+  });
+});

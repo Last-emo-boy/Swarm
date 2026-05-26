@@ -211,6 +211,26 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
         )
       );
 
+    case "governance":
+      return row(
+        event,
+        index,
+        "approval",
+        event.governance.status === "denied" ? "error" : event.governance.status === "requested" ? "pending" : "success",
+        `Governance ${event.governance.status}`,
+        `${event.governance.action} actor=${event.governance.actor_binding.actor_id}`,
+        compactLines(
+          event.governance.actor_binding.session_id ? `session=${event.governance.actor_binding.session_id}` : undefined,
+          event.governance.actor_binding.task_id ? `task=${event.governance.actor_binding.task_id}` : undefined,
+          `approval=${event.governance.approval_id}`,
+          `scope=${event.governance.scope.target}`,
+          `ttl=${event.governance.ttl_ms}ms`,
+          `expires=${event.governance.expires_at}`,
+          event.governance.yolo_evidence,
+          event.envelope ? `envelope=${event.envelope.id}` : undefined
+        )
+      );
+
     case "worker":
       return row(
         event,
@@ -676,6 +696,7 @@ export function workProtocolToActionRow(
           work.permission_name ? `permission=${work.permission_name}` : undefined,
           work.permission_rule ? `rule=${work.permission_rule}` : undefined,
           work.permission_reason ? `reason=${work.permission_reason}` : undefined,
+          work.governance ? `governance=actor:${work.governance.actor_binding.actor_id} scope:${work.governance.scope.target} ttl:${work.governance.ttl_ms}ms expires:${work.governance.expires_at}` : undefined,
           event ? `runtime=${safeJson(event)}` : undefined
         )
       };

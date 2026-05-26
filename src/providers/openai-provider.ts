@@ -449,9 +449,18 @@ export class OpenAIProvider {
 export type PromptBlock = {
   text: string;
   cache?: boolean;
+  section?: PromptCacheSection;
 };
 
 export type PromptInput = string | PromptBlock[];
+
+export type PromptCacheSection =
+  | "system"
+  | "tools"
+  | "workspace"
+  | "task"
+  | "context"
+  | "volatile_footer";
 
 export type PromptCacheOptions = {
   enabled?: boolean;
@@ -530,6 +539,8 @@ type PreparedPromptDiagnostics = {
   requestPrefixHash1024: string;
   requestPrefixHash4096: string;
   firstDynamicBlockIndex: number | null;
+  sectionHashes?: Partial<Record<PromptCacheSection, string>>;
+  cacheableSectionHashes?: Partial<Record<PromptCacheSection, string>>;
 };
 
 type PromptCachePolicy = {
@@ -543,6 +554,8 @@ export type PromptCacheDiagnostics = {
   scope: string;
   status: "new_scope" | "stable" | "changed" | "expected_empty_cache" | "cache_miss";
   changed: string[];
+  changedSections?: PromptCacheSection[];
+  missReason?: PromptCacheMissReason;
   current: PreparedPromptDiagnostics & {
     cacheKey: string;
     model: string;
@@ -567,7 +580,27 @@ type PromptCacheDiagnosticState = PromptCacheDiagnostics["current"] & {
 type NormalizedPromptBlock = {
   text: string;
   cache: boolean;
+  section: PromptCacheSection;
 };
+
+export type PromptCacheMissReason =
+  | "first_call"
+  | "changed_system"
+  | "changed_tools"
+  | "changed_workspace"
+  | "changed_task"
+  | "changed_context"
+  | "provider_no_cache"
+  | "unknown";
+
+const PROMPT_CACHE_SECTIONS: PromptCacheSection[] = [
+  "system",
+  "tools",
+  "workspace",
+  "task",
+  "context",
+  "volatile_footer"
+];
 
 type ProviderUsage = {
   inputTokens?: number;
@@ -613,8 +646,8 @@ function maxOutputTokensForResolvedModel(resolved: ResolvedModel, settings: Swar
 
 function preparePrompt(input: GenerateTextInput): PreparedPrompt {
   const arranged = arrangePromptBlocksForStablePrefix(
-    normalizePromptBlocks(input.system),
-    normalizePromptBlocks(input.user)
+    normalizePromptBlocks(input.system, "system"),
+    normalizePromptBlocks(input.user, "task")
   );
   const systemBlocks = arranged.systemBlocks;
   const userBlocks = arranged.userBlocks;
@@ -631,6 +664,7 @@ function preparePrompt(input: GenerateTextInput): PreparedPrompt {
   const cacheKey = explicitKey || (cacheablePrefixText ? `swarm:${stableHash(cacheablePrefixText).slice(0, 24)}` : "");
   const toolSchemaHash = hashToolSchemaFromText(cacheableUserText || userText);
   const requestPrefixText = requestPrefixBeforeDynamic(systemBlocks, userBlocks, arranged.firstDynamicBlockIndex);
+  const allBlocks = [...systemBlocks, ...userBlocks];
   return {
     systemBlocks,
     userBlocks,
@@ -652,7 +686,9 @@ function preparePrompt(input: GenerateTextInput): PreparedPrompt {
       dynamicUserHash: stableHash(dynamicUserText),
       requestPrefixHash1024: prefixHashForEstimatedTokens(requestPrefixText, 1024),
       requestPrefixHash4096: prefixHashForEstimatedTokens(requestPrefixText, 4096),
-      firstDynamicBlockIndex: arranged.firstDynamicBlockIndex
+      firstDynamicBlockIndex: arranged.firstDynamicBlockIndex,
+      sectionHashes: promptSectionHashes(allBlocks),
+      cacheableSectionHashes: promptSectionHashes(allBlocks.filter((block) => block.cache))
     }
   };
 }
@@ -678,7 +714,8 @@ function arrangePromptBlocksForStablePrefix(
           "Additional non-cacheable system context:",
           dynamicSystemText
         ].join("\n"),
-        cache: false
+        cache: false,
+        section: "context"
       }]
     : [];
   const arrangedSystemBlocks = cacheableSystemBlocks;
@@ -694,12 +731,16 @@ function arrangePromptBlocksForStablePrefix(
   };
 }
 
-function normalizePromptBlocks(input: PromptInput): NormalizedPromptBlock[] {
+function normalizePromptBlocks(input: PromptInput, defaultSection: PromptCacheSection): NormalizedPromptBlock[] {
   if (typeof input === "string") {
-    return input.trim() ? [{ text: input, cache: false }] : [];
+    return input.trim() ? [{ text: input.trim(), cache: false, section: defaultSection }] : [];
   }
   return input
-    .map((block) => ({ text: block.text.trim(), cache: block.cache === true }))
+    .map((block) => ({
+      text: block.text.trim(),
+      cache: block.cache === true,
+      section: block.section ?? defaultSection
+    }))
     .filter((block) => block.text.length > 0);
 }
 
@@ -723,6 +764,17 @@ function requestPrefixBeforeDynamic(
 
 function prefixHashForEstimatedTokens(text: string, tokens: number): string {
   return stableHash(text.slice(0, tokens * 4));
+}
+
+function promptSectionHashes(blocks: NormalizedPromptBlock[]): Partial<Record<PromptCacheSection, string>> {
+  const hashes: Partial<Record<PromptCacheSection, string>> = {};
+  for (const section of PROMPT_CACHE_SECTIONS) {
+    const text = joinPromptBlocks(blocks.filter((block) => block.section === section));
+    if (text) {
+      hashes[section] = stableHash(text);
+    }
+  }
+  return hashes;
 }
 
 function lastCacheableIndex(blocks: NormalizedPromptBlock[]): number {
@@ -889,12 +941,12 @@ function promptCacheScope(
   prompt: PreparedPrompt,
   context?: ProviderUsageContext
 ): string {
+  void prompt;
   return [
     context?.sessionId ?? "nosession",
     context?.purpose ?? "generateText",
     resolved.providerId,
-    resolved.model,
-    prompt.explicitCacheKey || prompt.cacheKey || "nocache"
+    resolved.model
   ].join(":");
 }
 
@@ -919,6 +971,7 @@ function trackPromptCacheDiagnostics(
   };
   const previous = promptCacheDiagnostics.get(scope);
   const changed = previous ? changedPromptCacheFields(previous, current) : [];
+  const changedSections = previous ? changedPromptCacheSections(previous, current) : [];
   const cacheableTokens = estimateTokens(prompt.cacheablePrefixText);
   const cachedInputTokens = usage.cachedInputTokens;
   const providerCacheExpected = providerSupportsPromptCache(resolved) && promptCacheEnabled();
@@ -931,12 +984,21 @@ function trackPromptCacheDiagnostics(
         : cacheableTokens < minimumCacheableTokens
           ? "expected_empty_cache"
           : (providerCacheExpected && typeof cachedInputTokens === "number" && cachedInputTokens <= 0 ? "cache_miss" : "stable");
+  const missReason = promptCacheMissReason({
+    status,
+    previous: Boolean(previous),
+    changedSections,
+    changed,
+    providerCacheExpected
+  });
   promptCacheDiagnostics.set(scope, { ...current, seenAt: Date.now() });
   trimPromptCacheDiagnostics();
   return {
     scope,
     status,
     changed,
+    changedSections,
+    missReason,
     current,
     previous: previous ? { ...previous } : undefined,
     cachedInputTokens,
@@ -1016,6 +1078,44 @@ function changedPromptCacheFields(
     "anthropicTtl"
   ] as const;
   return fields.filter((field) => previous[field] !== current[field]);
+}
+
+function changedPromptCacheSections(
+  previous: PromptCacheDiagnosticState,
+  current: PromptCacheDiagnostics["current"]
+): PromptCacheSection[] {
+  const previousHashes = previous.cacheableSectionHashes ?? {};
+  const currentHashes = current.cacheableSectionHashes ?? {};
+  return PROMPT_CACHE_SECTIONS.filter((section) => previousHashes[section] !== currentHashes[section]);
+}
+
+function promptCacheMissReason(input: {
+  status: PromptCacheDiagnostics["status"];
+  previous: boolean;
+  changedSections: PromptCacheSection[];
+  changed: string[];
+  providerCacheExpected: boolean;
+}): PromptCacheMissReason {
+  if (!input.previous || input.status === "new_scope") {
+    return "first_call";
+  }
+  for (const section of input.changedSections) {
+    if (section === "system") return "changed_system";
+    if (section === "tools") return "changed_tools";
+    if (section === "workspace") return "changed_workspace";
+    if (section === "task") return "changed_task";
+    if (section === "context" || section === "volatile_footer") return "changed_context";
+  }
+  if (input.changed.includes("cacheableSystemHash") || input.changed.includes("systemHash")) {
+    return "changed_system";
+  }
+  if (input.changed.includes("toolSchemaHash")) {
+    return "changed_tools";
+  }
+  if (input.status === "cache_miss" && input.providerCacheExpected) {
+    return "provider_no_cache";
+  }
+  return "unknown";
 }
 
 function trimPromptCacheDiagnostics(): void {

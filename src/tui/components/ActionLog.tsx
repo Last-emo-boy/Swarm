@@ -1,15 +1,22 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ui.js";
 import type { TuiActionRow, TuiActionStatus } from "../action-log.js";
-import { compactValue, sectionLabel, statusBadge, statusTone, toneColor } from "../theme.js";
+import { displayWidth, sliceByDisplayWidth } from "../display-width.js";
+import { shortcutHint } from "../shortcuts.js";
+import { sectionLabel, visualTokenColor, type TuiColorRef } from "../theme.js";
+import { SemanticTextLine, type SemanticTextSpan } from "./SemanticTextLine.js";
+import { statusIconText } from "./StatusIcon.js";
+import { toolResponseLineSpans } from "./ToolResponseSurface.js";
 
 const SPINNER_FRAMES = ["|", "/", "-", "\\"];
 
 type ActionLogLine = {
   key: string;
-  text: string;
-  color?: string;
+  text?: string;
+  spans?: SemanticTextSpan[];
+  color?: TuiColorRef;
   bold?: boolean;
+  inverse?: boolean;
 };
 
 export function ActionLog(props: {
@@ -39,7 +46,7 @@ export function ActionLog(props: {
   const displayLines = lines.length ? lines : [{
     key: "empty",
     text: "No actions yet.",
-    color: "gray"
+    color: "text.muted"
   }];
   const lineCount = displayLines.length;
   const maxOffset = Math.max(0, lineCount - bodyHeight);
@@ -60,15 +67,21 @@ export function ActionLog(props: {
   return (
     <Box flexDirection="column" width="100%" height={height} overflow="hidden">
       <Text wrap="truncate">
-        <Text color="cyan" bold>{sectionLabel("Action Log")}</Text>
-        <Text color="gray">  {rows.length} actions | {lines.length} lines | {bottomState}</Text>
-        {spinner ? <Text color="cyan"> {spinner}</Text> : null}
-        <Text color="gray"> | Up/Down select | Enter details | PgUp/PgDn</Text>
+        <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Action Log")}</Text>
+        <Text color={visualTokenColor("text.muted")}>  {rows.length} actions | {lines.length} lines | {bottomState}</Text>
+        {spinner ? <Text color={visualTokenColor("status.running")}> {spinner}</Text> : null}
+        <Text color={visualTokenColor("text.muted")}> | {shortcutHint(["action.select", "action.details", "action.page"])}</Text>
       </Text>
       {visible.map((line) => (
-        <Text key={line.key} wrap="truncate" color={line.color} bold={line.bold}>
-          {line.text || " "}
-        </Text>
+        <SemanticTextLine
+          key={line.key}
+          wrap="truncate"
+          text={line.text || " "}
+          spans={line.spans}
+          color={line.color}
+          bold={line.bold}
+          inverse={line.inverse}
+        />
       ))}
     </Box>
   );
@@ -88,47 +101,56 @@ function windowLines(lines: ActionLogLine[], start: number, bodyHeight: number):
   }
 
   return [
-    hasTop ? { key: `above:${start}`, text: `... ${start} earlier actions`, color: "gray" } : undefined,
+    hasTop ? { key: `above:${start}`, text: `... ${start} earlier actions`, color: visualTokenColor("text.muted") } : undefined,
     ...data,
-    hasBottom ? { key: `below:${hiddenBelow}`, text: `... ${hiddenBelow} newer actions`, color: "gray" } : undefined
+    hasBottom ? { key: `below:${hiddenBelow}`, text: `... ${hiddenBelow} newer actions`, color: visualTokenColor("text.muted") } : undefined
   ].filter((line): line is ActionLogLine => Boolean(line));
 }
 
 function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: number | undefined): ActionLogLine[] {
   const contentWidth = Math.max(32, columns - 4);
   return rows.flatMap((row, rowIndex) => {
-    const prefix = statusBadge(row.status);
+    const prefix = statusIconText(row.status, "badge");
     const kind = kindLabel(row.kind);
     const selected = rowIndex === selectedIndex;
     const lines: ActionLogLine[] = [{
       key: `${row.id}:head:${rowIndex}`,
-      text: trimForWidth(`${selected ? ">" : " "} ${prefix} ${kind} ${row.title}`, contentWidth),
-      color: statusColor(row.status),
-      bold: selected || row.status === "pending" || row.status === "error"
+      spans: trimSpans([
+        { text: selected ? "> " : "  ", color: selected ? "brand.focus" : "text.muted", bold: selected },
+        { text: `${prefix} `, color: statusColor(row.status), bold: row.status !== "info" },
+        { text: `${kind} `, color: kindColor(row.kind), bold: true },
+        { text: row.title, color: "text.primary", bold: selected }
+      ], contentWidth)
     }];
 
     if (row.summary) {
       lines.push({
-        key: `${row.id}:summary:${rowIndex}`,
-        text: trimForWidth(`     ${compactValue(row.summary, contentWidth - 5)}`, contentWidth),
-        color: row.status === "error" ? "red" : undefined
+          key: `${row.id}:summary:${rowIndex}`,
+          spans: trimSpans([
+            { text: "     ", color: "text.muted" },
+          ...toolResponseLineSpans(row.summary, { defaultColor: "text.primary" })
+        ], contentWidth)
       });
     }
 
     if (row.meta) {
       lines.push({
-        key: `${row.id}:meta:${rowIndex}`,
-        text: trimForWidth(`     ${row.meta}`, contentWidth),
-        color: "gray"
+          key: `${row.id}:meta:${rowIndex}`,
+          spans: trimSpans([
+            { text: "     ", color: "text.muted" },
+          ...toolResponseLineSpans(row.meta, { defaultColor: "text.muted", valueColor: "text.muted", fallbackLabel: "meta" })
+        ], contentWidth)
       });
     }
 
     const visibleDetails = row.details.slice(0, detailLimit(row.status));
     visibleDetails.forEach((detail, detailIndex) => {
       lines.push({
-        key: `${row.id}:detail:${detailIndex}`,
-        text: trimForWidth(`       ${detail}`, contentWidth),
-        color: detailColor(row.status)
+          key: `${row.id}:detail:${detailIndex}`,
+          spans: trimSpans([
+            { text: "       ", color: "text.muted" },
+          ...toolResponseLineSpans(detail, { defaultColor: "text.primary" })
+        ], contentWidth)
       });
     });
     const hidden = row.details.length - visibleDetails.length;
@@ -136,7 +158,7 @@ function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: numbe
       lines.push({
         key: `${row.id}:hidden:${rowIndex}`,
         text: trimForWidth(`       ... ${hidden} more details`, contentWidth),
-        color: "gray"
+        color: visualTokenColor("text.muted")
       });
     }
 
@@ -144,29 +166,72 @@ function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: numbe
   });
 }
 
-function statusMarker(status: TuiActionStatus): string {
+function statusColor(status: TuiActionStatus): TuiColorRef {
   switch (status) {
-    case "success": return "OK";
-    case "running": return "..";
-    case "pending": return "??";
-    case "warning": return "!!";
-    case "error": return "XX";
-    case "info": return "--";
+    case "success": return "status.success";
+    case "running": return "status.running";
+    case "pending": return "status.pending";
+    case "warning": return "status.warning";
+    case "error": return "status.danger";
+    case "info": return "text.muted";
   }
 }
 
-function statusColor(status: TuiActionStatus): string {
-  return toneColor(statusTone(status));
+function kindColor(kind: string): TuiColorRef {
+  const normalized = kind.toLowerCase();
+  if (normalized.includes("tool") || normalized.includes("shell") || normalized.includes("usage")) {
+    return "role.tool";
+  }
+  if (normalized.includes("gateway") || normalized.includes("lsp") || normalized.includes("provider") || normalized.includes("control")) {
+    return "role.gateway";
+  }
+  if (normalized.includes("agent") || normalized.includes("worker") || normalized.includes("handoff") || normalized.includes("swarm") || normalized.includes("task")) {
+    return "role.swarm";
+  }
+  if (normalized.includes("permission") || normalized.includes("approval")) {
+    return "status.pending";
+  }
+  if (normalized.includes("user")) {
+    return "role.user";
+  }
+  if (normalized.includes("message") || normalized.includes("assistant")) {
+    return "text.muted";
+  }
+  return "text.primary";
 }
 
-function detailColor(status: TuiActionStatus): string | undefined {
-  if (status === "error") {
-    return "red";
+function trimSpans(spans: SemanticTextSpan[], width: number): SemanticTextSpan[] {
+  const totalWidth = spans.reduce((sum, span) => sum + displayWidth(span.text), 0);
+  if (totalWidth <= width) {
+    return spans.length ? spans : [{ text: " ", color: "text.muted" }];
   }
-  if (status === "warning" || status === "pending") {
-    return "yellow";
+
+  const useEllipsis = width > 3;
+  const contentLimit = Math.max(0, useEllipsis ? width - 3 : width);
+  const result: SemanticTextSpan[] = [];
+  let used = 0;
+  for (const span of spans) {
+    if (used >= contentLimit) {
+      break;
+    }
+    const remaining = contentLimit - used;
+    const spanWidth = displayWidth(span.text);
+    if (spanWidth <= remaining) {
+      result.push(span);
+      used += spanWidth;
+      continue;
+    }
+    const sliced = sliceByDisplayWidth(span.text, remaining).head;
+    if (sliced) {
+      result.push({ ...span, text: sliced });
+    }
+    used = contentLimit;
+    break;
   }
-  return "gray";
+  if (useEllipsis) {
+    result.push({ text: "...", color: "text.muted" });
+  }
+  return result.length ? result : [{ text: " ", color: "text.muted" }];
 }
 
 function trimForWidth(value: string, width: number): string {

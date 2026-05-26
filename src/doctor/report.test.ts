@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { defaultSwarmConfig, defaultSwarmSettings } from "../config/settings.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { McpServerRecord } from "../extensions/mcp.js";
@@ -72,6 +73,52 @@ test("doctor report warns and skips preflight when workflow is missing", async (
     assert.doesNotMatch(report.detail, /preflight issues=/);
     assert.equal(report.ok, report.failed === 0);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("doctor report includes provider profiles with redacted key fingerprints", async () => {
+  const root = mkdtempSync(join(tmpdir(), "swarm-doctor-provider-"));
+  const home = join(root, "home");
+  const previousHome = process.env.SWARM_HOME;
+  try {
+    process.env.SWARM_HOME = home;
+    mkdirSync(home, { recursive: true });
+
+    const settings = defaultSwarmSettings();
+    settings.models.defaultProvider = "deepseek";
+    settings.models.planner = "deepseek/test-chat";
+    settings.models.worker = "deepseek/test-chat";
+    settings.models.aggregator = "deepseek/test-chat";
+    settings.providers.deepseek.baseURL = "https://api.deepseek.com";
+    settings.providers.deepseek.models = {
+      "test-chat": { name: "Test Chat" }
+    };
+    writeFileSync(join(home, "settings.json"), JSON.stringify(settings, null, 2), "utf8");
+
+    const config = defaultSwarmConfig();
+    config.providerApiKeys.deepseek = "sk-test-secret-123456";
+    writeFileSync(join(home, "config.json"), JSON.stringify(config, null, 2), "utf8");
+
+    const report = await buildDoctorReport({
+      workspace: root,
+      workflowPath: "missing-WORKFLOW.md"
+    });
+
+    assert.match(report.detail, /Provider Profiles/);
+    assert.match(report.detail, /provider=deepseek mode=openai-compatible/);
+    assert.match(report.detail, /endpoint=https:\/\/api\.deepseek\.com/);
+    assert.match(report.detail, /models=test-chat roles=planner,worker,aggregator/);
+    assert.match(report.detail, /api_key=config fingerprint=sha256:/);
+    assert.match(report.detail, /usage=supported cache_usage=supported/);
+    assert.doesNotMatch(report.detail, /sk-test-secret-123456/);
+    assert.doesNotMatch(report.detail, /Bearer /);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.SWARM_HOME;
+    } else {
+      process.env.SWARM_HOME = previousHome;
+    }
     rmSync(root, { recursive: true, force: true });
   }
 });

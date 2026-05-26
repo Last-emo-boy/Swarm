@@ -1,7 +1,7 @@
 import type { ExecutionResult } from "./orchestrator.js";
 import type { WorkSnapshot } from "../protocol/types.js";
 import type { ResultCardPromptCacheStatus } from "./prompt-cache-status.js";
-import { formatPromptCacheInline } from "./prompt-cache-status.js";
+import { buildPromptCacheRoi, formatPromptCacheInline, promptCacheTrendFromResultCardCache } from "./prompt-cache-status.js";
 import type { RecoveryAdvice } from "./recovery.js";
 import {
   formatRecoveryAdviceInline,
@@ -208,7 +208,8 @@ export function formatResultCardText(card: ResultCard): string {
     );
   }
   if (card.cache) {
-    lines.push("", `Cache: ${formatPromptCacheInline(card.cache)?.replace(/^cache:/, "") ?? card.cache.status}`);
+    const roi = buildPromptCacheRoi(promptCacheTrendFromResultCardCache(card.cache));
+    lines.push("", `Cache: ${formatPromptCacheInline(card.cache)?.replace(/^cache:/, "") ?? card.cache.status}${roi ? ` | ROI ${roi.saved_tokens}t${typeof roi.stable_prefix_ratio === "number" ? ` ${Math.round(roi.stable_prefix_ratio * 100)}% stable` : ""}` : ""}`);
   }
   return lines.join("\n");
 }

@@ -1,6 +1,7 @@
-import type { BlackboardEntry, RunAttempt, SwarmSession, WorkItem, WorkSnapshot } from "../protocol/types.js";
+import type { AgentCard, BlackboardEntry, RunAttempt, SwarmEnvelope, SwarmSession, SwarmTask, WorkItem, WorkSnapshot } from "../protocol/types.js";
 import { createEnvelope } from "../protocol/envelope.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
+import { workItemSourceAdapterMetadata } from "../runtime/source-adapter.js";
 import type { SessionRow } from "../storage/session-store.js";
 import { loadWorkflow, normalizeWorkflowConfig, renderWorkflowPrompt, type WorkflowDefinition, type WorkflowLoadResult, type WorkflowRuntimeConfig } from "./workflow.js";
 import { createWorkSourceFromConfig, isTerminalWorkSourceItem, workSourceIdentity, type LocalWorkRecord, type WorkSource } from "./work-source.js";
@@ -22,6 +23,8 @@ export type SymphonyDispatchRecord = {
   prompt?: string;
   blackboard_entry?: BlackboardEntry;
   attempt?: RunAttempt;
+  task_create_envelope?: SwarmEnvelope;
+  assignment_envelope?: SwarmEnvelope;
   snapshot?: WorkSnapshot;
   error?: string;
 };
@@ -87,6 +90,18 @@ type RetryRecord = {
   error?: string;
 };
 
+const SYMPHONY_SCHEDULER_AGENT_ID = "symphony.scheduler";
+const SYMPHONY_SCHEDULER_CARD: AgentCard = {
+  agent_id: SYMPHONY_SCHEDULER_AGENT_ID,
+  name: "Symphony Scheduler",
+  role: "scheduler",
+  capabilities: ["work_item.intake", "task.schedule", "claim.manage"],
+  status: "idle",
+  load: { running_tasks: 0, max_tasks: 1 },
+  reliability: { success_rate: 1, avg_latency_ms: 0 },
+  metadata: { kind: "symphony" }
+};
+
 export class SymphonyScheduler {
   private readonly ownerId = `symphony_scheduler_${process.pid}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   private readonly claimed = new Set<string>();
@@ -122,6 +137,11 @@ export class SymphonyScheduler {
 
   async tick(): Promise<SymphonyTickResult> {
     const workflow = loadWorkflow(this.input.workflowPath);
+    this.syncParticipant(workflow.ok ? "busy" : "degraded", {
+      workflow_path: workflow.ok ? workflow.workflow.path : this.input.workflowPath,
+      owner_id: this.ownerId,
+      phase: "tick"
+    });
     if (!workflow.ok) {
       const snapshot = this.snapshot(undefined);
       return { workflow, candidates: [], dispatched: [], skipped: [], failed: [], snapshot };
@@ -274,6 +294,17 @@ export class SymphonyScheduler {
       ? await this.runDispatchedWork(dispatched, config)
       : undefined;
 
+    const snapshot = this.snapshot(config);
+    this.syncParticipant(snapshot.running.length > 0 ? "busy" : "idle", {
+      workflow_path: workflow.workflow.path,
+      owner_id: this.ownerId,
+      phase: "tick_complete",
+      running: snapshot.running.length,
+      dispatched: dispatched.length,
+      failed: failed.length,
+      skipped: skipped.length
+    });
+
     return {
       workflow,
       candidates,
@@ -282,7 +313,7 @@ export class SymphonyScheduler {
       failed,
       preflight,
       runs,
-      snapshot: this.snapshot(config)
+      snapshot
     };
   }
 
@@ -366,28 +397,31 @@ export class SymphonyScheduler {
       }
     }
 
+    const symphonyTask: SwarmTask = {
+      task_id: "symphony.dispatch",
+      title: `Dispatch ${workItemLabel(item)}`,
+      description: "Symphony scheduler created a Work Kernel session for a local work item.",
+      objective: prompt,
+      type: "planning",
+      status: "assigned",
+      required_capabilities: ["code.implement", "code.review"],
+      inputs: {
+        work_item: item,
+        workflow_path: workflow.path,
+        workspace_path: prepared.workspace_path
+      },
+      expected_output: { format: "markdown" },
+      dependencies: [],
+      assigned_to: { agent_id: SYMPHONY_SCHEDULER_AGENT_ID, role: "scheduler" }
+    };
+
     const task = this.input.runtime.taskStateStore.upsert({
       session_id: session.session_id,
       swarm_id: session.swarm_id,
-      task: {
-        task_id: "symphony.dispatch",
-        title: `Dispatch ${workItemLabel(item)}`,
-        description: "Symphony scheduler created a Work Kernel session for a local work item.",
-        objective: prompt,
-        type: "planning",
-        status: "assigned",
-        required_capabilities: ["code.implement", "code.review"],
-        inputs: {
-          work_item: item,
-          workflow_path: workflow.path,
-          workspace_path: prepared.workspace_path
-        },
-        expected_output: { format: "markdown" },
-        dependencies: []
-      },
+      task: symphonyTask,
       status: "assigned",
       attempt: retryAttempt,
-      assigned_to: { agent_id: "symphony", role: "scheduler" }
+      assigned_to: { agent_id: SYMPHONY_SCHEDULER_AGENT_ID, role: "scheduler" }
     });
 
     const attempt = this.input.runtime.runAttemptStore.upsert({
@@ -408,27 +442,88 @@ export class SymphonyScheduler {
       }
     });
 
+    const workKey = workItemKey(item);
+    const claimKey = `symphony:${workKey}`;
+    const sourceIdentity = workSourceIdentity(item);
+    const sourceAdapter = {
+      schema_version: "swarm.source_adapter.event.v1",
+      source: "symphony",
+      source_id: sourceIdentity,
+      trust_level: "local",
+      dedupe_key: `${workflow.path}:${workKey}:${retryAttempt}`,
+      route: "symphony.intake",
+      metadata: workItemSourceAdapterMetadata(item)
+    };
+    const taskCreateEnvelope = createEnvelope({
+      swarm_id: session.swarm_id,
+      session_id: session.session_id,
+      task_id: task.task_id,
+      attempt: retryAttempt,
+      from: { agent_id: SYMPHONY_SCHEDULER_AGENT_ID, role: "scheduler" },
+      to: { agent_id: "router", role: "router" },
+      type: "task.create",
+      intent: "symphony.task.create",
+      idempotency_key: `${session.swarm_id}:${task.task_id}:symphony.task.create:${retryAttempt}`,
+      payload: {
+        source_adapter: sourceAdapter,
+        task: symphonyTask,
+        source: "symphony",
+        source_id: sourceIdentity,
+        trust_level: sourceAdapter.trust_level,
+        dedupe_key: sourceAdapter.dedupe_key,
+        source_identity: sourceIdentity,
+        work_item_key: workKey,
+        claim_key: claimKey,
+        workflow_path: workflow.path,
+        owner_id: SYMPHONY_SCHEDULER_AGENT_ID
+      },
+      trace: {
+        trace_id: session.session_id,
+        span_id: `span_symphony_task_create_${sanitizeAttemptId(task.task_id)}_${retryAttempt}`
+      }
+    });
+    await this.dispatchProtocolEnvelope(taskCreateEnvelope);
+
     const envelope = createEnvelope({
       swarm_id: session.swarm_id,
       session_id: session.session_id,
       task_id: task.task_id,
       attempt: retryAttempt,
-      from: { agent_id: "symphony", role: "scheduler" },
-      to: { agent_id: "main_swarm", role: "controller" },
+      from: { agent_id: "main_swarm", role: "controller" },
+      to: { agent_id: SYMPHONY_SCHEDULER_AGENT_ID, role: "scheduler" },
       type: "task.assign",
       intent: "symphony.dispatch",
       priority: priorityForItem(item),
       idempotency_key: `${session.swarm_id}:${task.task_id}:symphony.dispatch:${retryAttempt}`,
       payload: {
+        source_adapter: sourceAdapter,
+        source: "symphony",
+        source_id: sourceIdentity,
+        trust_level: sourceAdapter.trust_level,
+        dedupe_key: sourceAdapter.dedupe_key,
+        source_identity: sourceIdentity,
+        work_item_key: workKey,
+        claim_key: claimKey,
+        owner_id: SYMPHONY_SCHEDULER_AGENT_ID,
         work_item: item,
         workflow_path: workflow.path,
         workspace_path: prepared.workspace_path,
         prompt,
-        runner: "pending"
+        runner: "pending",
+        task: symphonyTask,
+        protocol: "symphony_source_adapter"
+      },
+      routing: {
+        mode: "direct",
+        require_ack: true
+      },
+      trace: {
+        trace_id: session.session_id,
+        span_id: `span_symphony_dispatch_${sanitizeAttemptId(task.task_id)}_${retryAttempt}`,
+        parent_span_id: taskCreateEnvelope.trace?.span_id
       }
     });
-    this.input.runtime.traceStore.append(envelope);
-    this.input.runtime.events.emitEvent({ type: "envelope", envelope });
+    await this.dispatchProtocolEnvelope(envelope);
 
     const blackboardEntry = this.input.runtime.blackboardStore.write({
       swarm_id: session.swarm_id,
@@ -438,14 +533,30 @@ export class SymphonyScheduler {
       type: "decision",
       value: {
         workflow_path: workflow.path,
+        source: "symphony",
+        source_identity: sourceIdentity,
+        work_item_key: workKey,
+        claim_key: claimKey,
+        owner_id: SYMPHONY_SCHEDULER_AGENT_ID,
+        status: "running",
         work_item: item,
         workspace_path: prepared.workspace_path,
         workspace_created_now: prepared.created_now,
         prompt,
-        attempt: retryAttempt
+        attempt: retryAttempt,
+        task_create_envelope_id: taskCreateEnvelope.id,
+        assignment_envelope_id: envelope.id
       },
-      created_by: { agent_id: "symphony", role: "scheduler" },
-      tags: ["symphony", "dispatch", "workflow", "work-kernel"]
+      created_by: { agent_id: SYMPHONY_SCHEDULER_AGENT_ID, role: "scheduler" },
+      tags: ["symphony", "dispatch", "workflow", "work-kernel", "claim"],
+      metadata: {
+        kind: "decision",
+        source_envelope_id: envelope.id,
+        source_envelope_ids: [taskCreateEnvelope.id, envelope.id],
+        claim_key: claimKey,
+        owner_agent_id: SYMPHONY_SCHEDULER_AGENT_ID,
+        source_agent_id: SYMPHONY_SCHEDULER_AGENT_ID
+      }
     });
 
     this.input.runtime.events.emitEvent({ type: "blackboard", entry: blackboardEntry });
@@ -464,8 +575,55 @@ export class SymphonyScheduler {
       prompt,
       blackboard_entry: blackboardEntry,
       attempt,
+      task_create_envelope: taskCreateEnvelope,
+      assignment_envelope: envelope,
       snapshot: this.input.runtime.getWorkSnapshot(session.session_id)
     };
+  }
+
+  private syncParticipant(status: AgentCard["status"], metadata: Record<string, unknown>): void {
+    this.input.runtime.registry?.register({
+      ...SYMPHONY_SCHEDULER_CARD,
+      status,
+      load: {
+        ...SYMPHONY_SCHEDULER_CARD.load,
+        running_tasks: status === "busy" ? 1 : 0
+      },
+      metadata: {
+        ...(SYMPHONY_SCHEDULER_CARD.metadata ?? {}),
+        ...metadata
+      }
+    });
+    this.input.runtime.agentActorStore?.registerSystemActor({
+      actor_id: SYMPHONY_SCHEDULER_AGENT_ID,
+      kind: "symphony",
+      name: "Symphony Scheduler",
+      role: "scheduler",
+      capabilities: SYMPHONY_SCHEDULER_CARD.capabilities,
+      status,
+      metadata
+    });
+    this.input.runtime.agentActorStore?.heartbeat(SYMPHONY_SCHEDULER_AGENT_ID, {
+      status,
+      metadata
+    });
+  }
+
+  private async dispatchProtocolEnvelope(envelope: SwarmEnvelope): Promise<void> {
+    if (this.input.runtime.router) {
+      try {
+        await this.input.runtime.router.dispatch(envelope);
+        return;
+      } catch (error) {
+        this.input.runtime.events.emitEvent({
+          type: "log",
+          level: "warn",
+          message: `Symphony protocol dispatch failed for ${envelope.type}: ${error instanceof Error ? error.message : String(error)}`
+        });
+      }
+    }
+    this.input.runtime.traceStore.append(envelope);
+    this.input.runtime.events.emitEvent({ type: "envelope", envelope });
   }
 
   private scheduleRetry(

@@ -6,6 +6,8 @@ import test from "node:test";
 import type { SwarmSession, WorkItem } from "../protocol/types.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import { RuntimeEvents, type RuntimeEvent } from "../runtime/events.js";
+import { AgentActorStore } from "../storage/agent-actor-store.js";
+import { EnvelopeDeliveryStore } from "../storage/envelope-delivery-store.js";
 import { BlackboardStore } from "../storage/blackboard-store.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { RunAttemptStore } from "../storage/run-attempt-store.js";
@@ -14,6 +16,9 @@ import { SymphonyClaimStore } from "../storage/symphony-claim-store.js";
 import { TaskStateStore } from "../storage/task-state-store.js";
 import { TraceStore } from "../storage/trace-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
+import { AgentRegistry } from "../runtime/registry.js";
+import { EnvelopeRouter } from "../runtime/router.js";
+import { getSymphonyStatus } from "./status.js";
 import { createSymphonyPolicy } from "./kernel.js";
 import { SymphonyScheduler } from "./scheduler.js";
 import { normalizeRecordToWorkItem, workSourceIdentity, type WorkSource } from "./work-source.js";
@@ -188,6 +193,63 @@ test("scheduler skips work items already claimed by another owner", async () => 
   }
 });
 
+test("scheduler dispatches work through durable participant mailbox and status projection", async () => {
+  const fixture = createFixture({ maxConcurrent: 2, withProtocol: true });
+  try {
+    const item = workItem("WK-501", "Todo");
+    const scheduler = new SymphonyScheduler({
+      runtime: fixture.runtime,
+      workflowPath: fixture.workflowPath,
+      source: sourceFor([item]),
+      createWorkspace: false
+    });
+
+    const result = await scheduler.tick();
+    assert.equal(result.dispatched.length, 1, JSON.stringify(result.failed));
+    const dispatch = result.dispatched[0];
+    assert(dispatch.task_create_envelope, "missing task.create envelope");
+    assert(dispatch.assignment_envelope, "missing task.assign envelope");
+    assert.equal(dispatch.assignment_envelope.from.agent_id, "main_swarm");
+    assert.equal(singleAgentId(dispatch.assignment_envelope.to), "symphony.scheduler");
+    assert.equal(dispatch.assignment_envelope.payload && typeof dispatch.assignment_envelope.payload === "object" && "protocol" in dispatch.assignment_envelope.payload
+      ? dispatch.assignment_envelope.payload.protocol
+      : undefined, "symphony_source_adapter");
+
+    const taskCreateDeliveries = fixture.runtime.envelopeDeliveryStore.list({ envelopeId: dispatch.task_create_envelope.id });
+    assert.deepEqual(taskCreateDeliveries.map((delivery) => `${delivery.recipient_agent_id}:${delivery.status}`), ["router:acked"]);
+
+    const assignmentDeliveries = fixture.runtime.envelopeDeliveryStore.list({ envelopeId: dispatch.assignment_envelope.id });
+    assert.deepEqual(assignmentDeliveries.map((delivery) => `${delivery.recipient_agent_id}:${delivery.status}`), ["symphony.scheduler:acked"]);
+
+    const mailbox = fixture.runtime.agentActorStore.mailbox("symphony.scheduler");
+    assert(mailbox.inbox_total >= 1);
+    assert(mailbox.inbox_acked >= 1);
+    assert.equal(mailbox.current_task_id, "symphony.dispatch");
+    assert(fixture.runtime.agentActorStore.listMailboxMessages("symphony.scheduler", "inbox")
+      .some((message) => message.envelope_id === dispatch.assignment_envelope?.id && message.type === "task.assign" && message.status === "acked"));
+
+    const actor = fixture.runtime.agentActorStore.get("symphony.scheduler");
+    assert.equal(actor?.kind, "symphony");
+    assert.equal(actor?.heartbeat_state, "fresh");
+    assert.equal(actor?.current_session_id, dispatch.session?.session_id);
+
+    const status = getSymphonyStatus({ runtime: fixture.runtime, workflowPath: fixture.workflowPath });
+    assert.equal(status.participant?.actor_id, "symphony.scheduler");
+    assert.equal(status.participant?.heartbeat_state, "fresh");
+    assert(status.participant?.mailbox.inbox_acked && status.participant.mailbox.inbox_acked >= 1);
+    assert.equal(status.scheduler.running.some((running) => running.key === workItemKey(item)), true);
+
+    const dispatchEntry = fixture.runtime.blackboardStore.query(dispatch.session!.session_id, { keyPrefix: "symphony.dispatch" })[0];
+    assert.equal(dispatchEntry?.metadata?.source_envelope_id, dispatch.assignment_envelope.id);
+    assert.deepEqual(dispatchEntry?.metadata?.source_envelope_ids, [
+      dispatch.task_create_envelope.id,
+      dispatch.assignment_envelope.id
+    ]);
+  } finally {
+    fixture.close();
+  }
+});
+
 type Fixture = {
   root: string;
   workspaceRoot: string;
@@ -198,7 +260,7 @@ type Fixture = {
   close(): void;
 };
 
-function createFixture(input: { maxConcurrent: number }): Fixture {
+function createFixture(input: { maxConcurrent: number; withProtocol?: boolean }): Fixture {
   const root = mkdtempSync(join(tmpdir(), "swarm-symphony-scheduler-"));
   const workspaceRoot = join(root, "workspaces");
   const workflowPath = join(root, "WORKFLOW.md");
@@ -210,6 +272,12 @@ function createFixture(input: { maxConcurrent: number }): Fixture {
     capturedEvents.push(event);
   });
   const interruptions: Fixture["interruptions"] = [];
+  const traceStore = new TraceStore(database);
+  const blackboardStore = new BlackboardStore(database);
+  const taskStateStore = new TaskStateStore(database);
+  const protocol = input.withProtocol
+    ? createProtocolRuntimeParts(database, events, traceStore, blackboardStore, taskStateStore)
+    : {};
   const runtime = {
     database,
     events,
@@ -217,9 +285,10 @@ function createFixture(input: { maxConcurrent: number }): Fixture {
     runAttemptStore: new RunAttemptStore(database),
     workspaceLeaseStore: new WorkspaceLeaseStore(database),
     symphonyClaimStore: new SymphonyClaimStore(database),
-    taskStateStore: new TaskStateStore(database),
-    traceStore: new TraceStore(database),
-    blackboardStore: new BlackboardStore(database),
+    taskStateStore,
+    traceStore,
+    blackboardStore,
+    ...protocol,
     settings: {
       runtime: {
         maxAgents: 4,
@@ -294,6 +363,67 @@ function createFixture(input: { maxConcurrent: number }): Fixture {
   };
 }
 
+function createProtocolRuntimeParts(
+  database: SwarmDatabase,
+  events: RuntimeEvents,
+  traceStore: TraceStore,
+  blackboardStore: BlackboardStore,
+  taskStateStore: TaskStateStore
+): Pick<SwarmRuntime, "registry" | "router" | "agentActorStore" | "envelopeDeliveryStore"> {
+  const agentActorStore = new AgentActorStore(database);
+  const envelopeDeliveryStore = new EnvelopeDeliveryStore(database);
+  const registry = new AgentRegistry(events, agentActorStore);
+  const mainCard = {
+    agent_id: "main_swarm",
+    name: "Main Swarm",
+    role: "coordinator",
+    capabilities: ["swarm.coordinate"],
+    status: "idle" as const,
+    load: { running_tasks: 0, max_tasks: 1 },
+    reliability: { success_rate: 1, avg_latency_ms: 0 },
+    metadata: { kind: "main" }
+  };
+  const symphonyCard = {
+    agent_id: "symphony.scheduler",
+    name: "Symphony Scheduler",
+    role: "scheduler",
+    capabilities: ["work_item.intake", "task.schedule", "claim.manage"],
+    status: "idle" as const,
+    load: { running_tasks: 0, max_tasks: 1 },
+    reliability: { success_rate: 1, avg_latency_ms: 0 },
+    metadata: { kind: "symphony" }
+  };
+  const routerCard = {
+    agent_id: "router",
+    name: "Envelope Router",
+    role: "router",
+    capabilities: ["envelope.dispatch"],
+    status: "idle" as const,
+    load: { running_tasks: 0, max_tasks: 1 },
+    reliability: { success_rate: 1, avg_latency_ms: 0 },
+    metadata: { kind: "router" }
+  };
+  registry.register(mainCard);
+  registry.register(symphonyCard);
+  registry.register(routerCard);
+  const router = new EnvelopeRouter(
+    registry,
+    traceStore,
+    events,
+    blackboardStore,
+    undefined,
+    taskStateStore,
+    envelopeDeliveryStore,
+    agentActorStore
+  );
+  return {
+    registry,
+    router,
+    agentActorStore,
+    envelopeDeliveryStore
+  } as Pick<SwarmRuntime, "registry" | "router" | "agentActorStore" | "envelopeDeliveryStore">;
+}
+
 function workflowText(workspaceRoot: string, maxConcurrent: number): string {
   return [
     "---",
@@ -322,6 +452,10 @@ function workItem(identifier: string, state: string): WorkItem {
     created_at: AT,
     updated_at: AT
   }, "fake");
+}
+
+function singleAgentId(to: { agent_id?: string } | Array<{ agent_id?: string }>): string | undefined {
+  return Array.isArray(to) ? to[0]?.agent_id : to.agent_id;
 }
 
 function sourceFor(candidates: WorkItem[], refreshed?: Map<string, WorkItem | undefined>): WorkSource {

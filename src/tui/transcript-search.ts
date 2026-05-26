@@ -64,6 +64,16 @@ export function updateTranscriptSearch(
   };
 }
 
+export function refreshTranscriptSearch(
+  previous: TranscriptSearchState,
+  index: TranscriptSearchIndex
+): TranscriptSearchState {
+  if (!previous.active) {
+    return previous;
+  }
+  return updateTranscriptSearch(previous, index, previous.query);
+}
+
 export function stepTranscriptSearch(state: TranscriptSearchState, delta: number): TranscriptSearchState {
   if (!state.matches.length) {
     return { ...state, currentIndex: -1 };
@@ -110,12 +120,42 @@ function searchTranscriptIndex(index: TranscriptSearchIndex, query: string): Tra
 }
 
 function transcriptSearchText(message: ConversationMessage): string {
-  return [
+  const base = [
     message.role,
     message.kind,
+    message.status,
     message.title,
     message.brief,
     message.preview,
     message.detail
   ].filter(Boolean).join("\n");
+  return [
+    base,
+    ...transcriptSearchAliases(base)
+  ].filter(Boolean).join("\n");
+}
+
+function transcriptSearchAliases(text: string): string[] {
+  const lower = text.toLowerCase();
+  const aliases: string[] = [];
+  if (/\berror\b|\bfailed\b|\bfailure\b/u.test(lower)) {
+    aliases.push("failed failure error");
+  }
+  if (/\bwarning\b|\bwarn\b|\bdegraded\b|\bpartial\b/u.test(lower)) {
+    aliases.push("warning warn degraded partial");
+  }
+  if (/\bcache_miss\b|\bprefix_drift\b|\bprompt cache\b|\bcached_input_tokens\b/u.test(lower)) {
+    aliases.push("cache miss prompt cache cache_miss");
+  }
+  if (/\blsp\b|\bfallback_reason\b|\bfallback_reasons\b|\bsemantic fallback\b/u.test(lower)) {
+    aliases.push("lsp fallback semantic fallback");
+  }
+  if (/\bgateway\b|\bsymphony\b|\blive_control\b|\boperator action\b|\bnot_supported\b/u.test(lower)) {
+    aliases.push("gateway action symphony control live_control");
+  }
+  const actionId = lower.match(/\b(action|message|task|session|correlation)[_-]?id[=:]\s*([a-z0-9._:-]+)/u);
+  if (actionId?.[2]) {
+    aliases.push(`action id ${actionId[2]}`);
+  }
+  return aliases;
 }

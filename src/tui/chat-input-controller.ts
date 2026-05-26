@@ -260,6 +260,29 @@ export function applyChatInputKey(
   return { state };
 }
 
+export function isChatInputPromptKey(character: string | undefined, key: ChatInputKey): boolean {
+  if (isGlobalControlKey(character, key) || isRawPaneCycleControlCharacter(character)) {
+    return false;
+  }
+  if (
+    key.escape ||
+    key.upArrow ||
+    key.downArrow ||
+    key.leftArrow ||
+    key.rightArrow ||
+    key.return ||
+    key.tab ||
+    key.backspace ||
+    key.delete
+  ) {
+    return true;
+  }
+  if (key.ctrl) {
+    return ["a", "e", "u", "k", "w", "y", "j"].includes(normalizeCtrlCharacter(character));
+  }
+  return Boolean(character);
+}
+
 function isGlobalControlKey(character: string | undefined, key: ChatInputKey): boolean {
   if (isRawGlobalControlCharacter(character)) {
     return true;

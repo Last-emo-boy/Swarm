@@ -111,6 +111,32 @@ export type LspRange = {
   end: LspPoint;
 };
 
+export type SemanticEvidence = {
+  schema_version: "swarm.semantic_evidence.v1";
+  evidence_id: string;
+  source: "lsp" | "fallback" | "file";
+  action: LspToolAction["type"] | string;
+  status: "success" | "partial" | "failed";
+  lsp_status?: string;
+  language?: string;
+  provider?: string;
+  root?: string;
+  symbol?: string;
+  range?: LspRange;
+  confidence: number;
+  staleness: "fresh" | "stale" | "fallback" | "unknown";
+  stale_reason?: string;
+  fallback_used: boolean;
+  fallback_reason?: string;
+  fallback_tools?: string[];
+  next_action?: string;
+  truncated?: boolean;
+  summary: string;
+  result_keys: string[];
+  primary_refs: string[];
+  changed_files?: string[];
+};
+
 export type LspOperationStatus = {
   code: "ready" | "partial" | "symbol_not_found" | "unsupported_language" | "request_timeout" | "failed" | string;
   language?: string;

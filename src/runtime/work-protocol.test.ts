@@ -95,6 +95,7 @@ test("approval events become permission records", () => {
   assert.equal(record.approval_id, "approval-1");
   assert.equal(record.risk_class, "r3");
   assert.equal(record.permission_decision, "ask");
+  assert.equal(record.governance?.actor_binding.actor_id, "worker:approval");
 });
 
 test("tool_result events become task records with sandbox metadata", () => {
@@ -427,7 +428,38 @@ function approvalRequest(): ToolApprovalRequest {
     permission_reason: "write requested",
     permission_mode: "ask",
     permission_name: "file.write",
-    permission_rule: "ask:file.write"
+    permission_rule: "ask:file.write",
+    governance: {
+      schema_version: "swarm.safety_governance.v1",
+      approval_id: "approval-1",
+      status: "requested",
+      action: "file.write",
+      risk: "write",
+      risk_class: "r3",
+      actor_id: "worker:approval",
+      actor_binding: {
+        actor_id: "worker:approval",
+        session_id: "session-1",
+        task_id: "task-1"
+      },
+      scope: {
+        kind: "write",
+        target: "src/runtime/work-protocol.ts",
+        actions: ["file.write"],
+        resources: ["src/runtime/work-protocol.ts"],
+        permission_name: "file.write",
+        risk_class: "r3"
+      },
+      ttl_ms: 900000,
+      expires_at: "2026-05-26T00:15:00.000Z",
+      permission_mode: "ask",
+      permission_decision: "ask",
+      permission_name: "file.write",
+      permission_rule: "ask:file.write",
+      decision_source: "test",
+      policy_evidence: ["risk=r3/write"],
+      created_at: "2026-05-26T00:00:00.000Z"
+    }
   };
 }
 

@@ -2,6 +2,14 @@ import type { CapabilityDescriptor, CapabilityProviderSnapshot } from "./types.j
 import type { SkillRecord } from "./skills.js";
 import type { PluginRecord } from "./plugins.js";
 import type { McpServerRecord } from "./mcp.js";
+import {
+  summarizeMcpRuntimeState,
+  summarizeSkillRuntimeState,
+  type McpRuntimeDiagnostic,
+  type McpRuntimeSettingsSnapshot,
+  type SkillRuntimeDiagnostic,
+  type SkillRuntimeSettingsSnapshot
+} from "./extension-diagnostics.js";
 
 export type CapabilityCatalogSummary = {
   totals: {
@@ -46,6 +54,7 @@ export type SkillCatalogSummary = {
     shadowedBy?: string;
   }>;
   diagnostics: Array<{ name: string; code?: string; message: string }>;
+  runtime?: SkillRuntimeDiagnostic;
 };
 
 export type PluginCatalogSummary = {
@@ -92,6 +101,7 @@ export type McpCatalogSummary = {
   }>;
   diagnostics: Array<{ serverId: string; code?: string; message: string }>;
   errors: Array<{ serverId: string; message: string }>;
+  runtime?: McpRuntimeDiagnostic;
 };
 
 export function summarizeCapabilityCatalog(
@@ -150,9 +160,12 @@ export function summarizeCapabilityCatalog(
   };
 }
 
-export function summarizeSkillCatalog(skills: SkillRecord[]): SkillCatalogSummary {
+export function summarizeSkillCatalog(
+  skills: SkillRecord[],
+  settings?: SkillRuntimeSettingsSnapshot
+): SkillCatalogSummary {
   const active = skills.filter((skill) => !skill.shadowedBy);
-  return {
+  const summary: SkillCatalogSummary = {
     totals: {
       skills: skills.length,
       active: active.length,
@@ -176,6 +189,12 @@ export function summarizeSkillCatalog(skills: SkillRecord[]): SkillCatalogSummar
       }))
     ).slice(0, 4)
   };
+  return settings
+    ? {
+        ...summary,
+        runtime: summarizeSkillRuntimeState({ settings, skills, summary })
+      }
+    : summary;
 }
 
 export function summarizePluginCatalog(plugins: PluginRecord[]): PluginCatalogSummary {
@@ -215,8 +234,11 @@ export function summarizePluginCatalog(plugins: PluginRecord[]): PluginCatalogSu
   };
 }
 
-export function summarizeMcpCatalog(servers: McpServerRecord[]): McpCatalogSummary {
-  return {
+export function summarizeMcpCatalog(
+  servers: McpServerRecord[],
+  settings?: McpRuntimeSettingsSnapshot
+): McpCatalogSummary {
+  const summary: McpCatalogSummary = {
     totals: {
       servers: servers.length,
       connected: servers.filter((server) => server.status === "connected").length,
@@ -254,4 +276,10 @@ export function summarizeMcpCatalog(servers: McpServerRecord[]): McpCatalogSumma
         message: server.lastError as string
       }))
   };
+  return settings
+    ? {
+        ...summary,
+        runtime: summarizeMcpRuntimeState({ settings, servers, summary })
+      }
+    : summary;
 }

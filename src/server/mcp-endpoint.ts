@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ActiveLiveControlResult, SwarmRuntime } from "../runtime/runtime.js";
 import type { RunMode } from "../runtime/execution-router.js";
+import { buildSessionWorkBoard, buildWorkspaceWorkBoard } from "../runtime/work-board.js";
 import { buildSessionSnapshot, buildWorkspaceSnapshot } from "./session-view.js";
 
 type JsonRpcRequest = {
@@ -79,8 +80,20 @@ const SWARM_MCP_TOOLS = [
       limit: { type: "number", description: "Recent session limit." }
     }),
     annotations: { readOnlyHint: true }
+  },
+  {
+    name: "swarm.work_board",
+    title: "Work Board",
+    description: "Read the unified Swarm/Symphony work board for a session or workspace.",
+    inputSchema: objectSchema({
+      session_id: { type: "string", description: "Optional session id." },
+      limit: { type: "number", description: "Recent session limit when reading the workspace board." }
+    }),
+    annotations: { readOnlyHint: true }
   }
 ];
+
+const MCP_GATEWAY_RESPONSE_SCHEMA_VERSION = "swarm.gateway.mcp.v1";
 
 export async function handleSwarmMcpEndpoint(options: McpEndpointOptions): Promise<void> {
   if (!options.runtime.settings.extensions.mcp.exposeGatewayServer) {
@@ -176,20 +189,49 @@ async function callSwarmTool(options: McpEndpointOptions, params: unknown): Prom
     const objective = stringArg(args, "objective");
     const mode = runModeArg(args.mode);
     const run = await options.startRun(objective, mode);
-    return textToolResult(`Started ${run.run_id}${run.session_id ? ` session=${run.session_id}` : ""} status=${run.status}`, run);
+    return textToolResult(`Started ${run.run_id}${run.session_id ? ` session=${run.session_id}` : ""} status=${run.status}`, withGatewayMcpContract(run, run.run_id));
   }
   if (name === "swarm.send_message") {
     const content = stringArg(args, "content");
+    const requestId = optionalString(args.request_id ?? args.requestId);
     const target = await options.runtime.sendUserMessage(content, {
       sessionId: optionalString(args.session_id),
-      requestId: optionalString(args.request_id ?? args.requestId)
+      requestId,
+      source: "mcp",
+      sourceId: "gateway.mcp",
+      sourceRoute: "mcp.tools.call.swarm.send_message",
+      sourceMode: "live",
+      correlationId: optionalString(args.correlation_id ?? args.correlationId) ?? requestId,
+      sourceMetadata: {
+        tool: name,
+        request_id: requestId
+      }
     });
-    return textToolResult(`Message applied to ${target.session_id} (${target.route})${target.control?.action ? `: ${target.control.action}` : ""}.`, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+    return textToolResult(
+      `Message applied to ${target.session_id} (${target.route})${target.control?.action ? `: ${target.control.action}` : ""}.`,
+      withGatewayMcpContract({ status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id ?? requestId, duplicate: target.duplicate === true, control: target.control }, requestId ?? target.control?.message_id)
+    );
   }
   if (name === "swarm.interrupt") {
     const content = optionalString(args.content) ?? "Interrupted through Swarm MCP endpoint.";
-    const target = options.interrupt(optionalString(args.session_id), content, optionalString(args.request_id ?? args.requestId));
-    return textToolResult(`Interrupt applied to ${target.session_id} (${target.route})${target.control?.action ? `: ${target.control.action}` : ""}.`, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+    const requestId = optionalString(args.request_id ?? args.requestId);
+    const target = options.runtime.requestInterrupt(content, {
+      sessionId: optionalString(args.session_id),
+      requestId,
+      source: "mcp",
+      sourceId: "gateway.mcp",
+      sourceRoute: "mcp.tools.call.swarm.interrupt",
+      sourceMode: "live",
+      correlationId: optionalString(args.correlation_id ?? args.correlationId) ?? requestId,
+      sourceMetadata: {
+        tool: name,
+        request_id: requestId
+      }
+    });
+    return textToolResult(
+      `Interrupt applied to ${target.session_id} (${target.route})${target.control?.action ? `: ${target.control.action}` : ""}.`,
+      withGatewayMcpContract({ status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id ?? requestId, duplicate: target.duplicate === true, control: target.control }, requestId ?? target.control?.message_id)
+    );
   }
   if (name === "swarm.approvals") {
     const sessionId = optionalString(args.session_id);
@@ -212,6 +254,14 @@ async function callSwarmTool(options: McpEndpointOptions, params: unknown): Prom
           limit,
           approvals: options.listApprovals(undefined, limit)
         });
+    return textToolResult(JSON.stringify(data, null, 2), data);
+  }
+  if (name === "swarm.work_board") {
+    const sessionId = optionalString(args.session_id);
+    const limit = positiveInteger(args.limit, 10);
+    const data = sessionId
+      ? buildSessionWorkBoard(options.runtime, sessionId)
+      : buildWorkspaceWorkBoard(options.runtime, { limit });
     return textToolResult(JSON.stringify(data, null, 2), data);
   }
   throw new Error(`Unknown Swarm MCP tool: ${name}`);
@@ -346,10 +396,19 @@ function textToolResult(text: string, data?: unknown): Record<string, unknown> {
   };
 }
 
+function withGatewayMcpContract(data: Record<string, unknown>, correlationId?: string): Record<string, unknown> {
+  return {
+    schema_version: MCP_GATEWAY_RESPONSE_SCHEMA_VERSION,
+    correlation_id: correlationId ?? optionalString(data.request_id) ?? optionalString(data.run_id) ?? optionalString(data.session_id) ?? "mcp",
+    ...data
+  };
+}
+
 function sessionSnapshot(runtime: SwarmRuntime, sessionId: string, approvals?: Record<string, unknown>): Record<string, unknown> {
+  const snapshot = buildSessionSnapshot(runtime, sessionId, { approvals });
   return approvals
-    ? { ...buildSessionSnapshot(runtime, sessionId), approvals }
-    : buildSessionSnapshot(runtime, sessionId);
+    ? { ...snapshot, approvals }
+    : snapshot;
 }
 
 function objectSchema(properties: Record<string, unknown>): Record<string, unknown> {

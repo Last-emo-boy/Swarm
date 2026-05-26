@@ -1,6 +1,8 @@
 import React from "react";
-import { Box, Text } from "ink";
-import { sectionLabel } from "../theme.js";
+import { Box, Text } from "../ui.js";
+import { sectionLabel, visualTokenColor, type TuiResolvedColor } from "../theme.js";
+import type { TuiDensity } from "../conversation-layout.js";
+import { ToolResponseSurface } from "./ToolResponseSurface.js";
 
 export function InspectorPane(props: {
   title?: string;
@@ -9,31 +11,43 @@ export function InspectorPane(props: {
   selected?: string;
   content: string;
   tabs?: string[];
+  density?: TuiDensity;
 }): React.ReactElement {
   const lines = props.content.split(/\r?\n/);
+  const density = props.density ?? "default";
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
-      <Box borderStyle="single" borderColor="cyan" paddingX={1} width="100%">
-        <Text color="cyan" bold>{sectionLabel(props.title ?? "Inspector")}</Text>
-        <Text color="gray" wrap="truncate">
+      <Box borderStyle="single" borderColor={inspectorBorderColor(props.title)} paddingX={1} width="100%">
+        <Text color={visualTokenColor("text.primary")} bold>{sectionLabel(props.title ?? "Inspector")}</Text>
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
           {"  "}
           {props.sessionId ? `session:${props.sessionId}` : "session:-"}
-          {props.route ? ` · route:${props.route}` : ""}
-          {props.selected ? ` · ${props.selected}` : ""}
+          {props.route && density !== "compact" ? ` · route:${props.route}` : ""}
+          {props.selected && density !== "compact" ? ` · ${props.selected}` : ""}
         </Text>
       </Box>
-      {props.tabs?.length ? (
-        <Text color="gray" wrap="truncate">
+      {props.tabs?.length && density !== "compact" ? (
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
           tabs: {props.tabs.join(" · ")}
         </Text>
       ) : null}
-      <Box borderStyle="single" borderColor="gray" flexDirection="column" paddingX={1} width="100%">
-        {lines.map((line, index) => (
-          <Text key={`${index}-${line}`} wrap="truncate">
-            {line || " "}
-          </Text>
-        ))}
+      <Box borderStyle="single" borderColor={visualTokenColor("surface.line")} flexDirection="column" paddingX={1} width="100%">
+        <ToolResponseSurface lines={lines} wrap="wrap" defaultColor="text.primary" />
       </Box>
     </Box>
   );
+}
+
+function inspectorBorderColor(title: string | undefined): TuiResolvedColor {
+  const normalized = (title ?? "").toLowerCase();
+  if (normalized.includes("command") || normalized.includes("output")) {
+    return visualTokenColor("role.tool");
+  }
+  if (normalized.includes("gateway") || normalized.includes("lsp") || normalized.includes("provider")) {
+    return visualTokenColor("role.gateway");
+  }
+  if (normalized.includes("approval") || normalized.includes("risk")) {
+    return visualTokenColor("status.warning");
+  }
+  return visualTokenColor("brand.focus");
 }

@@ -1,7 +1,10 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ui.js";
+import { visualTokenColor, type TuiColorRef } from "../theme.js";
 import type { ResultCard as RuntimeResultCard } from "../../runtime/result-card.js";
-import ScrollBox, { type ScrollBoxHandle } from "../ink/ScrollBox.js";
+import { conversationRendererContract } from "../conversation-layout.js";
+import ScrollBox, { type RendererScrollBoxHandle as ScrollBoxHandle } from "../renderer/components/ScrollBox.js";
+import { shortcutPhrase } from "../shortcuts.js";
 import { statusBadge } from "../theme.js";
 
 export function ConversationFullscreenLayout(props: {
@@ -14,11 +17,17 @@ export function ConversationFullscreenLayout(props: {
   completionOverlayRows?: number;
   bottomRows: number;
 }): React.ReactElement {
-  const bottomRows = Math.max(1, Math.min(props.bottomRows, props.rows - 1));
-  const scrollableRows = Math.max(1, props.rows - bottomRows);
-  const completionOverlayRows = Math.max(1, Math.min(props.completionOverlayRows ?? 1, scrollableRows));
+  const contract = conversationRendererContract({
+    rows: props.rows,
+    columns: props.columns,
+    bottomRows: props.bottomRows,
+    completionOverlayRows: props.completionOverlay ? props.completionOverlayRows ?? 1 : undefined
+  });
+  const scrollableRows = contract.zones.scrollRegion.height;
+  const bottomRows = contract.zones.bottomChrome.height;
+  const completionOverlay = contract.zones.completionOverlay;
   return (
-    <Box width={props.columns} height={props.rows} flexDirection="column" overflow="hidden">
+    <Box width={contract.columns} height={contract.rows} flexDirection="column" overflow="hidden">
       <Box
         flexGrow={1}
         flexShrink={1}
@@ -40,12 +49,12 @@ export function ConversationFullscreenLayout(props: {
         >
           {props.scrollable}
         </ScrollBox>
-        {props.completionOverlay && (
+        {props.completionOverlay && completionOverlay && (
           <Box
             position="absolute"
-            marginTop={Math.max(0, scrollableRows - completionOverlayRows)}
+            marginTop={completionOverlay.top}
             width="100%"
-            height={completionOverlayRows}
+            height={completionOverlay.height}
             flexDirection="column"
             overflow="hidden"
           >
@@ -104,8 +113,8 @@ export function ConversationStatusLine(props: {
     ? SPINNER_FRAMES[props.motionFrame % SPINNER_FRAMES.length]
     : "*";
   return (
-    <Text color="gray" wrap="truncate">
-      <Text color="cyan">{spinner} </Text>
+    <Text color={visualTokenColor("text.muted")} wrap="truncate">
+      <Text color={visualTokenColor("status.running")}>{spinner} </Text>
       {stripActivityPrefix(props.message)}
     </Text>
   );
@@ -119,13 +128,13 @@ export function ConversationResultLine(props: {
   const checks = props.card.checks.length;
   return (
     <Box flexDirection="column" width="100%">
-      <Text color="gray" wrap="truncate">
+      <Text color={visualTokenColor("text.muted")} wrap="truncate">
         <Text color={resultColor(props.card.status)}>{statusBadge(props.card.status)} </Text>
         {props.card.summary}
       </Text>
-      <Text color="gray" wrap="truncate">
+      <Text color={visualTokenColor("text.muted")} wrap="truncate">
         {changed} changed · {checks} checks
-        {props.detailAvailable ? " · Ctrl+O for details" : ""}
+        {props.detailAvailable ? ` · ${shortcutPhrase("detail.open", "details")}` : ""}
       </Text>
     </Box>
   );
@@ -135,8 +144,8 @@ function stripActivityPrefix(value: string): string {
   return value.replace(/^#\d+\s+/, "").trim();
 }
 
-function resultColor(status: RuntimeResultCard["status"]): "green" | "yellow" | "red" {
-  if (status === "completed") return "green";
-  if (status === "failed") return "red";
-  return "yellow";
+function resultColor(status: RuntimeResultCard["status"]): TuiColorRef {
+  if (status === "completed") return "status.success";
+  if (status === "failed") return "status.danger";
+  return "status.pending";
 }

@@ -6,7 +6,7 @@ import test from "node:test";
 import { defaultSwarmSettings } from "../config/settings.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 import type { OpenAIProvider } from "../providers/openai-provider.js";
-import { CodingAgentLoop, collectCodingLoopOutcomeSignals } from "./coding-agent-loop.js";
+import { CodingAgentLoop, collectCodingLoopOutcomeSignals, evaluateCodingLoopCacheLab } from "./coding-agent-loop.js";
 import { RuntimeEvents, type RuntimeEvent } from "./events.js";
 
 type GenerateTextRequest = Parameters<OpenAIProvider["generateText"]>[0];
@@ -88,6 +88,27 @@ test("coding loop treats repaired bare continue with final content as completed"
   assert.doesNotMatch(result.content, /Swarm could not repair/);
 });
 
+test("coding loop permits read-workspace files_touched without write evidence", async () => {
+  const events = new RuntimeEvents();
+  const recorded: RuntimeEvent[] = [];
+  events.onEvent((event) => recorded.push(event));
+
+  const result = await runCodingLoopWithFakeProvider(() => Promise.resolve(JSON.stringify({
+    status: "completed",
+    summary: "Repository scan complete",
+    message: "I inspected the repository README and source files without changing them.",
+    files_touched: ["README.md", "src/index.ts"],
+    next_actions: [],
+    tool_calls: []
+  })), { events });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.outcome?.changed_files, []);
+  assert.equal(recorded.some((event) =>
+    event.type === "tool_result" && event.action === "workspace.verify" && event.errorCode === "UNVERIFIED_WORKSPACE_CHANGE"
+  ), false);
+});
+
 test("coding loop still fails closed when repaired tool calls remain malformed", async () => {
   const result = await runCodingLoopWithFakeProvider(() => Promise.resolve(JSON.stringify({
     status: "continue",
@@ -151,6 +172,72 @@ test("worker coding loop annotates activity with the running worker identity", a
   );
   assert(thinking, "expected worker thinking activity");
   assert.equal(thinking.agent?.worker_id, "worker-identity-1");
+});
+
+test("coding loop exposes LSP semantic evidence for the next edit-planning turn", async () => {
+  const requests: GenerateTextRequest[] = [];
+
+  await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    const sawEvidence = promptInputText(request.user).includes("swarm.semantic_evidence.prompt.v1");
+    return Promise.resolve(JSON.stringify(sawEvidence
+      ? {
+          status: "completed",
+          summary: "Used semantic evidence",
+          message: "Used semantic evidence before planning the edit.",
+          files_touched: [],
+          next_actions: [],
+          tool_calls: []
+        }
+      : {
+          status: "continue",
+          summary: "Inspect symbol",
+          message: "Inspect symbol definition first.",
+          files_touched: [],
+          next_actions: [],
+          tool_calls: [
+            { id: "definition_add", action: "lsp.definition", inputs: { file: "src/use.ts", line: 2, column: 22 } }
+          ]
+        }));
+  }, {
+    setupWorkspace: (workspace) => {
+      mkdirSync(join(workspace, "src"), { recursive: true });
+      writeFileSync(join(workspace, "package.json"), "{\"type\":\"module\"}\n", "utf8");
+      writeFileSync(join(workspace, "tsconfig.json"), JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          skipLibCheck: true
+        },
+        include: ["src/**/*.ts"]
+      }, null, 2), "utf8");
+      writeFileSync(join(workspace, "src", "math.ts"), [
+        "export function add(left: number, right: number): number {",
+        "  return left + right;",
+        "}",
+        ""
+      ].join("\n"), "utf8");
+      writeFileSync(join(workspace, "src", "use.ts"), [
+        "import { add } from \"./math.js\";",
+        "export const total = add(1, 2);",
+        ""
+      ].join("\n"), "utf8");
+    }
+  });
+
+  assert.equal(requests.length, 2);
+  const context = promptBlockTextBySection(requests[1].user, "context");
+  assert.match(context, /swarm\.semantic_evidence\.prompt\.v1/);
+  assert.match(context, /"guidance": "Use these semantic_evidence ids when planning edits/);
+  assert.match(context, /"evidence_id": "sem:[a-f0-9]{12}"/);
+  assert.match(context, /"source": "lsp"/);
+  assert.match(context, /"action": "lsp\.definition"/);
+  assert.match(context, /"symbol": "add"/);
+  assert.match(context, /"range": \{/);
+  assert.match(context, /"staleness": "fresh"/);
+  assert.match(context, /src\/math\.ts/);
 });
 
 test("coding loop gives actionable recovery for unmatched file.edit replacement", async () => {
@@ -280,6 +367,66 @@ test("coding loop keeps durable context out of the cacheable system prefix", asy
   assert.equal(user[user.length - 1]?.cache, false);
 });
 
+test("coding loop keeps agent memory context in non-cacheable context block", async () => {
+  const firstRequests: GenerateTextRequest[] = [];
+  const secondRequests: GenerateTextRequest[] = [];
+  const workspace = mkdtempSync(join(tmpdir(), "swarm-coding-loop-agent-memory-"));
+  const complete = JSON.stringify({
+    status: "completed",
+    summary: "Done",
+    message: "Done",
+    files_touched: [],
+    next_actions: [],
+    tool_calls: []
+  });
+
+  try {
+    await runCodingLoopWithFakeProvider((request) => {
+      firstRequests.push(request);
+      return Promise.resolve(complete);
+    }, {
+      workspace,
+      agentMemoryContext: () => [
+        "Agent memory summary:",
+        "actor_id=worker:memory-test",
+        "cache_stable_summary_hash=amx:abc123def456",
+        "cache_stable_summary:",
+        "- Prefer session projection tests."
+      ].join("\n")
+    });
+    await runCodingLoopWithFakeProvider((request) => {
+      secondRequests.push(request);
+      return Promise.resolve(complete);
+    }, {
+      workspace,
+      agentMemoryContext: () => [
+        "Agent memory summary:",
+        "actor_id=worker:memory-test",
+        "cache_stable_summary_hash=amx:changed999999",
+        "cache_stable_summary:",
+        "- Prefer gateway projection tests."
+      ].join("\n")
+    });
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+
+  assert.equal(firstRequests.length, 1);
+  assert.equal(secondRequests.length, 1);
+  assert.equal(firstRequests[0].cache?.key, secondRequests[0].cache?.key);
+  const user = firstRequests[0].user;
+  assert(Array.isArray(user));
+  const contextBlock = promptBlockBySection(user, "context");
+  assert(contextBlock, "expected context block");
+  assert.equal(contextBlock.cache, false);
+  assert.match(contextBlock.text, /agent_memory_context/);
+  assert.match(contextBlock.text, /worker:memory-test/);
+  assert.match(contextBlock.text, /Prefer session projection tests/);
+  const cacheableText = user.filter((block) => block.cache).map((block) => block.text).join("\n");
+  assert.doesNotMatch(cacheableText, /worker:memory-test|Prefer session projection tests|agent_memory_context/);
+  assert.match(promptBlockTextBySection(secondRequests[0].user, "context"), /Prefer gateway projection tests/);
+});
+
 test("coding loop renders cacheable dynamic capability payload deterministically", async () => {
   const alpha = testCapability("mcp__alpha__read");
   const beta = testCapability("mcp__beta__read");
@@ -346,16 +493,235 @@ test("coding loop keeps volatile workspace state out of cacheable prompt blocks"
   const secondUser = secondRequests[0].user;
   assert(Array.isArray(firstUser));
   assert(Array.isArray(secondUser));
-  assert.equal(firstUser[0]?.cache, true);
-  assert.equal(secondUser[0]?.cache, true);
-  assert.equal(firstUser[0]?.text, secondUser[0]?.text);
-  assert.doesNotMatch(firstUser[0]?.text ?? "", /dirty|recent_files|src\/old\.ts|src\/new\.ts/);
+  const firstWorkspace = promptBlockTextBySection(firstUser, "workspace");
+  const secondWorkspace = promptBlockTextBySection(secondUser, "workspace");
+  assert.equal(promptBlockBySection(firstUser, "workspace")?.cache, true);
+  assert.equal(promptBlockBySection(secondUser, "workspace")?.cache, true);
+  assert.equal(firstWorkspace, secondWorkspace);
+  assert.doesNotMatch(firstWorkspace, /dirty|recent_files|src\/old\.ts|src\/new\.ts/);
+  assert.doesNotMatch(firstWorkspace, /index_manifests|\.swarm\/index/);
 
-  assert.equal(firstUser[1]?.cache, false);
-  assert.equal(secondUser[1]?.cache, false);
-  assert.match(firstUser[1]?.text ?? "", /src\/old\.ts/);
-  assert.match(secondUser[1]?.text ?? "", /src\/new\.ts/);
-  assert.match(secondUser[1]?.text ?? "", /2 dirty file\(s\)/);
+  const firstContext = promptBlockTextBySection(firstUser, "context");
+  const secondContext = promptBlockTextBySection(secondUser, "context");
+  assert.equal(promptBlockBySection(firstUser, "context")?.cache, false);
+  assert.equal(promptBlockBySection(secondUser, "context")?.cache, false);
+  assert.match(secondContext, /prompt_packing/);
+  assert.match(secondContext, /stable_prefix_sections/);
+  assert.match(secondContext, /context_order/);
+  assert.match(firstContext, /src\/old\.ts/);
+  assert.match(secondContext, /src\/new\.ts/);
+  assert.match(secondContext, /2 dirty file\(s\)/);
+});
+
+test("coding loop orders prompt sections for a stable cache prefix", async () => {
+  const requests: GenerateTextRequest[] = [];
+  await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    return Promise.resolve(JSON.stringify({
+      status: "completed",
+      summary: "Done",
+      message: "Done",
+      files_touched: [],
+      next_actions: [],
+      tool_calls: []
+    }));
+  }, {
+    durableContext: () => "Pinned detail that must remain outside the cacheable prefix.",
+    workspaceIndex: {
+      recentFiles: [{ path: "src/context.ts", size: 123, mtimeMs: 200 }],
+      gitStatusSummary: "1 dirty file(s)",
+      dirtyFiles: ["src/context.ts"]
+    }
+  });
+
+  const user = requests[0].user;
+  assert(Array.isArray(user));
+  assert.deepEqual(user.map((block) => block.section), ["system", "tools", "workspace", "task", "context", "volatile_footer"]);
+  assert.deepEqual(user.map((block) => block.cache === true), [true, true, true, false, false, false]);
+  assert.match(promptBlockTextBySection(user, "task"), /Think about how this project can be optimized/);
+  assert.match(promptBlockTextBySection(user, "context"), /Pinned detail/);
+  assert.doesNotMatch(
+    user.filter((block) => block.cache).map((block) => block.text).join("\n"),
+    /Pinned detail|remaining_turns|tool_results|live_user_messages/
+  );
+});
+
+test("coding loop schedules workspace context blocks deterministically with budget metadata", async () => {
+  const requests: GenerateTextRequest[] = [];
+  await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    return Promise.resolve(JSON.stringify({
+      status: "completed",
+      summary: "Done",
+      message: "Done",
+      files_touched: [],
+      next_actions: [],
+      tool_calls: []
+    }));
+  }, {
+    workspaceIndex: {
+      recentFiles: [
+        { path: "src/zeta.ts", size: 30, mtimeMs: 300 },
+        { path: "src/alpha.ts", size: 10, mtimeMs: 100 },
+        { path: "src/middle.ts", size: 20, mtimeMs: 200 }
+      ],
+      gitStatusSummary: "2 dirty file(s)",
+      dirtyFiles: ["src/zeta.ts", "README.md"]
+    }
+  });
+
+  const user = requests[0].user;
+  assert(Array.isArray(user));
+  const context = promptBlockTextBySection(user, "context");
+  assert.match(context, /"included_context_blocks": 5/);
+  assert.match(context, /"dropped_context_blocks": 0/);
+  assert.match(context, /"context_block_limit": 20/);
+  assert.match(context, /"context_order": "source,path,relevance_desc"/);
+  assert.match(context, /"volatile_tail_budget_tokens": 4000/);
+  assert.match(context, /"included_context_tokens_estimate": \d+/);
+  assert.match(context, /"prefix_identity_hint": "pcx:[a-f0-9]{12}"/);
+
+  const readmeIndex = context.indexOf('"path": "README.md"');
+  const dirtyZetaIndex = context.indexOf('"path": "src/zeta.ts"');
+  const recentAlphaIndex = context.indexOf('"path": "src/alpha.ts"');
+  const recentMiddleIndex = context.indexOf('"path": "src/middle.ts"');
+  const recentZetaIndex = context.lastIndexOf('"path": "src/zeta.ts"');
+  assert(readmeIndex >= 0);
+  assert(dirtyZetaIndex > readmeIndex);
+  assert(recentAlphaIndex > dirtyZetaIndex);
+  assert(recentMiddleIndex > recentAlphaIndex);
+  assert(recentZetaIndex > recentMiddleIndex);
+});
+
+test("coding loop records context overflow packing decisions", async () => {
+  const requests: GenerateTextRequest[] = [];
+  await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    return Promise.resolve(JSON.stringify({
+      status: "completed",
+      summary: "Done",
+      message: "Done",
+      files_touched: [],
+      next_actions: [],
+      tool_calls: []
+    }));
+  }, {
+    workspaceIndex: {
+      recentFiles: [],
+      gitStatusSummary: "25 dirty file(s)",
+      dirtyFiles: Array.from({ length: 25 }, (_, index) => `src/dirty-${String(index).padStart(2, "0")}.ts`)
+    }
+  });
+
+  const user = requests[0].user;
+  assert(Array.isArray(user));
+  const context = promptBlockTextBySection(user, "context");
+  assert.match(context, /"included_context_blocks": 20/);
+  assert.match(context, /"dropped_context_blocks": 5/);
+  assert.match(context, /"overflow_reason": "context_block_limit"/);
+  assert.match(context, /"dropped_context_tokens_estimate": \d+/);
+});
+
+test("coding loop cache lab distinguishes volatile tail changes from stable prefix drift", async () => {
+  const firstRequests: GenerateTextRequest[] = [];
+  const secondRequests: GenerateTextRequest[] = [];
+  const driftRequests: GenerateTextRequest[] = [];
+  const workspace = mkdtempSync(join(tmpdir(), "swarm-cache-lab-replay-"));
+  const complete = JSON.stringify({
+    status: "completed",
+    summary: "Done",
+    message: "Done",
+    files_touched: [],
+    next_actions: [],
+    tool_calls: []
+  });
+
+  try {
+    await runCodingLoopWithFakeProvider((request) => {
+      firstRequests.push(request);
+      return Promise.resolve(complete);
+    }, {
+      workspace,
+      workspaceIndex: {
+        recentFileName: "src/old.ts",
+        gitStatusSummary: "clean",
+        dirtyFiles: []
+      }
+    });
+    await runCodingLoopWithFakeProvider((request) => {
+      secondRequests.push(request);
+      return Promise.resolve(complete);
+    }, {
+      workspace,
+      workspaceIndex: {
+        recentFileName: "src/new.ts",
+        gitStatusSummary: "3 dirty file(s)",
+        dirtyFiles: ["src/new.ts", "README.md", "package.json"]
+      }
+    });
+    await runCodingLoopWithFakeProvider((request) => {
+      driftRequests.push(request);
+      return Promise.resolve(complete);
+    }, {
+      workspace,
+      workspaceIndex: {
+        recentFileName: "src/new.ts",
+        gitStatusSummary: "3 dirty file(s)",
+        dirtyFiles: ["src/new.ts", "README.md", "package.json"]
+      },
+      allowedTools: ["Read", "Grep"]
+    });
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+
+  const first = firstRequests[0];
+  const second = secondRequests[0];
+  const drift = driftRequests[0];
+  assert(Array.isArray(first.system));
+  assert(Array.isArray(first.user));
+  assert(Array.isArray(second.system));
+  assert(Array.isArray(second.user));
+  assert(Array.isArray(drift.system));
+  assert(Array.isArray(drift.user));
+
+  const lab = evaluateCodingLoopCacheLab([
+    {
+      label: "first",
+      cacheKey: first.cache?.key,
+      system: first.system,
+      user: first.user,
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 6000
+    },
+    {
+      label: "volatile-tail-change",
+      cacheKey: second.cache?.key,
+      system: second.system,
+      user: second.user,
+      cachedInputTokens: 4200,
+      totalInputWithCacheTokens: 6000
+    },
+    {
+      label: "tool-schema-drift",
+      cacheKey: drift.cache?.key,
+      system: drift.system,
+      user: drift.user,
+      cachedInputTokens: 0,
+      totalInputWithCacheTokens: 6000
+    }
+  ]);
+
+  assert.equal(lab.replays[0]?.missReason, "cold_start");
+  assert.equal(lab.replays[1]?.prefixDrift, false);
+  assert.deepEqual(lab.replays[1]?.changedSections, []);
+  assert.equal(lab.replays[1]?.hitRate, 0.7);
+  assert.equal(lab.replays[1]?.stablePrefixIdentity, lab.baseline?.stablePrefixIdentity);
+  assert(lab.replays[1]?.volatileTailTokensEstimate !== lab.replays[0]?.volatileTailTokensEstimate);
+  assert.equal(lab.replays[2]?.prefixDrift, true);
+  assert.equal(lab.replays[2]?.missReason, "prefix_drift");
+  assert.deepEqual(lab.replays[2]?.changedSections, ["system", "tools"]);
+  assert.match(lab.replays[2]?.stablePrefixIdentity ?? "", /^pcx:[a-f0-9]{12}$/);
 });
 
 async function captureCacheableUserPrompt(capabilities: CapabilityDescriptor[]): Promise<string> {
@@ -363,7 +729,7 @@ async function captureCacheableUserPrompt(capabilities: CapabilityDescriptor[]):
   await runCodingLoopWithFakeProvider((request) => {
     const user = request.user;
     assert(Array.isArray(user));
-    cacheableUserPrompt = user[0]?.text ?? "";
+    cacheableUserPrompt = promptBlockTextBySection(user, "tools");
     return Promise.resolve(JSON.stringify({
       status: "completed",
       summary: "Done",
@@ -391,7 +757,7 @@ async function capturePromptCacheShape(options: { allowedTools: string[]; worksp
     shape = {
       cacheKey: request.cache?.key,
       systemText: system.map((block) => block.text).join("\n"),
-      cacheableUserPrompt: user[0]?.text ?? ""
+      cacheableUserPrompt: promptBlockTextBySection(user, "tools")
     };
     return Promise.resolve(JSON.stringify({
       status: "completed",
@@ -436,6 +802,17 @@ function promptInputText(input: GenerateTextRequest["user"]): string {
   return input.map((block) => block.text).join("\n");
 }
 
+function promptBlockBySection(input: GenerateTextRequest["user"], section: string) {
+  assert(Array.isArray(input));
+  return input.find((block) => block.section === section);
+}
+
+function promptBlockTextBySection(input: GenerateTextRequest["user"], section: string): string {
+  const block = promptBlockBySection(input, section);
+  assert(block, `expected prompt block section ${section}`);
+  return block.text;
+}
+
 async function runCodingLoopWithFakeProvider(
   generateText: (request: GenerateTextRequest) => Promise<string>,
   options: {
@@ -443,12 +820,14 @@ async function runCodingLoopWithFakeProvider(
     role?: "main" | "worker";
     workerId?: string;
     durableContext?: (sessionId: string) => string | Promise<string>;
+    agentMemoryContext?: (sessionId: string) => string | Promise<string>;
     listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
     allowedTools?: string[];
     workspace?: string;
     setupWorkspace?: (workspace: string) => void;
     workspaceIndex?: {
-      recentFileName: string;
+      recentFileName?: string;
+      recentFiles?: Array<{ path: string; size?: number; mtimeMs?: number }>;
       gitStatusSummary: string;
       dirtyFiles: string[];
     };
@@ -475,6 +854,7 @@ async function runCodingLoopWithFakeProvider(
       maxToolCalls: 3,
       expectedSideEffects: "read_workspace",
       durableContext: options.durableContext,
+      agentMemoryContext: options.agentMemoryContext,
       listModelCapabilities: options.listModelCapabilities,
       allowedTools: options.allowedTools,
       workspaceIndex: options.workspaceIndex ? {
@@ -483,11 +863,7 @@ async function runCodingLoopWithFakeProvider(
         packageManager: "npm",
         detected: ["node", "typescript"],
         scripts: { test: "node --test", check: "tsc --noEmit" },
-        recentFiles: [{
-          path: join(workspace, options.workspaceIndex.recentFileName),
-          size: 123,
-          mtimeMs: Date.now()
-        }],
+        recentFiles: workspaceIndexRecentFiles(workspace, options.workspaceIndex),
         files: [],
         git: {
           isRepo: true,
@@ -517,4 +893,19 @@ async function runCodingLoopWithFakeProvider(
       rmSync(workspace, { recursive: true, force: true });
     }
   }
+}
+
+function workspaceIndexRecentFiles(
+  workspace: string,
+  input: {
+    recentFileName?: string;
+    recentFiles?: Array<{ path: string; size?: number; mtimeMs?: number }>;
+  }
+): Array<{ path: string; size: number; mtimeMs: number }> {
+  const files = input.recentFiles ?? (input.recentFileName ? [{ path: input.recentFileName }] : []);
+  return files.map((file, index) => ({
+    path: join(workspace, file.path),
+    size: file.size ?? 123,
+    mtimeMs: file.mtimeMs ?? index + 1
+  }));
 }

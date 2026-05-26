@@ -71,13 +71,20 @@ not as separate product UIs.
   gates, footer/status overlays, transcript search, foldable runtime rows, and
   narrow/short viewport checks, Symphony workspace boundary checks, and narrow
   LSP status/restart/logs plus TypeScript semantic fallback coverage.
+- Evidence-backed local Swarm v2 collaboration is implemented for the local
+  runtime surface: actor identity, mailbox delivery, task/handoff ownership,
+  blackboard claim/proposal/decision flow, Gateway/Symphony/LSP participants,
+  protocol debug timeline, `/swarm` workbench projection, real swarm offline
+  fake-provider evals, and legacy direct-path migration audit all have source
+  and test/eval anchors in the coverage matrix.
 - Implemented with partial or missing focused tests: checkpoint/revert source,
   broader end-to-end session creation coverage, and broad Blackboard semantics
   beyond the tested store/router query and mutation paths.
 - Deferred from this iteration: hook-race approval arbitration, broader
   checkpoint orchestration beyond the bounded Gateway checkpoint route, broader
   distributed ASP transport hardening beyond the verified local child-process
-  seam, and richer WorkSource write operations.
+  seam, cross-host distributed network execution, complex consensus beyond the
+  local protocol fixtures, external provider dogfood, and richer WorkSource write operations.
 
 Release-ready wording should stay bounded to the verified local surface:
 
@@ -95,6 +102,12 @@ Release-ready wording should stay bounded to the verified local surface:
   child-process IPC forwarding/reply/progress behavior, and execution routing
   policy. Network transport, cross-host routing, distributed trace, and a new
   distributed worker model are not completed claims.
+- "Swarm v2 collaboration" means the evidence-backed local Swarm v2
+  collaboration path with durable actors, mailboxes, ownership, blackboard
+  collaboration, source-adapter participants, protocol timeline diagnostics,
+  offline real swarm evals, and legacy direct-path audit. It is not a claim that
+  cross-host distributed network execution, complex consensus, or external
+  provider dogfood is complete.
 
 ## Milestones
 

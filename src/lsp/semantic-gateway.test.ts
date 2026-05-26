@@ -67,6 +67,19 @@ test("LSP semantic gateway serves compact TypeScript tool results", async () => 
     }, context);
     assert.equal(definition.status, "success");
     assert.match(definition.content ?? "", /src\/math\.ts/);
+    const definitionEvidence = recordValue(definition.metadata?.semantic_evidence);
+    assert.equal(definitionEvidence.schema_version, "swarm.semantic_evidence.v1");
+    assert.match(String(definitionEvidence.evidence_id), /^sem:[a-f0-9]{12}$/);
+    assert.equal(definitionEvidence.source, "lsp");
+    assert.equal(definitionEvidence.action, "lsp.definition");
+    assert.equal(definitionEvidence.status, "success");
+    assert.equal(definitionEvidence.lsp_status, "ready");
+    assert.equal(definitionEvidence.staleness, "fresh");
+    assert.equal(definitionEvidence.fallback_used, false);
+    assert.equal(definitionEvidence.symbol, "add");
+    assert.deepEqual(definitionEvidence.range, { start: { line: 2, column: 17 }, end: { line: 2, column: 20 } });
+    assert.deepEqual(definitionEvidence.result_keys, ["definitions"]);
+    assert.match(JSON.stringify(definitionEvidence.primary_refs), /src\/math\.ts/);
 
     const references = await runLocalTool({
       type: "lsp.references",
@@ -121,6 +134,46 @@ test("LSP semantic gateway gives actionable fallback for unsupported languages",
     assert.match(result.recoverySuggestion ?? "", /file\.grep/);
     assert.match(result.recoverySuggestion ?? "", /file\.read/);
     assert.match(result.recoverySuggestion ?? "", /provider for python/);
+    const evidence = recordValue(result.metadata?.semantic_evidence);
+    assert.equal(evidence.schema_version, "swarm.semantic_evidence.v1");
+    assert.match(String(evidence.evidence_id), /^sem:[a-f0-9]{12}$/);
+    assert.equal(evidence.source, "fallback");
+    assert.equal(evidence.action, "lsp.hover");
+    assert.equal(evidence.status, "failed");
+    assert.equal(evidence.lsp_status, "unsupported_language");
+    assert.equal(evidence.staleness, "fallback");
+    assert.equal(evidence.fallback_used, true);
+    assert.equal(evidence.fallback_reason, "unsupported_language");
+    assert.deepEqual(evidence.fallback_tools, ["file.grep", "file.read"]);
+    assert.equal(evidence.next_action, result.recoverySuggestion);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("LSP semantic evidence marks partial rename previews stale with changed files", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-lsp-rename-evidence-"));
+  try {
+    await writeFixtureProject(workspace);
+
+    const result = await runLocalTool({
+      type: "lsp.rename_preview",
+      file: "src/use.ts",
+      line: 2,
+      column: 22,
+      newName: "sum",
+      maxResults: 1
+    }, toolContext(workspace));
+
+    assert.equal(result.status, "partial");
+    const evidence = recordValue(result.metadata?.semantic_evidence);
+    assert.equal(evidence.schema_version, "swarm.semantic_evidence.v1");
+    assert.equal(evidence.action, "lsp.rename_preview");
+    assert.equal(evidence.symbol, "add");
+    assert.equal(evidence.staleness, "stale");
+    assert.match(String(evidence.stale_reason), /truncated|partial/);
+    assert.deepEqual(evidence.changed_files, ["src/use.ts"]);
+    assert.deepEqual(evidence.range, { start: { line: 2, column: 22 }, end: { line: 2, column: 25 } });
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
@@ -158,4 +211,9 @@ function toolContext(workspace: string): LocalToolContext {
   const settings = defaultSwarmSettings();
   settings.permissions.defaultMode = "full-auto";
   return { workspace, settings };
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  assert(value && typeof value === "object" && !Array.isArray(value), "expected record value");
+  return value as Record<string, unknown>;
 }

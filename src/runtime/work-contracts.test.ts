@@ -88,11 +88,15 @@ test("buildWorkContractWorker derives scoped-write policy from file scope when t
     workerId: "worker-1",
     status: "completed",
     fileScope: ["src/agents/worker-loop-contract.ts"]
-  }));
+  }), { generatedAt: NOW });
 
   assert.equal(contract.worker_id, "worker-1");
   assert.equal(contract.write_policy, "scoped_write");
   assert.deepEqual(contract.file_scope, ["src/agents/worker-loop-contract.ts"]);
+  assert.equal(contract.claim_owner, "session-1");
+  assert.equal(contract.heartbeat_state, "complete");
+  assert.equal(contract.resume_command, "/continue-agent worker-1 inspect the completed result");
+  assert.equal(contract.last_artifact, undefined);
 });
 
 test("buildWorkContractWorker prefers explicit task packet write policy", () => {
@@ -101,9 +105,11 @@ test("buildWorkContractWorker prefers explicit task packet write policy", () => 
     status: "running",
     fileScope: ["src/runtime/runtime.ts"],
     taskPacket: taskPacket({ writePolicy: "read_only", fileScope: ["src/runtime/runtime.ts"] })
-  }));
+  }), { generatedAt: NOW });
 
   assert.equal(contract.write_policy, "read_only");
+  assert.equal(contract.heartbeat_state, "fresh");
+  assert.equal(contract.resume_command, "/continue-agent worker-1 continue from the last known state");
 });
 
 test("buildWorkContractHandoff maps task packet policy and scope", () => {
@@ -112,7 +118,7 @@ test("buildWorkContractHandoff maps task packet policy and scope", () => {
     status: "active",
     fileScope: ["src/symphony/scheduler.ts"],
     writePolicy: "scoped_write"
-  }));
+  }), { generatedAt: NOW });
 
   assert.equal(contract.handoff_id, "handoff-1");
   assert.equal(contract.write_policy, "scoped_write");
@@ -122,12 +128,12 @@ test("buildWorkContractHandoff maps task packet policy and scope", () => {
 test("summarizeWorkContracts includes active handoff scope in scoped targets", () => {
   const summary = summarizeWorkContracts({
     workers: [
-      buildWorkContractWorker(worker({ workerId: "running", status: "running", fileScope: ["src/runtime/runtime.ts"] })),
-      buildWorkContractWorker(worker({ workerId: "failed", status: "failed", fileScope: [] }))
+      buildWorkContractWorker(worker({ workerId: "running", status: "running", fileScope: ["src/runtime/runtime.ts"] }), { generatedAt: NOW }),
+      buildWorkContractWorker(worker({ workerId: "failed", status: "failed", fileScope: [] }), { generatedAt: NOW })
     ],
     handoffs: [
-      buildWorkContractHandoff(handoff({ handoffId: "active", status: "active", fileScope: ["docs/WORK_KERNEL.md"] })),
-      buildWorkContractHandoff(handoff({ handoffId: "failed", status: "failed", fileScope: ["ignored.md"] }))
+      buildWorkContractHandoff(handoff({ handoffId: "active", status: "active", fileScope: ["docs/WORK_KERNEL.md"] }), { generatedAt: NOW }),
+      buildWorkContractHandoff(handoff({ handoffId: "failed", status: "failed", fileScope: ["ignored.md"] }), { generatedAt: NOW })
     ]
   });
 

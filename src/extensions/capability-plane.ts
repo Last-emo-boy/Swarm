@@ -7,6 +7,7 @@ import { PluginProvider, type PluginRecord } from "./plugins.js";
 import { SkillProvider, type ActivatedSkill, type SkillRecord } from "./skills.js";
 import { SlashCommandProvider } from "./slash-commands.js";
 import { CustomCommandProvider, type CustomCommandRecord } from "./custom-commands.js";
+import { LspCapabilityProvider } from "../lsp/capability-provider.js";
 import type {
   CapabilityDescriptor,
   CapabilityFilter,
@@ -17,15 +18,18 @@ export class CapabilityPlane {
   readonly registry = new CapabilityRegistry();
   readonly skills: SkillProvider;
   readonly mcp: McpClientProvider;
+  readonly lsp: LspCapabilityProvider;
   readonly plugins: PluginProvider;
   readonly commands: CustomCommandProvider;
 
   constructor(readonly settings: SwarmSettings, readonly workspace: string) {
     this.skills = new SkillProvider({ settings, workspace });
     this.mcp = new McpClientProvider({ settings, workspace });
+    this.lsp = new LspCapabilityProvider({ workspace });
     this.plugins = new PluginProvider({ settings, workspace });
     this.commands = new CustomCommandProvider({ settings, workspace });
     this.registry.register(new BuiltinLocalToolProvider());
+    this.registry.register(this.lsp);
     this.registry.register(new SlashCommandProvider());
     this.registry.register(this.commands);
     this.registry.register(new AgentSpecProvider({ settings, workspace }));
@@ -47,7 +51,7 @@ export class CapabilityPlane {
   }
 
   refresh(providerId?: string): Promise<CapabilityProviderSnapshot[]> {
-    return this.registry.refresh(providerId?.startsWith("mcp:") ? "mcp" : providerId);
+    return this.registry.refresh(providerRegistryId(providerId));
   }
 
   listProviders(): Promise<CapabilityProviderSnapshot[]> {
@@ -107,6 +111,19 @@ export class CapabilityPlane {
   dispose(): Promise<void> {
     return this.registry.dispose();
   }
+}
+
+function providerRegistryId(providerId?: string): string | undefined {
+  if (!providerId) {
+    return undefined;
+  }
+  if (providerId.startsWith("mcp:")) {
+    return "mcp";
+  }
+  if (providerId.startsWith("lsp:")) {
+    return "lsp";
+  }
+  return providerId;
 }
 
 function applyCapabilitySettings(capability: CapabilityDescriptor, settings: SwarmSettings): CapabilityDescriptor {

@@ -2,6 +2,7 @@ import type { RiskClass } from "../protocol/types.js";
 
 export type CapabilityKind =
   | "local_tool"
+  | "lsp_tool"
   | "mcp_tool"
   | "mcp_resource"
   | "mcp_prompt"
@@ -15,6 +16,7 @@ export type CapabilitySource =
   | "user"
   | "project"
   | "workspace"
+  | "lsp"
   | "mcp"
   | "plugin";
 

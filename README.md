@@ -33,6 +33,12 @@ Current verified surface:
 - CLI/TUI first local coding product with result cards, resume/memory checks,
   slash command operator surfaces, prompt-cache status, scoped-write/read-only
   policy, local LSP semantic helpers, and local Work Kernel inspection.
+- Evidence-backed local Swarm v2 collaboration: actor identity, mailbox
+  delivery, ownership leases, handoff transfer, blackboard claim/proposal/
+  decision flow, Gateway/Symphony/LSP capability participants, protocol debug
+  timeline, `/swarm` workbench projection, real swarm offline evals, and legacy
+  direct-path migration audit are implemented and covered by focused local
+  tests/evals.
 - Local Gateway automation for runs, event streams, live approvals, sessions,
   workers, handoffs, capabilities, bounded checkpoint routes, and Symphony
   route smoke.
@@ -58,6 +64,9 @@ Still intentionally bounded:
 - Broader distributed ASP transport is still planned: network/cross-host
   routing, a new distributed worker model, retry-different-worker health
   policy, and distributed trace are not completed product claims.
+- Cross-host distributed network execution, complex consensus beyond the local
+  protocol fixtures, and external provider dogfood remain deferred or optional;
+  the default release gate does not require paid provider calls.
 - Hook-race approval arbitration and rich WorkSource writes remain deferred.
 
 ## Quick Start
@@ -851,8 +860,24 @@ Key environment variables:
 npm run check     # TypeScript compilation check, no emit
 npm run build     # Compile to dist/
 npm run evals     # Build and run local product regression evals
+npm run release:gate # Build and run the offline Claude Code parity release gate
 npm run smoke     # Build and run end-to-end smoke test
 ```
+
+The parity release gate is offline by default. It reports the current
+operator-grade scorecard for TUI trust, cache yield, provider setup,
+Gateway/Symphony control-plane evidence, LSP fallback, artifact/debug-loop
+coverage, and the evidence-backed local Swarm v2 collaboration path without
+calling a live provider. `node dist/evals/local-evals.js --real-swarm` covers
+bugfix, feature, refactor, conflict, handoff, Symphony intake, LSP fallback, and
+cache reuse scenarios with fake-provider metrics. External provider dogfood is
+optional. The report also includes a regression triage queue with evidence
+links, suspected owner files, and next task suggestions. The same gate is
+available in the TUI with `/evals --release-gate`.
+
+Local planning and dogfood artifacts under `.workflow/` and
+`.swarm/local-tests/` are working-state evidence. Keep them local unless a task
+explicitly asks for those artifacts to be published.
 
 Package publishing/install uses the `files` allowlist in `package.json`, so
 global installs include `dist/` and this README.

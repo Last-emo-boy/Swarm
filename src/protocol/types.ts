@@ -84,15 +84,41 @@ export type SwarmMessageType =
   | "agent.update_status"
   | "agent.capability_query"
   | "agent.capability_response"
+  | "approval.request"
+  | "approval.grant"
+  | "approval.deny"
+  | "user.message"
   | "task.create"
   | "task.assign"
   | "task.accept"
   | "task.reject"
   | "task.start"
   | "task.progress"
+  | "task.checkpoint"
   | "task.result"
   | "task.fail"
   | "task.cancel"
+  | "task.supersede"
+  | "handoff.request"
+  | "handoff.accept"
+  | "handoff.reject"
+  | "handoff.renew"
+  | "handoff.checkpoint"
+  | "handoff.return"
+  | "handoff.take_back"
+  | "handoff.conflict"
+  | "handoff.timeout"
+  | "negotiation.propose"
+  | "negotiation.counter"
+  | "negotiation.accept"
+  | "negotiation.decline"
+  | "negotiation.delegate"
+  | "negotiation.escalate"
+  | "squad.create"
+  | "squad.join"
+  | "squad.leave"
+  | "squad.role.assign"
+  | "squad.dissolve"
   | "bid.request"
   | "bid.submit"
   | "bid.award"
@@ -101,6 +127,14 @@ export type SwarmMessageType =
   | "blackboard.update"
   | "blackboard.lock"
   | "blackboard.unlock"
+  | "blackboard.subscribe"
+  | "blackboard.claim"
+  | "blackboard.release"
+  | "blackboard.proposal"
+  | "blackboard.review"
+  | "blackboard.decision"
+  | "blackboard.result"
+  | "blackboard.notification"
   | "review.request"
   | "review.result"
   | "consensus.request"
@@ -299,6 +333,130 @@ export type BlackboardEntry = {
   visibility: "private" | "team" | "public";
   version: number;
   tags?: string[];
+  metadata?: BlackboardCollaborationMetadata;
+};
+
+export type BlackboardCollaborationKind =
+  | "write"
+  | "update"
+  | "lock"
+  | "unlock"
+  | "claim"
+  | "claim_release"
+  | "claim_conflict"
+  | "proposal"
+  | "review"
+  | "decision"
+  | "result"
+  | "subscription";
+
+export type BlackboardClaimStatus = "claimed" | "released" | "expired" | "conflict";
+export type BlackboardDecisionStatus = "proposed" | "reviewed" | "accepted" | "rejected" | "superseded";
+export type BlackboardDecisionPolicyMode =
+  | "single_owner"
+  | "reviewer_approval"
+  | "quorum"
+  | "user_approval"
+  | "timeout_fallback";
+export type BlackboardDecisionPolicyStatus =
+  | "open"
+  | "waiting"
+  | "satisfied"
+  | "blocked"
+  | "timeout_fallback";
+
+export type BlackboardDecisionPolicy = {
+  mode: BlackboardDecisionPolicyMode;
+  risk_level?: RiskClass;
+  required_reviewers?: string[];
+  quorum?: number;
+  timeout_ms?: number;
+  fallback_status?: Extract<BlackboardDecisionStatus, "accepted" | "rejected" | "superseded">;
+  user_approval_required?: boolean;
+  reason?: string;
+};
+
+export type BlackboardDecisionVote = {
+  voter?: string;
+  vote: "approve" | "reject" | "abstain" | string;
+  confidence?: number;
+  reason?: string;
+  source_envelope_id?: string;
+};
+
+export type BlackboardDecisionOutcome = {
+  status: BlackboardDecisionStatus;
+  reason?: string;
+  votes?: BlackboardDecisionVote[];
+  policy_status?: BlackboardDecisionPolicyStatus;
+  supersedes_decision_id?: string;
+};
+
+export type BlackboardCollaborationMetadata = {
+  kind?: BlackboardCollaborationKind;
+  source_envelope_id?: string;
+  source_envelope_ids?: string[];
+  correlation_id?: string;
+  reply_to?: string;
+  owner_agent_id?: string;
+  source_agent_id?: string;
+  claim_key?: string;
+  claim_status?: BlackboardClaimStatus;
+  decision_status?: BlackboardDecisionStatus;
+  decision_policy?: BlackboardDecisionPolicy;
+  decision_policy_status?: BlackboardDecisionPolicyStatus;
+  decision_waiting_for?: string[];
+  decision_votes?: BlackboardDecisionVote[];
+  decision_outcome?: BlackboardDecisionOutcome;
+  proposal_id?: string;
+  review_id?: string;
+  decision_id?: string;
+  result_id?: string;
+  subscription_id?: string;
+  target_key?: string;
+  target_tags?: string[];
+  expires_at?: string;
+  released_at?: string;
+  conflict_with_entry_id?: string;
+  conflict_reason?: string;
+  [key: string]: unknown;
+};
+
+export type BlackboardSubscriptionFilter = {
+  key?: string;
+  keyPrefix?: string;
+  tag?: string;
+  taskId?: string;
+  agentId?: string;
+  claimKey?: string;
+  proposalId?: string;
+  kind?: BlackboardCollaborationKind;
+  decisionStatus?: BlackboardDecisionStatus;
+};
+
+export type BlackboardSubscriptionRecord = {
+  subscription_id: string;
+  session_id: string;
+  subscriber: AgentAddress;
+  filter: BlackboardSubscriptionFilter;
+  source_envelope_id?: string;
+  correlation_id?: string;
+  created_at: string;
+  expires_at?: string;
+};
+
+export type BlackboardEventRecord = {
+  event_id: string;
+  swarm_id: string;
+  session_id: string;
+  task_id?: string;
+  key: string;
+  kind: BlackboardCollaborationKind;
+  actor: AgentAddress;
+  source_envelope_id?: string;
+  correlation_id?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
 };
 
 export type ReviewResult = {
@@ -381,12 +539,39 @@ export type WorkContractWorker = {
   agent_spec_id?: string;
   invocation_mode?: string;
   handoff_id?: string;
+  claim_owner?: string;
+  lease_age?: WorkLeaseAge;
+  heartbeat_state?: WorkHeartbeatState;
+  stale_reason?: string;
+  resume_command?: string;
+  last_artifact?: string;
   write_policy?: "read_only" | "scoped_write" | "workspace_write";
   file_scope: string[];
   requested_by?: string;
   blocked_reason?: string;
   updated_at: string;
 };
+
+export type WorkLeaseAge = {
+  since: string;
+  age_ms: number;
+  label: string;
+};
+
+export type WorkHeartbeatState = "fresh" | "stale" | "missing" | "blocked" | "stopped" | "complete";
+
+export type HandoffProtocolStatus =
+  | "requested"
+  | "accepted"
+  | "rejected"
+  | "renewed"
+  | "checkpointed"
+  | "returned"
+  | "taken_back"
+  | "failed"
+  | "stale"
+  | "conflict"
+  | "timeout";
 
 export type WorkContractHandoff = {
   handoff_id: string;
@@ -395,6 +580,20 @@ export type WorkContractHandoff = {
   target_agent_spec_id: string;
   reason: string;
   status: "active" | "returned" | "taken_back" | "failed";
+  protocol_status?: HandoffProtocolStatus;
+  requester_agent_id?: string;
+  owner_agent_id?: string;
+  claim_owner?: string;
+  scope: string[];
+  lease_age?: WorkLeaseAge;
+  heartbeat_state?: WorkHeartbeatState;
+  stale_reason?: string;
+  conflict_reason?: string;
+  deadline_at?: string;
+  lease_expires_at?: string;
+  accepted_at?: string;
+  last_checkpoint?: unknown;
+  return_contract?: unknown;
   write_policy: "read_only" | "scoped_write" | "workspace_write";
   file_scope: string[];
   updated_at: string;
@@ -479,6 +678,14 @@ export type WorkSnapshot = {
   context_summary?: {
     entries: number;
     compactions: number;
+    health: "empty" | "active" | "compacted";
+    last_learned?: {
+      entry_id: string;
+      kind: string;
+      role: string;
+      created_at: string;
+    };
+    last_compacted_at?: string;
     latest_compaction?: {
       compaction_id: string;
       pre_tokens: number;

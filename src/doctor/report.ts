@@ -7,6 +7,7 @@ import {
   loadSwarmSettings
 } from "../config/settings.js";
 import { summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
+import { buildProviderProfiles, formatProviderProfiles } from "../providers/provider-profile.js";
 import type { WorkItem } from "../protocol/types.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import { runSymphonyPreflight } from "../symphony/preflight.js";
@@ -67,6 +68,19 @@ export async function buildDoctorReport(input: {
       item.configured ? "OK" : "FAIL",
       `${item.role ?? "model"}=${item.modelRef} provider=${item.providerId || "-"}${item.reason ? ` - ${item.reason}` : ""}`
     );
+  }
+
+  lines.push("", "Provider Profiles");
+  for (const line of formatProviderProfiles(buildProviderProfiles({ settings, config }))) {
+    if (line.startsWith("OK ")) {
+      add("OK", line.slice(3));
+    } else if (line.startsWith("WARN ")) {
+      add("WARN", line.slice(5));
+    } else if (line.startsWith("FAIL ")) {
+      add("FAIL", line.slice(5));
+    } else {
+      lines.push(line);
+    }
   }
 
   lines.push("", "Permissions");

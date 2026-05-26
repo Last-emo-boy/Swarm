@@ -77,6 +77,7 @@ test("formatResumeWorkContracts includes active, resumable, and handoff counts",
       status: "active",
       write_policy: "scoped_write",
       file_scope: ["src/runtime/runtime.ts"],
+      scope: ["src/runtime/runtime.ts"],
       updated_at: "2026-05-11T00:00:00.000Z"
     }]
   };

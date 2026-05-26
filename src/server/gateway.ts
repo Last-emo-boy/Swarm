@@ -1,20 +1,28 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
-import type { SwarmSession } from "../protocol/types.js";
+import { createEnvelope } from "../protocol/envelope.js";
+import { approvalEnvelopeForRequest } from "../runtime/safety-governance.js";
+import type { SwarmEnvelope, SwarmMessageType, SwarmSession, WorkItem } from "../protocol/types.js";
 import { SwarmRuntime } from "../runtime/runtime.js";
 import type { RuntimeEvent } from "../runtime/events.js";
 import type { SandboxWritePolicy } from "../runtime/sandbox-policy.js";
 import { buildWorkRecordFromRuntimeEvent, type WorkProtocolRecord } from "../runtime/work-protocol.js";
+import { buildSessionWorkBoard, buildWorkspaceWorkBoard } from "../runtime/work-board.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
+import type { SessionRow } from "../storage/session-store.js";
 import { installPluginRoot, removePluginRoot, setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
+import { createSymphonyActionFact, type SymphonyActionFact } from "../symphony/action-lifecycle.js";
+import { SYMPHONY_SESSION_SOURCES, workItemKey } from "../symphony/work-item.js";
 import type { CapabilityFilter } from "../extensions/types.js";
 import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
+import { mcpSettingsSnapshot } from "../extensions/mcp-report.js";
+import { skillSettingsSnapshot } from "../extensions/skill-report.js";
 import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
 import { buildSessionSnapshot, buildWorkspaceSnapshot } from "./session-view.js";
 import {
@@ -50,6 +58,7 @@ export type GatewayOptions = {
 type GatewayRunStatus = "starting" | "running" | "completed" | "failed";
 
 type GatewayRun = {
+  schema_version: typeof GATEWAY_RESPONSE_SCHEMA_VERSION;
   run_id: string;
   session_id?: string;
   objective: string;
@@ -85,12 +94,83 @@ type SseClient = {
   id: string;
   sessionId?: string;
   protocol: "runtime" | "work";
+  lastEventId?: number;
+  replayWindow: number;
+  missedEventsHint?: GatewayReplayMissedEventsHint;
   response: ServerResponse;
+};
+
+type GatewayEventBufferEntry = {
+  id: number;
+  at: string;
+  event: RuntimeEvent;
+  work: WorkProtocolRecord;
+};
+
+type SymphonyOperatorAction = "pause" | "resume" | "cancel" | "retry";
+
+type GatewaySymphonyActionResult = {
+  schema_version: typeof GATEWAY_RESPONSE_SCHEMA_VERSION;
+  action_id: string;
+  correlation_id: string;
+  gateway_envelope_id?: string;
+  action: SymphonyOperatorAction;
+  status: "not_supported" | "already_terminal" | "cancelled";
+  session_id: string;
+  previous_status?: string;
+  next_status?: string;
+  work_item_key?: string;
+  live_stop_requested?: boolean;
+  action_fact: SymphonyActionFact;
+  attempt: unknown;
+  error?: {
+    status: number;
+    code: string;
+    message: string;
+  };
+  recovery?: string;
+  session?: Record<string, unknown>;
+};
+
+type GatewaySymphonyActionCacheEntry = {
+  response: GatewaySymphonyActionResult;
+  status: number;
+};
+
+type GatewayReplayMissedEventsHint = {
+  requested_last_event_id?: number;
+  oldest_replayable_event_id?: number;
+  replay_window: number;
+  missed: boolean;
+};
+
+type GatewayControlEnvelopeInput = {
+  request?: IncomingMessage;
+  body?: Record<string, unknown>;
+  sessionId: string;
+  swarmId?: string;
+  taskId?: string;
+  type: SwarmMessageType;
+  intent: string;
+  route: string;
+  action: string;
+  status?: string;
+  payload?: Record<string, unknown>;
+  to?: SwarmEnvelope["to"];
+  requestId?: string;
+  correlationId?: string;
+  replyTo?: string;
+  idempotencyKey?: string;
 };
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 38171;
 const EVENT_BUFFER_LIMIT = 500;
+const GATEWAY_ACTOR_ID = "gateway.local";
+const GATEWAY_LEGACY_ACTOR_ID = "gateway";
+const GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION = "swarm.gateway.control.v1";
+const GATEWAY_RESPONSE_SCHEMA_VERSION = "swarm.gateway.response.v1";
+const GATEWAY_STREAM_SCHEMA_VERSION = "swarm.gateway.stream.v1";
 const PUBLIC_API_SURFACE = [
   "/",
   "/health",
@@ -102,6 +182,7 @@ const PUBLIC_API_SURFACE = [
   "/v1/runs",
   "/v1/checkpoints",
   "/v1/checkpoints/:id/revert",
+  "/v1/work-board",
   "/v1/events",
   "/v1/work-events",
   "/v1/sessions/:id/events",
@@ -138,6 +219,7 @@ const PUBLIC_API_SURFACE = [
   "/v1/symphony/preview",
   "/v1/symphony/tick",
   "/v1/symphony/status",
+  "/v1/symphony/actions",
   "/v1/symphony/cleanup",
   "/v1/symphony/daemon",
   "/v1/symphony/daemon/start",
@@ -152,7 +234,8 @@ export class SwarmGatewayServer {
   private readonly clients = new Map<string, SseClient>();
   private readonly symphonySchedulers = new Map<string, SymphonyScheduler>();
   private readonly symphonyDaemons: SymphonyDaemonManager;
-  private readonly eventBuffer: { id: number; at: string; event: RuntimeEvent; work: WorkProtocolRecord }[] = [];
+  private readonly eventBuffer: GatewayEventBufferEntry[] = [];
+  private readonly symphonyActionCache = new Map<string, GatewaySymphonyActionCacheEntry>();
   private nextEventId = 1;
   private listening = false;
 
@@ -163,6 +246,7 @@ export class SwarmGatewayServer {
       databasePath: options.databasePath,
       approvalHandler
     });
+    this.registerGatewayActors(options);
     this.symphonyDaemons = new SymphonyDaemonManager(this.runtime);
     this.server = createServer((request, response) => {
       void this.handle(request, response);
@@ -236,6 +320,104 @@ export class SwarmGatewayServer {
     };
   }
 
+  private registerGatewayActors(options: GatewayOptions): void {
+    const card = {
+      agent_id: GATEWAY_ACTOR_ID,
+      name: "Swarm Gateway",
+      role: "http_gateway",
+      capabilities: ["gateway.http", "gateway.control", "events.stream", "symphony.control"],
+      status: "idle" as const,
+      load: { running_tasks: 0, max_tasks: 1 },
+      reliability: { success_rate: 1, avg_latency_ms: 0 },
+      metadata: {
+        kind: "gateway",
+        host: options.host,
+        port: options.port,
+        legacy_actor_id: GATEWAY_LEGACY_ACTOR_ID
+      }
+    };
+    this.runtime.registry.register(card);
+    this.runtime.agentActorStore.registerSystemActor({
+      actor_id: GATEWAY_LEGACY_ACTOR_ID,
+      kind: "gateway",
+      name: "Swarm Gateway Legacy Alias",
+      role: "http_gateway",
+      capabilities: ["gateway.http", "events.stream", "symphony.control"],
+      metadata: {
+        host: options.host,
+        port: options.port,
+        alias_for: GATEWAY_ACTOR_ID
+      }
+    });
+  }
+
+  private emitGatewayControlEnvelope(input: GatewayControlEnvelopeInput): SwarmEnvelope<Record<string, unknown>> {
+    const body = input.body ?? {};
+    const httpRequestId = input.requestId ??
+      optionalString(body.request_id ?? body.requestId) ??
+      optionalHeader(input.request?.headers["x-swarm-request-id"]) ??
+      optionalHeader(input.request?.headers["x-request-id"]);
+    const correlationId = input.correlationId ??
+      optionalString(body.correlation_id ?? body.correlationId) ??
+      optionalHeader(input.request?.headers["x-correlation-id"]) ??
+      httpRequestId ??
+      `gateway_${input.action}_${randomUUID()}`;
+    const replyTo = input.replyTo ??
+      optionalString(body.reply_to ?? body.replyTo) ??
+      optionalHeader(input.request?.headers["x-swarm-reply-to"]);
+    const idempotencyKey = input.idempotencyKey ??
+      optionalString(body.idempotency_key ?? body.idempotencyKey);
+    const session = this.runtime.sessionStore.get(input.sessionId);
+    const payload = stripUndefinedRecord({
+      schema_version: "swarm.gateway.control_envelope.v1",
+      route: input.route,
+      action: input.action,
+      status: input.status ?? "requested",
+      http_method: input.request?.method,
+      http_path: input.request?.url,
+      http_request_id: httpRequestId,
+      request_id: httpRequestId,
+      correlation_id: correlationId,
+      actor_id: GATEWAY_ACTOR_ID,
+      ...input.payload
+    });
+    const envelope = createEnvelope<Record<string, unknown>>({
+      swarm_id: input.swarmId ?? session?.swarm_id ?? `swarm_${input.sessionId}`,
+      session_id: input.sessionId,
+      task_id: input.taskId,
+      from: { agent_id: GATEWAY_ACTOR_ID, role: "http_gateway" },
+      to: input.to ?? { agent_id: "main_swarm", role: "coordinator" },
+      type: input.type,
+      intent: input.intent,
+      payload,
+      correlation_id: correlationId,
+      reply_to: replyTo,
+      idempotency_key: idempotencyKey,
+      auth: {
+        actor: gatewayAuthActor(input.request),
+        scopes: ["gateway.http", `gateway.${input.action}`]
+      },
+      trace: {
+        trace_id: correlationId,
+        span_id: `span_gateway_${randomUUID()}`
+      }
+    });
+    this.runtime.router.receive(envelope);
+    this.runtime.agentActorStore.heartbeat(GATEWAY_ACTOR_ID, {
+      status: "idle",
+      current_task_id: input.taskId ?? null,
+      current_worker_id: typeof input.payload?.worker_id === "string" ? input.payload.worker_id : null,
+      current_session_id: input.sessionId,
+      metadata: {
+        last_action: input.action,
+        last_route: input.route,
+        last_envelope_id: envelope.id,
+        last_correlation_id: correlationId
+      }
+    });
+    return envelope;
+  }
+
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     setCommonHeaders(response, request.headers.origin, this.securityOptions);
     const corsDecision = gatewayCorsDecision(optionalHeader(request.headers.origin), this.securityOptions);
@@ -288,12 +470,12 @@ export class SwarmGatewayServer {
       }
 
       if (request.method === "GET" && segments[0] === "v1" && segments[1] === "events") {
-        this.openEventStream(response, undefined, "runtime");
+        this.openEventStream(request, response, undefined, "runtime");
         return;
       }
 
       if (request.method === "GET" && segments[0] === "v1" && segments[1] === "work-events") {
-        this.openEventStream(response, undefined, "work");
+        this.openEventStream(request, response, undefined, "work");
         return;
       }
 
@@ -325,6 +507,11 @@ export class SwarmGatewayServer {
 
     if (resource === "sessions") {
       await this.handleSessions(request, response, url, id, child, childId);
+      return;
+    }
+
+    if (resource === "work-board" || resource === "work_board") {
+      this.handleWorkBoard(request, response, url, id);
       return;
     }
 
@@ -414,6 +601,23 @@ export class SwarmGatewayServer {
     throw new HttpError(404, "Unknown checkpoint route.");
   }
 
+  private handleWorkBoard(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    sessionId?: string
+  ): void {
+    if (request.method !== "GET") {
+      throw new HttpError(405, "Method not allowed.");
+    }
+    const targetSessionId = sessionId ?? optionalString(url.searchParams.get("session_id") ?? url.searchParams.get("session"));
+    const limit = integerParam(url, "limit", 25);
+    const board = targetSessionId
+      ? buildSessionWorkBoard(this.runtime, targetSessionId)
+      : buildWorkspaceWorkBoard(this.runtime, { limit });
+    sendJson(response, 200, board);
+  }
+
   private async handleSymphony(
     request: IncomingMessage,
     response: ServerResponse,
@@ -448,6 +652,11 @@ export class SwarmGatewayServer {
         throw new HttpError(400, `${result.workflow.error.code}: ${result.workflow.error.message}`);
       }
       sendJson(response, result.execute ? 202 : 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && (action === "actions" || action === "action")) {
+      await this.handleSymphonyOperatorAction(request, response);
       return;
     }
 
@@ -514,6 +723,316 @@ export class SwarmGatewayServer {
     }
 
     throw new HttpError(404, "Unknown symphony route.");
+  }
+
+  private async handleSymphonyOperatorAction(
+    request: IncomingMessage,
+    response: ServerResponse
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    const action = symphonyOperatorAction(body.action);
+    const reason = optionalString(body.reason) ?? `operator_${action}`;
+    const actionId = optionalString(body.action_id ?? body.actionId) ?? `symphony_${action}_${randomUUID()}`;
+    const correlationId = optionalString(body.correlation_id ?? body.correlationId) ?? actionId;
+    const idempotencyKey = optionalString(body.idempotency_key ?? body.idempotencyKey) ?? actionId;
+    const cached = this.symphonyActionCache.get(idempotencyKey);
+    if (cached) {
+      sendJson(response, cached.status, cached.response);
+      return;
+    }
+    const target = this.requireSymphonyActionTarget(body);
+    const targetWorkItemKey = target.workItem ? workItemKey(target.workItem) : undefined;
+    const requestedAt = new Date().toISOString();
+    const gatewayEnvelope = this.emitGatewayControlEnvelope({
+      request,
+      body,
+      sessionId: target.row.session_id,
+      swarmId: target.row.swarm_id,
+      taskId: `symphony.operator.${action}`,
+      type: action === "cancel" ? "task.cancel" : "task.progress",
+      intent: `gateway.symphony.${action}`,
+      route: "/v1/symphony/actions",
+      action: `symphony.${action}`,
+      status: action === "cancel" ? "requested" : "not_supported",
+      correlationId,
+      idempotencyKey,
+      payload: {
+        action_id: actionId,
+        action,
+        reason,
+        session_id: target.row.session_id,
+        work_item_key: targetWorkItemKey,
+        previous_status: target.row.status
+      }
+    });
+    if (action !== "cancel") {
+      const recovery = unsupportedSymphonyActionRecovery(action);
+      const actionFact = createSymphonyActionFact({
+        action_id: actionId,
+        correlation_id: correlationId,
+        gateway_envelope_id: gatewayEnvelope.id,
+        action,
+        status: "not_supported",
+        target: {
+          session_id: target.row.session_id,
+          work_item_key: targetWorkItemKey
+        },
+        actor: { kind: "gateway", id: "gateway.symphony.operator" },
+        reason,
+        message: recovery.message,
+        recovery: recovery.recovery,
+        error_code: "SYMPHONY_ACTION_NOT_SUPPORTED",
+        replay: [
+          { status: "requested", at: requestedAt, message: reason },
+          { status: "not_supported", at: requestedAt, message: recovery.message }
+        ]
+      });
+      const attempt = this.runtime.runAttemptStore.upsert({
+        session_id: target.row.session_id,
+        task_id: `symphony.operator.${action}`,
+        runner_id: "gateway.symphony.operator",
+        kind: "swarm_task",
+        status: "failed",
+        attempt: 0,
+        title: `Symphony operator ${action}`,
+        terminal_reason: recovery.message,
+        error_code: "SYMPHONY_ACTION_NOT_SUPPORTED",
+        recovery_suggestion: recovery.recovery,
+        metadata: {
+          action_id: actionId,
+          correlation_id: correlationId,
+          gateway_envelope_id: gatewayEnvelope.id,
+          action,
+          action_status: actionFact.status,
+          action_fact: actionFact,
+          reason,
+          work_item: target.workItem,
+          work_item_key: targetWorkItemKey
+        }
+      });
+      const persistedActionFact = { ...actionFact, attempt_id: attempt.attempt_id };
+      const entry = this.runtime.blackboardStore.write({
+        swarm_id: target.row.swarm_id,
+        session_id: target.row.session_id,
+        task_id: `symphony.operator.${action}`,
+        key: `symphony.operator.${action}.${actionId}`,
+        type: "decision",
+        value: {
+          action_id: actionId,
+          correlation_id: correlationId,
+          gateway_envelope_id: gatewayEnvelope.id,
+          action,
+          status: "not_supported",
+          reason,
+          message: recovery.message,
+          recovery: recovery.recovery,
+          action_fact: persistedActionFact,
+          work_item: target.workItem,
+          work_item_key: targetWorkItemKey,
+          attempt
+        },
+        created_by: { agent_id: "gateway", role: "operator" },
+        tags: ["gateway", "symphony", "operator", action, "not_supported"]
+      });
+      this.runtime.events.emitEvent({ type: "blackboard", entry });
+      this.runtime.events.emitEvent({
+        type: "tool_result",
+        session_id: target.row.session_id,
+        task_id: `symphony.operator.${action}`,
+        title: `Symphony operator ${action}`,
+        action: `symphony.${action}`,
+        summary: recovery.message,
+        content: recovery.recovery,
+        status: "failed",
+        errorCode: "SYMPHONY_ACTION_NOT_SUPPORTED",
+        recoverySuggestion: recovery.recovery,
+        metadata: {
+          action_id: actionId,
+          correlation_id: correlationId,
+          gateway_envelope_id: gatewayEnvelope.id,
+          action_fact: persistedActionFact
+        }
+      });
+      const responseBody = {
+        schema_version: GATEWAY_RESPONSE_SCHEMA_VERSION,
+        action_id: actionId,
+        correlation_id: correlationId,
+        gateway_envelope_id: gatewayEnvelope.id,
+        action,
+        status: "not_supported",
+        session_id: target.row.session_id,
+        work_item_key: targetWorkItemKey,
+        action_fact: persistedActionFact,
+        attempt,
+        error: {
+          status: 501,
+          code: "SYMPHONY_ACTION_NOT_SUPPORTED",
+          message: recovery.message
+        },
+        recovery: recovery.recovery
+      } satisfies GatewaySymphonyActionResult;
+      this.symphonyActionCache.set(idempotencyKey, { response: responseBody, status: 501 });
+      sendJson(response, 501, responseBody);
+      return;
+    }
+
+    const alreadyTerminal = isTerminalSessionStatus(target.row.status);
+    const liveStopRequested = alreadyTerminal
+      ? false
+      : this.runtime.interruptWorkSession(target.row.session_id, reason);
+    if (!alreadyTerminal) {
+      this.runtime.sessionStore.setStatus(target.row.session_id, "cancelled");
+    }
+    const appliedAt = new Date().toISOString();
+    const actionFact = createSymphonyActionFact({
+      action_id: actionId,
+      correlation_id: correlationId,
+      gateway_envelope_id: gatewayEnvelope.id,
+      action,
+      status: alreadyTerminal ? "rejected" : "applied",
+      target: {
+        session_id: target.row.session_id,
+        work_item_key: targetWorkItemKey
+      },
+      actor: { kind: "gateway", id: "gateway.symphony.operator" },
+      reason,
+      message: alreadyTerminal
+        ? `Symphony session ${target.row.session_id} is already ${target.row.status}.`
+        : `Symphony session ${target.row.session_id} cancelled.`,
+      previous_status: target.row.status,
+      next_status: alreadyTerminal ? target.row.status : "cancelled",
+      live_stop_requested: liveStopRequested,
+      replay: [
+        { status: "requested", at: requestedAt, message: reason },
+        { status: "accepted", at: requestedAt, message: `Target session ${target.row.session_id} resolved.` },
+        {
+          status: alreadyTerminal ? "rejected" : "applied",
+          at: appliedAt,
+          message: alreadyTerminal ? `Session already terminal: ${target.row.status}.` : "Session status set to cancelled."
+        }
+      ]
+    });
+    const attempt = this.runtime.runAttemptStore.upsert({
+      session_id: target.row.session_id,
+      task_id: "symphony.operator.cancel",
+      runner_id: "gateway.symphony.operator",
+      kind: "swarm_task",
+      status: "cancelled",
+      attempt: 0,
+      title: "Symphony operator cancel",
+      terminal_reason: reason,
+      metadata: {
+        action_id: actionId,
+        correlation_id: correlationId,
+        gateway_envelope_id: gatewayEnvelope.id,
+        action,
+        action_status: actionFact.status,
+        action_fact: actionFact,
+        reason,
+        previous_status: target.row.status,
+        work_item: target.workItem,
+        work_item_key: targetWorkItemKey,
+        live_stop_requested: liveStopRequested,
+        already_terminal: alreadyTerminal
+      }
+    });
+    const persistedActionFact = { ...actionFact, attempt_id: attempt.attempt_id };
+    const entry = this.runtime.blackboardStore.write({
+      swarm_id: target.row.swarm_id,
+      session_id: target.row.session_id,
+      task_id: "symphony.operator.cancel",
+      key: `symphony.operator.cancel.${actionId}`,
+      type: "decision",
+      value: {
+        action_id: actionId,
+        correlation_id: correlationId,
+        gateway_envelope_id: gatewayEnvelope.id,
+        action,
+        reason,
+        previous_status: target.row.status,
+        next_status: alreadyTerminal ? target.row.status : "cancelled",
+        status: actionFact.status,
+        action_fact: persistedActionFact,
+        work_item: target.workItem,
+        work_item_key: targetWorkItemKey,
+        live_stop_requested: liveStopRequested,
+        attempt
+      },
+      created_by: { agent_id: "gateway", role: "operator" },
+      tags: ["gateway", "symphony", "operator", "cancel"]
+    });
+    this.runtime.events.emitEvent({ type: "blackboard", entry });
+    this.runtime.events.emitEvent({
+      type: "tool_result",
+      session_id: target.row.session_id,
+      task_id: "symphony.operator.cancel",
+      title: "Symphony operator cancel",
+      action: "symphony.cancel",
+      summary: alreadyTerminal
+        ? `Symphony session ${target.row.session_id} is already ${target.row.status}.`
+        : `Symphony session ${target.row.session_id} cancelled.`,
+      content: reason,
+      status: "success",
+      metadata: {
+        action_id: actionId,
+        correlation_id: correlationId,
+        gateway_envelope_id: gatewayEnvelope.id,
+        action_fact: persistedActionFact
+      }
+    });
+    if (!alreadyTerminal) {
+      this.runtime.events.emitEvent({
+        type: "session",
+        session_id: target.row.session_id,
+        status: "cancelled",
+        objective: target.row.objective
+      });
+    }
+    const responseBody = {
+      schema_version: GATEWAY_RESPONSE_SCHEMA_VERSION,
+      action_id: actionId,
+      correlation_id: correlationId,
+      gateway_envelope_id: gatewayEnvelope.id,
+      action,
+      status: alreadyTerminal ? "already_terminal" : "cancelled",
+      session_id: target.row.session_id,
+      previous_status: target.row.status,
+      next_status: alreadyTerminal ? target.row.status : "cancelled",
+      work_item_key: targetWorkItemKey,
+      live_stop_requested: liveStopRequested,
+      action_fact: persistedActionFact,
+      attempt,
+      session: sessionSnapshot(this.runtime, target.row.session_id, this.approvalQueueView(target.row.session_id, 80))
+    } satisfies GatewaySymphonyActionResult & { session: Record<string, unknown> };
+    this.symphonyActionCache.set(idempotencyKey, { response: responseBody, status: alreadyTerminal ? 200 : 202 });
+    sendJson(response, alreadyTerminal ? 200 : 202, responseBody);
+  }
+
+  private requireSymphonyActionTarget(body: Record<string, unknown>): {
+    row: SessionRow;
+    workItem?: WorkItem;
+  } {
+    const sessionId = optionalString(body.session_id ?? body.sessionId);
+    const targetKey = optionalString(body.work_item_key ?? body.workItemKey);
+    if (sessionId) {
+      const row = this.runtime.sessionStore.get(sessionId);
+      const workItem = row ? parseWorkItem(row.source_json) : undefined;
+      if (!row || !workItem || !SYMPHONY_SESSION_SOURCES.includes(workItem.source as typeof SYMPHONY_SESSION_SOURCES[number])) {
+        throw new HttpError(404, `Unknown Symphony session: ${sessionId}`);
+      }
+      return { row, workItem };
+    }
+    if (targetKey) {
+      const rows = this.runtime.sessionStore.listBySources([...SYMPHONY_SESSION_SOURCES], 1_000);
+      for (const row of rows) {
+        const workItem = parseWorkItem(row.source_json);
+        if (workItem && workItemKey(workItem) === targetKey) {
+          return { row, workItem };
+        }
+      }
+      throw new HttpError(404, `Unknown Symphony work item: ${targetKey}`);
+    }
+    throw new HttpError(400, "Missing string field: session_id or work_item_key");
   }
 
   private async handleCapabilities(
@@ -600,7 +1119,8 @@ export class SwarmGatewayServer {
   ): Promise<void> {
     if (request.method === "GET" && !skillName) {
       const skills = this.runtime.listSkills();
-      sendJson(response, 200, { skills, summary: summarizeSkillCatalog(skills) });
+      const settings = skillSettingsSnapshot(this.runtime);
+      sendJson(response, 200, { skills, settings, summary: summarizeSkillCatalog(skills, settings) });
       return;
     }
 
@@ -696,7 +1216,8 @@ export class SwarmGatewayServer {
   ): Promise<void> {
     if (resource === "servers" && request.method === "GET" && !serverId) {
       const servers = this.runtime.listMcpServers();
-      sendJson(response, 200, { servers, summary: summarizeMcpCatalog(servers) });
+      const settings = mcpSettingsSnapshot(this.runtime);
+      sendJson(response, 200, { servers, settings, summary: summarizeMcpCatalog(servers, settings) });
       return;
     }
 
@@ -705,14 +1226,16 @@ export class SwarmGatewayServer {
       if (!server) {
         throw new HttpError(404, `Unknown MCP server: ${serverId}`);
       }
-      sendJson(response, 200, { server, summary: summarizeMcpCatalog([server]) });
+      const settings = mcpSettingsSnapshot(this.runtime);
+      sendJson(response, 200, { server, settings, summary: summarizeMcpCatalog([server], settings) });
       return;
     }
 
     if (resource === "servers" && request.method === "POST" && serverId && action === "refresh") {
       const server = await this.runtime.refreshMcpServer(serverId);
       const capabilities = await this.runtime.listCapabilities({ providerId: `mcp:${serverId}`, includeDisabled: true });
-      sendJson(response, 200, { server, capabilities, summary: summarizeMcpCatalog([server]) });
+      const settings = mcpSettingsSnapshot(this.runtime);
+      sendJson(response, 200, { server, capabilities, settings, summary: summarizeMcpCatalog([server], settings) });
       return;
     }
 
@@ -840,6 +1363,7 @@ export class SwarmGatewayServer {
       const activeTarget = this.runtime.getActiveLiveTarget();
       sendJson(response, 200, activeTarget
         ? {
+            schema_version: GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION,
             status: "active",
             active_target: activeTarget,
             controls: {
@@ -849,6 +1373,7 @@ export class SwarmGatewayServer {
             session: sessionSnapshot(this.runtime, activeTarget.session_id, this.approvalQueueView(activeTarget.session_id, 80))
           }
         : {
+            schema_version: GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION,
             status: "idle",
             active_target: null,
             controls: {
@@ -862,10 +1387,34 @@ export class SwarmGatewayServer {
     if (request.method === "POST" && child === "messages") {
       const body = await readJsonBody(request);
       try {
-        const target = await this.runtime.sendUserMessage(stringField(body, "content"), {
-          requestId: optionalString(body.request_id ?? body.requestId)
+        const content = stringField(body, "content");
+        const requestId = optionalString(body.request_id ?? body.requestId);
+        const correlationId = optionalString(body.correlation_id ?? body.correlationId) ?? requestId ?? `live_${randomUUID()}`;
+        const target = await this.runtime.sendUserMessage(content, {
+          requestId,
+          correlationId,
+          source: "gateway",
+          sourceId: "http",
+          sourceRoute: "/v1/live/messages",
+          sourceMode: "live",
+          sourceMetadata: {
+            http_method: request.method,
+            http_path: request.url,
+            route: "/v1/live/messages",
+            correlation_id: correlationId,
+            actor_id: GATEWAY_ACTOR_ID
+          }
         });
-        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+        sendJson(response, 200, {
+          schema_version: GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION,
+          correlation_id: correlationId,
+          status: "applied",
+          session_id: target.session_id,
+          route: target.route,
+          request_id: target.request_id ?? requestId,
+          duplicate: target.duplicate === true,
+          control: target.control
+        });
       } catch (error) {
         throw liveReplyHttpError(error);
       }
@@ -875,10 +1424,54 @@ export class SwarmGatewayServer {
     if (request.method === "POST" && child === "interrupt") {
       const body = await readJsonBody(request);
       try {
-        const target = this.runtime.requestInterrupt(optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.", {
-          requestId: optionalString(body.request_id ?? body.requestId)
+        const content = optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.";
+        const requestId = optionalString(body.request_id ?? body.requestId);
+        const correlationId = optionalString(body.correlation_id ?? body.correlationId) ?? requestId ?? `live_${randomUUID()}`;
+        const target = this.runtime.requestInterrupt(content, {
+          requestId,
+          correlationId,
+          source: "gateway",
+          sourceId: "http",
+          sourceRoute: "/v1/live/interrupt",
+          sourceMode: "live",
+          sourceMetadata: {
+            http_method: request.method,
+            http_path: request.url,
+            route: "/v1/live/interrupt",
+            correlation_id: correlationId,
+            actor_id: GATEWAY_ACTOR_ID
+          }
         });
-        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+        this.emitGatewayControlEnvelope({
+          request,
+          body,
+          sessionId: target.session_id,
+          taskId: target.control?.message_id ?? target.request_id ?? requestId,
+          type: "task.cancel",
+          intent: "gateway.live.interrupt",
+          route: "/v1/live/interrupt",
+          action: "live.interrupt",
+          status: "applied",
+          requestId,
+          correlationId,
+          payload: {
+            content,
+            route: target.route,
+            request_id: target.request_id ?? requestId,
+            duplicate: target.duplicate === true,
+            control: target.control
+          }
+        });
+        sendJson(response, 200, {
+          schema_version: GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION,
+          correlation_id: correlationId,
+          status: "applied",
+          session_id: target.session_id,
+          route: target.route,
+          request_id: target.request_id ?? requestId,
+          duplicate: target.duplicate === true,
+          control: target.control
+        });
       } catch (error) {
         throw interruptHttpError(error);
       }
@@ -936,23 +1529,48 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "GET" && child === "events") {
-      this.openEventStream(response, sessionId, "runtime");
+      this.openEventStream(request, response, sessionId, "runtime");
       return;
     }
 
     if (request.method === "GET" && child === "work-events") {
-      this.openEventStream(response, sessionId, "work");
+      this.openEventStream(request, response, sessionId, "work");
       return;
     }
 
     if (request.method === "POST" && child === "messages") {
       const body = await readJsonBody(request);
       try {
-        const target = await this.runtime.sendUserMessage(stringField(body, "content"), {
+        const content = stringField(body, "content");
+        const requestId = optionalString(body.request_id ?? body.requestId);
+        const correlationId = optionalString(body.correlation_id ?? body.correlationId) ?? requestId ?? `live_${randomUUID()}`;
+        const target = await this.runtime.sendUserMessage(content, {
           sessionId,
-          requestId: optionalString(body.request_id ?? body.requestId)
+          requestId,
+          correlationId,
+          source: "gateway",
+          sourceId: "http",
+          sourceRoute: `/v1/sessions/${sessionId}/messages`,
+          sourceMode: "live",
+          sourceMetadata: {
+            http_method: request.method,
+            http_path: request.url,
+            route: `/v1/sessions/${sessionId}/messages`,
+            requested_session_id: sessionId,
+            correlation_id: correlationId,
+            actor_id: GATEWAY_ACTOR_ID
+          }
         });
-        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+        sendJson(response, 200, {
+          schema_version: GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION,
+          correlation_id: correlationId,
+          status: "applied",
+          session_id: target.session_id,
+          route: target.route,
+          request_id: target.request_id ?? requestId,
+          duplicate: target.duplicate === true,
+          control: target.control
+        });
       } catch (error) {
         throw liveReplyHttpError(error);
       }
@@ -962,11 +1580,57 @@ export class SwarmGatewayServer {
     if (request.method === "POST" && child === "interrupt") {
       const body = await readJsonBody(request);
       try {
-        const target = this.runtime.requestInterrupt(optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.", {
+        const content = optionalString(body.content) ?? "User requested an interrupt through the Swarm Gateway.";
+        const requestId = optionalString(body.request_id ?? body.requestId);
+        const correlationId = optionalString(body.correlation_id ?? body.correlationId) ?? requestId ?? `live_${randomUUID()}`;
+        const target = this.runtime.requestInterrupt(content, {
           sessionId,
-          requestId: optionalString(body.request_id ?? body.requestId)
+          requestId,
+          correlationId,
+          source: "gateway",
+          sourceId: "http",
+          sourceRoute: `/v1/sessions/${sessionId}/interrupt`,
+          sourceMode: "live",
+          sourceMetadata: {
+            http_method: request.method,
+            http_path: request.url,
+            route: `/v1/sessions/${sessionId}/interrupt`,
+            requested_session_id: sessionId,
+            correlation_id: correlationId,
+            actor_id: GATEWAY_ACTOR_ID
+          }
         });
-        sendJson(response, 200, { status: "applied", session_id: target.session_id, route: target.route, request_id: target.request_id, duplicate: target.duplicate === true, control: target.control });
+        this.emitGatewayControlEnvelope({
+          request,
+          body,
+          sessionId: target.session_id,
+          taskId: target.control?.message_id ?? target.request_id ?? requestId,
+          type: "task.cancel",
+          intent: "gateway.live.interrupt",
+          route: `/v1/sessions/${sessionId}/interrupt`,
+          action: "live.interrupt",
+          status: "applied",
+          requestId,
+          correlationId,
+          payload: {
+            content,
+            requested_session_id: sessionId,
+            route: target.route,
+            request_id: target.request_id ?? requestId,
+            duplicate: target.duplicate === true,
+            control: target.control
+          }
+        });
+        sendJson(response, 200, {
+          schema_version: GATEWAY_CONTROL_RESPONSE_SCHEMA_VERSION,
+          correlation_id: correlationId,
+          status: "applied",
+          session_id: target.session_id,
+          route: target.route,
+          request_id: target.request_id ?? requestId,
+          duplicate: target.duplicate === true,
+          control: target.control
+        });
       } catch (error) {
         throw interruptHttpError(error);
       }
@@ -1058,7 +1722,41 @@ export class SwarmGatewayServer {
     if (request.method === "POST" && child === "decision") {
       const body = await readJsonBody(request);
       const approved = body.approved === true || body.decision === "approved" || body.status === "approved";
-      sendJson(response, 200, this.applyApprovalDecision(approvalId, approved));
+      const decision = this.applyApprovalDecision(approvalId, approved);
+      if (decision.session_id) {
+        const approvalEnvelope = approvalEnvelopeForRequest(decision.request, decision.status, {
+          actor_id: "gateway.local",
+          actor_role: "http_gateway",
+          decision_source: "gateway.approval.decision",
+          swarm_id: this.runtime.sessionStore.get(decision.session_id)?.swarm_id,
+          correlation_id: optionalString(body.correlation_id ?? body.correlationId),
+          now: new Date().toISOString()
+        });
+        if (approvalEnvelope) {
+          this.runtime.router.receive(approvalEnvelope);
+        }
+        this.emitGatewayControlEnvelope({
+          request,
+          body,
+          sessionId: decision.session_id,
+          taskId: approvalId,
+          type: "blackboard.write",
+          intent: "gateway.approval.decision",
+          route: `/v1/approvals/${approvalId}/decision`,
+          action: "approval.decision",
+          status: decision.status,
+          payload: {
+            approval_id: approvalId,
+            approved,
+            decision: decision.status,
+            session_id: decision.session_id,
+            approval_envelope_id: approvalEnvelope?.id,
+            governance: decision.request.governance
+          }
+        });
+      }
+      const { request: _request, ...responseBody } = decision;
+      sendJson(response, 200, responseBody);
       return;
     }
 
@@ -1104,6 +1802,30 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "POST" && workerId && child === "stop") {
+      const body = await readJsonBody(request);
+      const worker = this.runtime.workerStateStore.get(workerId);
+      if (!worker) {
+        throw new HttpError(404, `Unknown worker: ${workerId}`);
+      }
+      const reason = optionalString(body.reason) ?? "Gateway stop requested.";
+      this.emitGatewayControlEnvelope({
+        request,
+        body,
+        sessionId: worker.parent_session_id,
+        taskId: worker.worker_id,
+        type: "task.cancel",
+        intent: "gateway.worker.stop",
+        route: `/v1/workers/${workerId}/stop`,
+        action: "worker.stop",
+        status: "requested",
+        payload: {
+          worker_id: worker.worker_id,
+          worker_status: worker.status,
+          worker_session_id: worker.worker_session_id,
+          handoff_id: worker.handoff_id,
+          reason
+        }
+      });
       this.runtime.stopWorker(workerId);
       sendJson(response, 202, { worker_id: workerId, status: "stop_requested" });
       return;
@@ -1115,6 +1837,28 @@ export class SwarmGatewayServer {
       if (!message) {
         throw new HttpError(400, "Missing string field: message");
       }
+      const worker = this.runtime.workerStateStore.get(workerId);
+      if (!worker) {
+        throw new HttpError(404, `Unknown worker: ${workerId}`);
+      }
+      this.emitGatewayControlEnvelope({
+        request,
+        body,
+        sessionId: worker.parent_session_id,
+        taskId: worker.worker_id,
+        type: "task.assign",
+        intent: "gateway.worker.continue",
+        route: `/v1/workers/${workerId}/continue`,
+        action: "worker.continue",
+        status: "requested",
+        payload: {
+          worker_id: worker.worker_id,
+          worker_status: worker.status,
+          worker_session_id: worker.worker_session_id,
+          handoff_id: worker.handoff_id,
+          message
+        }
+      });
       const result = await this.runtime.continueAgent(workerId, message);
       sendJson(response, 200, { worker_id: workerId, result });
       return;
@@ -1154,7 +1898,51 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "POST" && handoffId && child === "take-back") {
-      sendJson(response, 202, this.runtime.takeBackHandoff(handoffId));
+      const body = await readJsonBody(request);
+      const existing = this.runtime.getHandoff(handoffId);
+      if (!existing) {
+        throw new HttpError(404, `Unknown handoff: ${handoffId}`);
+      }
+      if (existing.status !== "active") {
+        sendJson(response, 202, existing);
+        return;
+      }
+      const reason = optionalString(body.reason) ?? "Taken back through the Swarm Gateway.";
+      const previousOwner = existing.owner_agent_id ?? `worker:${existing.worker_id}`;
+      const envelope = this.emitGatewayControlEnvelope({
+        request,
+        body,
+        sessionId: existing.parent_session_id,
+        taskId: existing.handoff_id,
+        type: "handoff.take_back",
+        intent: "gateway.handoff.take_back",
+        route: `/v1/handoffs/${handoffId}/take-back`,
+        action: "handoff.take_back",
+        status: "requested",
+        replyTo: existing.accept_envelope_id ?? existing.request_envelope_id,
+        correlationId: optionalString(body.correlation_id ?? body.correlationId) ?? existing.request_envelope_id ?? existing.accept_envelope_id ?? existing.handoff_id,
+        to: { agent_id: previousOwner, role: "worker" },
+        payload: {
+          handoff_id: existing.handoff_id,
+          worker_id: existing.worker_id,
+          requester_agent_id: GATEWAY_ACTOR_ID,
+          reason,
+          previous_owner: previousOwner,
+          resulting_owner: GATEWAY_ACTOR_ID,
+          owner_agent_id: previousOwner,
+          target_agent_spec_id: existing.target_agent_spec_id,
+          protocol: "gateway_handoff_ownership_protocol"
+        }
+      });
+      const handoff = this.runtime.handoffStore.takeBack(handoffId, {
+        requester_agent_id: GATEWAY_ACTOR_ID,
+        reason,
+        envelope_id: envelope.id
+      });
+      const worker = this.runtime.workerStateStore.requestStop(handoff.worker_id);
+      this.runtime.events.emitEvent({ type: "worker", worker, status: worker.status, message: "Handoff taken back through the Swarm Gateway." });
+      this.runtime.events.emitEvent({ type: "handoff_taken_back", handoff });
+      sendJson(response, 202, handoff);
       return;
     }
 
@@ -1337,6 +2125,7 @@ export class SwarmGatewayServer {
     approval_id: string;
     status: "approved" | "denied";
     session_id?: string;
+    request: ToolApprovalRequest;
   } {
     const pending = this.pendingApprovals.get(approvalId);
     if (!pending) {
@@ -1354,7 +2143,8 @@ export class SwarmGatewayServer {
     return {
       approval_id: approvalId,
       status: approved ? "approved" : "denied",
-      session_id: pending.request.session_id
+      session_id: pending.request.session_id,
+      request: pending.request
     };
   }
 
@@ -1381,15 +2171,21 @@ export class SwarmGatewayServer {
       if (!this.eventMatchesSession(event, client.sessionId)) {
         continue;
       }
-      writeGatewayEvent(client, id, { at, event, work });
+      client.replayWindow = this.eventBuffer.length;
+      writeGatewayEvent(client, id, { at, event, work }, this.eventBuffer.length);
     }
   }
 
-  private openEventStream(response: ServerResponse, sessionId?: string, protocol: "runtime" | "work" = "runtime"): void {
+  private openEventStream(request: IncomingMessage, response: ServerResponse, sessionId?: string, protocol: "runtime" | "work" = "runtime"): void {
+    const requestedLastEventId = this.parseLastEventId(optionalHeader(request.headers["last-event-id"]));
+    const replayState = this.computeReplayState(requestedLastEventId);
     const client: SseClient = {
       id: `sse_${randomUUID()}`,
       sessionId,
       protocol,
+      lastEventId: replayState.lastEventId,
+      replayWindow: replayState.replayWindow,
+      missedEventsHint: replayState.missedEventsHint,
       response
     };
     response.writeHead(200, {
@@ -1398,25 +2194,75 @@ export class SwarmGatewayServer {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no"
     });
-    writeSse(response, 0, "ready", { session_id: sessionId, protocol, message: "Swarm Gateway event stream connected." });
-    for (const item of this.eventBuffer) {
+    writeSse(response, 0, "ready", {
+      schema_version: GATEWAY_STREAM_SCHEMA_VERSION,
+      session_id: sessionId,
+      protocol,
+      message: "Swarm Gateway event stream connected.",
+      last_event_id: replayState.lastEventId,
+      replay_window: replayState.replayWindow,
+      missed_events_hint: replayState.missedEventsHint
+    });
+    for (const item of replayState.replayedEvents) {
       if (!this.eventMatchesSession(item.event, sessionId)) {
         continue;
       }
-      writeGatewayEvent(client, item.id, item);
+      writeGatewayEvent(client, item.id, item, replayState.replayWindow, replayState.missedEventsHint);
     }
     this.clients.set(client.id, client);
     response.on("close", () => {
       this.clients.delete(client.id);
     });
   }
+
+  private parseLastEventId(value: string | undefined): number | undefined {
+    if (!value) {
+      return undefined;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : undefined;
+  }
+
+  private computeReplayState(requestedLastEventId?: number): {
+    lastEventId?: number;
+    replayWindow: number;
+    missedEventsHint?: GatewayReplayMissedEventsHint;
+    replayedEvents: GatewayEventBufferEntry[];
+  } {
+    const replayWindow = this.eventBuffer.length ? this.eventBuffer[this.eventBuffer.length - 1]!.id - this.eventBuffer[0]!.id + 1 : 0;
+    if (requestedLastEventId === undefined || !this.eventBuffer.length) {
+      return {
+        lastEventId: this.eventBuffer.at(-1)?.id,
+        replayWindow,
+        replayedEvents: this.eventBuffer
+      };
+    }
+    const oldestId = this.eventBuffer[0]!.id;
+    const newestId = this.eventBuffer.at(-1)!.id;
+    const missed = requestedLastEventId < oldestId - 1;
+    const replayedEvents = this.eventBuffer.filter((item) => item.id > requestedLastEventId);
+    return {
+      lastEventId: newestId,
+      replayWindow,
+      missedEventsHint: missed
+        ? {
+            requested_last_event_id: requestedLastEventId,
+            oldest_replayable_event_id: oldestId,
+            replay_window: replayWindow,
+            missed: true
+          }
+        : undefined,
+      replayedEvents
+    };
+  }
 }
 
 function sessionSnapshot(runtime: SwarmRuntime, sessionId: string, approvals?: Record<string, unknown>): Record<string, unknown> {
   try {
+    const snapshot = buildSessionSnapshot(runtime, sessionId, { approvals });
     return approvals
-      ? { ...buildSessionSnapshot(runtime, sessionId), approvals }
-      : buildSessionSnapshot(runtime, sessionId);
+      ? { ...snapshot, approvals }
+      : snapshot;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith("Unknown session: ")) {
@@ -1455,6 +2301,7 @@ function plannedSessionFromStore(runtime: SwarmRuntime, sessionId: string): Plan
 function createRun(objective: string, mode: RunMode): GatewayRun {
   const now = new Date().toISOString();
   return {
+    schema_version: GATEWAY_RESPONSE_SCHEMA_VERSION,
     run_id: `run_${randomUUID()}`,
     objective,
     mode,
@@ -1512,6 +2359,77 @@ function stringField(body: Record<string, unknown>, key: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stripUndefinedRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function gatewayAuthActor(request: IncomingMessage | undefined): string {
+  if (!request) {
+    return "gateway.local";
+  }
+  if (optionalHeader(request.headers.authorization)) {
+    return "gateway.http.bearer";
+  }
+  if (optionalHeader(request.headers["x-swarm-gateway-token"])) {
+    return "gateway.http.token";
+  }
+  if (optionalHeader(request.headers["x-swarm-local-control"])) {
+    return "gateway.local.control";
+  }
+  return request.socket.remoteAddress ? `gateway.remote:${request.socket.remoteAddress}` : "gateway.http";
+}
+
+function symphonyOperatorAction(value: unknown): SymphonyOperatorAction {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new HttpError(400, "Missing string field: action");
+  }
+  const action = value.trim().toLowerCase();
+  if (action === "pause" || action === "resume" || action === "cancel" || action === "retry") {
+    return action;
+  }
+  throw new HttpError(400, `Invalid Symphony operator action: ${value}. Expected pause, resume, cancel, or retry.`);
+}
+
+function unsupportedSymphonyActionRecovery(action: Exclude<SymphonyOperatorAction, "cancel">): {
+  message: string;
+  recovery: string;
+} {
+  return {
+    message: `Symphony operator action ${action} is not supported by this local gateway yet.`,
+    recovery: "Use /status or GET /v1/symphony/status to inspect current state. Use action=cancel for local cancellation, or wait for the scheduled retry path instead of forcing this action."
+  };
+}
+
+function parseWorkItem(value: string | null | undefined): WorkItem | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value) as WorkItem;
+    return isWorkItem(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isWorkItem(value: unknown): value is WorkItem {
+  return typeof value === "object" &&
+    value !== null &&
+    "source" in value &&
+    "title" in value &&
+    "labels" in value &&
+    "metadata" in value &&
+    typeof (value as { source?: unknown }).source === "string" &&
+    typeof (value as { title?: unknown }).title === "string" &&
+    Array.isArray((value as { labels?: unknown }).labels) &&
+    typeof (value as { metadata?: unknown }).metadata === "object" &&
+    (value as { metadata?: unknown }).metadata !== null;
+}
+
+function isTerminalSessionStatus(value: string): boolean {
+  return value === "completed" || value === "failed" || value === "cancelled";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1608,13 +2526,27 @@ function gatewayIndex(): Record<string, unknown> {
 function writeGatewayEvent(
   client: SseClient,
   id: number,
-  item: { at: string; event: RuntimeEvent; work: WorkProtocolRecord }
+  item: { at: string; event: RuntimeEvent; work: WorkProtocolRecord },
+  replayWindow: number,
+  missedEventsHint?: GatewayReplayMissedEventsHint
 ): void {
   if (client.protocol === "work") {
-    writeSse(client.response, id, item.work.kind, item.work);
+    writeSse(client.response, id, item.work.kind, {
+      ...item.work,
+      gateway_schema_version: GATEWAY_STREAM_SCHEMA_VERSION,
+      sequence: id,
+      last_event_id: id,
+      replay_window: replayWindow,
+      missed_events_hint: missedEventsHint
+    });
     return;
   }
   writeSse(client.response, id, item.event.type, {
+    schema_version: GATEWAY_STREAM_SCHEMA_VERSION,
+    sequence: id,
+    last_event_id: id,
+    replay_window: replayWindow,
+    missed_events_hint: missedEventsHint,
     at: item.at,
     event: item.event,
     work: item.work

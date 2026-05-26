@@ -58,9 +58,10 @@ export class SkillProvider implements CapabilityProvider {
     }
     const roots = skillRoots(this.input.settings, this.input.workspace);
     const scanned = roots.flatMap((root) => root.enabled ? scanSkillRoot(root) : []);
+    const discovered = scanned.length ? scanned : builtinSkillRecords();
     const byName = new Map<string, SkillRecord>();
     const records: SkillRecord[] = [];
-    for (const record of scanned) {
+    for (const record of discovered) {
       const existing = byName.get(record.name);
       if (existing) {
         records.push({
@@ -81,11 +82,11 @@ export class SkillProvider implements CapabilityProvider {
       records.push(record);
     }
     this.records = records.slice(0, this.input.settings.extensions.skills.maxSkills);
-    if (scanned.length > this.records.length) {
+    if (discovered.length > this.records.length) {
       this.providerDiagnostics.push({
         severity: "warn",
         code: "SKILL_LIMIT_REACHED",
-        message: `Loaded ${this.records.length}/${scanned.length} discovered skills because settings.extensions.skills.maxSkills was reached.`
+        message: `Loaded ${this.records.length}/${discovered.length} discovered skills because settings.extensions.skills.maxSkills was reached.`
       });
     }
   }
@@ -190,7 +191,7 @@ export class SkillProvider implements CapabilityProvider {
     }
     return {
       ...skill,
-      content: readFileSync(skill.path, "utf8"),
+      content: readSkillContent(skill),
       activatedAt: new Date().toISOString()
     };
   }
@@ -291,6 +292,128 @@ function readSkill(path: string, root: SkillRoot): SkillRecord {
     resourcePaths: listSkillResources(dirname(path)),
     diagnostics
   };
+}
+
+function readSkillContent(skill: SkillRecord): string {
+  const builtin = BUILTIN_SKILLS.find((record) => record.name === skill.name && skill.path === builtinSkillPath(record.name));
+  return builtin?.content ?? readFileSync(skill.path, "utf8");
+}
+
+const BUILTIN_SKILLS: Array<{
+  name: string;
+  displayName: string;
+  description: string;
+  allowedTools: string[];
+  content: string;
+}> = [
+  {
+    name: "repo-auditor",
+    displayName: "Repo Auditor",
+    description: "Audit repository state, risky diffs, missing tests, and release readiness.",
+    allowedTools: ["Read", "Grep", "Glob", "GitShow"],
+    content: [
+      "---",
+      "name: repo-auditor",
+      "description: Audit repository state, risky diffs, missing tests, and release readiness.",
+      "allowed-tools: [Read, Grep, Glob, GitShow]",
+      "---",
+      "",
+      "Use this skill when the user asks for a repository audit or release readiness review.",
+      "Focus on concrete findings with file evidence, missing verification, and next fixes."
+    ].join("\n")
+  },
+  {
+    name: "tui-designer",
+    displayName: "TUI Designer",
+    description: "Review terminal UI layout, visual tokens, density, and interaction ergonomics.",
+    allowedTools: ["Read", "Grep", "Glob"],
+    content: [
+      "---",
+      "name: tui-designer",
+      "description: Review terminal UI layout, visual tokens, density, and interaction ergonomics.",
+      "allowed-tools: [Read, Grep, Glob]",
+      "---",
+      "",
+      "Use this skill for TUI polish work.",
+      "Prioritize input focus, non-overlapping layout, semantic color roles, and compact evidence-rich surfaces."
+    ].join("\n")
+  },
+  {
+    name: "cache-diagnoser",
+    displayName: "Cache Diagnoser",
+    description: "Diagnose prompt cache hit rate, prefix drift, provider telemetry, and cache ROI.",
+    allowedTools: ["Read", "Grep", "Glob"],
+    content: [
+      "---",
+      "name: cache-diagnoser",
+      "description: Diagnose prompt cache hit rate, prefix drift, provider telemetry, and cache ROI.",
+      "allowed-tools: [Read, Grep, Glob]",
+      "---",
+      "",
+      "Use this skill when cache hit rate, provider usage telemetry, or prompt prefix stability is under review.",
+      "Do not expose raw prompts or secrets; summarize stable prefix and drift reasons instead."
+    ].join("\n")
+  },
+  {
+    name: "lsp-debugger",
+    displayName: "LSP Debugger",
+    description: "Diagnose language-server provider detection, fallback, readiness, and semantic evidence.",
+    allowedTools: ["Read", "Grep", "Glob"],
+    content: [
+      "---",
+      "name: lsp-debugger",
+      "description: Diagnose language-server provider detection, fallback, readiness, and semantic evidence.",
+      "allowed-tools: [Read, Grep, Glob]",
+      "---",
+      "",
+      "Use this skill for LSP status and semantic evidence issues.",
+      "Explain provider, root, command, detected manifests, fallback mode, and next action."
+    ].join("\n")
+  },
+  {
+    name: "release-checker",
+    displayName: "Release Checker",
+    description: "Check local release gates, build/test evidence, eval coverage, and docs updates.",
+    allowedTools: ["Read", "Grep", "Glob", "GitShow"],
+    content: [
+      "---",
+      "name: release-checker",
+      "description: Check local release gates, build/test evidence, eval coverage, and docs updates.",
+      "allowed-tools: [Read, Grep, Glob, GitShow]",
+      "---",
+      "",
+      "Use this skill before install, publish, or release.",
+      "Verify build, focused tests, local eval gates, artifact redaction, and user-facing docs."
+    ].join("\n")
+  }
+];
+
+function builtinSkillRecords(): SkillRecord[] {
+  return BUILTIN_SKILLS.map((skill) => ({
+    name: skill.name,
+    displayName: skill.displayName,
+    description: skill.description,
+    path: builtinSkillPath(skill.name),
+    directory: `builtin://skills/${skill.name}`,
+    scope: "user",
+    trust: "trusted",
+    frontmatter: {
+      name: skill.name,
+      description: skill.description,
+      builtin: true
+    },
+    allowedTools: skill.allowedTools,
+    resourcePaths: [],
+    diagnostics: [{
+      severity: "info",
+      code: "SKILL_BUILTIN_TEMPLATE",
+      message: "Built-in fallback skill template loaded because no user or project skills were discovered."
+    }]
+  }));
+}
+
+function builtinSkillPath(name: string): string {
+  return `builtin://skills/${name}/SKILL.md`;
 }
 
 function parseSkillMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {

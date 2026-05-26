@@ -1,6 +1,7 @@
 import { compactValue } from "./theme.js";
+import { serviceClusterItem, type ServiceClusterItem } from "./status-surface.js";
 
-export type FooterPillId = "tasks" | "approvals" | "cache" | "gateway" | "symphony" | "lsp";
+export type FooterPillId = "tasks" | "approvals" | "cache" | "gateway" | "mcp" | "skills" | "symphony" | "lsp";
 
 export type FooterPillTone = "neutral" | "running" | "pending" | "success" | "warning" | "danger" | "muted";
 
@@ -79,10 +80,23 @@ export function buildFooterPills(input: {
   cacheStatus?: string;
   cacheHitRate?: number;
   gatewayStatus?: string;
+  mcpStatus?: string;
+  skillStatus?: string;
   symphonyRunning: number;
   symphonyRetrying: number;
   lspStatus?: string;
 }): FooterPill[] {
+  const cache = serviceClusterItem({ service: "cache", status: input.cacheStatus, hitRate: input.cacheHitRate });
+  const gateway = serviceClusterItem({ service: "gateway", status: input.gatewayStatus ?? "local" });
+  const mcp = serviceClusterItem({ service: "mcp", status: input.mcpStatus ?? "disabled" });
+  const skills = serviceClusterItem({ service: "skills", status: input.skillStatus ?? "empty" });
+  const symphony = serviceClusterItem({
+    service: "symphony",
+    running: input.symphonyRunning,
+    retrying: input.symphonyRetrying,
+    status: input.symphonyRetrying > 0 ? "retrying" : input.symphonyRunning > 0 ? "running" : "unknown"
+  });
+  const lsp = serviceClusterItem({ service: "lsp", status: input.lspStatus ?? "unknown" });
   return [
     {
       id: "tasks",
@@ -101,31 +115,43 @@ export function buildFooterPills(input: {
     {
       id: "cache",
       label: "cache",
-      value: promptCacheFooterValue(input.cacheStatus, input.cacheHitRate),
-      tone: cacheFooterTone(input.cacheStatus),
+      value: cache.value,
+      tone: footerToneFromServiceCluster(cache),
       detailHint: "Prompt cache"
     },
     {
       id: "gateway",
       label: "gateway",
-      value: compactValue(input.gatewayStatus ?? "local", 14),
-      tone: serviceFooterTone(input.gatewayStatus),
+      value: gateway.value,
+      tone: footerToneFromServiceCluster(gateway),
       detailHint: "Gateway surface"
+    },
+    {
+      id: "mcp",
+      label: "mcp",
+      value: mcp.value,
+      tone: footerToneFromServiceCluster(mcp),
+      detailHint: "MCP servers"
+    },
+    {
+      id: "skills",
+      label: "skills",
+      value: skills.value,
+      tone: footerToneFromServiceCluster(skills),
+      detailHint: "Agent skills"
     },
     {
       id: "symphony",
       label: "symphony",
-      value: input.symphonyRetrying > 0
-        ? `${input.symphonyRunning} run/${input.symphonyRetrying} retry`
-        : `${input.symphonyRunning} run`,
-      tone: input.symphonyRetrying > 0 ? "warning" : input.symphonyRunning > 0 ? "running" : "muted",
+      value: symphony.value,
+      tone: footerToneFromServiceCluster(symphony),
       detailHint: "Symphony scheduler"
     },
     {
       id: "lsp",
       label: "lsp",
-      value: compactValue(input.lspStatus ?? "unknown", 14),
-      tone: serviceFooterTone(input.lspStatus),
+      value: lsp.value,
+      tone: footerToneFromServiceCluster(lsp),
       detailHint: "Language server"
     }
   ];
@@ -149,41 +175,12 @@ function stepFooterSelection(ids: FooterPillId[], selected: FooterPillId | undef
   return ids[nextIndex] ?? ids[0]!;
 }
 
-function promptCacheFooterValue(status: string | undefined, hitRate: number | undefined): string {
-  const base = status?.trim() || "--";
-  if (typeof hitRate !== "number") {
-    return compactValue(base, 14);
-  }
-  return compactValue(`${base} ${Math.round(hitRate * 100)}%`, 14);
-}
-
-function cacheFooterTone(status: string | undefined): FooterPillTone {
-  const normalized = (status ?? "").toLowerCase();
-  if (["error", "failed", "unavailable", "disabled", "degraded"].includes(normalized)) {
-    return "warning";
-  }
-  if (["cache_hit", "hit", "warm", "stable", "ready", "ok"].includes(normalized)) {
-    return "success";
-  }
-  if (["cache_miss", "miss", "changed", "unknown"].includes(normalized)) {
-    return "muted";
-  }
-  return normalized ? "neutral" : "muted";
-}
-
-function serviceFooterTone(status: string | undefined): FooterPillTone {
-  const normalized = (status ?? "").toLowerCase();
-  if (["failed", "error", "unavailable", "blocked"].includes(normalized)) {
-    return "danger";
-  }
-  if (["degraded", "reconnecting", "retrying", "warning"].includes(normalized)) {
-    return "warning";
-  }
-  if (["running", "starting"].includes(normalized)) {
-    return "running";
-  }
-  if (["ready", "healthy", "ok", "local"].includes(normalized)) {
-    return "success";
-  }
-  return normalized ? "neutral" : "muted";
+function footerToneFromServiceCluster(item: ServiceClusterItem): FooterPillTone {
+  if (item.tone === "danger") return "danger";
+  if (item.tone === "warning") return "warning";
+  if (item.tone === "pending") return "pending";
+  if (item.tone === "running") return "running";
+  if (item.tone === "success") return "success";
+  if (item.tone === "muted") return "muted";
+  return "neutral";
 }

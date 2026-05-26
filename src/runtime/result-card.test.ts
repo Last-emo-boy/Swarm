@@ -133,7 +133,10 @@ test("Result cards render prompt cache status with shared cache formatting", () 
 
   assert.equal(card.cache?.status, "changed");
   assert(card.recovery?.some((advice) => advice.category === "cache"));
-  assert(formatResultCardText(card).includes("Cache: changed hit 64%, write 12% requestPrefixHash4096"));
+  const text = formatResultCardText(card);
+  assert(text.includes("Cache: changed hit 64%, write 12%"));
+  assert(text.includes("saved"));
+  assert(formatResultCardText(card).includes("ROI 0t"));
   assert(formatResultCardText(card).includes("Recovery (1)"));
   assert(formatResultCardText(card).includes("[cache/info/retry]"));
 });

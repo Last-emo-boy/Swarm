@@ -104,6 +104,24 @@ if (!command) {
 } else if (command === "lsp") {
   const { runLspCommand } = await import("./lsp/cli.js");
   await runLspCommand(args);
+} else if (command === "tui-artifact") {
+  const { runCcGradeVisualArtifactCli } = await import("./tui/renderer/cc-grade-visual-artifact.js");
+  runCcGradeVisualArtifactCli(args);
+} else if (command === "tui-smoke") {
+  const { runTuiSmokeHarnessCli } = await import("./tui/tui-smoke-harness.js");
+  await runTuiSmokeHarnessCli(args);
+} else if (command === "smoke") {
+  const options = parseOptions(args);
+  const { runInstallSmoke, formatInstallSmokeResult } = await import("./smoke.js");
+  const result = await runInstallSmoke({ swarmHome: options["swarm-home"] || options.out });
+  if (options.json === "true") {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(formatInstallSmokeResult(result));
+  }
+  if (result.status !== "pass") {
+    process.exitCode = 1;
+  }
 } else if (command === "onboard") {
   await launchChat({ forceOnboarding: true });
 } else if (command === "init") {
@@ -2487,7 +2505,8 @@ async function runHeadless(values: string[]): Promise<void> {
       error: runError,
       reportPath: absoluteReportPath,
       telemetryPath: absoluteTelemetryPath,
-      trajectoryPath: absoluteTrajectoryPath
+      trajectoryPath: absoluteTrajectoryPath,
+      debugLogPath: runtime.debug?.logPath
     });
     if (absoluteReportPath) {
       writeJsonArtifact(absoluteReportPath, artifacts.report);
@@ -3080,11 +3099,11 @@ function delay(ms: number): Promise<void> {
 
 async function launchChat(options: { forceOnboarding?: boolean } = {}): Promise<void> {
   const [{ render }, React, { SwarmChatApp }] = await Promise.all([
-    import("ink"),
+    import("./tui/ui.js"),
     import("react"),
     import("./tui/SwarmChatApp.js")
   ]);
-  render(React.default.createElement(SwarmChatApp, options));
+  await render(React.default.createElement(SwarmChatApp, options)).waitUntilExit();
 }
 
 function parseOptions(values: string[]): Record<string, string> {
@@ -3283,6 +3302,7 @@ function looksLikeCapabilityFilterToken(value: string): boolean {
 function isCapabilityCliKind(value: string): boolean {
   return [
     "local_tool",
+    "lsp_tool",
     "mcp_tool",
     "mcp_resource",
     "mcp_prompt",
@@ -3371,6 +3391,9 @@ Usage:
   ${binary} mcp prompts <server_id> [--workspace <path>] [--json]
   ${binary} mcp prompt <server_id> <name> [key=value...] [--session <session_id>] [--workspace <path>] [--json]
   ${binary} lsp status|restart|logs [--provider typescript|python|rust|go] [--workspace <path>] [--json]
+  ${binary} tui-artifact [--out <dir>] [--columns N] [--rows N] [--json]
+  ${binary} tui-smoke [--out <dir>] [--columns N] [--rows N] [--json]
+  ${binary} smoke [--swarm-home <dir>] [--json]
   ${binary} onboard
   ${binary} init
   ${binary} serve [--host 127.0.0.1] [--port 38171]
@@ -3416,6 +3439,10 @@ Commands:
   skills     List, inspect, and activate discovered Agent Skills
   mcp        List, inspect, refresh, and read configured MCP servers, resources, and prompts
   lsp        Inspect local Language Server Protocol providers and logs
+  tui-artifact
+             Generate cc-grade TUI plain/ANSI/profile-diff visual artifacts
+  tui-smoke  Run local-only TUI smoke and capture ANSI/log/checklist evidence
+  smoke      Run global-install smoke checks without touching the user's real ~/.swarm
   bench      Run, report, or compare optimization benchmarks
   yolo       Open chat with temporary yolo permissions for this process
   onboard    Configure provider, model, and plaintext API key

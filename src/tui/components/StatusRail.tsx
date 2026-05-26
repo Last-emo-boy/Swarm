@@ -1,6 +1,9 @@
 import React from "react";
-import { Box, Text } from "ink";
-import { compactValue, policyBadge, policyTone, routeBadge, sandboxBadge, sandboxTone, statusBadge, statusTone, toneColor } from "../theme.js";
+import { Box, Text } from "../ui.js";
+import { cacheOutcomeTone, compactValue, policyBadge, policyTone, routeBadge, sandboxBadge, sandboxTone, visualTokenColor } from "../theme.js";
+import type { TuiDensity } from "../conversation-layout.js";
+import { StatusIcon } from "./StatusIcon.js";
+import { TonePill } from "./TonePill.js";
 
 export type StatusRailProps = {
   appName: string;
@@ -14,6 +17,7 @@ export type StatusRailProps = {
   checkpoint?: string;
   view?: string;
   compact?: boolean;
+  density?: TuiDensity;
 };
 
 export type StatusRailSummary = {
@@ -21,71 +25,107 @@ export type StatusRailSummary = {
   showPermission: boolean;
   showSandbox: boolean;
   showModel: boolean;
+  showCache: boolean;
   details: string[];
 };
 
 export function statusRailSummary(props: StatusRailProps): StatusRailSummary {
-  const cacheDetail = statusRailCacheDetail(props.cacheStatus);
-  if (!props.compact) {
+  const showCache = statusRailShouldShowCache(props);
+  if (!props.density) {
+    if (!props.compact) {
+      return {
+        showRoute: true,
+        showPermission: true,
+        showSandbox: true,
+        showModel: true,
+        showCache,
+        details: [
+          props.view ? props.view : undefined,
+          props.sessionId ? `session ${shortId(props.sessionId)}` : undefined,
+          props.checkpoint ? `checkpoint ${compactValue(props.checkpoint, 28)}` : undefined
+        ].filter((detail): detail is string => Boolean(detail))
+      };
+    }
+
+    return {
+      showRoute: props.state !== "idle",
+      showPermission: props.permissionMode === "yolo",
+      showSandbox: props.state === "awaiting approval",
+      showModel: false,
+      showCache,
+      details: [
+        props.state !== "idle" && props.sessionId ? `session ${shortId(props.sessionId)}` : undefined
+      ].filter((detail): detail is string => Boolean(detail))
+    };
+  }
+
+  const density = props.density ?? (props.compact ? "compact" : "default");
+  if (density === "comfortable") {
     return {
       showRoute: true,
       showPermission: true,
       showSandbox: true,
       showModel: true,
+      showCache,
       details: [
         props.view ? props.view : undefined,
         props.sessionId ? `session ${shortId(props.sessionId)}` : undefined,
-        cacheDetail,
         props.checkpoint ? `checkpoint ${compactValue(props.checkpoint, 28)}` : undefined
       ].filter((detail): detail is string => Boolean(detail))
     };
   }
 
   return {
-    showRoute: props.state !== "idle",
+    showRoute: density !== "compact" && props.state !== "idle",
     showPermission: props.permissionMode === "yolo",
-    showSandbox: props.state === "awaiting approval",
-    showModel: false,
+    showSandbox: density !== "compact" && props.state === "awaiting approval",
+    showModel: density === "default",
+    showCache,
     details: [
-      props.state !== "idle" && props.sessionId ? `session ${shortId(props.sessionId)}` : undefined,
-      props.state !== "idle" ? cacheDetail : undefined
+      props.state !== "idle" && props.sessionId ? `session ${shortId(props.sessionId)}` : undefined
     ].filter((detail): detail is string => Boolean(detail))
   };
 }
 
 export function StatusRail(props: StatusRailProps): React.ReactElement {
-  const tone = statusTone(props.state);
   const summary = statusRailSummary(props);
   return (
     <Box flexDirection="column" width="100%">
       <Text wrap="truncate">
-        <Text color="cyan" bold>{props.appName}</Text>
-        <Text color={toneColor(tone)}> {statusBadge(props.state)} </Text>
+        <Text color={visualTokenColor("brand.focus")} bold>{props.appName}</Text>
+        <Text> </Text>
+        <StatusIcon status={props.state} label="badge" withSpace />
         {summary.showRoute ? (
-          <>
-            <Text color="gray">route:</Text>
-            <Text color="cyan">{routeBadge(props.route)}</Text>
-          </>
+          <TonePill label="route" value={routeBadge(props.route)} tone="text.primary" />
         ) : null}
         {summary.showPermission ? (
-          <>
-            <Text color="gray"> perm:</Text>
-            <Text color={toneColor(policyTone(props.permissionMode))}>{policyBadge(props.permissionMode)}</Text>
-          </>
+          <TonePill label="perm" value={policyBadge(props.permissionMode)} tone={policyTone(props.permissionMode)} prefixSpace={summary.showRoute} />
         ) : null}
         {summary.showSandbox ? (
-          <>
-            <Text color="gray"> sandbox:</Text>
-            <Text color={toneColor(sandboxTone(props.sandboxMode))}>{sandboxBadge(props.sandboxMode)}</Text>
-          </>
+          <TonePill
+            label="sandbox"
+            value={sandboxBadge(props.sandboxMode)}
+            tone={sandboxTone(props.sandboxMode)}
+            prefixSpace={summary.showRoute || summary.showPermission}
+          />
         ) : null}
         {summary.showModel ? (
-          <>
-            <Text color="gray"> model:</Text>
-            <Text>{shortModel(props.model)}</Text>
-          </>
+          <TonePill
+            label="model"
+            value={shortModel(props.model)}
+            tone="text.muted"
+            prefixSpace={summary.showRoute || summary.showPermission || summary.showSandbox}
+          />
         ) : null}
-        {summary.details.length ? <Text color="gray"> | {summary.details.join(" | ")}</Text> : null}
+        {summary.showCache && props.cacheStatus ? (
+          <TonePill
+            label="cache"
+            value={statusRailCacheBadge(props.cacheStatus)}
+            tone={cacheOutcomeTone(props.cacheStatus)}
+            prefixSpace={summary.showRoute || summary.showPermission || summary.showSandbox || summary.showModel}
+          />
+        ) : null}
+        {summary.details.length ? <Text color={visualTokenColor("text.muted")}> | {summary.details.join(" | ")}</Text> : null}
       </Text>
     </Box>
   );
@@ -100,12 +140,25 @@ function shortModel(value: string): string {
   return compactValue(model, 28);
 }
 
-function statusRailCacheDetail(status: string | undefined): string | undefined {
-  const normalized = status?.toLowerCase();
-  if (!normalized || ["ok", "ready", "cache_hit", "hit", "warm", "stable"].includes(normalized)) {
-    return undefined;
+function statusRailShouldShowCache(props: StatusRailProps): boolean {
+  const normalized = props.cacheStatus?.toLowerCase();
+  if (!normalized) {
+    return false;
   }
-  return `cache ${status}`;
+  if (props.state === "idle" && ["ok", "ready", "cache_hit", "hit", "warm", "stable"].includes(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function statusRailCacheBadge(status: string): string {
+  const normalized = status.toLowerCase();
+  if (["cache_hit", "hit"].includes(normalized)) return "HIT";
+  if (["warm", "stable", "ready", "ok"].includes(normalized)) return "WARM";
+  if (["cache_miss", "miss", "changed", "cold"].includes(normalized)) return "MISS";
+  if (["disabled"].includes(normalized)) return "OFF";
+  if (["failed", "error", "unavailable", "degraded"].includes(normalized)) return "DEGRADED";
+  return compactValue(status.toUpperCase(), 18);
 }
 
 /*

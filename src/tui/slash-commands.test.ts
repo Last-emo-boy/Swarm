@@ -15,7 +15,14 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("symphony")?.group, "Symphony");
   assert.equal(commands.get("approvals")?.group, "Kernel");
   assert.equal(commands.get("doctor")?.group, "Core");
+  assert.equal(commands.get("density")?.usage, "/density [auto|compact|default|comfortable]");
   assert.equal(commands.get("view")?.group, "Core");
+  assert.equal(commands.get("evals")?.usage, "/evals [--release-gate|--cache-lab|--tui-replay]");
+  assert.equal(commands.get("swarm")?.group, "Agents");
+  assert.equal(commands.get("swarm")?.usage, "/swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]");
+  assert.equal(commands.get("ownership")?.usage, "/ownership");
+  assert.equal(commands.get("mailbox")?.usage, "/mailbox <actor_id>");
+  assert.equal(commands.get("agent")?.usage, "/agent <actor_id|agent_spec_id>");
   assert.equal(commands.get("capabilities")?.group, "Config");
 });
 
@@ -24,6 +31,10 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony \[workflow_path\]/);
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon_id\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[session_id\]/);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug timeline \[actor:<id>\|task:<id>\|correlation:<id>\|category:<kind>\]/);
+  assert.match(renderSlashHelp({ namespace: "swarm" }), /\/swarm/);
+  assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <actor_id>/);
   assert.match(renderSlashHelp({ namespace: "ext" }), /\/capabilities \[kind\|provider\|query\|all\]/);
 });
 
@@ -31,7 +42,9 @@ test("default slash help stays on the main path unless advanced help is requeste
   const basicHelp = renderSlashHelp();
 
   assert.match(basicHelp, /\/help/);
+  assert.match(basicHelp, /\/density \[auto\|compact\|default\|comfortable\]/);
   assert.match(basicHelp, /\/view \[chat\|trace\|overview\|output\|sessions\|attempts\|agents\|blackboard\]/);
+  assert.match(basicHelp, /\/swarm/);
   assert.match(basicHelp, /\/kernel \[workflow_path\]/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
@@ -42,6 +55,10 @@ test("slash command candidates include required commands and aliases", () => {
   assert.equal(commandCandidatesForInput("/ker", 4, { includeAdvanced: true })[0]?.name, "kernel");
   assert.deepEqual(commandCandidatesForInput("/status", 7, { includeAdvanced: true }).map((command) => command.name).slice(0, 2), ["status", "kernel"]);
   assert.equal(commandCandidatesForInput("/sym", 4, { includeAdvanced: true })[0]?.name, "symphony");
+  assert.equal(commandCandidatesForInput("/debug l", 8, { includeAdvanced: true })[0]?.name, "latest");
+  assert.equal(commandCandidatesForInput("/debug t", 8, { includeAdvanced: true })[0]?.name, "timeline");
+  assert.equal(commandCandidatesForInput("/swa", 4)[0]?.name, "swarm");
+  assert.equal(commandCandidatesForInput("/mail", 5, { includeAdvanced: true })[0]?.name, "mailbox");
 });
 
 test("slash command parser preserves raw args for operator commands", () => {
@@ -55,5 +72,50 @@ test("slash command parser preserves raw args for operator commands", () => {
       { value: "pending", start: 30, end: 39 }
     ],
     source: '/approvals session-1 --status "pending"'
+  });
+  assert.deepEqual(parseSlashCommandLine("/evals --release-gate"), {
+    command: "evals",
+    args: ["--release-gate"],
+    rawArgs: "--release-gate",
+    argSpans: [
+      { value: "--release-gate", start: 7, end: 21 }
+    ],
+    source: "/evals --release-gate"
+  });
+  assert.deepEqual(parseSlashCommandLine("/evals --cache-lab"), {
+    command: "evals",
+    args: ["--cache-lab"],
+    rawArgs: "--cache-lab",
+    argSpans: [
+      { value: "--cache-lab", start: 7, end: 18 }
+    ],
+    source: "/evals --cache-lab"
+  });
+  assert.deepEqual(parseSlashCommandLine("/evals --tui-replay"), {
+    command: "evals",
+    args: ["--tui-replay"],
+    rawArgs: "--tui-replay",
+    argSpans: [
+      { value: "--tui-replay", start: 7, end: 19 }
+    ],
+    source: "/evals --tui-replay"
+  });
+  assert.deepEqual(parseSlashCommandLine("/mailbox worker:surface-1"), {
+    command: "mailbox",
+    args: ["worker:surface-1"],
+    rawArgs: "worker:surface-1",
+    argSpans: [
+      { value: "worker:surface-1", start: 9, end: 25 }
+    ],
+    source: "/mailbox worker:surface-1"
+  });
+  assert.deepEqual(parseSlashCommandLine("/agent worker:surface-1"), {
+    command: "agent",
+    args: ["worker:surface-1"],
+    rawArgs: "worker:surface-1",
+    argSpans: [
+      { value: "worker:surface-1", start: 7, end: 23 }
+    ],
+    source: "/agent worker:surface-1"
   });
 });

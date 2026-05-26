@@ -134,6 +134,129 @@ test("product docs keep claim boundaries explicit", () => {
   }
 });
 
+test("CAND-PROD-059 true swarm claims stay evidence-backed and bounded", () => {
+  const matrix = readWorkspaceFile(MATRIX_PATH);
+  const readme = readWorkspaceFile("README.md");
+  const prd = readWorkspaceFile("docs/PRD.md");
+  const workKernel = readWorkspaceFile("docs/WORK_KERNEL.md");
+  const rfc = readWorkspaceFile("docs/SWARM_V2_PROTOCOL_RFC.md");
+  const docs = [
+    ["README.md", readme],
+    ["docs/PRD.md", prd],
+    ["docs/WORK_KERNEL.md", workKernel],
+    ["docs/SWARM_V2_PROTOCOL_RFC.md", rfc]
+  ] as const;
+  const candProd059 = parseMatrixRows(matrix).find((row) => row.name === "CAND-PROD-059 local Swarm v2 collaboration");
+
+  assert(candProd059, "coverage matrix must include CAND-PROD-059 local Swarm v2 collaboration evidence.");
+  assert.equal(candProd059.status, "implemented+tested");
+  for (const anchor of [
+    "src/runtime/agent-actor-runtime.ts",
+    "src/runtime/router.ts",
+    "src/tui/swarm-surface.ts",
+    "src/evals/real-swarm-evals.ts",
+    "src/runtime/legacy-direct-path-audit.ts"
+  ]) {
+    assert(candProd059.source.includes(anchor), `CAND-PROD-059 row missing source anchor: ${anchor}`);
+  }
+  for (const anchor of [
+    "src/runtime/agent-actor-runtime.test.ts",
+    "src/tui/swarm-surface.test.ts",
+    "src/evals/local-evals.test.ts",
+    "src/runtime/legacy-direct-path-audit.test.ts"
+  ]) {
+    assert(candProd059.tests.includes(anchor), `CAND-PROD-059 row missing test/eval anchor: ${anchor}`);
+  }
+  assert(matrix.includes("node dist/evals/local-evals.js --real-swarm"), "coverage matrix must name the real swarm eval command.");
+  assert(matrix.includes("CAND-PROD-059"), "coverage matrix must keep the CAND-PROD-059 evidence id visible.");
+
+  for (const [path, contents] of docs) {
+    assert.match(
+      contents,
+      /Evidence-backed local Swarm v2 collaboration/i,
+      `${path} must describe the upgraded Swarm v2 claim as evidence-backed local collaboration.`
+    );
+    assert.match(
+      contents,
+      /cross-host distributed network/i,
+      `${path} must keep cross-host distributed network work deferred.`
+    );
+    assert.match(
+      contents,
+      /complex consensus/i,
+      `${path} must keep complex consensus claims bounded.`
+    );
+    assert.match(
+      contents,
+      /external provider dogfood/i,
+      `${path} must keep external provider dogfood optional or deferred.`
+    );
+    assert.doesNotMatch(
+      contents,
+      /fully autonomous true swarm|true swarm is fully autonomous|fully implemented true swarm|complete true swarm/i,
+      `${path} must not claim fully autonomous or complete true swarm.`
+    );
+  }
+});
+
+test("TUI product spec preserves CC-style product requirements and evidence gates", () => {
+  const spec = readWorkspaceFile("docs/TUI_PRODUCT_SPEC.md");
+  const renderer = readWorkspaceFile("docs/TUI_RENDERER.md");
+
+  for (const phrase of [
+    "Conversation-first layout",
+    "No default auto-open of command output detail panes",
+    "MCP, Skills, LSP, Gateway, Cache, Symphony, Tasks, and Approvals",
+    "Empty Enter must not open a `COMMAND OUTPUT` screen",
+    "NO_COLOR",
+    "npm run smoke",
+    "swarm tui-smoke --json"
+  ]) {
+    assert(spec.includes(phrase), `TUI product spec is missing: ${phrase}`);
+  }
+  assert(renderer.includes("dom-renderer"), "renderer doc must keep the default DOM renderer contract visible.");
+});
+
+test("Swarm v2 protocol RFC keeps planned boundary and compatibility gates explicit", () => {
+  const rfc = readWorkspaceFile("docs/SWARM_V2_PROTOCOL_RFC.md");
+
+  for (const phrase of [
+    "Status: evidence-backed local Swarm v2 protocol surface; distributed and remote-worker scope remains deferred.",
+    "Every new agent-to-agent interaction MUST be representable as an Envelope.",
+    "Envelope Bus",
+    "Agent Actor",
+    "Ownership Contract",
+    "Handoff",
+    "Blackboard Collaboration",
+    "Symphony MUST enter as `symphony.scheduler` participant",
+    "Gateway MUST normalize external control actions",
+    "Compatibility Matrix",
+    "Direct Paths To Migrate",
+    "Allowed Compatibility Adapters",
+    "Migration Gates",
+    "Evidence-backed local Swarm v2 collaboration",
+    "No claim that Swarm v2 is complete beyond the local evidence-backed protocol surface."
+  ]) {
+    assert(rfc.includes(phrase), `Swarm v2 RFC is missing: ${phrase}`);
+  }
+
+  for (const legacyPath of [
+    "`SwarmRuntime.invokeAgent()`",
+    "`HandoffStore.create()`",
+    "`SymphonyScheduler.dispatchItem()`",
+    "`TraceStore`",
+    "`WorkerStateStore`"
+  ]) {
+    assert(rfc.includes(legacyPath), `Swarm v2 RFC must name compatibility or migration path: ${legacyPath}`);
+  }
+
+  assert.doesNotMatch(
+    rfc,
+    /Swarm v2 (is|has been) fully implemented|fully autonomous true swarm/i,
+    "Swarm v2 RFC must not overclaim implementation completion."
+  );
+});
+
 test("coverage matrix source and test anchors resolve to real workspace files", () => {
   const rows = parseMatrixRows(readWorkspaceFile(MATRIX_PATH));
   for (const row of rows) {

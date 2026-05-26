@@ -1,5 +1,6 @@
 import type { SwarmSettings } from "../config/settings.js";
 import type { RecoveryAdvice } from "../runtime/recovery.js";
+import type { ApprovalGovernanceEvidence } from "../runtime/safety-governance.js";
 import type {
   LspCodeActionsAction,
   LspCompletionAction,
@@ -533,4 +534,5 @@ export type ToolApprovalRequest = {
   permission_rule?: string;
   attention_note?: string;
   summary_diff?: string;
+  governance?: ApprovalGovernanceEvidence;
 };

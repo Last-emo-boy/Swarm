@@ -6,6 +6,7 @@ export type RecoveryCategory =
   | "sandbox"
   | "permission"
   | "provider_rate_limit"
+  | "provider_timeout"
   | "provider_config"
   | "cache"
   | "lsp"
@@ -154,6 +155,17 @@ export function recoveryAdviceFromProviderError(input: {
       detail: compactDetail(message)
     };
   }
+  if (/timeout|timed out|etimedout|deadline/i.test(combined)) {
+    return {
+      category: "provider_timeout",
+      severity: "warning",
+      retryable: true,
+      summary: "Model provider request timed out.",
+      nextAction: "Retry with a longer timeout, narrower context, lower concurrency, or a fallback model.",
+      commandHint: "swarm run --max-agents 1",
+      detail: compactDetail(message)
+    };
+  }
   if (
     statusCode === 401 ||
     statusCode === 403 ||
@@ -191,7 +203,9 @@ export function recoveryAdviceFromCacheStatus(status: ResultCardPromptCacheStatu
     nextAction,
     detail: [
       status.status ? `status=${status.status}` : undefined,
+      status.missReason ? `miss_reason=${status.missReason}` : undefined,
       status.diagnostics ? `diagnostics=${status.diagnostics}` : undefined,
+      status.changedSections?.length ? `changed_sections=${status.changedSections.slice(0, 4).join(",")}` : undefined,
       status.changed?.length ? `changed=${status.changed.slice(0, 4).join(",")}` : undefined
     ].filter(Boolean).join(" ") || undefined
   };

@@ -1,5 +1,6 @@
 import React, { useEffect, useImperativeHandle, useMemo, useRef } from "react";
-import { Box, type BoxProps } from "ink";
+import { Box } from "../ui.js";
+import type { RendererBoxProps as BoxProps } from "../renderer/components/Box.js";
 import {
   clampScrollTop,
   createScrollDomState,

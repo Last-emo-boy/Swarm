@@ -1,6 +1,9 @@
+import { createEnvelope } from "../protocol/envelope.js";
+import type { SwarmEnvelope } from "../protocol/types.js";
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { SymphonyDispatchRecord } from "./scheduler.js";
+import { workItemKey } from "./work-item.js";
 
 export type SymphonyRunnerInput = {
   dispatch: SymphonyDispatchRecord;
@@ -39,6 +42,11 @@ export class LocalCodingLoopSymphonyRunner implements SymphonyRunner {
         maxToolCalls: input.maxToolCalls
       });
       if (result.status === "stopped") {
+        const envelope = createRunnerEnvelope(dispatch, "task.cancel", {
+          status: "cancelled",
+          result,
+          summary: result.outcome?.final_summary ?? firstLine(result.content)
+        });
         const attempt = this.runtime.runAttemptStore.upsert({
           session_id: dispatch.session.session_id,
           task_id: "symphony.runner",
@@ -62,11 +70,14 @@ export class LocalCodingLoopSymphonyRunner implements SymphonyRunner {
           type: "decision",
           value: {
             result,
-            attempt
+            attempt,
+            result_envelope_id: envelope.id
           },
           created_by: { agent_id: "symphony", role: "runner" },
-          tags: ["symphony", "runner", "cancelled", "work-kernel"]
+          tags: ["symphony", "runner", "cancelled", "work-kernel"],
+          metadata: blackboardMetadataFromRunnerEnvelope(dispatch, envelope, "decision")
         });
+        receiveRunnerEnvelope(this.runtime, envelope);
         this.runtime.events.emitEvent({ type: "blackboard", entry });
         this.runtime.events.emitEvent({
           type: "log",
@@ -75,6 +86,11 @@ export class LocalCodingLoopSymphonyRunner implements SymphonyRunner {
         });
         return { dispatch, status: "cancelled", result };
       }
+      const envelope = createRunnerEnvelope(dispatch, "task.result", {
+        status: "completed",
+        result,
+        summary: result.outcome?.final_summary ?? firstLine(result.content)
+      });
       const attempt = this.runtime.runAttemptStore.upsert({
         session_id: dispatch.session.session_id,
         task_id: "symphony.runner",
@@ -98,11 +114,14 @@ export class LocalCodingLoopSymphonyRunner implements SymphonyRunner {
         type: "result",
         value: {
           result,
-          attempt
+          attempt,
+          result_envelope_id: envelope.id
         },
         created_by: { agent_id: "symphony", role: "runner" },
-        tags: ["symphony", "runner", "completed", "work-kernel"]
+        tags: ["symphony", "runner", "completed", "work-kernel"],
+        metadata: blackboardMetadataFromRunnerEnvelope(dispatch, envelope, "result")
       });
+      receiveRunnerEnvelope(this.runtime, envelope);
       this.runtime.events.emitEvent({ type: "blackboard", entry });
       this.runtime.events.emitEvent({
         type: "log",
@@ -112,7 +131,14 @@ export class LocalCodingLoopSymphonyRunner implements SymphonyRunner {
       return { dispatch, status: "completed", result };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.runtime.runAttemptStore.upsert({
+      const envelope = createRunnerEnvelope(dispatch, "task.fail", {
+        status: "failed",
+        error: message,
+        message,
+        summary: message,
+        recoverable: true
+      });
+      const attempt = this.runtime.runAttemptStore.upsert({
         session_id: dispatch.session.session_id,
         task_id: "symphony.runner",
         runner_id: this.runner_id,
@@ -134,8 +160,14 @@ export class LocalCodingLoopSymphonyRunner implements SymphonyRunner {
         type: "evidence",
         value: { error: message },
         created_by: { agent_id: "symphony", role: "runner" },
-        tags: ["symphony", "runner", "failed", "work-kernel"]
+        tags: ["symphony", "runner", "failed", "work-kernel"],
+        metadata: {
+          ...blackboardMetadataFromRunnerEnvelope(dispatch, envelope, "result"),
+          attempt_id: attempt.attempt_id,
+          result_envelope_id: envelope.id
+        }
       });
+      receiveRunnerEnvelope(this.runtime, envelope);
       this.runtime.events.emitEvent({ type: "blackboard", entry });
       this.runtime.events.emitEvent({
         type: "log",
@@ -174,6 +206,80 @@ function classifyRunnerError(message: string): string {
     return "PERMISSION_REQUIRED";
   }
   return "RUNNER_FAILED";
+}
+
+function createRunnerEnvelope(
+  dispatch: SymphonyDispatchRecord,
+  type: Extract<SwarmEnvelope["type"], "task.result" | "task.fail" | "task.cancel">,
+  payload: Record<string, unknown>
+): SwarmEnvelope {
+  const workKey = workItemKey(dispatch.work_item);
+  const assignment = dispatch.assignment_envelope;
+  const taskCreate = dispatch.task_create_envelope;
+  return createEnvelope({
+    swarm_id: dispatch.session?.swarm_id ?? assignment?.swarm_id ?? taskCreate?.swarm_id ?? `swarm_${dispatch.session?.session_id ?? "symphony"}`,
+    session_id: dispatch.session?.session_id ?? assignment?.session_id ?? taskCreate?.session_id ?? "symphony",
+    task_id: assignment?.task_id ?? taskCreate?.task_id ?? "symphony.dispatch",
+    attempt: dispatch.attempt?.attempt,
+    from: { agent_id: "symphony.scheduler", role: "scheduler" },
+    to: { agent_id: "main_swarm", role: "controller" },
+    type,
+    intent: type === "task.result"
+      ? "symphony.runner.result"
+      : type === "task.fail"
+        ? "symphony.runner.fail"
+        : "symphony.runner.cancel",
+    payload: {
+      source: "symphony",
+      work_item_key: workKey,
+      claim_key: `symphony:${workKey}`,
+      owner_id: "symphony.scheduler",
+      runner: "symphony.local_coding_loop",
+      runner_task_id: "symphony.runner",
+      assignment_envelope_id: assignment?.id,
+      task_create_envelope_id: taskCreate?.id,
+      protocol: "symphony_source_adapter",
+      ...payload
+    },
+    correlation_id: assignment?.id ?? taskCreate?.id,
+    reply_to: assignment?.id,
+    trace: {
+      trace_id: assignment?.trace?.trace_id ?? dispatch.session?.session_id ?? taskCreate?.trace?.trace_id ?? "symphony",
+      span_id: `span_symphony_runner_${type.replace(/[^A-Za-z0-9]+/g, "_")}_${Date.now()}`,
+      parent_span_id: assignment?.trace?.span_id ?? taskCreate?.trace?.span_id
+    }
+  });
+}
+
+function receiveRunnerEnvelope(runtime: SwarmRuntime, envelope: SwarmEnvelope): void {
+  if (runtime.router) {
+    runtime.router.receive(envelope);
+    return;
+  }
+  runtime.traceStore?.append(envelope);
+  runtime.events.emitEvent({ type: "envelope", envelope });
+}
+
+function blackboardMetadataFromRunnerEnvelope(
+  dispatch: SymphonyDispatchRecord,
+  envelope: SwarmEnvelope,
+  kind: "decision" | "result"
+): Record<string, unknown> {
+  const sourceEnvelopeIds = [
+    dispatch.task_create_envelope?.id,
+    dispatch.assignment_envelope?.id,
+    envelope.id
+  ].filter((item): item is string => Boolean(item));
+  return {
+    kind,
+    source_envelope_id: envelope.id,
+    source_envelope_ids: sourceEnvelopeIds,
+    correlation_id: envelope.correlation_id,
+    reply_to: envelope.reply_to,
+    claim_key: `symphony:${workItemKey(dispatch.work_item)}`,
+    owner_agent_id: "symphony.scheduler",
+    source_agent_id: "symphony.scheduler"
+  };
 }
 
 function firstLine(value: string): string {

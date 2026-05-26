@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { defaultSwarmSettings, type PermissionMode, type SwarmSettings } from "../config/settings.js";
+import { attachApprovalGovernance } from "../runtime/safety-governance.js";
 import type { LocalToolContext, ToolAction, ToolApprovalRequest } from "./types.js";
 import type { RiskClass } from "../protocol/types.js";
 
@@ -246,25 +247,37 @@ export function createToolApprovalRequest(action: ToolAction, decision?: ToolPer
     ...(summaryDiff ? { summary_diff: summaryDiff } : {})
   };
   if (action.type === "process.stop") {
-    return {
+    return attachApprovalGovernance({
       ...base,
       summary: `Stop background process: ${action.processId}`,
       detail: [`Process ID: ${action.processId}`, `Session ID: ${action.sessionId ?? "(current)"}`].join("\n")
-    };
+    }, {
+      status: decision?.decision === "allow" ? "evidence" : "requested",
+      decision_source: decision ? "tool.permission" : "tool.approval.request",
+      actor_id: "main_swarm"
+    });
   }
   if (action.type === "shell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.build" || action.type === "process.start") {
-    return {
+    return attachApprovalGovernance({
       ...base,
       summary: approvalSummary(action),
       detail: commandApprovalDetail(action)
-    };
+    }, {
+      status: decision?.decision === "allow" ? "evidence" : "requested",
+      decision_source: decision ? "tool.permission" : "tool.approval.request",
+      actor_id: "main_swarm"
+    });
   }
 
-  return {
+  return attachApprovalGovernance({
     ...base,
     summary: approvalSummary(action),
     detail: renderActionDetail(action)
-  };
+  }, {
+    status: decision?.decision === "allow" ? "evidence" : "requested",
+    decision_source: decision ? "tool.permission" : "tool.approval.request",
+    actor_id: "main_swarm"
+  });
 }
 
 export function riskClassForAction(action: ToolAction): RiskClass {

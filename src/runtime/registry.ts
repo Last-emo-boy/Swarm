@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import type { AgentCard } from "../protocol/types.js";
+import type { AgentActorStore } from "../storage/agent-actor-store.js";
 import { RuntimeEvents } from "./events.js";
 
 export type RegisteredAgent = {
@@ -10,19 +11,22 @@ export type RegisteredAgent = {
 export class AgentRegistry {
   private readonly agents = new Map<string, RegisteredAgent>();
 
-  constructor(private readonly events: RuntimeEvents) {}
+  constructor(private readonly events: RuntimeEvents, private readonly actors?: AgentActorStore) {}
 
   register(card: AgentCard, process?: ChildProcess): void {
     this.agents.set(card.agent_id, { card, process });
+    this.actors?.upsertFromCard(card);
     this.events.emitEvent({ type: "agent", card });
   }
 
   updateStatus(agentId: string, status: AgentCard["status"]): void {
     const registered = this.agents.get(agentId);
     if (!registered) {
+      this.actors?.updateStatus(agentId, status);
       return;
     }
     registered.card.status = status;
+    this.actors?.upsertFromCard(registered.card);
     this.events.emitEvent({ type: "agent", card: registered.card });
   }
 
@@ -75,6 +79,7 @@ export class AgentRegistry {
     }
     registered.card.load.running_tasks += 1;
     registered.card.status = "busy";
+    this.actors?.upsertFromCard(registered.card);
     this.events.emitEvent({ type: "agent", card: registered.card });
   }
 
@@ -85,6 +90,7 @@ export class AgentRegistry {
     }
     registered.card.load.running_tasks = Math.max(0, registered.card.load.running_tasks - 1);
     registered.card.status = registered.card.load.running_tasks === 0 ? "idle" : "busy";
+    this.actors?.upsertFromCard(registered.card);
     this.events.emitEvent({ type: "agent", card: registered.card });
   }
 }

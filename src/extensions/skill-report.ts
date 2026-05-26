@@ -14,15 +14,18 @@ export type SkillCliReport = {
 
 export function buildSkillListReport(runtime: SwarmRuntime): SkillCliReport {
   const skills = runtime.listSkills();
-  const summary = summarizeSkillCatalog(skills);
   const settings = skillSettingsSnapshot(runtime);
+  const summary = summarizeSkillCatalog(skills, settings);
   const lines = [
     "Swarm Skills",
     `workspace=${runtime.getWorkspacePath()}`,
     `settings enabled=${settings.enabled ? "yes" : "no"} load_project=${settings.load_project_skills} configured_roots=${settings.configured_roots.length} max=${settings.max_skills}`,
     `summary skills=${summary.totals.skills} active=${summary.totals.active} shadowed=${summary.totals.shadowed} trusted=${summary.totals.trusted}`,
+    summary.runtime ? `runtime ${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
+    summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
+    summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
     ""
-  ];
+  ].filter((line): line is string => typeof line === "string");
   if (!skills.length) {
     lines.push("No skills discovered.");
     lines.push("");
@@ -172,7 +175,7 @@ function requireSkill(runtime: SwarmRuntime, selector: string): SkillRecord {
   return skill;
 }
 
-function skillSettingsSnapshot(runtime: SwarmRuntime): {
+export function skillSettingsSnapshot(runtime: SwarmRuntime): {
   enabled: boolean;
   load_project_skills: string;
   configured_roots: string[];

@@ -26,6 +26,9 @@ import { SwarmDatabase } from "../storage/database.js";
 import { SessionStore } from "../storage/session-store.js";
 import { TaskStateStore } from "../storage/task-state-store.js";
 import { TraceStore } from "../storage/trace-store.js";
+import { EnvelopeDeliveryStore } from "../storage/envelope-delivery-store.js";
+import { AgentActorStore, type AgentActorRecord, type AgentMailboxMessage, type AgentMailboxProjection } from "../storage/agent-actor-store.js";
+import { AgentMemoryStore } from "../storage/agent-memory-store.js";
 import { makeWorkerIdentity, workerDisplayLabel, WorkerStateStore } from "../storage/worker-state-store.js";
 import { HandoffStore } from "../storage/handoff-store.js";
 import { ApprovalStore } from "../storage/approval-store.js";
@@ -44,6 +47,10 @@ import { builtinAgents } from "./builtin-agents.js";
 import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import { AgentRegistry } from "./registry.js";
 import { EnvelopeRouter } from "./router.js";
+import { AgentActorRuntime, emitLegacyDirectInvokeAdapterTelemetry } from "./agent-actor-runtime.js";
+import { MailboxDeliveryPump } from "./mailbox-delivery-pump.js";
+import { policyFromActor } from "./agent-autonomy-policy.js";
+import { auditLegacyDirectPaths } from "./legacy-direct-path-audit.js";
 import { PlanGenerator } from "./plan-generator.js";
 import { Orchestrator, type ExecutionResult, type PlannedSession, type ToolApprovalHandler } from "./orchestrator.js";
 import { getDebugLogger, type DebugLogger } from "./debug-logger.js";
@@ -81,8 +88,11 @@ import { ensureWorkspaceIndex, type WorkspaceIndex } from "./workspace-index.js"
 import { createCheckpoint as createWorkspaceCheckpoint, revertCheckpoint as revertWorkspaceCheckpoint, listCheckpoints as listWorkspaceCheckpoints, type CheckpointSummary } from "./checkpoints.js";
 import { buildResultCard } from "./result-card.js";
 import { promptCacheStatusFromUsage, promptCacheTrendFromUsage, type PromptCacheRuntimeStatus, type PromptCacheTrend } from "./prompt-cache-status.js";
+import { createSourceUserMessageEnvelope, type SourceAdapterTrustLevel } from "./source-adapter.js";
 import { buildTaskContractSnapshot, buildWorkContractHandoff, buildWorkContractSnapshot, buildWorkContractWorker } from "./work-contracts.js";
+import { formatProtocolTimelineEvent, protocolTimelineEventsFromRuntimeEvent } from "./protocol-debug-timeline.js";
 import { RuntimeSystemLoop } from "./system-loop.js";
+import { approvalEnvelopeForGovernance, approvalEnvelopeForRequest } from "./safety-governance.js";
 import {
   buildResumeHealth,
   buildResumePrompt as buildResumePromptReport,
@@ -108,7 +118,13 @@ type McpPromptGetResult = {
 
 const CHAT_MAX_OUTPUT_TOKENS = 4_000;
 const CONTROL_PLANE_MAX_OUTPUT_TOKENS = 1_200;
+const TUI_CHAT_CONTEXT_BUDGET: Partial<SessionContextBudget> = {
+  maxTokens: 6_000,
+  keepRecentEntries: 16,
+  summaryMaxTokens: 1_200
+};
 const WORKER_SLOT_POLL_MS = 50;
+const HANDOFF_LEASE_TTL_MS = 5 * 60 * 1000;
 const NO_ACTIVE_LIVE_REPLY_MESSAGE = "No active work is available to receive a live reply. Start or resume a run first.";
 const NO_ACTIVE_INTERRUPT_MESSAGE = "No active work is available to interrupt. Start or resume a run first.";
 
@@ -144,6 +160,19 @@ type LoopSessionSourceOptions = {
   sourceId?: string;
 };
 
+type WorkerOwnershipProtocol = {
+  worker_id: string;
+  worker_actor_id: string;
+  assignment: SwarmEnvelope;
+  assignment_delivered: boolean;
+  capability: string;
+  agent_spec_id: string;
+  invocation_mode: AgentInvocationMode;
+  handoff_id?: string;
+};
+
+type HandoffEnvelopeDirection = "main_to_worker" | "worker_to_main";
+
 export class SwarmRuntime {
   readonly events = new RuntimeEvents();
   readonly database: SwarmDatabase;
@@ -153,6 +182,11 @@ export class SwarmRuntime {
   readonly sessionStore: SessionStore;
   readonly taskStateStore: TaskStateStore;
   readonly traceStore: TraceStore;
+  readonly envelopeDeliveryStore: EnvelopeDeliveryStore;
+  readonly agentActorStore: AgentActorStore;
+  readonly agentMemoryStore: AgentMemoryStore;
+  readonly agentActorRuntime: AgentActorRuntime;
+  readonly mailboxDeliveryPump: MailboxDeliveryPump;
   readonly workerStateStore: WorkerStateStore;
   readonly handoffStore: HandoffStore;
   readonly blackboardStore: BlackboardStore;
@@ -204,11 +238,16 @@ export class SwarmRuntime {
     this.database = new SwarmDatabase(options.databasePath ?? this.settings.runtime.databasePath);
     const traceStore = new TraceStore(this.database);
     this.traceStore = traceStore;
+    const envelopeDeliveryStore = new EnvelopeDeliveryStore(this.database);
+    this.envelopeDeliveryStore = envelopeDeliveryStore;
+    const agentActorStore = new AgentActorStore(this.database);
+    this.agentActorStore = agentActorStore;
+    this.agentMemoryStore = new AgentMemoryStore(this.database);
     const sessionStore = new SessionStore(this.database);
     this.sessionStore = sessionStore;
     const taskStateStore = new TaskStateStore(this.database);
     this.taskStateStore = taskStateStore;
-    this.workerStateStore = new WorkerStateStore(this.database);
+    this.workerStateStore = new WorkerStateStore(this.database, agentActorStore);
     this.handoffStore = new HandoffStore(this.database);
     const blackboardStore = new BlackboardStore(this.database);
     this.blackboardStore = blackboardStore;
@@ -223,8 +262,11 @@ export class SwarmRuntime {
     this.taskGraphStore = new TaskGraphStore(this.database, taskStateStore);
     const artifactStore = new ArtifactStore(this.database);
     this.artifactStore = artifactStore;
-    this.registry = new AgentRegistry(this.events);
-    this.router = new EnvelopeRouter(this.registry, traceStore, this.events, blackboardStore, artifactStore, taskStateStore);
+    this.registry = new AgentRegistry(this.events, agentActorStore);
+    this.registerCoreActors(agentActorStore, this.registry);
+    this.router = new EnvelopeRouter(this.registry, traceStore, this.events, blackboardStore, artifactStore, taskStateStore, envelopeDeliveryStore, agentActorStore, this.handoffStore);
+    this.agentActorRuntime = new AgentActorRuntime(agentActorStore, this.registry, this.events);
+    this.mailboxDeliveryPump = new MailboxDeliveryPump(envelopeDeliveryStore, traceStore, agentActorStore, this.events, (envelope) => this.router.receive(envelope));
     this.router.on("incoming", (envelope: SwarmEnvelope) => {
       if (envelope.from.agent_id === "router") {
         this.forwardToAddressedAgent(envelope);
@@ -238,6 +280,7 @@ export class SwarmRuntime {
       workspaceForSession: (sessionId) => sessionId ? this.workspaceForSession(sessionId) : this.workspace,
       approvalHandler: this.approvalHandler,
       emitApproval: (request, status) => this.events.emitEvent({ type: "approval", request, status }),
+      emitGovernance: (governance) => this.events.emitEvent({ type: "governance", governance }),
       emitToolResult: (event) => this.events.emitEvent({ type: "tool_result", ...event }),
       delegate: (action, sessionId, taskId) => this.invokeAgent({
         parent_session_id: sessionId,
@@ -284,6 +327,9 @@ export class SwarmRuntime {
 
     if (this.debug) {
       this.unsubscribeRuntimeEventLogger = this.events.onEvent((event) => {
+        for (const timelineEvent of protocolTimelineEventsFromRuntimeEvent(event, new Date().toISOString())) {
+          this.debug?.debug("protocol-timeline", formatProtocolTimelineEvent(timelineEvent), timelineEvent);
+        }
         if (event.type === "envelope") {
           const env = event.envelope;
           this.debug?.debug("envelope", `${env.type} ${env.from.agent_id ?? "?"} → ${Array.isArray(env.to) ? env.to.map((a) => a.agent_id ?? a.capability ?? "?").join(",") : env.to.agent_id ?? env.to.capability ?? "?"}`, {
@@ -363,6 +409,18 @@ export class SwarmRuntime {
           this.debug?.info("self-review", event.summary, { findings: event.findings, recommendations: event.recommendations });
         } else if (event.type === "eval_result") {
           this.debug?.debug("eval", `${event.status} ${event.name}: ${event.message}`);
+        } else if (event.type === "tui_focus") {
+          this.debug?.debug(
+            "tui-focus",
+            `${event.key_event} ${event.detail_reason} ${event.focus_before}->${event.focus_after} detail=${event.detail_before}->${event.detail_after} pane=${event.pane_before}->${event.pane_after} allowed=${event.allowed}`,
+            {
+              route: event.route,
+              session_id: event.session_id,
+              action_id: event.action_id,
+              detail_source: event.detail_source,
+              blocked_reason: event.blocked_reason
+            }
+          );
         }
       });
     }
@@ -379,6 +437,63 @@ export class SwarmRuntime {
 
   workspaceRoot(): string {
     return this.workspace;
+  }
+
+  private registerCoreActors(actors: AgentActorStore, registry: AgentRegistry): void {
+    const cards: AgentCard[] = [
+      {
+        agent_id: "main_swarm",
+        name: "Main Swarm",
+        role: "coordinator",
+        capabilities: ["swarm.coordinate", "agent.delegate", "blackboard.write"],
+        status: "idle",
+        load: { running_tasks: 0, max_tasks: 1 },
+        reliability: { success_rate: 1, avg_latency_ms: 0 },
+        metadata: { kind: "main" }
+      },
+      {
+        agent_id: "router",
+        name: "Envelope Router",
+        role: "router",
+        capabilities: ["envelope.dispatch", "envelope.delivery", "envelope.ack"],
+        status: "idle",
+        load: { running_tasks: 0, max_tasks: 1 },
+        reliability: { success_rate: 1, avg_latency_ms: 0 },
+        metadata: { kind: "router" }
+      },
+      {
+        agent_id: "blackboard",
+        name: "Blackboard",
+        role: "shared_workspace",
+        capabilities: ["blackboard.read", "blackboard.write", "blackboard.lock"],
+        status: "idle",
+        load: { running_tasks: 0, max_tasks: 1 },
+        reliability: { success_rate: 1, avg_latency_ms: 0 },
+        metadata: { kind: "blackboard" }
+      },
+      {
+        agent_id: "symphony.scheduler",
+        name: "Symphony Scheduler",
+        role: "scheduler",
+        capabilities: ["work_item.intake", "task.schedule", "claim.manage"],
+        status: "idle",
+        load: { running_tasks: 0, max_tasks: 1 },
+        reliability: { success_rate: 1, avg_latency_ms: 0 },
+        metadata: { kind: "symphony" }
+      }
+    ];
+    for (const card of cards) {
+      registry.register(card);
+    }
+    for (const card of cards) {
+      const kind = card.metadata?.kind === "main" ||
+        card.metadata?.kind === "router" ||
+        card.metadata?.kind === "blackboard" ||
+        card.metadata?.kind === "symphony"
+        ? card.metadata.kind
+        : "builtin";
+      actors.upsertFromCard(card, { kind });
+    }
   }
 
   getLastCheckpoint(): CheckpointSummary | undefined {
@@ -462,7 +577,20 @@ export class SwarmRuntime {
     try {
       this.emitReadRootPreflight(objective, options.sandboxMode);
       this.systemLoop.wake("before_user_run");
+      const sourceEnvelope = await this.recordSourceUserMessage(objective, {
+        source: "cli",
+        route: "runtime.run",
+        mode: options.mode ?? "auto",
+        sourceId: "headless"
+      });
       const result = await this.controller.run(objective, options);
+      if (sourceEnvelope && result.session_id !== sourceEnvelope.session_id) {
+        this.events.emitEvent({
+          type: "log",
+          level: "info",
+          message: `Source adapter recorded CLI user.message ${sourceEnvelope.id} before session ${result.session_id} was created.`
+        });
+      }
       this.systemLoop.wake("after_user_run");
       return result;
     } finally {
@@ -547,6 +675,7 @@ export class SwarmRuntime {
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: () => this.renderDurableContextForSession(input.session_id),
+      agentMemoryContext: () => this.renderAgentMemoryForActor("main_swarm"),
       sessionId: input.session_id,
       maxTurns: input.maxTurns,
       maxToolCalls: input.maxToolCalls,
@@ -728,9 +857,19 @@ export class SwarmRuntime {
       }
     }
     if (route.mode === "chat") {
-      const sessionId = `chat_${randomUUID()}`;
-      this.ensureLoopSession(sessionId, objective);
+      const tuiChatSessionId = options.tuiChatSessionId?.trim();
+      const sessionId = tuiChatSessionId || `chat_${randomUUID()}`;
+      if (tuiChatSessionId) {
+        this.ensureTuiChatSession(sessionId);
+      } else {
+        this.ensureLoopSession(sessionId, objective);
+      }
       const activatedSkills = this.activateRunSkills(sessionId, options.skills, "headless chat skill option");
+      const chatMemory = this.renderTuiChatMemoryForPrompt(sessionId);
+      this.recordSessionContext(sessionId, "user", "user", objective, {
+        source: "runtime.run",
+        route: "chat"
+      });
       const chatSystemPrompt = [
         options.systemPrompt !== undefined ? options.systemPrompt : [
           "You are Swarm, a local coding CLI assistant.",
@@ -748,7 +887,7 @@ export class SwarmRuntime {
           text: chatSystemPrompt,
           cache: true
         }],
-        user: objective,
+        user: chatPromptWithMemory(objective, chatMemory),
         usage: { sessionId, taskId: `${sessionId}_chat`, purpose: "chat" },
         maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS
       });
@@ -790,6 +929,7 @@ export class SwarmRuntime {
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: (sessionId) => this.renderDurableContextForSession(sessionId),
+      agentMemoryContext: () => this.renderAgentMemoryForActor("main_swarm"),
       maxTurns: options.maxTurns,
       maxToolCalls: options.maxToolCalls,
       expectedSideEffects: route.expected_side_effects,
@@ -826,11 +966,13 @@ export class SwarmRuntime {
         cache: this.latestPromptCache
       });
       if (resultStatus !== "completed") {
+        this.mirrorResultToTuiChatMemory(options.tuiChatSessionId, objective, result, resultStatus);
         this.events.emitEvent({ type: "session", session_id: result.session_id, status: resultStatus, objective });
         return { ...result, result_card: resultCard };
       }
       const postCheck = await this.runPostChangeChecks(result.session_id, objective, result.outcome);
       if (!postCheck) {
+        this.mirrorResultToTuiChatMemory(options.tuiChatSessionId, objective, result, "completed");
         this.events.emitEvent({ type: "session", session_id: result.session_id, status: "completed", objective });
         return { ...result, result_card: resultCard };
       }
@@ -852,6 +994,12 @@ export class SwarmRuntime {
       };
       this.events.emitEvent({ type: "final", session_id: result.session_id, content, outcome, status: postStatus, checkpoint: this.lastCheckpoint });
       this.sessionStore.setFinalOutput(result.session_id, content, postSessionStatus);
+      this.mirrorResultToTuiChatMemory(options.tuiChatSessionId, objective, {
+        ...result,
+        status: postStatus,
+        content,
+        outcome
+      }, postSessionStatus);
       this.events.emitEvent({ type: "session", session_id: result.session_id, status: postSessionStatus, objective });
       return {
         ...result,
@@ -890,13 +1038,32 @@ export class SwarmRuntime {
     return undefined;
   }
 
-  async sendUserMessage(content: string, options: { sessionId?: string; requestId?: string } = {}): Promise<ActiveLiveControlResult> {
+  async sendUserMessage(content: string, options: {
+    sessionId?: string;
+    requestId?: string;
+    source?: string;
+    sourceId?: string;
+    sourceRoute?: string;
+    sourceMode?: string;
+    sourceMetadata?: Record<string, unknown>;
+    correlationId?: string;
+  } = {}): Promise<ActiveLiveControlResult> {
     const requestId = normalizeLiveControlRequestId(options.requestId);
     const cached = requestId ? this.liveControlResults.get(requestId) : undefined;
     if (cached) {
       return { ...cached, duplicate: true };
     }
     const target = this.requireActiveLiveTarget(options.sessionId);
+    await this.recordSourceUserMessage(content, {
+      source: options.source ?? "runtime",
+      route: options.sourceRoute ?? "runtime.live.message",
+      mode: options.sourceMode ?? target.route,
+      sessionId: target.session_id,
+      requestId,
+      correlationId: options.correlationId,
+      sourceId: options.sourceId ?? "runtime.live",
+      metadata: options.sourceMetadata
+    });
     const control = await this.controller.submitUserMessage(content, "next", requestId);
     const result: ActiveLiveControlResult = {
       ...target,
@@ -909,7 +1076,16 @@ export class SwarmRuntime {
 
   requestInterrupt(
     content = "User requested an interrupt. Reassess the current work before continuing.",
-    options: { sessionId?: string; requestId?: string } = {}
+    options: {
+      sessionId?: string;
+      requestId?: string;
+      source?: string;
+      sourceId?: string;
+      sourceRoute?: string;
+      sourceMode?: string;
+      sourceMetadata?: Record<string, unknown>;
+      correlationId?: string;
+    } = {}
   ): ActiveLiveControlResult {
     const requestId = normalizeLiveControlRequestId(options.requestId);
     const cached = requestId ? this.liveControlResults.get(requestId) : undefined;
@@ -917,6 +1093,16 @@ export class SwarmRuntime {
       return { ...cached, duplicate: true };
     }
     const target = this.requireInterruptTarget(options.sessionId);
+    void this.recordSourceUserMessage(content, {
+      source: options.source ?? "runtime",
+      route: options.sourceRoute ?? "runtime.live.interrupt",
+      mode: options.sourceMode ?? target.route,
+      sessionId: target.session_id,
+      requestId,
+      correlationId: options.correlationId,
+      sourceId: options.sourceId ?? "runtime.live",
+      metadata: options.sourceMetadata
+    });
     if (target.route === "coding_loop") {
       const control = this.activeCodingLoop?.requestInterrupt(content, { requestId });
       const result: ActiveLiveControlResult = {
@@ -1014,6 +1200,60 @@ export class SwarmRuntime {
       if (first) {
         this.liveControlResults.delete(first);
       }
+    }
+  }
+
+  private async recordSourceUserMessage(content: string, input: {
+    source: "cli" | "gateway" | string;
+    route: string;
+    mode?: string;
+    sessionId?: string;
+    requestId?: string;
+    sourceId?: string;
+    trustLevel?: SourceAdapterTrustLevel;
+    correlationId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<SwarmEnvelope<Record<string, unknown>> | undefined> {
+    const sessionId = input.sessionId ?? `source_${input.source}_${randomUUID()}`;
+    const session = this.sessionStore.get(sessionId);
+    const envelope = createSourceUserMessageEnvelope({
+      source: input.source,
+      sourceId: input.sourceId,
+      trustLevel: input.trustLevel ?? (input.source === "gateway" ? "trusted" : "local"),
+      content,
+      swarmId: session?.swarm_id ?? `swarm_${sessionId}`,
+      sessionId,
+      route: input.route,
+      mode: input.mode,
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+      metadata: input.metadata
+    });
+    try {
+      await this.router.dispatch(envelope);
+      this.agentActorStore.registerSystemActor({
+        actor_id: envelope.from.agent_id ?? `source.${input.source}`,
+        kind: "source_adapter",
+        name: `${input.source} Source Adapter`,
+        role: envelope.from.role ?? "source_adapter",
+        capabilities: ["source.normalize", "envelope.emit"],
+        status: "idle",
+        metadata: {
+          source: input.source,
+          source_id: input.sourceId,
+          trust_level: input.trustLevel ?? (input.source === "gateway" ? "trusted" : "local"),
+          last_envelope_id: envelope.id,
+          last_correlation_id: envelope.correlation_id
+        }
+      });
+      return envelope;
+    } catch (error) {
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Source adapter failed to record ${input.source} user.message: ${error instanceof Error ? error.message : String(error)}`
+      });
+      return undefined;
     }
   }
 
@@ -1228,7 +1468,7 @@ export class SwarmRuntime {
     const workers = parentSessionId
       ? this.workerStateStore.listByParent(parentSessionId)
       : this.workerStateStore.listRecent(limit);
-    return workers.map(buildWorkContractWorker);
+    return workers.map((worker) => buildWorkContractWorker(worker));
   }
 
   getWorkerContract(workerId: string): WorkContractWorker | undefined {
@@ -1240,7 +1480,7 @@ export class SwarmRuntime {
     const handoffs = parentSessionId
       ? this.handoffStore.listByParent(parentSessionId)
       : this.handoffStore.listRecent(limit);
-    return handoffs.map(buildWorkContractHandoff);
+    return handoffs.map((handoff) => buildWorkContractHandoff(handoff));
   }
 
   getHandoffContract(handoffId: string): WorkContractHandoff | undefined {
@@ -1578,7 +1818,40 @@ export class SwarmRuntime {
     if (existing.status !== "active") {
       return existing;
     }
-    const handoff = this.handoffStore.takeBack(handoffId);
+    const previousOwner = existing.owner_agent_id ?? `worker:${existing.worker_id}`;
+    const session = this.sessionStore.get(existing.parent_session_id);
+    const takeBackEnvelope = createEnvelope({
+      swarm_id: session?.swarm_id ?? `swarm_${existing.parent_session_id}`,
+      session_id: existing.parent_session_id,
+      task_id: existing.handoff_id,
+      from: { agent_id: "main_swarm", role: "controller" },
+      to: { agent_id: previousOwner, role: "worker" },
+      type: "handoff.take_back",
+      intent: "handoff.ownership.take_back",
+      payload: {
+        handoff_id: existing.handoff_id,
+        worker_id: existing.worker_id,
+        requester_agent_id: "main_swarm",
+        reason: "Taken back by main Swarm.",
+        previous_owner: previousOwner,
+        resulting_owner: "main_swarm",
+        owner_agent_id: previousOwner,
+        target_agent_spec_id: existing.target_agent_spec_id,
+        protocol: "local_handoff_ownership_protocol"
+      },
+      correlation_id: existing.request_envelope_id ?? existing.accept_envelope_id ?? existing.handoff_id,
+      reply_to: existing.accept_envelope_id ?? existing.request_envelope_id,
+      trace: {
+        trace_id: existing.parent_session_id,
+        span_id: `span_handoff_take_back_${randomUUID()}`
+      }
+    });
+    this.router.receive(takeBackEnvelope);
+    const handoff = this.handoffStore.takeBack(handoffId, {
+      requester_agent_id: "main_swarm",
+      reason: "Taken back by main Swarm.",
+      envelope_id: takeBackEnvelope.id
+    });
     const worker = this.workerStateStore.requestStop(handoff.worker_id);
     this.events.emitEvent({ type: "worker", worker, status: worker.status, message: "Handoff taken back by main Swarm." });
     this.events.emitEvent({ type: "handoff_taken_back", handoff });
@@ -1739,6 +2012,7 @@ export class SwarmRuntime {
     const contextEntries = this.sessionContextStore.list(sessionId, 10_000);
     const compactions = this.sessionContextStore.listCompactions(sessionId, 100);
     const latestCompaction = compactions[0];
+    const lastContextEntry = contextEntries.at(-1);
     const changedFiles = finalOutcome?.changed_files ?? uniqueStrings(
       blackboard
         .filter((entry) => (entry.tags ?? []).includes("workspace-change"))
@@ -1783,6 +2057,16 @@ export class SwarmRuntime {
       context_summary: {
         entries: contextEntries.length,
         compactions: compactions.length,
+        health: contextEntries.length === 0 ? "empty" : compactions.length > 0 ? "compacted" : "active",
+        last_learned: lastContextEntry
+          ? {
+              entry_id: lastContextEntry.entry_id,
+              kind: lastContextEntry.kind,
+              role: lastContextEntry.role,
+              created_at: lastContextEntry.created_at
+            }
+          : undefined,
+        last_compacted_at: latestCompaction?.created_at,
         latest_compaction: latestCompaction
           ? {
               compaction_id: latestCompaction.compaction_id,
@@ -1802,6 +2086,30 @@ export class SwarmRuntime {
       .filter(isLiveControlDirectiveEntry)
       .slice(-limit);
     return entries.length ? entries.map(formatLiveControlDirective) : ["(none)"];
+  }
+
+  private replayProtocolSection(sessionId: string): string[] {
+    const actors = this.agentActorStore
+      .list()
+      .filter((actor) => actorBelongsToReplaySession(this.agentActorStore, actor, sessionId));
+    const recentMessages = actors.flatMap((actor) => [
+      ...this.agentActorStore.listMailboxMessages(actor.actor_id, "inbox", { limit: 10 }),
+      ...this.agentActorStore.listMailboxMessages(actor.actor_id, "outbox", { limit: 10 })
+    ])
+      .filter((message) => message.session_id === sessionId)
+      .sort((left, right) => left.queued_at.localeCompare(right.queued_at))
+      .slice(-20);
+    const audit = auditLegacyDirectPaths();
+    return [
+      `Swarm Protocol Actors: ${actors.length}`,
+      ...(actors.length ? actors.map((actor) => formatReplayProtocolActor(actor, this.agentActorStore.mailbox(actor.actor_id))) : ["(none)"]),
+      "",
+      `Swarm Protocol Mailbox Messages: ${recentMessages.length}`,
+      ...(recentMessages.length ? recentMessages.map(formatReplayProtocolMailboxMessage) : ["(none)"]),
+      "",
+      `Swarm Protocol Legacy Audit: ${audit.status} exceptions=${audit.summary.exceptions} adapters=${audit.summary.adapters} warnings=${audit.summary.warnings}`,
+      ...(audit.exceptions.length ? audit.exceptions.map((entry) => `${entry.id} [${entry.status}] ${entry.area} -> ${entry.migration_task}`) : ["(none)"])
+    ];
   }
 
   replaySession(sessionId: string): string {
@@ -1826,6 +2134,8 @@ export class SwarmRuntime {
       "",
       "Live Control Directives",
       ...liveControlDirectives,
+      "",
+      ...this.replayProtocolSection(sessionId),
       "",
       "Workspace",
       snapshot.workspace ? `${snapshot.workspace.workspace_path} boundary=${snapshot.workspace.write_boundary}` : "(none)",
@@ -1908,13 +2218,28 @@ export class SwarmRuntime {
       }
       if (event.type === "approval") {
         this.approvalStore.upsert(event.request, event.status);
+        const approvalEnvelope = approvalEnvelopeForRequest(event.request, event.status, {
+          actor_id: event.status === "pending" ? "policy_engine" : "local_user",
+          actor_role: event.status === "pending" ? "policy" : "operator",
+          decision_source: event.status === "pending" ? "runtime.approval.request" : "runtime.approval.decision",
+          swarm_id: event.request.session_id ? this.sessionStore.get(event.request.session_id)?.swarm_id : undefined
+        });
+        if (approvalEnvelope) {
+          this.router.receive(approvalEnvelope);
+        }
         this.usageStore.append({
           session_id: event.request.session_id,
           task_id: event.request.task_id,
           kind: "approval",
           amount: 1,
           unit: "count",
-          metadata: { status: event.status, action: event.request.action, risk_class: event.request.risk_class }
+          metadata: {
+            status: event.status,
+            action: event.request.action,
+            risk_class: event.request.risk_class,
+            governance: event.request.governance,
+            approval_envelope_id: approvalEnvelope?.id
+          }
         });
         this.auditStore.append({
           session_id: event.request.session_id,
@@ -1926,6 +2251,24 @@ export class SwarmRuntime {
           risk_class: event.request.risk_class,
           decision: event.status === "pending" ? "requested" : event.status,
           reason: event.request.why_now
+        });
+        return;
+      }
+      if (event.type === "governance") {
+        const governanceEnvelope = event.envelope ?? approvalEnvelopeForGovernance(event.governance);
+        if (governanceEnvelope) {
+          this.router.receive(governanceEnvelope);
+        }
+        this.auditStore.append({
+          session_id: event.governance.actor_binding.session_id,
+          task_id: event.governance.actor_binding.task_id,
+          actor_type: "policy",
+          actor_id: event.governance.actor_id,
+          action: event.governance.action,
+          resource: { governance: event.governance, envelope_id: governanceEnvelope?.id },
+          risk_class: event.governance.risk_class,
+          decision: governanceAuditDecision(event.governance.status),
+          reason: event.governance.policy_evidence.join("; ")
         });
         return;
       }
@@ -2043,6 +2386,7 @@ export class SwarmRuntime {
             error_code: event.errorCode,
             recovery_suggestion: event.recoverySuggestion,
             metadata: {
+              ...(event.metadata ?? {}),
               action: event.action,
               summary: event.summary,
               capability_id: event.capability?.id,
@@ -2341,6 +2685,8 @@ export class SwarmRuntime {
           event: "prompt_cache_diagnostic",
           diagnostic_status: usage.promptCacheDiagnostics.status,
           changed: usage.promptCacheDiagnostics.changed,
+          changed_sections: usage.promptCacheDiagnostics.changedSections,
+          miss_reason: usage.promptCacheDiagnostics.missReason,
           scope: usage.promptCacheDiagnostics.scope
         }
       });
@@ -2441,10 +2787,131 @@ export class SwarmRuntime {
       tags: ["decision", "spawn", spec.id, workerDecision.invocation_mode],
       created_by: { agent_id: "main_swarm", role: "controller" }
     });
+    const ownership = await this.dispatchWorkerOwnershipAssignment({
+      worker,
+      spec,
+      request,
+      decision: durableDecision,
+      taskPacket: durableTaskPacket,
+      handoffId
+    });
+    if (!ownership.assignment_delivered) {
+      const message = `Worker assignment was not delivered to ${ownership.worker_actor_id}.`;
+      const failedWorker = this.workerStateStore.setResult({
+        worker_id: workerId,
+        status: "failed",
+        last_result: message
+      });
+      this.emitWorkerProtocolEnvelope(ownership, "task.reject", "worker.assignment.rejected", {
+        status: "rejected",
+        worker_status: failedWorker.status,
+        message,
+        reason: "assignment_not_delivered",
+        recoverable: true
+      });
+      this.events.emitEvent({ type: "worker", worker: failedWorker, status: failedWorker.status, message });
+      return {
+        action: "agent.delegate",
+        status: "failed",
+        summary: `${spec.name} rejected assignment: ${message}`,
+        content: message,
+        errorCode: "TASK_OWNERSHIP_REJECTED",
+        recoverable: true,
+        recoverySuggestion: "Retry the delegation after the worker actor mailbox is available.",
+        data: {
+          worker_id: workerId,
+          agent_spec_id: spec.id,
+          invocation_mode: workerDecision.invocation_mode,
+          handoff_id: handoffId,
+          capability: request.capability,
+          worker_status: failedWorker.status,
+          assignment_envelope_id: ownership.assignment.id
+        }
+      };
+    }
     const runInBackground = workerDecision.invocation_mode === "parallel";
+    emitLegacyDirectInvokeAdapterTelemetry(this.events, {
+      worker_id: workerId,
+      worker_actor_id: ownership.worker_actor_id,
+      parent_session_id: request.parent_session_id,
+      agent_spec_id: spec.id,
+      invocation_mode: workerDecision.invocation_mode,
+      assignment_envelope_id: ownership.assignment.id
+    });
     const executeWorker = async (): Promise<ToolResult> => {
+      let handoff: HandoffSessionRecord | undefined;
+      if (handoffId) {
+        const requestEnvelope = await this.dispatchHandoffProtocolEnvelope(
+          ownership,
+          "handoff.request",
+          "handoff.ownership.requested",
+          {
+            status: "requested",
+            requester_agent_id: request.requested_by,
+            requested_by: request.requested_by,
+            source_agent: request.requested_by,
+            target_agent_id: ownership.worker_actor_id,
+            scope: durableTaskPacket.file_scope,
+            lease_ttl_ms: HANDOFF_LEASE_TTL_MS,
+            lease_expires_at: new Date(Date.now() + HANDOFF_LEASE_TTL_MS).toISOString(),
+            reason: workerDecision.reason,
+            objective: request.task,
+            task_packet: durableTaskPacket
+          },
+          {
+            idempotencyKey: `${ownership.assignment.swarm_id}:${request.parent_session_id}:${handoffId}:handoff.request`
+          }
+        );
+        handoff = this.handoffStore.create({
+          handoff_id: handoffId,
+          worker_id: workerId,
+          parent_session_id: request.parent_session_id,
+          source_agent: request.requested_by,
+          target_agent_spec_id: spec.id,
+          reason: workerDecision.reason,
+          task_packet: durableTaskPacket,
+          requester_agent_id: request.requested_by,
+          scope: durableTaskPacket.file_scope,
+          lease_ttl_ms: HANDOFF_LEASE_TTL_MS,
+          request_envelope_id: requestEnvelope.id
+        });
+        this.events.emitEvent({ type: "handoff_started", handoff });
+      }
+      this.emitWorkerProtocolEnvelope(ownership, "task.accept", "worker.assignment.accepted", {
+        status: "accepted",
+        summary: `${spec.name} accepted ${workerDecision.invocation_mode} assignment.`,
+        worker_status: worker.status
+      });
+      if (handoff) {
+        const acceptEnvelope = this.receiveHandoffProtocolEnvelope(
+          ownership,
+          "handoff.accept",
+          "handoff.ownership.accepted",
+          {
+            status: "accepted",
+            summary: `${spec.name} accepted handoff ownership.`,
+            owner_agent_id: ownership.worker_actor_id,
+            requester_agent_id: handoff.requester_agent_id,
+            lease_ttl_ms: HANDOFF_LEASE_TTL_MS
+          },
+          {
+            replyTo: handoff.request_envelope_id
+          }
+        );
+        handoff = this.handoffStore.markAccepted({
+          handoff_id: handoff.handoff_id,
+          owner_agent_id: ownership.worker_actor_id,
+          envelope_id: acceptEnvelope.id,
+          lease_ttl_ms: HANDOFF_LEASE_TTL_MS
+        });
+      }
       let runningWorker = worker;
       if (queuedForSlot) {
+        this.emitWorkerProtocolEnvelope(ownership, "task.progress", "worker.assignment.queued", {
+          status: "pending",
+          summary: initialBlockedReason ?? "Worker is waiting for a worker slot.",
+          worker_status: "pending"
+        });
         this.events.emitEvent({
           type: "queue",
           queue: "worker_slots",
@@ -2466,6 +2933,58 @@ export class SwarmRuntime {
           const stopMessage = latestWorker.last_result
             ?? latestWorker.blocked_reason
             ?? "Worker stopped before it could start.";
+          this.emitWorkerProtocolEnvelope(
+            ownership,
+            latestWorker.status === "failed" ? "task.fail" : "task.cancel",
+            latestWorker.status === "failed" ? "worker.assignment.failed_before_start" : "worker.assignment.cancelled_before_start",
+            {
+              status: latestWorker.status,
+              summary: stopMessage,
+              message: stopMessage,
+              worker_status: latestWorker.status,
+              recoverable: latestWorker.status !== "failed"
+            }
+          );
+          const latestHandoff = handoff ? this.handoffStore.get(handoff.handoff_id) : undefined;
+          if (handoff && latestHandoff?.status !== "taken_back") {
+            const returnContract = {
+              output_contract: durableTaskPacket.expected_output,
+              checkpoint: latestHandoff?.last_checkpoint,
+              result: {
+                status: latestWorker.status,
+                summary: stopMessage,
+                content: stopMessage
+              },
+              worker_session_id: latestWorker.worker_session_id,
+              worker_status: latestWorker.status
+            };
+            const returnEnvelope = this.receiveHandoffProtocolEnvelope(
+              ownership,
+              "handoff.return",
+              "handoff.ownership.returned_before_start",
+              {
+                status: "failed",
+                summary: stopMessage,
+                result: stopMessage,
+                return_contract: returnContract,
+                checkpoint: returnContract.checkpoint,
+                worker_status: latestWorker.status,
+                worker_session_id: latestWorker.worker_session_id,
+                recoverable: latestWorker.status !== "failed"
+              },
+              {
+                replyTo: latestHandoff?.request_envelope_id
+              }
+            );
+            const failedHandoff = this.handoffStore.finish({
+              handoff_id: handoff.handoff_id,
+              status: "failed",
+              result: stopMessage,
+              envelope_id: returnEnvelope.id,
+              return_contract: returnContract
+            });
+            this.events.emitEvent({ type: "handoff_returned", handoff: failedHandoff, result: stopMessage });
+          }
           return {
             action: "agent.delegate",
             status: latestWorker.status === "failed" ? "failed" : "partial",
@@ -2486,6 +3005,11 @@ export class SwarmRuntime {
         runningWorker = admittedWorker;
       }
 
+      this.emitWorkerProtocolEnvelope(ownership, "task.start", "worker.execution.started", {
+        status: "running",
+        summary: `${spec.name} started ${workerDecision.invocation_mode} worker execution.`,
+        worker_status: runningWorker.status
+      });
       this.events.emitEvent({ type: "agent_run_started", worker: runningWorker, task_packet: durableTaskPacket });
       this.events.emitEvent({
         type: "worker",
@@ -2493,20 +3017,6 @@ export class SwarmRuntime {
         status: runningWorker.status,
         message: `${spec.id}/${workerDecision.invocation_mode}: ${request.task}`
       });
-
-      let handoff: HandoffSessionRecord | undefined;
-      if (handoffId) {
-        handoff = this.handoffStore.create({
-          handoff_id: handoffId,
-          worker_id: workerId,
-          parent_session_id: request.parent_session_id,
-          source_agent: request.requested_by,
-          target_agent_spec_id: spec.id,
-          reason: workerDecision.reason,
-          task_packet: durableTaskPacket
-        });
-        this.events.emitEvent({ type: "handoff_started", handoff });
-      }
 
       const workerSettings = settingsForAgentTask(this.settings, taskPacket);
       const workerLoop = new CodingAgentLoop({
@@ -2530,6 +3040,7 @@ export class SwarmRuntime {
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       agentControl: this.createRuntimeAgentControlTools(),
       durableContext: () => this.renderAgentDurableContext(request.parent_session_id, request.prior_worker_session_id),
+      agentMemoryContext: () => this.renderAgentMemoryForActor(ownership.worker_actor_id),
         agentInstructions: renderAgentRuntimeInstructions(spec, workerDecision, taskPacket),
         allowedTools: taskPacket.allowed_tools,
         writePolicy: taskPacket.write_policy,
@@ -2550,6 +3061,45 @@ export class SwarmRuntime {
             status: sessionLinkedWorker.status,
             message: `Worker session ${sessionId} started.`
           });
+          this.emitWorkerProtocolEnvelope(ownership, "task.checkpoint", "worker.session.started", {
+            kind: "checkpoint",
+            checkpoint: true,
+            status: "running",
+            summary: `Worker session ${sessionId} started.`,
+            worker_status: sessionLinkedWorker.status,
+            worker_session_id: sessionId
+          });
+          if (handoff) {
+            const checkpoint = {
+              kind: "worker_session_started",
+              summary: `Worker session ${sessionId} started.`,
+              worker_session_id: sessionId,
+              worker_status: sessionLinkedWorker.status
+            };
+            const checkpointEnvelope = this.receiveHandoffProtocolEnvelope(
+              ownership,
+              "handoff.checkpoint",
+              "handoff.ownership.checkpointed",
+              {
+                status: "running",
+                checkpoint,
+                summary: checkpoint.summary,
+                worker_session_id: sessionId,
+                worker_status: sessionLinkedWorker.status,
+                lease_ttl_ms: HANDOFF_LEASE_TTL_MS
+              },
+              {
+                replyTo: handoff.accept_envelope_id ?? handoff.request_envelope_id
+              }
+            );
+            handoff = this.handoffStore.checkpoint({
+              handoff_id: handoff.handoff_id,
+              checkpoint,
+              owner_agent_id: ownership.worker_actor_id,
+              envelope_id: checkpointEnvelope.id,
+              lease_ttl_ms: HANDOFF_LEASE_TTL_MS
+            });
+          }
         },
         onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? request.parent_session_id, change),
         onFileLock: (event) => this.recordFileLock(event)
@@ -2561,21 +3111,6 @@ export class SwarmRuntime {
         const latestHandoff = handoff ? this.handoffStore.get(handoff.handoff_id) : undefined;
         const stopped = latestWorker?.status === "stopped" || latestHandoff?.status === "taken_back";
         const status = workerStatusFromExecutionStatus(result.status, stopped);
-        const finalRecord = this.workerStateStore.setResult({
-          worker_id: workerId,
-          status,
-          worker_session_id: result.session_id,
-          last_result: result.content,
-          outcome: result.outcome
-        });
-        this.events.emitEvent({ type: "worker", worker: finalRecord, status: finalRecord.status, message: firstLine(result.content) });
-        this.events.emitEvent({ type: "agent_run_completed", worker: finalRecord, result: result.content });
-
-        let finalHandoff = latestHandoff;
-        if (handoff && latestHandoff?.status !== "taken_back") {
-          finalHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: status === "failed" ? "failed" : "returned", result: result.content });
-          this.events.emitEvent({ type: "handoff_returned", handoff: finalHandoff, result: result.content });
-        }
 
         const compactedResult = await this.compactWorkerResultForParent({
           parentSessionId: request.parent_session_id,
@@ -2586,6 +3121,94 @@ export class SwarmRuntime {
           content: result.content,
           outcome: result.outcome
         });
+        let finalHandoff = latestHandoff;
+        if (handoff && latestHandoff?.status !== "taken_back") {
+          const returnContract = {
+            output_contract: durableTaskPacket.expected_output,
+            checkpoint: latestHandoff?.last_checkpoint,
+            result: {
+              status,
+              summary: compactedResult.summary,
+              content: result.content,
+              output_ref: compactedResult.outputRef,
+              outcome: result.outcome
+            },
+            worker_session_id: result.session_id,
+            worker_status: status
+          };
+          const returnEnvelope = this.receiveHandoffProtocolEnvelope(
+            ownership,
+            "handoff.return",
+            status === "failed" ? "handoff.ownership.failed" : "handoff.ownership.returned",
+            {
+              status: status === "failed" ? "failed" : "returned",
+              summary: compactedResult.summary,
+              result: result.content,
+              content: result.content,
+              outputRef: compactedResult.outputRef,
+              return_contract: returnContract,
+              checkpoint: returnContract.checkpoint,
+              worker_session_id: result.session_id,
+              worker_status: status,
+              outcome: result.outcome,
+              recoverable: status !== "failed"
+            },
+            {
+              replyTo: latestHandoff?.accept_envelope_id ?? latestHandoff?.request_envelope_id
+            }
+          );
+          finalHandoff = this.handoffStore.finish({
+            handoff_id: handoff.handoff_id,
+            status: status === "failed" ? "failed" : "returned",
+            result: result.content,
+            envelope_id: returnEnvelope.id,
+            return_contract: returnContract
+          });
+          this.events.emitEvent({ type: "handoff_returned", handoff: finalHandoff, result: result.content });
+        }
+        const finalEnvelopeType = status === "failed" ? "task.fail" : status === "stopped" ? "task.cancel" : "task.result";
+        const finalEnvelope = this.emitWorkerProtocolEnvelope(
+          ownership,
+          finalEnvelopeType,
+          finalEnvelopeType === "task.result"
+            ? "worker.execution.completed"
+            : finalEnvelopeType === "task.cancel"
+              ? "worker.execution.cancelled"
+              : "worker.execution.failed",
+          {
+            status: status === "completed" ? "completed" : status,
+            summary: compactedResult.summary,
+            content: result.content,
+            outputRef: compactedResult.outputRef,
+            worker_session_id: result.session_id,
+            worker_status: status,
+            outcome: result.outcome,
+            recoverable: status !== "failed"
+          }
+        );
+        this.recordAgentMemoryFromWorkerResult({
+          actorId: ownership.worker_actor_id,
+          sessionId: result.session_id,
+          parentSessionId: request.parent_session_id,
+          taskId: workerId,
+          sourceEnvelopeId: finalEnvelope.id,
+          correlationId: finalEnvelope.correlation_id,
+          status,
+          summary: compactedResult.summary,
+          content: result.content,
+          capability: request.capability,
+          specId: spec.id,
+          outcome: result.outcome
+        });
+        const finalRecord = this.workerStateStore.setResult({
+          worker_id: workerId,
+          status,
+          worker_session_id: result.session_id,
+          last_result: result.content,
+          outcome: result.outcome
+        });
+        this.events.emitEvent({ type: "worker", worker: finalRecord, status: finalRecord.status, message: firstLine(result.content) });
+        this.events.emitEvent({ type: "agent_run_completed", worker: finalRecord, result: result.content });
         return {
           action: "agent.delegate",
           status: delegatedToolStatus(status),
@@ -2613,9 +3236,67 @@ export class SwarmRuntime {
         });
         this.events.emitEvent({ type: "worker", worker: failedRecord, status: failedRecord.status, message });
         if (handoff) {
-          const failedHandoff = this.handoffStore.finish({ handoff_id: handoff.handoff_id, status: "failed", result: message });
+          const latestHandoff = this.handoffStore.get(handoff.handoff_id);
+          const returnContract = {
+            output_contract: durableTaskPacket.expected_output,
+            checkpoint: latestHandoff?.last_checkpoint,
+            result: {
+              status: "failed",
+              summary: message,
+              content: message
+            },
+            worker_session_id: failedRecord.worker_session_id,
+            worker_status: failedRecord.status
+          };
+          const returnEnvelope = this.receiveHandoffProtocolEnvelope(
+            ownership,
+            "handoff.return",
+            "handoff.ownership.failed",
+            {
+              status: "failed",
+              summary: message,
+              result: message,
+              error: message,
+              return_contract: returnContract,
+              checkpoint: returnContract.checkpoint,
+              worker_session_id: failedRecord.worker_session_id,
+              worker_status: failedRecord.status,
+              recoverable: true
+            },
+            {
+              replyTo: latestHandoff?.accept_envelope_id ?? latestHandoff?.request_envelope_id
+            }
+          );
+          const failedHandoff = this.handoffStore.finish({
+            handoff_id: handoff.handoff_id,
+            status: "failed",
+            result: message,
+            envelope_id: returnEnvelope.id,
+            return_contract: returnContract
+          });
           this.events.emitEvent({ type: "handoff_returned", handoff: failedHandoff, result: message });
         }
+        const failureEnvelope = this.emitWorkerProtocolEnvelope(ownership, "task.fail", "worker.execution.failed", {
+          status: "failed",
+          summary: message,
+          message,
+          error: message,
+          worker_status: failedRecord.status,
+          recoverable: true
+        });
+        this.recordAgentMemoryFromWorkerResult({
+          actorId: ownership.worker_actor_id,
+          sessionId: failedRecord.worker_session_id ?? request.parent_session_id,
+          parentSessionId: request.parent_session_id,
+          taskId: workerId,
+          sourceEnvelopeId: failureEnvelope.id,
+          correlationId: failureEnvelope.correlation_id,
+          status: "failed",
+          summary: message,
+          content: message,
+          capability: request.capability,
+          specId: spec.id
+        });
         return {
           action: "agent.delegate",
           status: "failed",
@@ -2647,6 +3328,27 @@ export class SwarmRuntime {
           status: "failed",
           last_result: message
         });
+        const failureEnvelope = this.emitWorkerProtocolEnvelope(ownership, "task.fail", "worker.execution.failed", {
+          status: "failed",
+          summary: message,
+          message,
+          error: message,
+          worker_status: failedRecord.status,
+          recoverable: true
+        });
+        this.recordAgentMemoryFromWorkerResult({
+          actorId: ownership.worker_actor_id,
+          sessionId: failedRecord.worker_session_id ?? request.parent_session_id,
+          parentSessionId: request.parent_session_id,
+          taskId: workerId,
+          sourceEnvelopeId: failureEnvelope.id,
+          correlationId: failureEnvelope.correlation_id,
+          status: "failed",
+          summary: message,
+          content: message,
+          capability: request.capability,
+          specId: spec.id
+        });
         this.events.emitEvent({ type: "worker", worker: failedRecord, status: failedRecord.status, message });
         this.events.emitEvent({ type: "agent_run_completed", worker: failedRecord, result: message });
       });
@@ -2677,6 +3379,230 @@ export class SwarmRuntime {
     }
 
     return executeWorker();
+  }
+
+  private async dispatchWorkerOwnershipAssignment(input: {
+    worker: WorkerRecord;
+    spec: AgentSpec;
+    request: AgentInvocationRequest;
+    decision: AgentSpawnDecision;
+    taskPacket: AgentTaskPacket;
+    handoffId?: string;
+  }): Promise<WorkerOwnershipProtocol> {
+    const workerActorId = `worker:${input.worker.worker_id}`;
+    const session = this.sessionStore.get(input.request.parent_session_id);
+    const swarmId = session?.swarm_id ?? `swarm_${input.request.parent_session_id}`;
+    this.registry.register({
+      agent_id: workerActorId,
+      name: input.worker.display_name,
+      role: input.worker.role_title ?? input.spec.role,
+      capabilities: uniqueStrings([input.request.capability, input.spec.id, ...input.spec.capabilities]),
+      status: "idle",
+      load: {
+        running_tasks: 0,
+        max_tasks: 1
+      },
+      reliability: {
+        success_rate: 1,
+        avg_latency_ms: 0
+      },
+      metadata: {
+        kind: "local_worker_adapter",
+        worker_id: input.worker.worker_id,
+        parent_session_id: input.request.parent_session_id,
+        agent_spec_id: input.spec.id,
+        invocation_mode: input.decision.invocation_mode,
+        handoff_id: input.handoffId,
+        write_policy: input.taskPacket.write_policy,
+        file_scope: input.taskPacket.file_scope
+      }
+    });
+
+    const assignment = createEnvelope({
+      swarm_id: swarmId,
+      session_id: input.request.parent_session_id,
+      task_id: input.worker.worker_id,
+      from: { agent_id: "main_swarm", role: "controller" },
+      to: { agent_id: workerActorId, role: input.spec.role, capability: input.request.capability },
+      type: "task.assign",
+      intent: "worker.assignment",
+      idempotency_key: `${swarmId}:${input.request.parent_session_id}:${input.worker.worker_id}:task.assign`,
+      payload: {
+        worker_id: input.worker.worker_id,
+        owner_agent_id: workerActorId,
+        parent_session_id: input.request.parent_session_id,
+        capability: input.request.capability,
+        objective: input.request.task,
+        agent_spec_id: input.spec.id,
+        invocation_mode: input.decision.invocation_mode,
+        handoff_id: input.handoffId,
+        decision: input.decision,
+        task_packet: input.taskPacket,
+        file_scope: input.taskPacket.file_scope,
+        write_policy: input.taskPacket.write_policy,
+        requested_by: input.request.requested_by,
+        spawn_reason: input.request.spawn_reason,
+        protocol: "local_worker_actor_adapter"
+      },
+      routing: { mode: "direct" },
+      trace: {
+        trace_id: input.request.parent_session_id,
+        span_id: `span_worker_assign_${input.worker.worker_id}`
+      }
+    });
+
+    try {
+      await this.router.dispatch(assignment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.emitEvent({ type: "log", level: "warn", message: `Worker assignment dispatch failed for ${input.worker.worker_id}: ${message}` });
+    }
+
+    const assignmentDelivered = this.agentActorStore
+      .listMailboxMessages(workerActorId, "inbox", { limit: 50 })
+      .some((message) =>
+        message.envelope_id === assignment.id &&
+        (message.status === "delivered" || message.status === "acked")
+      );
+
+    return {
+      worker_id: input.worker.worker_id,
+      worker_actor_id: workerActorId,
+      assignment,
+      assignment_delivered: assignmentDelivered,
+      capability: input.request.capability,
+      agent_spec_id: input.spec.id,
+      invocation_mode: input.decision.invocation_mode,
+      handoff_id: input.handoffId
+    };
+  }
+
+  private emitWorkerProtocolEnvelope(
+    ownership: WorkerOwnershipProtocol,
+    type: SwarmEnvelope["type"],
+    intent: string,
+    payload: Record<string, unknown>
+  ): SwarmEnvelope {
+    const envelope = createEnvelope({
+      swarm_id: ownership.assignment.swarm_id,
+      session_id: ownership.assignment.session_id,
+      task_id: ownership.assignment.task_id,
+      from: { agent_id: ownership.worker_actor_id, role: "worker", capability: ownership.capability },
+      to: { agent_id: "main_swarm", role: "controller" },
+      type,
+      intent,
+      payload: {
+        worker_id: ownership.worker_id,
+        owner_agent_id: ownership.worker_actor_id,
+        agent_spec_id: ownership.agent_spec_id,
+        invocation_mode: ownership.invocation_mode,
+        handoff_id: ownership.handoff_id,
+        assignment_envelope_id: ownership.assignment.id,
+        protocol: "local_worker_actor_adapter",
+        ...payload
+      },
+      correlation_id: ownership.assignment.correlation_id ?? ownership.assignment.id,
+      reply_to: ownership.assignment.id,
+      trace: {
+        trace_id: ownership.assignment.trace?.trace_id ?? ownership.assignment.session_id,
+        span_id: `span_worker_${type.replace(/[^a-z0-9]+/gi, "_")}_${randomUUID()}`,
+        parent_span_id: ownership.assignment.trace?.span_id
+      }
+    });
+    this.router.receive(envelope);
+    return envelope;
+  }
+
+  private async dispatchHandoffProtocolEnvelope(
+    ownership: WorkerOwnershipProtocol,
+    type: SwarmEnvelope["type"],
+    intent: string,
+    payload: Record<string, unknown>,
+    options: { replyTo?: string; correlationId?: string; idempotencyKey?: string } = {}
+  ): Promise<SwarmEnvelope> {
+    const envelope = this.createHandoffProtocolEnvelope(
+      ownership,
+      type,
+      intent,
+      payload,
+      "main_to_worker",
+      options
+    );
+    try {
+      await this.router.dispatch(envelope);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.emitEvent({ type: "log", level: "warn", message: `Handoff protocol dispatch failed for ${ownership.handoff_id ?? ownership.worker_id}: ${message}` });
+    }
+    return envelope;
+  }
+
+  private receiveHandoffProtocolEnvelope(
+    ownership: WorkerOwnershipProtocol,
+    type: SwarmEnvelope["type"],
+    intent: string,
+    payload: Record<string, unknown>,
+    options: { replyTo?: string; correlationId?: string; idempotencyKey?: string } = {}
+  ): SwarmEnvelope {
+    const envelope = this.createHandoffProtocolEnvelope(
+      ownership,
+      type,
+      intent,
+      payload,
+      "worker_to_main",
+      options
+    );
+    this.router.receive(envelope);
+    return envelope;
+  }
+
+  private createHandoffProtocolEnvelope(
+    ownership: WorkerOwnershipProtocol,
+    type: SwarmEnvelope["type"],
+    intent: string,
+    payload: Record<string, unknown>,
+    direction: HandoffEnvelopeDirection,
+    options: { replyTo?: string; correlationId?: string; idempotencyKey?: string } = {}
+  ): SwarmEnvelope {
+    const handoffId = ownership.handoff_id;
+    if (!handoffId) {
+      throw new Error(`Cannot emit ${type} without a handoff id.`);
+    }
+    const from = direction === "main_to_worker"
+      ? { agent_id: "main_swarm", role: "controller" }
+      : { agent_id: ownership.worker_actor_id, role: "worker", capability: ownership.capability };
+    const to = direction === "main_to_worker"
+      ? { agent_id: ownership.worker_actor_id, role: "worker", capability: ownership.capability }
+      : { agent_id: "main_swarm", role: "controller" };
+    return createEnvelope({
+      swarm_id: ownership.assignment.swarm_id,
+      session_id: ownership.assignment.session_id,
+      task_id: handoffId,
+      from,
+      to,
+      type,
+      intent,
+      payload: {
+        handoff_id: handoffId,
+        worker_id: ownership.worker_id,
+        target_agent_id: ownership.worker_actor_id,
+        agent_spec_id: ownership.agent_spec_id,
+        target_agent_spec_id: ownership.agent_spec_id,
+        invocation_mode: ownership.invocation_mode,
+        assignment_envelope_id: ownership.assignment.id,
+        protocol: "local_handoff_ownership_protocol",
+        ...payload
+      },
+      correlation_id: options.correlationId ?? options.replyTo ?? ownership.assignment.id,
+      reply_to: options.replyTo,
+      idempotency_key: options.idempotencyKey,
+      routing: direction === "main_to_worker" ? { mode: "direct" } : undefined,
+      trace: {
+        trace_id: ownership.assignment.trace?.trace_id ?? ownership.assignment.session_id,
+        span_id: `span_handoff_${type.replace(/[^a-z0-9]+/gi, "_")}_${randomUUID()}`,
+        parent_span_id: ownership.assignment.trace?.span_id
+      }
+    });
   }
 
   private workspaceForSession(sessionId: string): string {
@@ -2761,6 +3687,106 @@ export class SwarmRuntime {
     ].filter(Boolean).join("\n\n");
   }
 
+  private renderAgentMemoryForActor(actorId: string): string {
+    return this.agentMemoryStore.renderForPrompt(actorId);
+  }
+
+  getAgentMemoryProjection(actorId: string): ReturnType<AgentMemoryStore["project"]> {
+    return this.agentMemoryStore.project(actorId);
+  }
+
+  clearAgentMemory(actorId: string, sourceEnvelopeId: string, input: { now?: string; metadata?: Record<string, unknown> } = {}): void {
+    this.agentMemoryStore.clear(actorId, {
+      source_envelope_id: sourceEnvelopeId,
+      now: input.now,
+      metadata: input.metadata
+    });
+  }
+
+  freezeAgentMemory(actorId: string, sourceEnvelopeId: string, frozen = true, input: { now?: string; metadata?: Record<string, unknown> } = {}): void {
+    this.agentMemoryStore.freeze(actorId, {
+      source_envelope_id: sourceEnvelopeId,
+      frozen,
+      now: input.now,
+      metadata: input.metadata
+    });
+  }
+
+  private recordAgentMemoryFromWorkerResult(input: {
+    actorId: string;
+    sessionId: string;
+    parentSessionId: string;
+    taskId: string;
+    sourceEnvelopeId: string;
+    correlationId?: string;
+    status: string;
+    summary: string;
+    content: string;
+    capability: string;
+    specId: string;
+    outcome?: SessionOutcome;
+  }): void {
+    try {
+      this.agentMemoryStore.append({
+        actor_id: input.actorId,
+        session_id: input.sessionId,
+        task_id: input.taskId,
+        kind: input.status === "failed" ? "failure_pattern" : "task_experience",
+        content: input.content,
+        summary: `${input.status}: ${input.summary}`,
+        tags: ["worker", input.status, input.capability, input.specId],
+        trusted_tools: input.outcome?.tests_run?.length ? ["code.test"] : [],
+        source_envelope_id: input.sourceEnvelopeId,
+        correlation_id: input.correlationId,
+        retention_policy: "long_term",
+        metadata: {
+          parent_session_id: input.parentSessionId,
+          worker_session_id: input.sessionId,
+          capability: input.capability,
+          agent_spec_id: input.specId,
+          changed_files: input.outcome?.changed_files,
+          tests_run: input.outcome?.tests_run,
+          final_summary: input.outcome?.final_summary
+        }
+      });
+    } catch (error) {
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: `Agent memory write skipped for ${input.actorId}: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  }
+
+  private renderTuiChatMemoryForPrompt(sessionId: string): string {
+    return this.sessionContextStore.renderForSession(sessionId, TUI_CHAT_CONTEXT_BUDGET);
+  }
+
+  private mirrorResultToTuiChatMemory(
+    tuiChatSessionId: string | undefined,
+    objective: string,
+    result: ExecutionResult,
+    status: SwarmSession["status"]
+  ): void {
+    const sessionId = tuiChatSessionId?.trim();
+    if (!sessionId || sessionId === result.session_id) {
+      return;
+    }
+    this.ensureTuiChatSession(sessionId);
+    this.recordSessionContext(sessionId, "user", "user", objective, {
+      source: "runtime.run",
+      route: "coding_loop",
+      child_session_id: result.session_id
+    });
+    this.recordSessionContext(sessionId, "final", "assistant", result.content, {
+      source: "runtime.run",
+      route: "coding_loop",
+      child_session_id: result.session_id,
+      status,
+      outcome: result.outcome
+    });
+  }
+
   private renderAgentDurableContext(parentSessionId: string, priorWorkerSessionId?: string): string {
     const sections = [this.renderDurableContextForSession(parentSessionId)];
     const priorWorkerContext = this.renderPriorWorkerSessionContext(priorWorkerSessionId);
@@ -2831,21 +3857,29 @@ export class SwarmRuntime {
       attempt: 0,
       content
     });
+    const policy = mcpMaterialPolicy(input.kind, artifact);
     this.artifactStore.create({
       session_id: sessionId,
       path: artifact.path,
       type: `mcp.${input.kind}`,
-      summary: `${input.serverId}:${input.nameOrUri}`
+      summary: `${input.serverId}:${input.nameOrUri} ${policy.cache_policy.cachePolicy} ttl=${policy.cache_policy.ttlSeconds}s`
     });
     this.writeBlackboardEvidence(sessionId, {
       key: `mcp.${input.kind}.${sanitizeKey(input.serverId)}.${sanitizeKey(input.nameOrUri)}`,
       type: "evidence",
       value: {
+        source: "mcp",
         server_id: input.serverId,
+        kind: input.kind,
         name_or_uri: input.nameOrUri,
         args: input.args,
         artifact,
-        bytes: artifact.bytes
+        bytes: artifact.bytes,
+        read_only: policy.read_only,
+        risk_class: policy.risk_class,
+        cache_policy: policy.cache_policy,
+        context_impact: policy.context_impact,
+        activation_reason: policy.activation_reason
       },
       tags: ["mcp", input.kind, "artifact", "work-kernel"],
       created_by: { agent_id: "main_swarm", role: "controller" },
@@ -2858,14 +3892,19 @@ export class SwarmRuntime {
       actor_id: `mcp.${input.serverId}`,
       action: `mcp.${input.kind}`,
       resource: {
+        source: "mcp",
         server_id: input.serverId,
+        kind: input.kind,
         name_or_uri: input.nameOrUri,
         args: input.args,
-        artifact
+        artifact,
+        read_only: policy.read_only,
+        cache_policy: policy.cache_policy,
+        context_impact: policy.context_impact
       },
-      risk_class: "r0",
+      risk_class: policy.risk_class,
       decision: "executed",
-      reason: `MCP ${input.kind} materialized as artifact.`
+      reason: policy.activation_reason
     });
     if (!input.sessionId) {
       this.sessionStore.setFinalOutput(sessionId, `MCP ${input.kind} materialized: ${input.serverId}:${input.nameOrUri}`, "completed");
@@ -2878,7 +3917,18 @@ export class SwarmRuntime {
     }
     return {
       ...(isRecord(input.result) ? input.result : { value: input.result }),
-      _swarm_artifact: artifact
+      _swarm_artifact: {
+        ...artifact,
+        source: "mcp",
+        server_id: input.serverId,
+        kind: input.kind,
+        name_or_uri: input.nameOrUri,
+        read_only: policy.read_only,
+        risk_class: policy.risk_class,
+        cache_policy: policy.cache_policy,
+        context_impact: policy.context_impact,
+        activation_reason: policy.activation_reason
+      }
     } as T & { _swarm_artifact?: { path: string; bytes: number; lines: number } };
   }
 
@@ -3668,6 +4718,30 @@ function renderActivatedSkillsForPrompt(skills: ActivatedSkill[]): string {
   ].join("\n\n");
 }
 
+function chatPromptWithMemory(objective: string, memory: string): Array<{ text: string; cache?: boolean; section?: "context" | "task" }> | string {
+  const trimmedMemory = memory.trim();
+  if (!trimmedMemory) {
+    return objective;
+  }
+  return [
+    {
+      text: [
+        "Previous TUI conversation memory:",
+        trimmedMemory,
+        "",
+        "Use this memory only as historical context. Answer the newest user message below."
+      ].join("\n"),
+      cache: false,
+      section: "context"
+    },
+    {
+      text: objective,
+      cache: false,
+      section: "task"
+    }
+  ];
+}
+
 function evaluateDelegationRoi(request: AgentInvocationRequest): { allow: boolean; reason: string } {
   const task = `${request.task}\n${request.context ?? ""}`.toLowerCase();
   const fileScope = request.file_scope ?? [];
@@ -4318,6 +5392,49 @@ function formatLiveControlDirective(entry: BlackboardEntry): string {
   ].filter(Boolean).join(" ");
 }
 
+function actorBelongsToReplaySession(store: AgentActorStore, actor: AgentActorRecord, sessionId: string): boolean {
+  if (["main", "router", "blackboard", "symphony", "gateway"].includes(actor.kind)) {
+    return true;
+  }
+  if (actor.current_session_id === sessionId) {
+    return true;
+  }
+  return store.listMailboxMessages(actor.actor_id, "inbox", { limit: 100 }).some((message) => message.session_id === sessionId) ||
+    store.listMailboxMessages(actor.actor_id, "outbox", { limit: 100 }).some((message) => message.session_id === sessionId);
+}
+
+function formatReplayProtocolActor(actor: AgentActorRecord, mailbox: AgentMailboxProjection): string {
+  const policy = policyFromActor(actor);
+  const leases = policy?.capability_leases ?? [];
+  const activeLeases = leases.filter((lease) => lease.status !== "revoked").length;
+  return [
+    `${actor.actor_id} [${actor.status}/${actor.heartbeat_state}]`,
+    `kind=${actor.kind}`,
+    `role=${actor.role}`,
+    actor.current_session_id ? `session=${actor.current_session_id}` : undefined,
+    actor.current_task_id ? `task=${actor.current_task_id}` : undefined,
+    actor.current_worker_id ? `worker=${actor.current_worker_id}` : undefined,
+    `mailbox=inbox ${mailbox.inbox_pending}/${mailbox.inbox_delivered}/${mailbox.inbox_acked}/${mailbox.inbox_failed} outbox ${mailbox.outbox_pending}/${mailbox.outbox_delivered}/${mailbox.outbox_acked}/${mailbox.outbox_failed}`,
+    policy ? `policy=${policy.level} leases=${activeLeases}/${leases.length}` : "policy=legacy"
+  ].filter(Boolean).join(" ");
+}
+
+function formatReplayProtocolMailboxMessage(message: AgentMailboxMessage): string {
+  const peer = message.direction === "inbox"
+    ? `from=${message.from_agent_id ?? "-"}`
+    : `to=${message.recipient_agent_id ?? "-"}`;
+  return [
+    message.queued_at,
+    message.direction,
+    message.status,
+    message.envelope_id,
+    message.type,
+    message.task_id ?? "",
+    message.intent,
+    peer
+  ].filter((part) => part !== "").join(" ");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -4332,6 +5449,49 @@ function formatWorkspaceChangeForFreshness(value: unknown): string {
   const path = typeof record.path === "string" ? record.path : "(unknown path)";
   const afterHash = typeof record.afterHash === "string" ? record.afterHash.slice(0, 12) : undefined;
   return afterHash ? `${operation} ${path}@${afterHash}` : `${operation} ${path}`;
+}
+
+function mcpMaterialPolicy(kind: "resource" | "prompt", artifact: { bytes: number; lines: number }): {
+  read_only: true;
+  risk_class: "r0";
+  cache_policy: {
+    cachePolicy: "stable_summary" | "dynamic_context";
+    ttlSeconds: number;
+    stablePrefixEligible: boolean;
+    reason: string;
+  };
+  context_impact: {
+    segment: "stable_prefix" | "dynamic_context";
+    bytes: number;
+    lines: number;
+    promptCacheImpact: "low" | "medium";
+    recommendation: string;
+  };
+  activation_reason: string;
+} {
+  const isResource = kind === "resource";
+  return {
+    read_only: true,
+    risk_class: "r0",
+    cache_policy: {
+      cachePolicy: isResource ? "stable_summary" : "dynamic_context",
+      ttlSeconds: isResource ? 3600 : 0,
+      stablePrefixEligible: isResource,
+      reason: isResource
+        ? "Read-only MCP resources can be summarized into the stable prefix until TTL expiry."
+        : "MCP prompts are materialized per invocation and stay in the dynamic context segment."
+    },
+    context_impact: {
+      segment: isResource ? "stable_prefix" : "dynamic_context",
+      bytes: artifact.bytes,
+      lines: artifact.lines,
+      promptCacheImpact: isResource ? "low" : "medium",
+      recommendation: isResource
+        ? "Reuse the artifact summary instead of reinjecting the full resource on every turn."
+        : "Keep prompt materialization near the turn that requested it to avoid prefix churn."
+    },
+    activation_reason: `MCP ${kind} materialized as a read-only r0 artifact with ${isResource ? "stable summary" : "dynamic context"} cache policy.`
+  };
 }
 
 export function handleRuntimeChildTransportMessage(input: RuntimeChildTransportMessageInput): RuntimeChildTransportMessageResult {
@@ -4540,4 +5700,14 @@ function toolStatusFromExecutionStatus(status: ExecutionResult["status"]): ToolR
     return "partial";
   }
   return "success";
+}
+
+function governanceAuditDecision(status: "requested" | "granted" | "denied" | "evidence"): "requested" | "approved" | "denied" | "executed" {
+  if (status === "granted") {
+    return "approved";
+  }
+  if (status === "evidence") {
+    return "executed";
+  }
+  return status;
 }

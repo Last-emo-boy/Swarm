@@ -7,11 +7,18 @@ import type { SwarmSession, WorkItem, WorkSessionOutcome } from "../protocol/typ
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import { RuntimeEvents, type RuntimeEvent } from "../runtime/events.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
+import { createEnvelope } from "../protocol/envelope.js";
+import { AgentActorStore } from "../storage/agent-actor-store.js";
 import { BlackboardStore } from "../storage/blackboard-store.js";
 import { SwarmDatabase } from "../storage/database.js";
+import { EnvelopeDeliveryStore } from "../storage/envelope-delivery-store.js";
 import { RunAttemptStore } from "../storage/run-attempt-store.js";
 import { SessionStore } from "../storage/session-store.js";
+import { TaskStateStore } from "../storage/task-state-store.js";
+import { TraceStore } from "../storage/trace-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
+import { AgentRegistry } from "../runtime/registry.js";
+import { EnvelopeRouter } from "../runtime/router.js";
 import { createSymphonyPolicy, createSymphonyWorkSession } from "./kernel.js";
 import { LocalCodingLoopSymphonyRunner, runDispatchedSymphonyWork } from "./runner.js";
 import type { SymphonyDispatchRecord } from "./scheduler.js";
@@ -162,6 +169,61 @@ test("local coding-loop runner skips incomplete dispatches without model executi
   }
 });
 
+test("local coding-loop runner returns protocol result and fail envelopes through router", async () => {
+  const completed = createFixture({
+    result: {
+      session_id: "result-protocol-completed",
+      content: "protocol completed",
+      status: "completed",
+      outcome: outcomeFixture("protocol completed")
+    },
+    withProtocol: true
+  });
+  try {
+    const dispatch = createDispatch(completed, "RUN-501", { attempt: 1, withAssignmentEnvelope: true });
+    const records = await runDispatchedSymphonyWork({
+      runtime: completed.runtime,
+      dispatches: [dispatch]
+    });
+    assert.equal(records[0]?.status, "completed");
+
+    const resultEnvelope = completed.runtime.traceStore.list(dispatch.session!.session_id)
+      .find((envelope) => envelope.type === "task.result" && envelope.reply_to === dispatch.assignment_envelope?.id);
+    assert(resultEnvelope, "missing task.result envelope");
+    assert.equal(resultEnvelope.from.agent_id, "symphony.scheduler");
+    assert.equal(singleAgentId(resultEnvelope.to), "main_swarm");
+    assert.equal(resultEnvelope.payload && typeof resultEnvelope.payload === "object" && "protocol" in resultEnvelope.payload
+      ? resultEnvelope.payload.protocol
+      : undefined, "symphony_source_adapter");
+    assert.equal(completed.runtime.envelopeDeliveryStore.list({ envelopeId: dispatch.assignment_envelope!.id })[0]?.status, "acked");
+    assert.equal(completed.runtime.envelopeDeliveryStore.list({ envelopeId: resultEnvelope.id })[0]?.status, "delivered");
+    assert.equal(completed.runtime.agentActorStore.get("symphony.scheduler")?.current_task_id, undefined);
+    assert.equal(latestRunnerEntry(completed, dispatch, "symphony.runner.completed")?.metadata?.source_envelope_id, resultEnvelope.id);
+  } finally {
+    completed.close();
+  }
+
+  const failed = createFixture({
+    error: new Error("Missing API key for provider"),
+    withProtocol: true
+  });
+  try {
+    const dispatch = createDispatch(failed, "RUN-502", { attempt: 1, withAssignmentEnvelope: true });
+    const runner = new LocalCodingLoopSymphonyRunner(failed.runtime);
+    const record = await runner.run({ dispatch });
+    assert.equal(record.status, "failed");
+
+    const failEnvelope = failed.runtime.traceStore.list(dispatch.session!.session_id)
+      .find((envelope) => envelope.type === "task.fail" && envelope.reply_to === dispatch.assignment_envelope?.id);
+    assert(failEnvelope, "missing task.fail envelope");
+    assert.equal(failed.runtime.envelopeDeliveryStore.list({ envelopeId: dispatch.assignment_envelope!.id })[0]?.status, "acked");
+    assert.equal(failed.runtime.agentActorStore.get("symphony.scheduler")?.status, "degraded");
+    assert.equal(latestRunnerEntry(failed, dispatch, "symphony.runner.failed")?.metadata?.source_envelope_id, failEnvelope.id);
+  } finally {
+    failed.close();
+  }
+});
+
 type Fixture = {
   root: string;
   workflowPath: string;
@@ -178,7 +240,7 @@ type Fixture = {
   close(): void;
 };
 
-function createFixture(input: { result?: ExecutionResult; error?: unknown }): Fixture {
+function createFixture(input: { result?: ExecutionResult; error?: unknown; withProtocol?: boolean }): Fixture {
   const root = mkdtempSync(join(tmpdir(), "swarm-symphony-runner-"));
   const workspaceRoot = join(root, "workspaces");
   const workspacePath = join(workspaceRoot, "RUN-101");
@@ -191,13 +253,22 @@ function createFixture(input: { result?: ExecutionResult; error?: unknown }): Fi
     capturedEvents.push(event);
   });
   const executeCalls: Fixture["executeCalls"] = [];
+  const traceStore = new TraceStore(database);
+  const blackboardStore = new BlackboardStore(database);
+  const taskStateStore = new TaskStateStore(database);
+  const protocol = input.withProtocol
+    ? createProtocolRuntimeParts(database, events, traceStore, blackboardStore, taskStateStore)
+    : {};
   const runtime = {
     database,
     events,
     sessionStore: new SessionStore(database),
     runAttemptStore: new RunAttemptStore(database),
-    blackboardStore: new BlackboardStore(database),
+    blackboardStore,
     workspaceLeaseStore: new WorkspaceLeaseStore(database),
+    traceStore,
+    taskStateStore,
+    ...protocol,
     settings: {
       runtime: {
         maxAgents: 4,
@@ -230,7 +301,7 @@ function createFixture(input: { result?: ExecutionResult; error?: unknown }): Fi
   };
 }
 
-function createDispatch(fixture: Fixture, identifier: string, input: { attempt: number }): SymphonyDispatchRecord {
+function createDispatch(fixture: Fixture, identifier: string, input: { attempt: number; withAssignmentEnvelope?: boolean }): SymphonyDispatchRecord {
   const item = workItem(identifier);
   const session = createSymphonyWorkSession({
     item,
@@ -254,12 +325,40 @@ function createDispatch(fixture: Fixture, identifier: string, input: { attempt: 
     source: item,
     workspace_lease_id: `lease_${session.session_id}`
   });
+  const assignment = input.withAssignmentEnvelope
+    ? createEnvelope({
+      swarm_id: session.swarm_id,
+      session_id: session.session_id,
+      task_id: "symphony.dispatch",
+      attempt: input.attempt,
+      from: { agent_id: "main_swarm", role: "controller" },
+      to: { agent_id: "symphony.scheduler", role: "scheduler" },
+      type: "task.assign",
+      intent: "symphony.dispatch",
+      payload: {
+        source: "symphony",
+        work_item_key: `fake:${identifier.toLowerCase()}`,
+        claim_key: `symphony:fake:${identifier.toLowerCase()}`,
+        owner_id: "symphony.scheduler",
+        protocol: "symphony_source_adapter"
+      },
+      routing: { mode: "direct", require_ack: true },
+      trace: {
+        trace_id: session.session_id,
+        span_id: `span_assignment_${identifier}`
+      }
+    })
+    : undefined;
+  if (assignment && fixture.runtime.router) {
+    void fixture.runtime.router.dispatch(assignment);
+  }
   return {
     status: "dispatched",
     work_item: item,
     session,
     workspace_path: workspacePath,
     prompt: `Implement ${identifier}`,
+    assignment_envelope: assignment,
     attempt: fixture.runtime.runAttemptStore.upsert({
       session_id: session.session_id,
       task_id: "symphony.dispatch",
@@ -274,6 +373,54 @@ function createDispatch(fixture: Fixture, identifier: string, input: { attempt: 
       }
     })
   };
+}
+
+function createProtocolRuntimeParts(
+  database: SwarmDatabase,
+  events: RuntimeEvents,
+  traceStore: TraceStore,
+  blackboardStore: BlackboardStore,
+  taskStateStore: TaskStateStore
+): Pick<SwarmRuntime, "registry" | "router" | "agentActorStore" | "envelopeDeliveryStore"> {
+  const agentActorStore = new AgentActorStore(database);
+  const envelopeDeliveryStore = new EnvelopeDeliveryStore(database);
+  const registry = new AgentRegistry(events, agentActorStore);
+  registry.register({
+    agent_id: "main_swarm",
+    name: "Main Swarm",
+    role: "coordinator",
+    capabilities: ["swarm.coordinate"],
+    status: "idle",
+    load: { running_tasks: 0, max_tasks: 1 },
+    reliability: { success_rate: 1, avg_latency_ms: 0 },
+    metadata: { kind: "main" }
+  });
+  registry.register({
+    agent_id: "symphony.scheduler",
+    name: "Symphony Scheduler",
+    role: "scheduler",
+    capabilities: ["work_item.intake", "task.schedule", "claim.manage"],
+    status: "idle",
+    load: { running_tasks: 0, max_tasks: 1 },
+    reliability: { success_rate: 1, avg_latency_ms: 0 },
+    metadata: { kind: "symphony" }
+  });
+  const router = new EnvelopeRouter(
+    registry,
+    traceStore,
+    events,
+    blackboardStore,
+    undefined,
+    taskStateStore,
+    envelopeDeliveryStore,
+    agentActorStore
+  );
+  return {
+    registry,
+    router,
+    agentActorStore,
+    envelopeDeliveryStore
+  } as Pick<SwarmRuntime, "registry" | "router" | "agentActorStore" | "envelopeDeliveryStore">;
 }
 
 function runnerAttempt(fixture: Fixture, dispatch: SymphonyDispatchRecord) {
@@ -299,6 +446,10 @@ function workItem(identifier: string): WorkItem {
     created_at: AT,
     updated_at: AT
   }, "fake");
+}
+
+function singleAgentId(to: { agent_id?: string } | Array<{ agent_id?: string }>): string | undefined {
+  return Array.isArray(to) ? to[0]?.agent_id : to.agent_id;
 }
 
 function outcomeFixture(finalSummary: string): WorkSessionOutcome {

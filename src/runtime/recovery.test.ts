@@ -52,7 +52,9 @@ test("cache changed and miss statuses map to cache recovery", () => {
     status: "changed",
     outcome: "miss",
     changed: ["requestPrefixHash4096"],
-    diagnostics: "system prompt changed"
+    changedSections: ["tools"],
+    missReason: "changed_tools",
+    diagnostics: "sections:tools"
   });
   const miss = recoveryAdviceFromCacheStatus({
     status: "cache_miss",
@@ -64,6 +66,8 @@ test("cache changed and miss statuses map to cache recovery", () => {
   assert.equal(changed.category, "cache");
   assert.match(changed.nextAction, /stable system text/i);
   assert.match(changed.detail ?? "", /requestPrefixHash4096/);
+  assert.match(changed.detail ?? "", /miss_reason=changed_tools/);
+  assert.match(changed.detail ?? "", /changed_sections=tools/);
   assert(miss, "expected cache miss recovery");
   assert.equal(miss.category, "cache");
   assert.match(miss.summary, /provider reported no reusable prefix/);

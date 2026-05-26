@@ -1,5 +1,5 @@
 import React from "react";
-import { Box } from "ink";
+import { Box } from "../ui.js";
 import type { ConversationMessage } from "../conversation-layout.js";
 import { ConversationLogo } from "./ConversationLogo.js";
 import { VirtualConversationList } from "./VirtualConversationList.js";
@@ -14,6 +14,7 @@ export function ConversationFirstPane(input: {
   expandedMessageKeys?: ReadonlySet<string>;
   selectedMessageIndex?: number;
   searchMatchMessageIndex?: number;
+  searchMatchQuery?: string;
   tail?: React.ReactNode;
   tailRows?: number;
 }): React.ReactElement {
@@ -39,6 +40,7 @@ export function ConversationFirstPane(input: {
           expandedMessageKeys={input.expandedMessageKeys}
           selectedMessageIndex={input.selectedMessageIndex}
           searchMatchMessageIndex={input.searchMatchMessageIndex}
+          searchMatchQuery={input.searchMatchQuery}
           tailRows={input.tailRows}
           tail={input.tail}
         />

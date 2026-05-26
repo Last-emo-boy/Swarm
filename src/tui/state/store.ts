@@ -1,0 +1,88 @@
+import React from "react";
+
+export type TuiStoreListener = () => void;
+export type TuiStoreEquality<T> = (left: T, right: T) => boolean;
+
+export type TuiStore<TState> = {
+  getState: () => TState;
+  setState: (updater: TState | ((previous: TState) => TState)) => void;
+  subscribe: (listener: TuiStoreListener) => () => void;
+  subscribeSelector: <TSelected>(
+    selector: (state: TState) => TSelected,
+    listener: (selected: TSelected, previous: TSelected) => void,
+    options?: { equality?: TuiStoreEquality<TSelected>; fireImmediately?: boolean }
+  ) => () => void;
+};
+
+export function createTuiStore<TState>(
+  initialState: TState,
+  onChange?: (next: TState, previous: TState) => void
+): TuiStore<TState> {
+  let state = initialState;
+  const listeners = new Set<TuiStoreListener>();
+
+  function emit(previous: TState): void {
+    onChange?.(state, previous);
+    for (const listener of listeners) {
+      listener();
+    }
+  }
+
+  return {
+    getState() {
+      return state;
+    },
+    setState(updater) {
+      const previous = state;
+      const next = typeof updater === "function"
+        ? (updater as (previous: TState) => TState)(previous)
+        : updater;
+      if (Object.is(previous, next)) {
+        return;
+      }
+      state = next;
+      emit(previous);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    subscribeSelector(selector, listener, options = {}) {
+      const equality = options.equality ?? Object.is;
+      let selected = selector(state);
+      if (options.fireImmediately) {
+        listener(selected, selected);
+      }
+      return this.subscribe(() => {
+        const next = selector(state);
+        if (equality(selected, next)) {
+          return;
+        }
+        const previous = selected;
+        selected = next;
+        listener(next, previous);
+      });
+    }
+  };
+}
+
+export function useTuiStoreSelector<TState, TSelected>(
+  store: TuiStore<TState>,
+  selector: (state: TState) => TSelected,
+  equality: TuiStoreEquality<TSelected> = Object.is
+): TSelected {
+  const [selected, setSelected] = React.useState(() => selector(store.getState()));
+  const selectedRef = React.useRef(selected);
+  React.useEffect(() => store.subscribe(() => {
+    const next = selector(store.getState());
+    if (equality(selectedRef.current, next)) {
+      return;
+    }
+    selectedRef.current = next;
+    setSelected(next);
+  }), [equality, selector, store]);
+  return selected;
+}
+

@@ -7,6 +7,7 @@ import test from "node:test";
 import { defaultSwarmSettings } from "../config/settings.js";
 import { normalizeToolAction, runLocalTool } from "../tools/local-tools.js";
 import type { LocalToolContext } from "../tools/types.js";
+import { lspCapabilityFactsForProvider } from "./capabilities.js";
 import { disposeGlobalLspManager, LspManager } from "./manager.js";
 
 test("lsp status reports TypeScript semantic fallback without external command", async () => {
@@ -39,6 +40,20 @@ test("lsp status reports TypeScript semantic fallback without external command",
     restoreEnvValue("SWARM_LSP_TYPESCRIPT_ARGS", previousTsArgs);
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("lsp capability facts omit undetected missing providers", () => {
+  const capabilities = lspCapabilityFactsForProvider({
+    providerId: "python",
+    status: "unavailable",
+    commandAvailable: false,
+    semanticFallback: false,
+    detected: false,
+    command: "pyright-langserver",
+    envPrefix: "SWARM_LSP_PYTHON"
+  });
+
+  assert.deepEqual(capabilities, []);
 });
 
 test("lsp tool uses TypeScript semantic fallback when server command is missing", async () => {

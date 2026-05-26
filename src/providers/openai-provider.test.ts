@@ -30,7 +30,7 @@ test("OpenAI-compatible provider usage reads DeepSeek prompt cache counters", as
         { text: JSON.stringify({ turn: 2, tool_results: [{ status: "success" }] }), cache: false }
       ],
       cache: { key: "swarm:test-cache", ttlSeconds: 3600 },
-      usage: { sessionId: "session-cache", taskId: "turn-2", purpose: "main_coding_loop" },
+      usage: { sessionId: "session-cache-counters", taskId: "turn-2", purpose: "cache_counter_test" },
       responseFormat: "json_object"
     });
 
@@ -67,7 +67,7 @@ test("prompt cache diagnostics ignore dynamic non-cacheable system text", async 
       system: [...stableSystem, { text: "dynamic durable context one", cache: false }],
       user: stableUser,
       cache: { key: "swarm:test-diagnostics", ttlSeconds: 3600 },
-      usage: { sessionId: "session-cache", taskId: "turn-1", purpose: "main_coding_loop" },
+      usage: { sessionId: "session-cache-dynamic-system", taskId: "turn-1", purpose: "dynamic_system_test" },
       responseFormat: "json_object"
     });
     await provider.generateText({
@@ -75,7 +75,7 @@ test("prompt cache diagnostics ignore dynamic non-cacheable system text", async 
       system: [...stableSystem, { text: "dynamic durable context two", cache: false }],
       user: stableUser,
       cache: { key: "swarm:test-diagnostics", ttlSeconds: 3600 },
-      usage: { sessionId: "session-cache", taskId: "turn-2", purpose: "main_coding_loop" },
+      usage: { sessionId: "session-cache-dynamic-system", taskId: "turn-2", purpose: "dynamic_system_test" },
       responseFormat: "json_object"
     });
 
@@ -83,6 +83,56 @@ test("prompt cache diagnostics ignore dynamic non-cacheable system text", async 
     assert.equal(usageReports[0].promptCacheDiagnostics?.status, "new_scope");
     assert.equal(usageReports[1].promptCacheDiagnostics?.status, "stable");
     assert.deepEqual(usageReports[1].promptCacheDiagnostics?.changed, []);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("prompt cache diagnostics report changed tool section", async () => {
+  const fixture = await createProviderFixture({
+    prompt_tokens: 1400,
+    completion_tokens: 10,
+    total_tokens: 1410,
+    prompt_cache_hit_tokens: 0,
+    prompt_cache_miss_tokens: 1400
+  });
+  try {
+    const usageReports: ProviderUsageReport[] = [];
+    const provider = new OpenAIProvider({
+      workspace: fixture.workspace,
+      onUsage: (usage) => usageReports.push(usage)
+    });
+    const stableSystem = [{ text: "Stable behavior block ".repeat(80), cache: true, section: "system" as const }];
+
+    await provider.generateText({
+      model: "deepseek/test-chat",
+      system: stableSystem,
+      user: [
+        { text: JSON.stringify({ tool_schemas: { Read: { path: "string" } } }), cache: true, section: "tools" },
+        { text: JSON.stringify({ objective: "inspect cache" }), cache: false, section: "task" }
+      ],
+      cache: { key: "swarm:test-section-tools", ttlSeconds: 3600 },
+      usage: { sessionId: "session-cache-tools-section", taskId: "turn-1", purpose: "section_test" },
+      responseFormat: "json_object"
+    });
+    await provider.generateText({
+      model: "deepseek/test-chat",
+      system: stableSystem,
+      user: [
+        { text: JSON.stringify({ tool_schemas: { Read: { path: "string" }, Grep: { pattern: "string" } } }), cache: true, section: "tools" },
+        { text: JSON.stringify({ objective: "inspect cache" }), cache: false, section: "task" }
+      ],
+      cache: { key: "swarm:test-section-tools", ttlSeconds: 3600 },
+      usage: { sessionId: "session-cache-tools-section", taskId: "turn-2", purpose: "section_test" },
+      responseFormat: "json_object"
+    });
+
+    assert.equal(usageReports.length, 2);
+    assert.equal(usageReports[0].promptCacheDiagnostics?.status, "new_scope");
+    assert.equal(usageReports[0].promptCacheDiagnostics?.missReason, "first_call");
+    assert.equal(usageReports[1].promptCacheDiagnostics?.status, "changed");
+    assert.deepEqual(usageReports[1].promptCacheDiagnostics?.changedSections, ["tools"]);
+    assert.equal(usageReports[1].promptCacheDiagnostics?.missReason, "changed_tools");
   } finally {
     await fixture.close();
   }
@@ -114,7 +164,7 @@ test("non-cacheable system blocks are moved behind the cacheable request prefix"
         { text: JSON.stringify({ turn: 1 }), cache: false }
       ],
       cache: { key: "swarm:test-request-prefix", ttlSeconds: 3600 },
-      usage: { sessionId: "session-cache", taskId: "turn-1", purpose: "main_coding_loop" },
+      usage: { sessionId: "session-cache-request-prefix", taskId: "turn-1", purpose: "request_prefix_test" },
       responseFormat: "json_object"
     });
 

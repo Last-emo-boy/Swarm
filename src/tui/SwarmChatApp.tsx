@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "./ui.js";
 import {
   addPermissionAdditionalDirectory,
   addCustomProvider,
@@ -27,6 +27,9 @@ import type { RuntimeEvent } from "../runtime/events.js";
 import { formatRuntimeEventBrief, formatWhyReport, formatWorkerBrief, formatWorkerDetail } from "../runtime/event-formatters.js";
 import { buildPermissionReport, buildReadRootPreflightReport } from "../runtime/permission-report.js";
 import { buildWorkRecordFromRuntimeEvent } from "../runtime/work-protocol.js";
+import { buildSessionWorkBoard, buildWorkspaceWorkBoard, formatWorkBoard, isWorkBoardFilter, type WorkBoardFilter } from "../runtime/work-board.js";
+import { buildLatestRunDiagnosis } from "../runtime/latest-diagnosis.js";
+import { buildProtocolDebugTimeline, formatProtocolDebugTimeline, type ProtocolTimelineCategory, type ProtocolTimelineFilter } from "../runtime/protocol-debug-timeline.js";
 import type { RunMode, RunSandboxMode } from "../runtime/execution-router.js";
 import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
 import { buildResultCardFromSnapshot, type ResultCard as RuntimeResultCard } from "../runtime/result-card.js";
@@ -48,7 +51,7 @@ import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js
 import type { BlackboardEntry, GeneratedPlan, RunAttempt, SwarmSession, WorkItem, WorkspaceLease } from "../protocol/types.js";
 import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
-import { runLocalEvals } from "../evals/local-evals.js";
+import { buildOfflineParityReleaseGate, runCacheLabReport, runLocalEvals, runTuiReplayReport } from "../evals/local-evals.js";
 import { buildDoctorReport } from "../doctor/report.js";
 import { restoreSessionFromRow } from "../sessions/session-row.js";
 import { getSymphonyStatus, type SymphonyStatus } from "../symphony/status.js";
@@ -70,7 +73,7 @@ import {
   type SlashCommandSpec
 } from "./slash-commands.js";
 import { buildResumeCommandResult, decideResumeExecution } from "./resume-control.js";
-import { ChatCommandCandidates, ChatInputArea, emptyChatCompletionState, type ChatCompletionState } from "./ChatInputArea.js";
+import { ChatCommandCandidates, ChatInputArea, emptyChatCompletionState, type ChatCompletionState, type ChatInputTelemetryEvent } from "./ChatInputArea.js";
 import { createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
 import {
   emptyIdlePaneSnapshot,
@@ -81,27 +84,35 @@ import {
 } from "./idle-pane-snapshot.js";
 import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
-import { messageToActionRow, runtimeEventToActionRow, type TuiActionRow } from "./action-log.js";
+import { messageToActionRow, renderActionRowDetail, runtimeEventToActionRow, type TuiActionRow } from "./action-log.js";
 import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiTaskState, type TuiWorkState } from "./work-state.js";
 import { ActionLog } from "./components/ActionLog.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
 import { ActivityTimeline } from "./components/ActivityTimeline.js";
-import { ApprovalOverlay } from "./components/ApprovalOverlay.js";
+import { ApprovalOverlay, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
 import { CurrentActionRow } from "./components/CurrentActionRow.js";
 import { InspectorPane } from "./components/InspectorPane.js";
+import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
 import { ResultCard as ResultCardPanel } from "./components/ResultCard.js";
 import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
 import {
   compactValue,
+  policyBadge,
+  policyTone,
   progressBar,
   routeBadge,
   sandboxBadge,
+  sandboxTone,
   sectionLabel,
+  resolveTuiColor,
   statusBadge,
   statusTone,
   toneColor,
+  visualTokenColor,
+  type TuiColorRef,
+  type TuiResolvedColor,
   type TuiTone
 } from "./theme.js";
 import { formatExecutionResultDisplay } from "./result-display.js";
@@ -119,14 +130,21 @@ import {
   conversationRenderedLineCount,
   conversationViewportAfterAppend,
   conversationViewportAfterScroll,
+  detailOpenInputIntent,
   detailTitleForSource,
   detailOpenTargetForPane,
   fullscreenConversationRows,
   inlineInspectorTargetForPane,
   resetConversationViewport,
+  shouldOpenDetailFromInput,
+  tuiFocusTransitionForInput,
+  resolveTuiDensity,
   tuiScreenMode,
+  type TuiDensity,
+  type TuiDensityPreference,
   type ConversationViewportState,
-  type ConversationMessage
+  type ConversationMessage,
+  type TuiFocusTransitionDecision
 } from "./conversation-layout.js";
 import { compactWorkSnapshotLines, formatSessionMemory, formatWorkSnapshot } from "./work-snapshot-display.js";
 import type { McpServerRecord } from "../extensions/mcp.js";
@@ -135,8 +153,10 @@ import type { SkillRecord, ActivatedSkill } from "../extensions/skills.js";
 import { renderCustomCommandObjective, type CustomCommandRecord } from "../extensions/custom-commands.js";
 import type { CapabilityDescriptor, CapabilityProviderSnapshot } from "../extensions/types.js";
 import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
+import { mcpSettingsSnapshot } from "../extensions/mcp-report.js";
+import { skillSettingsSnapshot } from "../extensions/skill-report.js";
 import { getGlobalLspManager, type LspStatusReport } from "../lsp/manager.js";
-import { lspHealthStatusFromReport } from "./lsp-status.js";
+import { lspHealthStatusFromReport, lspStatusSummaryFromReport } from "./lsp-status.js";
 import {
   buildFooterPills,
   createFooterNavigationState,
@@ -148,15 +168,25 @@ import {
 } from "./footer-navigation.js";
 import { formatServiceStatusSection } from "./status-surface.js";
 import {
+  buildSwarmSurfaceProjection,
+  formatSwarmSurface,
+  formatSwarmTopologySummary,
+  formatSwarmWorkbench,
+  type SwarmSurfaceMode,
+  type SwarmSurfaceProjection
+} from "./swarm-surface.js";
+import {
   buildTranscriptSearchIndex,
   closeTranscriptSearch,
   createTranscriptSearchState,
   currentTranscriptSearchMatch,
+  refreshTranscriptSearch,
   stepTranscriptSearch,
   transcriptSearchSummary,
   updateTranscriptSearch,
   type TranscriptSearchState
 } from "./transcript-search.js";
+import { appendDetailShortcut, detailOpenHint, transcriptSearchHint } from "./shortcuts.js";
 import {
   createMessageCursorState,
   messageCursorReducer,
@@ -169,7 +199,7 @@ type ChatMessage = ConversationMessage;
 type SlashCommandResult = {
   brief: string;
   detail?: string;
-  detailSource?: "ai" | "command";
+  detailSource?: "ai" | "command" | "event";
 };
 
 type OnboardField = "provider" | "apiKey" | "planner" | "worker" | "aggregator" | "customName" | "customBaseURL" | "customModel";
@@ -263,6 +293,7 @@ const LOOP_ACTIVITY_TIMELINE_LIMIT = 6;
 const MESSAGE_OUTPUT_PREVIEW_LINES = 4;
 const MESSAGE_OUTPUT_PREVIEW_CHARS = 800;
 const ADVANCED_SURFACE_FLAGS = new Set(["all", "advanced", "full", "--all", "--advanced"]);
+const TUI_DENSITIES: TuiDensity[] = ["compact", "default", "comfortable"];
 
 function createChatSessionId(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -271,7 +302,7 @@ function createChatSessionId(): string {
 
 export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactElement {
   const { exit } = useApp();
-  const { stdout } = useStdout();
+  const { rows: stdoutRows, columns: stdoutColumns } = useStdout();
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => {
     ensureSwarmHome();
     return loadSwarmSettings();
@@ -326,6 +357,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [latestResultCard, setLatestResultCard] = useState<RuntimeResultCard | undefined>();
   const [runMode, setRunMode] = useState<RunMode>("auto");
   const [runSandboxMode, setRunSandboxMode] = useState<RunSandboxMode>("workspace-write");
+  const [tuiDensity, setTuiDensity] = useState<TuiDensityPreference>("auto");
   const [mainPane, setMainPane] = useState<MainPaneId>("chat");
   const [conversationViewport, setConversationViewport] = useState<ConversationViewportState>(() => resetConversationViewport());
   const [actionLogScrollOffset, setActionLogScrollOffset] = useState(0);
@@ -344,8 +376,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const previousActionLogLengthRef = useRef(actionLogRows.length);
   const [motionTick, setMotionTick] = useState(0);
 
-  const terminalRows = stdout.rows || 32;
-  const terminalColumns = stdout.columns || 100;
+  const terminalRows = stdoutRows || 32;
+  const terminalColumns = stdoutColumns || 100;
+  const screenDensity = resolveTuiDensity({ density: tuiDensity, pane: mainPane, columns: terminalColumns });
   const detailHeight = Math.max(12, terminalRows - 6);
   const actionLogPageRows = Math.max(4, terminalRows - 12 - completionRows);
   const shouldAnimate = !detailOpen && !onboard.enabled && (busy || Boolean(approval) || Boolean(pendingPlan));
@@ -356,6 +389,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     ]
     : [];
   const lspHealthStatus = lspHealthStatusFromReport(lspStatusReport);
+  const mcpRuntimeSummary = runtime
+    ? summarizeMcpCatalog(runtime.listMcpServers(), mcpSettingsSnapshot(runtime)).runtime
+    : undefined;
+  const skillRuntimeSummary = runtime
+    ? summarizeSkillCatalog(runtime.listSkills(), skillSettingsSnapshot(runtime)).runtime
+    : undefined;
   runtimeRef.current = runtime;
 
   function refreshSettingsSurface(targetRuntime = runtime): ReturnType<typeof loadSwarmSettings> {
@@ -373,7 +412,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       recentApprovals: runtime?.listRecentApprovalsForWorkspace(8) ?? []
     });
     return {
-      brief: `${report.brief} Ctrl+O for details.`,
+      brief: appendDetailShortcut(report.brief),
       detail: report.detail
     };
   }
@@ -586,7 +625,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setActionLogRows((previous) => [...previous, messageToActionRow(message, previous.length)]);
   }
 
-  function appendChatTranscriptMessage(message: ChatMessage): void {
+  function appendChatTranscriptMessage(message: ChatMessage, options: { preserveSearch?: boolean } = {}): void {
     setMessages((previous) => {
       const next = appendTranscriptMessage(previous, message);
       if (next === previous) {
@@ -598,7 +637,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         messageIndex: previous.length,
         columns: conversationTextColumns()
       }));
-      setTranscriptSearch((state) => closeTranscriptSearch(state));
+      setTranscriptSearch((state) => options.preserveSearch
+        ? refreshTranscriptSearch(state, buildTranscriptSearchIndex(next))
+        : closeTranscriptSearch(state));
       return next;
     });
   }
@@ -627,7 +668,82 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (!message) {
       return;
     }
-    appendChatTranscriptMessage(message);
+    appendChatTranscriptMessage(message, { preserveSearch: true });
+  }
+
+  function emitTuiFocusTransition(
+    decision: TuiFocusTransitionDecision,
+    keyEvent: Extract<RuntimeEvent, { type: "tui_focus" }>["key_event"],
+    actionId?: string
+  ): void {
+    runtimeRef.current?.events.emitEvent({
+      type: "tui_focus",
+      key_event: keyEvent,
+      focus_before: decision.focusBefore,
+      focus_after: decision.focusAfter,
+      detail_before: decision.detailBefore,
+      detail_after: decision.detailAfter,
+      detail_source: decision.detailSource,
+      detail_reason: decision.reason,
+      allowed: decision.allowed,
+      blocked_reason: decision.blockedReason,
+      pane_before: decision.paneBefore,
+      pane_after: decision.paneAfter,
+      route: lastRoute?.mode ?? latestResultCard?.route,
+      session_id: lastSessionId,
+      action_id: actionId
+    });
+  }
+
+  function focusDecisionForInput(
+    character: string | undefined,
+    key: { ctrl?: boolean; return?: boolean; escape?: boolean },
+    options: {
+      focusBefore?: TuiFocusTransitionDecision["focusBefore"];
+      hasFocusedTarget?: boolean;
+    } = {}
+  ): TuiFocusTransitionDecision {
+    return tuiFocusTransitionForInput({
+      character,
+      key,
+      focusBefore: options.focusBefore,
+      detailOpen,
+      pane: mainPane,
+      latestDetailSource,
+      hasFocusedTarget: options.hasFocusedTarget
+    });
+  }
+
+  function logTuiInputTelemetry(event: ChatInputTelemetryEvent): void {
+    runtimeRef.current?.debug?.debug("tui-input", `${event.key} len=${event.promptLengthAfter} changed=${event.changed} submitted=${event.submitted}`, {
+      key: event.key,
+      inputLength: event.inputLength,
+      promptLengthBefore: event.promptLengthBefore,
+      promptLengthAfter: event.promptLengthAfter,
+      cursorBefore: event.cursorBefore,
+      cursorAfter: event.cursorAfter,
+      changed: event.changed,
+      submitted: event.submitted,
+      completionOpen: event.completionOpen,
+      source: event.source,
+      pane: mainPane,
+      detailOpen,
+      busy,
+      approval: Boolean(approval),
+      onboard: onboard.enabled
+    });
+  }
+
+  function logTuiExitTelemetry(reason: "onboarding" | "interrupt-requested" | "exit"): void {
+    runtimeRef.current?.debug?.debug("tui-exit", `ctrl+c ${reason}`, {
+      pane: mainPane,
+      detailOpen,
+      busy,
+      approval: Boolean(approval),
+      onboard: onboard.enabled,
+      session_id: lastSessionId,
+      route: lastRoute?.mode
+    });
   }
 
   useInput((character, key) => {
@@ -638,6 +754,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (detailOpen) {
       if (key.escape || (key.ctrl && (character === "o" || character === "c")) || character === "q") {
+        emitTuiFocusTransition(
+          focusDecisionForInput(character, key, { focusBefore: "detail", hasFocusedTarget: true }),
+          tuiKeyEventForInput(character, key)
+        );
         setDetailOpen(false);
         return;
       }
@@ -647,6 +767,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (onboard.enabled) {
       if (key.ctrl && character === "c") {
+        logTuiExitTelemetry("onboarding");
         exit();
         return;
       }
@@ -658,6 +779,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (busy && runtime) {
         try {
           const target = runtime.requestInterrupt("User pressed Ctrl+C. Stop unstarted work and reassess the current objective before continuing.");
+          logTuiExitTelemetry("interrupt-requested");
           setLastSessionId(target.session_id);
           appendChatMessage({ role: "system", brief: `Interrupt requested for ${target.session_id}. Swarm will reassess at the next safe boundary.` });
         } catch (error) {
@@ -665,23 +787,42 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         }
         return;
       }
+      logTuiExitTelemetry("exit");
       exit();
       return;
     }
 
-    if (key.ctrl && character === "o") {
+    if (detailOpenInputIntent({ character, key }) === "explicit") {
       const target = detailOpenTargetForPane({
         pane: mainPane,
         actionCount: actionLogRows.length,
         hasLatestDetail: latestDetailSource !== "none"
       });
       if (target === "selected-action") {
+        const row = actionLogRows[selectedActionIndex] ?? actionLogRows.at(-1);
+        emitTuiFocusTransition(
+          focusDecisionForInput(character, key, { focusBefore: "action-log", hasFocusedTarget: actionLogRows.length > 0 }),
+          tuiKeyEventForInput(character, key),
+          row?.id
+        );
         openSelectedActionDetail(true);
         return;
       }
       if (target === "latest") {
-        setDetailOpen((value) => !value);
+        emitTuiFocusTransition(
+          focusDecisionForInput(character, key, { focusBefore: "input", hasFocusedTarget: true }),
+          tuiKeyEventForInput(character, key)
+        );
+        setDetailOpen(true);
       }
+      return;
+    }
+
+    if (key.return && chatInputState.current.input.value.trim().length === 0 && !transcriptSearch.active) {
+      emitTuiFocusTransition(
+        focusDecisionForInput(character, key, { focusBefore: "input", hasFocusedTarget: latestDetailSource !== "none" }),
+        tuiKeyEventForInput(character, key)
+      );
       return;
     }
 
@@ -695,11 +836,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
 
     if (!busy && pendingPlan) {
-      if (character.toLowerCase() === "y") {
+      const normalized = normalizeActionLogControlCharacter(character);
+      if (normalized === "y") {
         void executePendingPlan();
         return;
       }
-      if (character.toLowerCase() === "n") {
+      if (normalized === "n") {
         appendChatMessage({ role: "system", brief: "Plan cancelled." });
         setPendingPlan(undefined);
         return;
@@ -758,7 +900,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     appendChatMessage({ role: "user", brief: objective });
     appendReadRootPreflightMessage(objective);
     try {
-      const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode });
+      const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode, tuiChatSessionId: chatSessionId.current });
       const display = formatExecutionResultDisplay(result, runtime);
       setLatestResultCard(result.result_card);
       recordAiDetail(display.detail);
@@ -919,7 +1061,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       setDetailScroll(0);
       return true;
     }
-    if (inputIsEmpty && key.return && actionLogRows.length > 0) {
+    const detailIntent = detailOpenInputIntent({ character, key });
+    if (inputIsEmpty && shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: actionLogRows.length > 0 })) {
+      const row = actionLogRows[selectedActionIndex] ?? actionLogRows.at(-1);
+      emitTuiFocusTransition(
+        focusDecisionForInput(character, key, { focusBefore: "action-log", hasFocusedTarget: actionLogRows.length > 0 }),
+        tuiKeyEventForInput(character, key),
+        row?.id
+      );
       openSelectedActionDetail(true);
       return true;
     }
@@ -996,9 +1145,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       setFooterNavigation((state) => footerNavigationReducer(state, { type: "next" }, footerItems));
       return true;
     }
-    if (key.return || (key.ctrl && normalized === "o")) {
+    const detailIntent = detailOpenInputIntent({ character, key });
+    if (shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: Boolean(selectedFooterPill(footerNavigation, footerItems)) })) {
       const id = selectedFooterPill(footerNavigation, footerItems)?.id;
       if (id) {
+        emitTuiFocusTransition(
+          focusDecisionForInput(character, key, { focusBefore: "footer", hasFocusedTarget: true }),
+          tuiKeyEventForInput(character, key),
+          `footer:${id}`
+        );
         void openFooterDetail(id);
         return true;
       }
@@ -1054,7 +1209,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   function handleMessageCursorInput(
     character: string | undefined,
-    key: { return?: boolean }
+    key: { ctrl?: boolean; return?: boolean }
   ): boolean {
     if (mainPane !== "chat" || chatInputState.current.input.value.length > 0) {
       return false;
@@ -1072,7 +1227,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       setMessageCursor((state) => messageCursorReducer(state, { type: "toggle" }, messages));
       return true;
     }
-    if (normalized === "o" || (key.return && messageCursor.selectedIndex !== undefined)) {
+    const detailIntent = detailOpenInputIntent({ character, key });
+    if (shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: messageCursor.selectedIndex !== undefined })) {
+      emitTuiFocusTransition(
+        focusDecisionForInput(character, key, { focusBefore: "message", hasFocusedTarget: true }),
+        tuiKeyEventForInput(character, key),
+        messageCursor.selectedIndex === undefined ? undefined : `message:${messageCursor.selectedIndex}`
+      );
       openSelectedMessageDetail();
       return true;
     }
@@ -1186,6 +1347,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (id === "gateway") {
       return renderGatewayStatusDetail();
     }
+    if (id === "mcp") {
+      return renderMcpStatusDetail();
+    }
+    if (id === "skills") {
+      return renderSkillStatusDetail();
+    }
     if (id === "symphony") {
       if (!runtime) {
         return "Runtime is not ready.";
@@ -1217,6 +1384,40 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     ].join("\n");
   }
 
+  function renderMcpStatusDetail(): string {
+    if (!runtime) {
+      return "Runtime is not ready.";
+    }
+    const servers = runtime.listMcpServers();
+    const settings = mcpSettingsSnapshot(runtime);
+    const summary = summarizeMcpCatalog(servers, settings);
+    return [
+      "MCP",
+      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
+      summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
+      summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
+      "",
+      formatMcpServersSummary(servers)
+    ].filter(Boolean).join("\n");
+  }
+
+  function renderSkillStatusDetail(): string {
+    if (!runtime) {
+      return "Runtime is not ready.";
+    }
+    const skills = runtime.listSkills();
+    const settings = skillSettingsSnapshot(runtime);
+    const summary = summarizeSkillCatalog(skills, settings);
+    return [
+      "Skills",
+      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
+      summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
+      summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
+      "",
+      formatSkillsSummary(skills)
+    ].filter(Boolean).join("\n");
+  }
+
   async function renderLspStatusDetail(): Promise<string> {
     const workspace = runtime?.workspaceRoot() ?? process.cwd();
     const report = await getGlobalLspManager(workspace).status();
@@ -1225,7 +1426,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleOnboardInput(
-    character: string,
+    character: string | undefined,
     key: { return?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean }
   ): void {
     if (key.return || key.tab) {
@@ -1338,6 +1539,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const result = await runSlashCommand(parsed.command, parsed.args, parsed);
       if (result.detailSource === "ai") {
         recordAiDetail(result.detail ?? result.brief);
+      } else if (result.detailSource === "event") {
+        recordEventDetail(result.detail ?? result.brief);
       } else if (result.detail) {
         recordCommandDetail(result.detail);
       } else {
@@ -1373,7 +1576,21 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (command === "work") {
       const subcommand = args[0]?.toLowerCase();
       if (!subcommand) {
-        return { brief: "Work commands. Ctrl+O for details.", detail: renderSlashHelp({ namespace: "work" }) };
+        return { brief: appendDetailShortcut("Work commands"), detail: renderSlashHelp({ namespace: "work" }) };
+      }
+      if (subcommand === "board") {
+        if (!runtime) throw new Error("Runtime is not ready.");
+        const first = args[1]?.toLowerCase();
+        const second = args[2]?.toLowerCase();
+        const sessionId = first && first !== "workspace" && !isWorkBoardFilter(first) ? args[1] : undefined;
+        const filter: WorkBoardFilter | undefined = isWorkBoardFilter(first) ? first : isWorkBoardFilter(second) ? second : undefined;
+        const board = sessionId
+          ? buildSessionWorkBoard(runtime, sessionId)
+          : buildWorkspaceWorkBoard(runtime, { limit: 8 });
+        return {
+          brief: appendDetailShortcut(`Work board: sessions=${board.summary.sessions}, workers=${board.summary.workers}, tasks=${board.summary.tasks}, claims=${board.summary.claims}, blocked=${board.summary.blocked}, failed=${board.summary.failed}, resumable=${board.summary.resumable}`),
+          detail: formatWorkBoard(board, { filter })
+        };
       }
       if (subcommand === "sessions") return runSlashCommand("session", args.slice(1), parsed);
       if (subcommand === "attempts") return runSlashCommand("attempts", args.slice(1), parsed);
@@ -1387,38 +1604,90 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const rows = subcommand === "files" ? snapshot.changed_files : snapshot.checks;
         const label = subcommand === "files" ? "changed files" : "checks";
         return {
-          brief: `${rows.length} ${label} for ${sessionId}. Ctrl+O for details.`,
+          brief: appendDetailShortcut(`${rows.length} ${label} for ${sessionId}`),
           detail: rows.length ? rows.join("\n") : `(no ${label})`
         };
       }
-      throw new Error("Usage: /work sessions|attempts|output|files|checks|workers");
+      throw new Error("Usage: /work board|sessions|attempts|output|files|checks|workers");
     }
 
     if (command === "debug") {
       const subcommand = args[0]?.toLowerCase();
       if (!subcommand) {
-        return { brief: "Debug commands. Ctrl+O for details.", detail: renderSlashHelp({ namespace: "debug" }) };
+        return { brief: appendDetailShortcut("Debug commands"), detail: renderSlashHelp({ namespace: "debug" }) };
       }
       if (subcommand === "trace") return runSlashCommand("trace", args.slice(1), parsed);
       if (subcommand === "blackboard") return runSlashCommand("blackboard", args.slice(1), parsed);
       if (subcommand === "audit") return runSlashCommand("audit", args.slice(1), parsed);
       if (subcommand === "usage") return runSlashCommand("usage", args.slice(1), parsed);
+      if (subcommand === "latest") {
+        const workspace = runtime?.workspaceRoot() ?? process.cwd();
+        const lspReport = lspStatusReport ?? await getGlobalLspManager(workspace).status().catch(() => undefined);
+        if (lspReport) {
+          updateLspStatusReport(lspReport);
+        }
+        const diagnosis = buildLatestRunDiagnosis({
+          events,
+          resultCard: latestResultCard,
+          latestDetail: {
+            source: latestDetailSource,
+            title: latestDetailSource === "none" ? undefined : detailTitleForSource(latestDetailSource),
+            route: lastRoute?.mode ?? latestResultCard?.route,
+            sessionId: lastSessionId
+          },
+          promptCache: runtime?.getPromptCacheStatus(),
+          promptCacheTrend: runtime?.getPromptCacheTrend(),
+          lspStatusReport: lspReport,
+          artifactPaths: {
+            logPath: runtime?.debug?.logPath
+          },
+          workspace
+        });
+        return { ...diagnosis, detailSource: "event" };
+      }
       if (subcommand === "cache") {
         if (!runtime) throw new Error("Runtime is not ready.");
         const cache = runtime.getPromptCacheStatus();
         return { brief: formatPromptCacheBrief(cache), detail: formatPromptCacheDetailWithTrend(cache, runtime.getPromptCacheTrend()) };
       }
+      if (subcommand === "timeline") {
+        const filter = parseProtocolTimelineFilter(args.slice(1));
+        const capturedEvents = events.map((event, index) => ({
+          at: new Date(index).toISOString(),
+          event
+        }));
+        const timeline = buildProtocolDebugTimeline({ capturedEvents, limit: filter.limit ?? 80 });
+        const detail = formatProtocolDebugTimeline({
+          events: timeline.events,
+          filter,
+          limit: filter.limit ?? 80,
+          title: "Protocol Timeline"
+        });
+        const filterLabel = formatProtocolTimelineFilter(filter);
+        return {
+          brief: appendDetailShortcut(`Protocol timeline: events=${timeline.total_events}, correlations=${timeline.correlations.length}${filterLabel ? `, ${filterLabel}` : ""}`),
+          detail: [
+            `schema=${timeline.schema_version}`,
+            `total=${timeline.total_events}`,
+            `correlations=${timeline.correlations.length}`,
+            filterLabel ? `filter=${filterLabel}` : undefined,
+            "",
+            detail
+          ].filter((line): line is string => typeof line === "string").join("\n"),
+          detailSource: "event"
+        };
+      }
       if (subcommand === "events") {
         const detail = events.slice(-80).map((event) => JSON.stringify(event)).join("\n");
-        return { brief: `${Math.min(events.length, 80)} recent runtime events. Ctrl+O for details.`, detail: detail || "No runtime events yet." };
+        return { brief: appendDetailShortcut(`${Math.min(events.length, 80)} recent runtime events`), detail: detail || "No runtime events yet." };
       }
-      throw new Error("Usage: /debug trace|blackboard|audit|usage|cache|events");
+      throw new Error("Usage: /debug latest|timeline|trace|blackboard|audit|usage|cache|events");
     }
 
     if (command === "ext") {
       const subcommand = args[0]?.toLowerCase();
       if (!subcommand) {
-        return { brief: "Extension commands. Ctrl+O for details.", detail: renderSlashHelp({ namespace: "ext" }) };
+        return { brief: appendDetailShortcut("Extension commands"), detail: renderSlashHelp({ namespace: "ext" }) };
       }
       if (subcommand === "capabilities") return runSlashCommand("capabilities", args.slice(1), parsed);
       if (subcommand === "commands") return runSlashCommand("commands", args.slice(1), parsed);
@@ -1437,7 +1706,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const target = args[0]?.toLowerCase();
       if (!target) {
         return {
-          brief: `Current view: ${mainPaneLabels[mainPane]}. Ctrl+O for views.`,
+          brief: appendDetailShortcut(`Current view: ${mainPaneLabels[mainPane]}`, "views"),
           detail: mainPaneOrder.map((pane) => `${pane}${pane === mainPane ? " (current)" : ""} - ${mainPaneLabels[pane]}`).join("\n")
         };
       }
@@ -1463,7 +1732,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           .map((provider) => `${provider.id} (${provider.protocol}) ${provider.name}`)
           .join("\n");
         const current = settings.models.defaultProvider || "none selected";
-        return { brief: `Current provider: ${current}. Ctrl+O for providers.`, detail };
+        return { brief: appendDetailShortcut(`Current provider: ${current}`, "providers"), detail };
       }
       if (!settings.providers[args[0]]) {
         throw new Error(`Unknown provider: ${args[0]}`);
@@ -1509,7 +1778,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       const models = getProviderModels(provider);
       const detail = models.length ? models.join("\n") : "No models configured. Try /refresh-models.";
-      return { brief: `${providerId}: ${models.length} models. Ctrl+O for list.`, detail };
+      return { brief: appendDetailShortcut(`${providerId}: ${models.length} models`, "list"), detail };
     }
 
     if (command === "refresh-models") {
@@ -1521,7 +1790,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const result = await refreshProviderModels(providerId);
       refreshSettingsSurface();
       if (result.error) {
-        return { brief: `${providerId}: model discovery failed. Ctrl+O for details.`, detail: result.error };
+        return { brief: appendDetailShortcut(`${providerId}: model discovery failed`), detail: result.error };
       }
       return { brief: `${providerId}: discovered ${result.models.length} models.`, detail: result.models.join("\n") };
     }
@@ -1530,7 +1799,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!runtime) throw new Error("Runtime is not ready.");
       const subcommand = args[0]?.toLowerCase();
       if (subcommand === "help") {
-        return { brief: "Symphony commands. Ctrl+O for details.", detail: renderSlashHelp({ namespace: "symphony" }) };
+        return { brief: appendDetailShortcut("Symphony commands"), detail: renderSlashHelp({ namespace: "symphony" }) };
       }
       if (subcommand === "status") {
         args = args.slice(1);
@@ -1555,7 +1824,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       const detail = formatSymphonyStatus(status);
       return {
-        brief: `Symphony: sessions=${status.totals.sessions}, running=${status.totals.running}, retrying=${status.totals.retrying}, capacity=${status.scheduler.capacity.running}/${status.scheduler.capacity.max_concurrent}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Symphony: sessions=${status.totals.sessions}, running=${status.totals.running}, retrying=${status.totals.retrying}, capacity=${status.scheduler.capacity.running}/${status.scheduler.capacity.max_concurrent}`),
         detail
       };
     }
@@ -1573,7 +1842,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       ]);
       const detail = formatWorkItems(workflow, source.kind, active, terminal);
       return {
-        brief: `Work items: active=${active.length}, terminal=${terminal.length}, source=${source.kind}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Work items: active=${active.length}, terminal=${terminal.length}, source=${source.kind}`),
         detail
       };
     }
@@ -1594,7 +1863,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       const runs = result.runs ?? [];
       return {
-        brief: `Symphony ${command === "symphony-run-once" ? "run-once" : "tick"}: candidates=${result.candidates.length}, dispatched=${result.dispatched.length}, skipped=${result.skipped.length}, failed=${result.failed.length}, runs=${runs.length}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Symphony ${command === "symphony-run-once" ? "run-once" : "tick"}: candidates=${result.candidates.length}, dispatched=${result.dispatched.length}, skipped=${result.skipped.length}, failed=${result.failed.length}, runs=${runs.length}`),
         detail: formatSymphonyTick(result)
       };
     }
@@ -1613,7 +1882,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const detail = formatSymphonyDaemons(records);
       const active = records.filter((record) => record.status === "running" || record.status === "stopping").length;
       return {
-        brief: `Symphony daemons: total=${records.length}, active=${active}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Symphony daemons: total=${records.length}, active=${active}`),
         detail
       };
     }
@@ -1629,7 +1898,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       refreshSymphonyDaemonState(manager);
       const detail = formatSymphonyDaemons([result.daemon]);
       return {
-        brief: `Symphony daemon ${result.created ? "started" : "already running"}: ${result.daemon.daemon_id} ticks=${result.daemon.tick_count}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Symphony daemon ${result.created ? "started" : "already running"}: ${result.daemon.daemon_id} ticks=${result.daemon.tick_count}`),
         detail
       };
     }
@@ -1641,7 +1910,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const records = manager.requestStop(parsed);
       refreshSymphonyDaemonState(manager);
       return {
-        brief: `Symphony stop requested: ${records.length} daemon(s). Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Symphony stop requested: ${records.length} daemon(s)`),
         detail: formatSymphonyDaemons(records)
       };
     }
@@ -1661,7 +1930,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       const detail = formatSymphonyCleanup(result);
       return {
-        brief: `Symphony cleanup ${result.execute ? "execute" : "dry-run"}: inspected=${result.inspected}, removed=${result.removed}, skipped=${result.skipped}, failed=${result.failed}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Symphony cleanup ${result.execute ? "execute" : "dry-run"}: inspected=${result.inspected}, removed=${result.removed}, skipped=${result.skipped}, failed=${result.failed}`),
         detail
       };
     }
@@ -1694,13 +1963,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         if (!runtime) throw new Error("Runtime is not ready.");
         const snapshot = runtime.getWorkSnapshot(args[0]);
         const detail = formatWorkSnapshot(snapshot);
-        return { brief: `${snapshot.session.session_id}: ${snapshot.session.status}, attempts=${snapshot.attempts.length}, changed=${snapshot.changed_files.length}. Ctrl+O for details.`, detail };
+        return { brief: appendDetailShortcut(`${snapshot.session.session_id}: ${snapshot.session.status}, attempts=${snapshot.attempts.length}, changed=${snapshot.changed_files.length}`), detail };
       }
       const rows = runtime?.listRecentSessionsForWorkspace(10) ?? [];
       const detail = rows.length
         ? rows.map((row) => `${row.session_id} [${row.status}] ${row.updated_at} ${row.objective}`).join("\n")
         : "No sessions yet.";
-      return { brief: `${rows.length} recent sessions. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} recent sessions`), detail };
     }
 
     if (command === "memory") {
@@ -1720,7 +1989,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const summary = snapshot.context_summary
         ? `entries=${snapshot.context_summary.entries}, compactions=${snapshot.context_summary.compactions}`
         : "no saved memory";
-      return { brief: `Memory for ${sessionId}: ${summary}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`Memory for ${sessionId}: ${summary}`), detail };
     }
 
     if (command === "resume" || command === "continue") {
@@ -1783,7 +2052,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const sessionId = args[0] ?? lastSessionId;
       if (!sessionId) throw new Error("Usage: /replay <session_id>");
       const detail = runtime.replaySession(sessionId);
-      return { brief: `Replay loaded for ${sessionId}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`Replay loaded for ${sessionId}`), detail };
     }
 
     if (command === "fork") {
@@ -1805,13 +2074,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const detail = rows.length
           ? rows.map((task) => `${task.task_id} [${task.status}] #${task.attempt} ${task.title}${task.last_error ? ` - ${task.last_error}` : ""}`).join("\n")
           : "No persisted task state for this session.";
-        return { brief: `${rows.length} persisted task states. Ctrl+O for details.`, detail };
+        return { brief: appendDetailShortcut(`${rows.length} persisted task states`), detail };
       }
       const rows = [...taskStates.entries()];
       const detail = rows.length
         ? rows.map(([id, state]) => `${id} [${state.status}${state.attempt ? ` attempt ${state.attempt}` : ""}] ${state.title}`).join("\n")
         : "No active task state in this chat.";
-      return { brief: `${rows.length} task states. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} task states`), detail };
     }
 
     if (command === "graph") {
@@ -1831,7 +2100,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         "Edges",
         ...edgeLines
       ].join("\n");
-      return { brief: `${graph.tasks.length} task graph nodes for ${sessionId}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${graph.tasks.length} task graph nodes for ${sessionId}`), detail };
     }
 
     if (command === "task") {
@@ -1840,7 +2109,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const sessionId = args[1] ?? lastSessionId;
       if (!taskId || !sessionId) throw new Error("Usage: /task <task_id> [session_id]");
       const detail = JSON.stringify(runtime.getTaskDetail(sessionId, taskId), null, 2);
-      return { brief: `Task ${taskId}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`Task ${taskId}`), detail };
     }
 
     if (command === "trace") {
@@ -1851,7 +2120,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const detail = trace.length
         ? trace.map((env) => `${env.created_at} ${env.type} ${env.from.agent_id ?? env.from.role ?? "?"} -> ${Array.isArray(env.to) ? env.to.length : env.to.agent_id ?? env.to.capability ?? env.to.role ?? "?"} ${env.task_id ?? ""} ${env.trace?.trace_id ?? ""}/${env.trace?.span_id ?? ""}`).join("\n")
         : "No trace envelopes for this session.";
-      return { brief: `${trace.length} trace envelopes. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${trace.length} trace envelopes`), detail };
     }
 
     if (command === "attempts") {
@@ -1866,7 +2135,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           ? `No run attempts recorded for ${sessionId}.`
           : "No run attempts recorded.";
       return {
-        brief: `${rows.length} attempts${sessionId ? ` for ${sessionId}` : " in this workspace"}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`${rows.length} attempts${sessionId ? ` for ${sessionId}` : " in this workspace"}`),
         detail
       };
     }
@@ -1883,7 +2152,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           ? `No workspace leases recorded for ${target}.`
           : "No workspace leases recorded.";
       return {
-        brief: `${rows.length} workspace leases${target ? ` for ${target}` : " in this workspace"}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`${rows.length} workspace leases${target ? ` for ${target}` : " in this workspace"}`),
         detail
       };
     }
@@ -1905,7 +2174,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         "Audit",
         ...(audit.length ? audit.map(formatAuditRecord) : ["(none)"])
       ].join("\n");
-      return { brief: `${trace.length} envelopes, ${audit.length} audit records. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${trace.length} envelopes, ${audit.length} audit records`), detail };
     }
 
     if (command === "approvals") {
@@ -1913,7 +2182,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const sessionId = args[0] ?? lastSessionId;
       const rows = sessionId ? runtime.listApprovalsForSessionFamily(sessionId, 80) : runtime.listRecentApprovalsForWorkspace(80);
       const detail = rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
-      return { brief: `${rows.length} approvals${sessionId ? ` for ${sessionId}` : " in this workspace"}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} approvals${sessionId ? ` for ${sessionId}` : " in this workspace"}`), detail };
     }
 
     if (command === "approval") {
@@ -1922,7 +2191,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!approvalId) return runSlashCommand("approvals", [], parsed);
       const approval = runtime.approvalStore.get(approvalId);
       if (!approval) throw new Error(`Unknown approval: ${approvalId}`);
-      return { brief: `${approval.approval_id}: ${approval.status}. Ctrl+O for details.`, detail: formatApprovalRecord(approval) };
+      return { brief: appendDetailShortcut(`${approval.approval_id}: ${approval.status}`), detail: formatApprovalRecord(approval) };
     }
 
     if (command === "audit") {
@@ -1930,7 +2199,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const sessionId = args[0] ?? lastSessionId;
       const rows = runtime.auditStore.list(sessionId, 100);
       const detail = rows.length ? rows.map(formatAuditRecord).join("\n") : "No audit records.";
-      return { brief: `${rows.length} audit records${sessionId ? ` for ${sessionId}` : ""}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} audit records${sessionId ? ` for ${sessionId}` : ""}`), detail };
     }
 
     if (command === "budget" || command === "usage") {
@@ -1948,7 +2217,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         "Usage",
         JSON.stringify(summary, null, 2)
       ].join("\n");
-      return { brief: `${sessionId} usage: ${Object.keys(summary).length} counters. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${sessionId} usage: ${Object.keys(summary).length} counters`), detail };
     }
 
     if (command === "output") {
@@ -1989,7 +2258,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const detail = rows.length
         ? rows.map(formatBlackboardEntry).join("\n\n")
         : "No workspace changes recorded.";
-      return { brief: `${rows.length} workspace changes${sessionId ? ` for ${sessionId}` : ""}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} workspace changes${sessionId ? ` for ${sessionId}` : ""}`), detail };
     }
 
     if (command === "blackboard") {
@@ -2003,7 +2272,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const detail = rows.length
         ? rows.map(formatBlackboardEntry).join("\n\n")
         : "No blackboard entries matched.";
-      return { brief: `${rows.length} blackboard entries${sessionId ? ` for ${sessionId}` : ""}. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} blackboard entries${sessionId ? ` for ${sessionId}` : ""}`), detail };
     }
 
     if (command === "capabilities") {
@@ -2020,7 +2289,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         : formatCapabilitySummary(capabilities, providers);
       return {
         brief: includeAdvanced || hasCapabilityCommandFilter(filter)
-          ? `${capabilities.length} capabilities across ${providers.length} providers. Ctrl+O for details.`
+          ? appendDetailShortcut(`${capabilities.length} capabilities across ${providers.length} providers`)
           : `${capabilities.length} capabilities across ${providers.length} providers. Use /capabilities all for the full catalog.`,
         detail
       };
@@ -2041,7 +2310,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       await runtime.refreshCapabilities();
       const capability = await runtime.getCapability(capabilityId);
       return {
-        brief: `Capability ${capabilityId} updated. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Capability ${capabilityId} updated`),
         detail: capability ? formatCapabilities([capability], await runtime.listCapabilityProviders()) : `Capability setting saved for ${capabilityId}.`
       };
     }
@@ -2058,7 +2327,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       return {
         brief: includeAdvanced || pluginId
-          ? `${selected.length} plugin${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`
+          ? appendDetailShortcut(`${selected.length} plugin${selected.length === 1 ? "" : "s"}`)
           : `${plugins.length} plugins discovered. Use /plugins all for the full catalog.`,
         detail: includeAdvanced || pluginId ? formatPlugins(selected) : formatPluginsSummary(plugins)
       };
@@ -2079,7 +2348,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       await runtime.refreshCapabilities();
       const plugins = runtime.listPlugins();
       return {
-        brief: `Plugin root ${command === "plugin-install" ? "installed" : "removed"}. Ctrl+O for plugin list.`,
+        brief: appendDetailShortcut(`Plugin root ${command === "plugin-install" ? "installed" : "removed"}`, "plugin list"),
         detail: formatPlugins(plugins)
       };
     }
@@ -2090,7 +2359,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       await runtime.refreshCapabilities();
       const plugins = runtime.listPlugins();
       return {
-        brief: `Plugin catalog refreshed: ${plugins.length} plugin${plugins.length === 1 ? "" : "s"}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Plugin catalog refreshed: ${plugins.length} plugin${plugins.length === 1 ? "" : "s"}`),
         detail: formatPlugins(plugins)
       };
     }
@@ -2108,7 +2377,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const plugins = runtime.listPlugins();
       const selected = plugins.find((plugin) => plugin.id === pluginId);
       return {
-        brief: `Plugin ${pluginId} ${enabled ? "enabled" : "disabled"}. Ctrl+O for plugin list.`,
+        brief: appendDetailShortcut(`Plugin ${pluginId} ${enabled ? "enabled" : "disabled"}`, "plugin list"),
         detail: selected ? formatPlugins([selected]) : formatPlugins(plugins)
       };
     }
@@ -2121,7 +2390,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const active = commands.filter((item) => !item.shadowedBy).length;
       return {
         brief: hasAdvancedSurfaceFlag(args)
-          ? `${active} custom commands, ${pluginSlashCommands.length} plugin slash commands, ${commands.length - active} shadowed. Ctrl+O for details.`
+          ? appendDetailShortcut(`${active} custom commands, ${pluginSlashCommands.length} plugin slash commands, ${commands.length - active} shadowed`)
           : `${active} custom commands, ${pluginSlashCommands.length} plugin slash commands, ${commands.length - active} shadowed. Use /commands all for the full catalog.`,
         detail: hasAdvancedSurfaceFlag(args)
           ? [
@@ -2141,7 +2410,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const active = skills.filter((skill) => !skill.shadowedBy).length;
       return {
         brief: hasAdvancedSurfaceFlag(args)
-          ? `${active} active skills, ${skills.length - active} shadowed. Ctrl+O for details.`
+          ? appendDetailShortcut(`${active} active skills, ${skills.length - active} shadowed`)
           : `${active} active skills, ${skills.length - active} shadowed. Use /skills all for the full catalog.`,
         detail: hasAdvancedSurfaceFlag(args) ? formatSkills(skills) : formatSkillsSummary(skills)
       };
@@ -2153,7 +2422,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!name) throw new Error("Usage: /skill <name>");
       const skill = runtime.activateSkill(name, lastSessionId, "tui slash command");
       return {
-        brief: `Skill activated: ${skill.name}. Ctrl+O for instructions.`,
+        brief: appendDetailShortcut(`Skill activated: ${skill.name}`, "instructions"),
         detail: formatActivatedSkill(skill)
       };
     }
@@ -2170,7 +2439,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       return {
         brief: includeAdvanced || serverId
-          ? `${selected.length} MCP server${selected.length === 1 ? "" : "s"}. Ctrl+O for details.`
+          ? appendDetailShortcut(`${selected.length} MCP server${selected.length === 1 ? "" : "s"}`)
           : `${servers.length} MCP servers configured. Use /mcp all for the full catalog.`,
         detail: includeAdvanced || serverId ? formatMcpServers(selected) : formatMcpServersSummary(servers)
       };
@@ -2183,7 +2452,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const server = await runtime.refreshMcpServer(serverId);
       const capabilities = await runtime.listCapabilities({ providerId: `mcp:${serverId}`, includeDisabled: true });
       return {
-        brief: `MCP ${server.id}: ${server.status}, tools=${server.toolCount}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`MCP ${server.id}: ${server.status}, tools=${server.toolCount}`),
         detail: [
           formatMcpServers([server]),
           "",
@@ -2199,7 +2468,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!serverId) throw new Error("Usage: /mcp-resources <server_id>");
       const resources = runtime.listMcpResources(serverId);
       return {
-        brief: `${resources.length} MCP resources from ${serverId}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`${resources.length} MCP resources from ${serverId}`),
         detail: resources.length ? resources.map(formatMcpResource).join("\n\n") : "No MCP resources exposed."
       };
     }
@@ -2211,7 +2480,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!serverId || !uri) throw new Error("Usage: /mcp-read <server_id> <uri>");
       const result = await runtime.readMcpResource(serverId, uri);
       return {
-        brief: `MCP resource ${uri}. Ctrl+O for contents.`,
+        brief: appendDetailShortcut(`MCP resource ${uri}`, "contents"),
         detail: formatMcpResourceReadResult(result)
       };
     }
@@ -2222,7 +2491,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!serverId) throw new Error("Usage: /mcp-prompts <server_id>");
       const prompts = runtime.listMcpPrompts(serverId);
       return {
-        brief: `${prompts.length} MCP prompts from ${serverId}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`${prompts.length} MCP prompts from ${serverId}`),
         detail: prompts.length ? prompts.map(formatMcpPrompt).join("\n\n") : "No MCP prompts exposed."
       };
     }
@@ -2234,7 +2503,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!serverId || !name) throw new Error("Usage: /mcp-prompt <server_id> <name> [key=value...]");
       const result = await runtime.getMcpPrompt(serverId, name, parseKeyValueArgs(args.slice(2)));
       return {
-        brief: `MCP prompt ${name}. Ctrl+O for rendered messages.`,
+        brief: appendDetailShortcut(`MCP prompt ${name}`, "rendered messages"),
         detail: formatMcpPromptResult(result)
       };
     }
@@ -2248,16 +2517,59 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         `when: ${spec.when_to_use}`,
         `tools: ${spec.tools.join(", ")}`
       ].join("\n")).join("\n\n");
-      return { brief: `${specs.length} agent specs. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${specs.length} agent specs`), detail };
+    }
+
+    if (command === "swarm") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const selection = parseSwarmWorkbenchSelection(args);
+      const surface = buildTuiSwarmSurface(runtime, selection.mode === "summary" ? 30 : 100);
+      return {
+        brief: appendDetailShortcut(`Swarm: ${formatSwarmTopologySummary(surface)}`),
+        detail: formatSwarmWorkbench(surface, {
+          mode: selection.mode,
+          actorId: selection.actorId,
+          columns: terminalColumns,
+          rows: detailHeight,
+          limit: terminalColumns < 100 ? 6 : 14
+        })
+      };
+    }
+
+    if (command === "ownership") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const surface = buildTuiSwarmSurface(runtime, 40);
+      return {
+        brief: appendDetailShortcut(`Ownership: ${surface.summary.ownership_items} items, ${surface.summary.conflicts} conflicts`),
+        detail: formatSwarmSurface(surface, { mode: "ownership", limit: 30 })
+      };
+    }
+
+    if (command === "mailbox") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const actorId = args[0];
+      if (!actorId) throw new Error("Usage: /mailbox <actor_id>");
+      const surface = buildTuiSwarmSurface(runtime, 100);
+      return {
+        brief: appendDetailShortcut(`Mailbox ${actorId}`),
+        detail: formatSwarmSurface(surface, { mode: "mailbox", actorId, limit: 30 })
+      };
     }
 
     if (command === "agent") {
       if (!runtime) throw new Error("Runtime is not ready.");
       const agentId = args[0];
-      if (!agentId) throw new Error("Usage: /agent <agent_spec_id>");
+      if (!agentId) throw new Error("Usage: /agent <actor_id|agent_spec_id>");
+      if (runtime.agentActorStore.get(agentId)) {
+        const surface = buildTuiSwarmSurface(runtime, 100);
+        return {
+          brief: appendDetailShortcut(`Agent actor ${agentId}`),
+          detail: formatSwarmSurface(surface, { mode: "agent", actorId: agentId, limit: 30 })
+        };
+      }
       const detail = runtime.renderAgentSpec(agentId);
-      if (!detail) throw new Error(`Unknown agent spec: ${agentId}`);
-      return { brief: `Agent spec ${agentId}. Ctrl+O for details.`, detail };
+      if (!detail) throw new Error(`Unknown agent actor or spec: ${agentId}`);
+      return { brief: appendDetailShortcut(`Agent spec ${agentId}`), detail };
     }
 
     if (command === "workers") {
@@ -2266,7 +2578,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const detail = rows.length
         ? rows.map(formatWorkerBrief).join("\n")
         : "No persisted workers yet.";
-      return { brief: `${rows.length} workers in this workspace. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} workers in this workspace`), detail };
     }
 
     if (command === "worker") {
@@ -2275,7 +2587,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!workerId) throw new Error("Usage: /worker <worker_id>");
       const worker = runtime.workerStateStore.get(workerId);
       if (!worker) throw new Error(`Unknown worker: ${workerId}`);
-      return { brief: `${worker.worker_id}: ${worker.status}. Ctrl+O for details.`, detail: formatWorkerDetail(worker) };
+      return { brief: appendDetailShortcut(`${worker.worker_id}: ${worker.status}`), detail: formatWorkerDetail(worker) };
     }
 
     if (command === "stop-worker") {
@@ -2301,7 +2613,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const detail = rows.length
         ? rows.map(formatHandoff).join("\n\n")
         : "No handoff sessions yet.";
-      return { brief: `${rows.length} handoffs in this workspace. Ctrl+O for details.`, detail };
+      return { brief: appendDetailShortcut(`${rows.length} handoffs in this workspace`), detail };
     }
 
     if (command === "handoff") {
@@ -2310,7 +2622,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!handoffId) throw new Error("Usage: /handoff <handoff_id>");
       const handoff = runtime.getHandoff(handoffId);
       if (!handoff) throw new Error(`Unknown handoff: ${handoffId}`);
-      return { brief: `${handoff.handoff_id}: ${handoff.status}. Ctrl+O for details.`, detail: formatHandoff(handoff) };
+      return { brief: appendDetailShortcut(`${handoff.handoff_id}: ${handoff.status}`), detail: formatHandoff(handoff) };
     }
 
     if (command === "takeback") {
@@ -2356,6 +2668,67 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
 
     if (command === "evals") {
+      if (args.includes("--cache-lab")) {
+        const detail = runCacheLabReport().join("\n");
+        runtime?.events.emitEvent({
+          type: "eval_result",
+          name: "Cache lab report",
+          status: "pass",
+          message: "Offline cache lab report generated."
+        });
+        return {
+          brief: appendDetailShortcut("Cache lab report ready"),
+          detail,
+          detailSource: "event"
+        };
+      }
+      if (args.includes("--tui-replay")) {
+        const detail = runTuiReplayReport().join("\n");
+        const failed = /status=fail/.test(detail);
+        runtime?.events.emitEvent({
+          type: "eval_result",
+          name: "TUI replay report",
+          status: failed ? "fail" : "pass",
+          message: failed ? "Offline TUI replay reported failures." : "Offline TUI replay passed."
+        });
+        return {
+          brief: appendDetailShortcut(`TUI replay ${failed ? "failed" : "passed"}`),
+          detail,
+          detailSource: "event"
+        };
+      }
+      if (args.includes("--release-gate")) {
+        const gate = buildOfflineParityReleaseGate();
+        const detail = [
+          `status=${gate.status}`,
+          `profile=${gate.profile}`,
+          `compared_to=${gate.compared_to}`,
+          `next_task=${gate.next_task ?? "-"}`,
+          "",
+          "Dimensions",
+          ...gate.dimensions.map((dimension) => `- ${dimension.id}: ${dimension.status} score=${dimension.score} next=${dimension.next_task ?? "-"}`),
+          "",
+          "Red Lines",
+          ...gate.red_lines.map((redLine) => `- ${redLine.id}: ${redLine.status} next=${redLine.next_task ?? "-"}`),
+          "",
+          "Near Claude Code",
+          ...gate.near_claude_code.map((item) => `- ${item}`),
+          "",
+          "Gaps",
+          ...gate.gaps.map((item) => `- ${item}`)
+        ].join("\n");
+        runtime?.events.emitEvent({
+          type: "eval_result",
+          name: "Claude Code parity release gate",
+          status: gate.status,
+          message: gate.summary
+        });
+        return {
+          brief: appendDetailShortcut(`Release gate ${gate.status}. Next: ${gate.next_task ?? "none"}`),
+          detail,
+          detailSource: "event"
+        };
+      }
       const results = runLocalEvals();
       if (runtime) {
         for (const result of results) {
@@ -2426,7 +2799,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         `Message: ${message}`
       ].join("\n");
       return {
-        brief: `Interrupt requested for ${target.session_id} (${target.route}). Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Interrupt requested for ${target.session_id} (${target.route})`),
         detail
       };
     }
@@ -2444,7 +2817,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         `Message: ${message}`
       ].join("\n");
       return {
-        brief: `Live reply sent to ${target.session_id} (${target.route}). Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Live reply sent to ${target.session_id} (${target.route})`),
         detail
       };
     }
@@ -2461,7 +2834,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const settings = refreshSettingsSurface();
       const report = buildPermissionsCommandResult(settings);
       return {
-        brief: `Additional read directory added: ${directory}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Additional read directory added: ${directory}`),
         detail: report.detail
       };
     }
@@ -2475,8 +2848,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const report = buildPermissionsCommandResult(settings);
       return {
         brief: removed
-          ? `Additional read directory removed: ${args[0]}. Ctrl+O for details.`
-          : `Additional read directory not found: ${args[0]}. Ctrl+O for details.`,
+          ? appendDetailShortcut(`Additional read directory removed: ${args[0]}`)
+          : appendDetailShortcut(`Additional read directory not found: ${args[0]}`),
         detail: report.detail
       };
     }
@@ -2493,7 +2866,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const settings = refreshSettingsSurface();
       const report = buildPermissionsCommandResult(settings);
       return {
-        brief: `Permission mode set to ${mode}. Ctrl+O for details.`,
+        brief: appendDetailShortcut(`Permission mode set to ${mode}`),
         detail: report.detail
       };
     }
@@ -2510,7 +2883,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         additionalDirectories: settingsSnapshot.permissions.additionalDirectories
       });
       return {
-        brief: next.changed ? `${next.brief} Ctrl+O for details.` : `${report.brief} Ctrl+O for details.`,
+        brief: next.changed ? appendDetailShortcut(next.brief) : appendDetailShortcut(report.brief),
         detail: report.detail
       };
     }
@@ -2527,6 +2900,30 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           ? "Execution mode set to full_swarm. This path is experimental; use it for explicit multi-agent tasks."
           : `Execution mode set to ${normalized}.`
       };
+    }
+
+    if (command === "density") {
+      const value = args[0]?.toLowerCase();
+      if (!value) {
+        return {
+          brief: `TUI density: ${tuiDensity === "auto" ? `auto (${screenDensity})` : tuiDensity}.`,
+          detail: [
+            "compact - smallest chrome, terse summaries, best for narrow terminals",
+            "default - balanced hierarchy",
+            "comfortable - full operator labels and wider detail panes",
+            "auto - choose from pane and terminal width"
+          ].join("\n")
+        };
+      }
+      if (value === "auto" || TUI_DENSITIES.includes(value as TuiDensity)) {
+        setTuiDensity(value as TuiDensity | "auto");
+        return {
+          brief: value === "auto"
+            ? `TUI density set to auto (${resolveTuiDensity({ density: "auto", pane: mainPane, columns: terminalColumns })}).`
+            : `TUI density set to ${value}.`
+        };
+      }
+      throw new Error("Usage: /density [auto|compact|default|comfortable]");
     }
 
     if (command === "checkpoint") {
@@ -2776,17 +3173,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     });
   }
 
-  function handleApprovalInput(character: string, key: { ctrl?: boolean; escape?: boolean }): void {
-    const decision = approvalInputDecision(character, key);
-    if (!decision.handled) {
-      return;
-    }
+  function resolveApprovalDecision(decision: ApprovalOverlayDecision): void {
     if (decision.rememberForSession && approval) {
       sessionApprovalAllow.current.add(approvalSessionRuleKey(approval, runtimeRef.current));
     }
     approvalResolver.current?.(decision.approved);
     approvalResolver.current = undefined;
     setApproval(undefined);
+  }
+
+  function handleApprovalInput(character: string | undefined, key: { ctrl?: boolean; escape?: boolean }): void {
+    const decision = approvalInputDecision(character ?? "", key);
+    if (!decision.handled) {
+      return;
+    }
+    resolveApprovalDecision({
+      approved: decision.approved,
+      rememberForSession: decision.rememberForSession
+    });
   }
 
   if (detailOpen) {
@@ -2815,6 +3219,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const latestSnapshot = runtime && lastSessionId ? safeWorkSnapshot(runtime, lastSessionId) : undefined;
   const displayedResultCard = latestResultCard
     ?? (latestSnapshot?.final_outcome ? buildResultCardFromSnapshot(latestSnapshot) : undefined);
+  const swarmSurface = runtime ? safeSwarmSurface(runtime, 12) : undefined;
   const promptCacheStatus = runtime?.getPromptCacheStatus();
   const cacheStatus = promptCacheStatus?.status ?? displayedResultCard?.cache?.status;
   const cacheHitRate = promptCacheStatus?.hitRate ?? displayedResultCard?.cache?.hitRate;
@@ -2845,7 +3250,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     columns: terminalColumns,
     busy,
     hasApproval: Boolean(approval),
-    hasPendingPlan: Boolean(pendingPlan)
+    hasPendingPlan: Boolean(pendingPlan),
+    density: tuiDensity
   });
   const showCurrentAction = screenMode.showCurrentAction;
   const needYou = approval
@@ -2867,26 +3273,38 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const timelineLimit = bodyRows >= 30 ? 5 : 3;
   const overviewSurface = busy
     ? (
-      <ActiveWorkSummary
-        taskStates={taskStates}
-        taskCompleted={taskCompleted}
-        taskTotal={taskTotal}
-        toolResults={toolResults}
-      />
+      <Box flexDirection="column" width="100%">
+        <ActiveWorkSummary
+          taskStates={taskStates}
+          taskCompleted={taskCompleted}
+          taskTotal={taskTotal}
+          toolResults={toolResults}
+          density={screenDensity}
+        />
+        <SwarmSurfacePanel surface={swarmSurface} limit={3} />
+      </Box>
     )
     : displayedResultCard
-      ? <ResultCardPanel
+      ? <Box flexDirection="column" width="100%">
+        <ResultCardPanel
           card={displayedResultCard}
-          detailHint={latestDetailSource !== "none" ? "Ctrl+O opens the latest detail." : undefined}
+          detailHint={latestDetailSource !== "none" ? detailOpenHint() : undefined}
+          density={screenDensity}
         />
-      : <ResultCardPanel emptyLabel="Not finished. Enter an objective or use /continue." />;
+        <SwarmSurfacePanel surface={swarmSurface} limit={3} />
+      </Box>
+      : <Box flexDirection="column" width="100%">
+        <ResultCardPanel emptyLabel="Not finished. Enter an objective or use /continue." density={screenDensity} />
+        <SwarmSurfacePanel surface={swarmSurface} limit={4} />
+      </Box>;
   const wideWorkbench = screenMode.showInspector;
   const primaryColumns = wideWorkbench ? Math.max(72, Math.floor((terminalColumns - 4) * 0.64)) : terminalColumns;
   const inspectorColumns = Math.max(40, terminalColumns - primaryColumns - 3);
   const selectedActionRow = actionLogRows[selectedActionIndex] ?? actionLogRows.at(-1);
   const activeSearchMatch = currentTranscriptSearchMatch(transcriptSearch);
+  const activeSearchSummary = transcriptSearchSummary(transcriptSearch);
   const bottomFooterHint = transcriptSearch.active
-    ? `${transcriptSearchSummary(transcriptSearch) ?? "search"} | Enter jump | Esc close`
+    ? transcriptSearchHint(activeSearchSummary)
     : "Left/Right footer | [/] message | / search";
   const inlineInspectorTarget = inlineInspectorTargetForPane({
     pane: mainPane,
@@ -2904,6 +3322,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     cacheStatus,
     cacheHitRate,
     gatewayStatus: "local",
+    mcpStatus: mcpRuntimeSummary?.state,
+    skillStatus: skillRuntimeSummary?.state,
     symphonyRunning: symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length,
     symphonyRetrying: 0,
     lspStatus: lspHealthStatus
@@ -2914,11 +3334,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     const conversationRows = fullscreenConversationRows(terminalRows, bottomRows);
     const inputCapacity = chatInputCapacity();
     const bottom = approval ? (
-      <ApprovalOverlay request={approval} />
+      <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
     ) : pendingPlan ? (
-      <Box borderStyle="single" paddingX={1} width="100%">
-        <Text color="yellow">Approve plan with y, cancel with n</Text>
-      </Box>
+      <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
     ) : (
       <ConversationBottomChrome
         busy={busy}
@@ -2936,9 +3354,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             promptLabel={routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase()}
             sandboxLabel={runSandboxMode === "workspace-write" ? undefined : sandboxBadge(runSandboxMode).toLowerCase()}
             footerHint={bottomFooterHint}
+            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
+            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
+            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
             footerItems={footerItems}
             selectedFooterItem={selectedFooterItem}
+            footerModeLabel={routeBadge(routeLabel)}
+            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
+            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
+            footerSandboxLabel={sandboxBadge(runSandboxMode)}
+            footerSandboxTone={sandboxTone(runSandboxMode)}
+            onInputTelemetry={logTuiInputTelemetry}
             completionPlacement="overlay"
+            density={screenDensity}
+            columns={terminalColumns}
             maxRows={bottomRows}
             maxInputRows={inputCapacity.maxInputRows}
           />
@@ -2974,6 +3403,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             expandedMessageKeys={messageCursor.expandedKeys}
             selectedMessageIndex={messageCursor.selectedIndex}
             searchMatchMessageIndex={activeSearchMatch?.messageIndex}
+            searchMatchQuery={transcriptSearch.query}
             tailRows={conversationTailRows({ busy, hasResult: Boolean(displayedResultCard) })}
             tail={conversationTail({
               busy,
@@ -3002,6 +3432,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         checkpoint={checkpointLabel}
         view={mainPaneLabels[mainPane]}
         compact={screenMode.compactStatus}
+        density={screenDensity}
       />
 
       <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={1}>
@@ -3009,10 +3440,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           <CurrentActionRow
             message={currentAction}
             phase={currentPhase}
-            color={loopActivity ? loopActivityColor(loopActivity.phase) : busy ? "cyan" : displayedResultCard ? "green" : "gray"}
+            status={loopActivity ? loopActivityStatus(loopActivity.phase) : busy ? "running" : displayedResultCard ? displayedResultCard.status : "idle"}
+            tone={loopActivity ? loopActivityTone(loopActivity.phase) : busy ? "running" : displayedResultCard ? statusTone(displayedResultCard.status) : "muted"}
             progress={progress}
             needYou={needYou === "no" ? undefined : needYou}
             motionFrame={shouldAnimate ? motionTick : undefined}
+            density={screenDensity}
           />
         )}
 
@@ -3035,6 +3468,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
                   items={timelineItems}
                   emptyLabel="(none)"
                   limit={timelineLimit}
+                  density={screenDensity}
                 />
 
                 <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={1}>
@@ -3053,6 +3487,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
                       approvals={idlePaneSnapshot.approvals}
                       workers={mergeWorkerRecords(workers, idlePaneSnapshot.workers, 6)}
                       blackboard={idlePaneSnapshot.blackboard}
+                      swarmSurface={swarmSurface}
                       symphonyDaemons={symphonyDaemons.slice(0, 4)}
                       lastSessionId={lastSessionId}
                       lastRoute={lastRoute}
@@ -3073,6 +3508,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
                 route={lastRoute ? routeDisplayLabel(lastRoute.mode) : undefined}
                 source={inlineInspectorTarget.source}
                 title={inlineInspectorTarget.title}
+                density={screenDensity}
               />
             </Box>
           )}
@@ -3081,11 +3517,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
       <Box flexShrink={0} width="100%" marginTop={1}>
         {approval ? (
-          <ApprovalOverlay request={approval} />
+          <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
         ) : pendingPlan ? (
-          <Box borderStyle="single" paddingX={1} width="100%">
-            <Text color="yellow">Approve plan with y, cancel with n</Text>
-          </Box>
+          <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
         ) : (
           <ChatInputArea
             onSubmit={submitObjective}
@@ -3095,8 +3529,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             promptLabel={routeBadge(routeLabel).toLowerCase()}
             sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
             footerHint={bottomFooterHint}
+            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
+            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
+            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
             footerItems={footerItems}
             selectedFooterItem={selectedFooterItem}
+            footerModeLabel={routeBadge(routeLabel)}
+            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
+            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
+            footerSandboxLabel={sandboxBadge(runSandboxMode)}
+            footerSandboxTone={sandboxTone(runSandboxMode)}
+            onInputTelemetry={logTuiInputTelemetry}
+            density={screenDensity}
+            columns={terminalColumns}
           />
         )}
       </Box>
@@ -3197,26 +3642,26 @@ function OnboardView({ state }: { state: OnboardState }): React.ReactElement {
   return (
     <Box flexDirection="column" width="100%">
       <Box borderStyle="single" paddingX={1} width="100%">
-        <Text color="cyan">Swarm Onboarding</Text>
-        <Text color="gray">  Enter/Tab next. Use a provider id, custom-openai:id, or custom-claude:id.</Text>
+        <Text color={visualTokenColor("brand.focus")}>Swarm Onboarding</Text>
+        <Text color={mutedColor()}>  Enter/Tab next. Use a provider id, custom-openai:id, or custom-claude:id.</Text>
       </Box>
       <Box borderStyle="round" flexDirection="column" paddingX={1} marginTop={1} width="100%">
         {readiness.map((item, index) => (
-          <Text key={`${item.modelRef}:${index}`} color={item.configured ? "green" : "yellow"}>
+          <Text key={`${item.modelRef}:${index}`} color={item.configured ? successColor() : pendingColor()}>
             {item.modelRef}: {item.configured ? "configured" : item.reason}
           </Text>
         ))}
       </Box>
       <Box borderStyle="round" flexDirection="column" paddingX={1} marginTop={1} width="100%">
         {visibleFields.map((field) => (
-          <Text key={field} color={field === state.field ? "cyan" : undefined}>
+          <Text key={field} color={field === state.field ? visualTokenColor("role.user") : undefined}>
             {fieldLabel(field)}: {maskField(field, state.values[field])}
           </Text>
         ))}
       </Box>
       {state.error && (
         <Box marginTop={1}>
-          <Text color="red">{state.error}</Text>
+          <Text color={dangerColor()}>{state.error}</Text>
         </Box>
       )}
     </Box>
@@ -3235,6 +3680,7 @@ function IdleKernelView(input: {
   approvals: ApprovalStoreRecord[];
   workers: WorkerRecord[];
   blackboard: BlackboardEntry[];
+  swarmSurface?: SwarmSurfaceProjection;
   symphonyDaemons: SymphonyDaemonRecord[];
   lastSessionId?: string;
   lastRoute?: RouteState;
@@ -3256,7 +3702,7 @@ function IdleKernelView(input: {
       {input.pane === "output" && <IdleOutputPane rows={input.rows} outputs={input.toolOutputs} />}
       {input.pane === "sessions" && <IdleSessionsPane rows={input.rows} sessions={input.sessions} leases={input.leases} lastSessionId={input.lastSessionId} />}
       {input.pane === "attempts" && <IdleAttemptsPane rows={input.rows} attempts={input.attempts} />}
-      {input.pane === "agents" && <IdleActivityPane rows={input.rows} workers={input.workers} approvals={input.approvals} daemons={activeDaemons} />}
+      {input.pane === "agents" && <IdleActivityPane rows={input.rows} workers={input.workers} approvals={input.approvals} daemons={activeDaemons} swarmSurface={input.swarmSurface} />}
       {input.pane === "blackboard" && <IdleBlackboardPane rows={input.rows} blackboard={input.blackboard} messages={input.messages} />}
     </Box>
   );
@@ -3267,17 +3713,67 @@ function PaneHeader({ pane, columns }: { pane: MainPaneId; columns: number }): R
   const current = compact ? mainPaneShortLabels[pane] : mainPaneLabels[pane];
   const shortcut = columns < 72 ? "/view" : "use /view";
   return (
-    <Text wrap="truncate">
-      <Text color="cyan" bold>{sectionLabel("View")}</Text>
-      <Text color="gray"> {current} | {shortcut} </Text>
+    <Box flexDirection="column" width="100%">
+      <Text wrap="truncate">
+        <Text color={paneAccentColor(pane)} bold>{sectionLabel(current)}</Text>
+        <Text color={mutedColor()}>  {shortcut} · </Text>
       {mainPaneOrder.map((item, index) => (
-        <Text key={item} inverse={item === pane} color={item === pane ? "black" : "gray"}>
+        <Text key={item} inverse={item === pane} color={item === pane ? selectedTextColor() : mutedColor()}>
           {item === pane ? `[${compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}]` : compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}
           {index < mainPaneOrder.length - 1 ? " " : ""}
         </Text>
       ))}
+      </Text>
+      <PaneDivider tone={paneAccentToken(pane)} />
+    </Box>
+  );
+}
+
+function PaneDivider({ tone = "surface.line" }: { tone?: TuiColorRef }): React.ReactElement {
+  return (
+    <Text color={resolveTuiColor(tone)} wrap="truncate">
+      {"─".repeat(160)}
     </Text>
   );
+}
+
+function PaneSection({
+  title,
+  tone = "text.primary",
+  children,
+  marginTop = 1
+}: {
+  title: string;
+  tone?: TuiColorRef;
+  children: React.ReactNode;
+  marginTop?: number;
+}): React.ReactElement {
+  return (
+    <Box flexDirection="column" width="100%" marginTop={marginTop}>
+      <Text wrap="truncate">
+        <Text color={resolveTuiColor(tone)} bold>{sectionLabel(title)}</Text>
+        <Text color={mutedColor()}> {"─".repeat(96)}</Text>
+      </Text>
+      {children}
+    </Box>
+  );
+}
+
+function paneAccentToken(pane: MainPaneId): TuiColorRef {
+  switch (pane) {
+    case "output": return "role.tool";
+    case "sessions": return "role.gateway";
+    case "attempts": return "status.warning";
+    case "agents": return "role.swarm";
+    case "blackboard": return "role.swarm";
+    case "overview": return "brand.focus";
+    case "chat": return "text.primary";
+    case "log": return "text.primary";
+  }
+}
+
+function paneAccentColor(pane: MainPaneId): TuiResolvedColor {
+  return resolveTuiColor(paneAccentToken(pane));
 }
 
 function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
@@ -3289,79 +3785,73 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
   const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
   return (
     <>
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Status")}</Text>
-      </Box>
-      <Text color="gray">
-        {`sessions=${input.sessions.length} attempts=${input.attempts.length} outputs=${input.toolOutputs.length} approvals=${input.approvals.length} symphony=${activeDaemons.length} last=${shortId(input.lastSessionId ?? "-")}`}
-      </Text>
-      {input.lastRoute && (
-        <Text color="cyan" wrap="truncate">
-          route={input.lastRoute.mode}{typeof input.lastRoute.confidence === "number" ? ` ${Math.round(input.lastRoute.confidence * 100)}%` : ""} {firstLine(input.lastRoute.reason, 90)}
+      <PaneSection title="Status" tone="role.gateway">
+        <Text color={mutedColor()}>
+          {`sessions=${input.sessions.length} attempts=${input.attempts.length} outputs=${input.toolOutputs.length} approvals=${input.approvals.length} symphony=${activeDaemons.length} last=${shortId(input.lastSessionId ?? "-")}`}
         </Text>
-      )}
+        {input.lastRoute && (
+          <Text color={visualTokenColor("role.gateway")} wrap="truncate">
+            route={input.lastRoute.mode}{typeof input.lastRoute.confidence === "number" ? ` ${Math.round(input.lastRoute.confidence * 100)}%` : ""} {firstLine(input.lastRoute.reason, 90)}
+          </Text>
+        )}
+        {input.swarmSurface && (
+          <Text color={input.swarmSurface.summary.conflicts ? pendingColor() : visualTokenColor("role.swarm")} wrap="truncate">
+            swarm {formatSwarmTopologySummary(input.swarmSurface)}
+          </Text>
+        )}
+      </PaneSection>
 
       {(input.approvals.length > 0 || activeDaemons.length > 0) && (
-        <>
-          <Box marginTop={1}>
-            <Text color="yellow" bold>{sectionLabel("Attention")}</Text>
-          </Box>
+        <PaneSection title="Attention" tone="status.pending">
           {input.approvals.slice(0, 2).map((approval) => (
-            <Text key={approval.approval_id} wrap="truncate" color="yellow">
+            <Text key={approval.approval_id} wrap="truncate" color={pendingColor()}>
               approval {approval.risk_class}/{approval.risk} {approval.action} {firstLine(approval.target, 60)}
             </Text>
           ))}
           {activeDaemons.slice(0, 2).map((daemon) => (
-            <Text key={daemon.daemon_id} wrap="truncate" color="cyan">
+            <Text key={daemon.daemon_id} wrap="truncate" color={visualTokenColor("role.swarm")}>
               daemon {shortId(daemon.daemon_id)} [{daemon.status}] ticks={daemon.tick_count}
             </Text>
           ))}
-        </>
+        </PaneSection>
       )}
 
       {input.lastSessionId && (
-        <>
-          <Box marginTop={1}>
-            <Text color="cyan" bold>{sectionLabel("Latest Session")}</Text>
-          </Box>
+        <PaneSection title="Latest Session" tone="brand.focus">
           {lastSnapshot
             ? compactWorkSnapshotLines(lastSnapshot).slice(0, 2).map((line) => (
-                <Text key={line} wrap="truncate" color="gray">
+                <Text key={line} wrap="truncate" color={mutedColor()}>
                   {line}
                 </Text>
               ))
-            : <Text color="gray">No snapshot available.</Text>}
-        </>
+            : <Text color={mutedColor()}>No snapshot available.</Text>}
+        </PaneSection>
       )}
 
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Recent Messages")}</Text>
-      </Box>
-      {input.messages.length ? input.messages.slice(-recentMessages).map((message, index) => (
-        <Box key={`${message.role}-${index}`} flexDirection="column">
-          <Text wrap="truncate" color={roleColor(message.role)}>
-            {message.role}: {message.brief}
-          </Text>
-        </Box>
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Recent Messages" tone="text.primary">
+        {input.messages.length ? input.messages.slice(-recentMessages).map((message, index) => (
+          <Box key={`${message.role}-${index}`} flexDirection="column">
+            <Text wrap="truncate" color={roleColor(message.role)}>
+              {message.role}: {message.brief}
+            </Text>
+          </Box>
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
 
       {input.toolOutputs.length > 0 && (
-        <>
-          <Box marginTop={1}>
-            <Text color="cyan" bold>{sectionLabel("Latest Output")}</Text>
-          </Box>
+        <PaneSection title="Latest Output" tone="role.tool">
           {input.toolOutputs.slice(-1).map((result, index) => {
             return (
               <Box key={`${result.task_id}-${index}`} flexDirection="column">
                 <Text wrap="truncate">
                   {statusIcon(result.status ?? "completed")} {result.action} {firstLine(result.summary, 88)}{result.outputRef ? " (saved)" : ""}
                 </Text>
-                {result.recoverySuggestion && <Text color="yellow" wrap="truncate">{indentPreview(firstLine(result.recoverySuggestion, 88), "  ")}</Text>}
+                {result.recoverySuggestion && <Text color={pendingColor()} wrap="truncate">{indentPreview(firstLine(result.recoverySuggestion, 88), "  ")}</Text>}
                 {compactPreview(result.content)}
               </Box>
             );
           })}
-        </>
+        </PaneSection>
       )}
     </>
   );
@@ -3371,19 +3861,16 @@ function IdleOutputPane({ rows, outputs }: { rows: number; outputs: ToolResultSt
   const outputLimit = rows >= 48 ? 5 : rows >= 36 ? 3 : 2;
   const outputRows = orderCompactIdleRows(outputs.map((result, index) => compactIdleOutputRow(result, index))).slice(0, outputLimit);
   return (
-    <>
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Command Output")}</Text>
-      </Box>
+    <PaneSection title="Command Output" tone="role.tool">
       {outputRows.length ? outputRows.map(({ row, source }) => (
         <Box key={row.key} flexDirection="column">
           <CompactIdleRow row={row} />
-          {source.recoverySuggestion && <Text color="yellow" wrap="truncate">{indentPreview(firstLine(source.recoverySuggestion, 92), "  ")}</Text>}
-          {source.outputRef && <Text color="gray" wrap="truncate">{indentPreview(`full: ${shortPath(source.outputRef)}`, "  ")}</Text>}
+          {source.recoverySuggestion && <Text color={pendingColor()} wrap="truncate">{indentPreview(firstLine(source.recoverySuggestion, 92), "  ")}</Text>}
+          {source.outputRef && <Text color={mutedColor()} wrap="truncate">{indentPreview(`full: ${shortPath(source.outputRef)}`, "  ")}</Text>}
           {compactPreview(source.content)}
         </Box>
-      )) : <Text color="gray">(none)</Text>}
-    </>
+      )) : <Text color={mutedColor()}>(none)</Text>}
+    </PaneSection>
   );
 }
 
@@ -3397,11 +3884,11 @@ function CompactIdleRow({ row }: { row: CompactIdleRowData }): React.ReactElemen
   const tone = row.tone ?? statusTone(row.status);
   const color = toneColor(tone);
   return (
-    <Text wrap="truncate">
-      <Text color={color}>{parts.badge}</Text>
-      <Text> {parts.id} {parts.title}</Text>
-      {parts.status ? <Text color={color}> [{parts.status}]</Text> : null}
-      {parts.meta.length ? <Text color="gray"> · {parts.meta.join(" · ")}</Text> : null}
+      <Text wrap="truncate">
+        <Text color={color}>{parts.badge}</Text>
+        <Text> {parts.id} {parts.title}</Text>
+        {parts.status ? <Text color={color}> [{parts.status}]</Text> : null}
+      {parts.meta.length ? <Text color={mutedColor()}> · {parts.meta.join(" · ")}</Text> : null}
     </Text>
   );
 }
@@ -3673,20 +4160,18 @@ function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
   const leaseRows = orderCompactIdleRows(leases.map((lease, index) => compactIdleLeaseRow(lease, index))).slice(0, leaseLimit);
   return (
     <>
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Recent Sessions")}</Text>
-      </Box>
-      {lastSessionId && <Text color="gray">last={shortId(lastSessionId)}</Text>}
-      {sessionRows.length ? sessionRows.map((row) => (
-        <CompactIdleRow key={row.key} row={row} />
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Recent Sessions" tone="role.gateway">
+        {lastSessionId && <Text color={mutedColor()}>last={shortId(lastSessionId)}</Text>}
+        {sessionRows.length ? sessionRows.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
 
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Workspace Leases")}</Text>
-      </Box>
-      {leaseRows.length ? leaseRows.map((row) => (
-        <CompactIdleRow key={row.key} row={row} />
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Workspace Leases" tone="role.gateway">
+        {leaseRows.length ? leaseRows.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
     </>
   );
 }
@@ -3696,28 +4181,26 @@ function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttem
   const attemptRows = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
   const attemptById = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]));
   return (
-    <>
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Recent Attempts")}</Text>
-      </Box>
+    <PaneSection title="Recent Attempts" tone="status.warning">
       {attemptRows.length ? attemptRows.map((row) => {
         const attempt = attemptById.get(row.key);
         return (
         <Box key={row.key} flexDirection="column">
           <CompactIdleRow row={row} />
-          {attempt?.recovery_suggestion && <Text color="yellow" wrap="truncate">  Recovery: {firstLine(attempt.recovery_suggestion, 92)}</Text>}
+          {attempt?.recovery_suggestion && <Text color={pendingColor()} wrap="truncate">  Recovery: {firstLine(attempt.recovery_suggestion, 92)}</Text>}
         </Box>
         );
-      }) : <Text color="gray">(none)</Text>}
-    </>
+      }) : <Text color={mutedColor()}>(none)</Text>}
+    </PaneSection>
   );
 }
 
-function IdleActivityPane({ rows, workers, approvals, daemons }: {
+function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
   rows: number;
   workers: WorkerRecord[];
   approvals: ApprovalStoreRecord[];
   daemons: SymphonyDaemonRecord[];
+  swarmSurface?: SwarmSurfaceProjection;
 }): React.ReactElement {
   const workerLimit = rows >= 48 ? 6 : 3;
   const approvalLimit = rows >= 48 ? 4 : rows >= 36 ? 3 : 2;
@@ -3728,34 +4211,65 @@ function IdleActivityPane({ rows, workers, approvals, daemons }: {
   const daemonRows = orderCompactIdleRows(daemons.map((daemon, index) => compactIdleDaemonRow(daemon, index))).slice(0, daemonLimit);
   return (
     <>
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Active Work")}</Text>
-      </Box>
-      {workerRows.length ? workerRows.map((row) => {
-        const worker = workerById.get(row.key);
-        return (
-          <Box key={row.key} flexDirection="column">
-            <CompactIdleRow row={row} />
-            {worker?.last_result && <Text wrap="truncate" color="gray">{indentPreview(firstLine(worker.last_result, 90), "  ")}</Text>}
-            {worker?.blocked_reason && <Text wrap="truncate" color="yellow">{indentPreview(firstLine(worker.blocked_reason, 90), "  ")}</Text>}
-          </Box>
-        );
-      }) : <Text color="gray">(none)</Text>}
+      <SwarmSurfacePanel surface={swarmSurface} limit={rows >= 48 ? 5 : 3} />
 
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Approvals")}</Text>
-      </Box>
-      {approvalRows.length ? approvalRows.map((row) => (
-        <CompactIdleRow key={row.key} row={row} />
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Active Work" tone="role.swarm">
+        {workerRows.length ? workerRows.map((row) => {
+          const worker = workerById.get(row.key);
+          return (
+            <Box key={row.key} flexDirection="column">
+              <CompactIdleRow row={row} />
+              {worker?.last_result && <Text wrap="truncate" color={mutedColor()}>{indentPreview(firstLine(worker.last_result, 90), "  ")}</Text>}
+              {worker?.blocked_reason && <Text wrap="truncate" color={pendingColor()}>{indentPreview(firstLine(worker.blocked_reason, 90), "  ")}</Text>}
+            </Box>
+          );
+        }) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
 
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Background Work")}</Text>
-      </Box>
-      {daemonRows.length ? daemonRows.map((row) => (
-        <CompactIdleRow key={row.key} row={row} />
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Approvals" tone="status.pending">
+        {approvalRows.length ? approvalRows.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
+
+      <PaneSection title="Background Work" tone="role.swarm">
+        {daemonRows.length ? daemonRows.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
     </>
+  );
+}
+
+function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProjection; limit?: number }): React.ReactElement | null {
+  if (!surface) {
+    return null;
+  }
+  const visibleLimit = Math.max(1, Math.min(limit, 6));
+  const tone: TuiColorRef = surface.summary.conflicts > 0 ? "status.warning" : "role.swarm";
+  const ownership = surface.ownership.slice(0, visibleLimit);
+  const conflicts = surface.conflicts.slice(0, visibleLimit);
+  return (
+    <PaneSection title="Swarm Surface" tone={tone}>
+      <Text color={mutedColor()} wrap="truncate">
+        {formatSwarmTopologySummary(surface)}
+      </Text>
+      {surface.actors.slice(0, visibleLimit).map((actor) => (
+        <Text key={actor.actor_id} color={actor.heartbeat_state === "fresh" ? visualTokenColor("role.swarm") : pendingColor()} wrap="truncate">
+          {actor.actor_id} [{actor.kind}/{actor.status}/{actor.heartbeat_state}] in={actor.mailbox.inbox_total}/{actor.mailbox.inbox_pending + actor.mailbox.inbox_failed} out={actor.mailbox.outbox_total}/{actor.mailbox.outbox_pending + actor.mailbox.outbox_failed}{actor.current_task_id ? ` task=${actor.current_task_id}` : ""}{actor.current_worker_id ? ` worker=${actor.current_worker_id}` : ""}
+        </Text>
+      ))}
+      {ownership.length > 0 && (
+        <Text color={mutedColor()} wrap="truncate">
+          ownership {ownership.map((item) => `${item.kind}:${item.id}->${item.owner ?? "-"}`).join(" | ")}
+        </Text>
+      )}
+      {conflicts.map((item) => (
+        <Text key={`${item.kind}:${item.id}`} color={item.severity === "error" ? dangerColor() : pendingColor()} wrap="truncate">
+          conflict {item.kind}:{item.id} {firstLine(item.summary, 72)}
+        </Text>
+      ))}
+    </PaneSection>
   );
 }
 
@@ -3764,30 +4278,34 @@ function ActiveWorkSummary(input: {
   taskCompleted: number;
   taskTotal: number;
   toolResults: ToolResultState[];
+  density?: TuiDensity;
 }): React.ReactElement {
   const latestTask = [...input.taskStates.entries()].slice(-1)[0];
   const latestOutput = input.toolResults.slice(-1)[0];
   const policySummary = summarizeTaskWritePolicies(input.taskStates);
   const scopePreview = policySummary.scopedTargets.slice(0, 3).join(", ");
   const scopeSuffix = policySummary.scopedTargets.length > 3 ? ` +${policySummary.scopedTargets.length - 3} more` : "";
+  const compact = input.density === "compact";
   return (
     <Box flexDirection="column" width="100%">
-      <Text color="cyan" bold>{sectionLabel("Work")}</Text>
-      <Text color="gray" wrap="truncate">
+      <Text color={visualTokenColor("role.swarm")} bold>{sectionLabel("Work")}</Text>
+      <Text color={mutedColor()} wrap="truncate">
         in progress · tasks {input.taskCompleted}/{input.taskTotal || 0} · tool outputs {input.toolResults.length}
       </Text>
-      <Text color="gray" wrap="truncate">
-        policies: ro {policySummary.readOnly} · scoped {policySummary.scopedWrite} · workspace {policySummary.workspaceWrite}
-      </Text>
+      {!compact && (
+        <Text color={mutedColor()} wrap="truncate">
+          policies: ro {policySummary.readOnly} · scoped {policySummary.scopedWrite} · workspace {policySummary.workspaceWrite}
+        </Text>
+      )}
       {policySummary.scopedTargets.length > 0 && (
-        <Text color="gray" wrap="truncate">
+        <Text color={mutedColor()} wrap="truncate">
           scope: {scopePreview}{scopeSuffix}
         </Text>
       )}
-      <Text color="gray" wrap="truncate">
+      <Text color={mutedColor()} wrap="truncate">
         task: {latestTask ? `${statusIcon(latestTask[1].status)} ${latestTask[1].title || latestTask[0]}${formatTaskStatePolicyHint(latestTask[1])}` : "(waiting)"}
       </Text>
-      <Text color="gray" wrap="truncate">
+      <Text color={mutedColor()} wrap="truncate">
         output: {latestOutput ? `[${latestOutput.status ?? "unknown"}${latestOutput.errorCode ? `/${latestOutput.errorCode}` : ""}] ${latestOutput.agentLabel ? `${latestOutput.agentLabel}: ` : ""}${latestOutput.summary}` : "(none)"}
       </Text>
     </Box>
@@ -3827,7 +4345,7 @@ function ActivityPanel({ workers, agents }: {
       </>
     );
   }
-  return <Text color="gray">No active background work.</Text>;
+  return <Text color={mutedColor()}>No active background work.</Text>;
 }
 
 function WorkerLine({ worker, compact = false }: { worker: WorkerRecord; compact?: boolean }): React.ReactElement {
@@ -3848,11 +4366,11 @@ function WorkerLine({ worker, compact = false }: { worker: WorkerRecord; compact
       <Text wrap="truncate" color={workerStatusColor(worker.status)}>
         {statusIcon(worker.status)} {displayLabel} [{worker.status}]
       </Text>
-      <Text wrap="truncate" color="gray">
+      <Text wrap="truncate" color={mutedColor()}>
         {worker.worker_id} {agent}{worker.file_scope.length ? ` scope=${worker.file_scope.slice(0, 3).join(",")}` : ""}
       </Text>
       {!compact && <Text wrap="truncate">{worker.objective}</Text>}
-      {result && <Text wrap="truncate" color="gray">{result}</Text>}
+      {result && <Text wrap="truncate" color={mutedColor()}>{result}</Text>}
     </Box>
   );
 }
@@ -3867,21 +4385,19 @@ function IdleBlackboardPane({ rows, blackboard, messages }: {
   const blackboardRows = orderCompactIdleRows(blackboard.map((entry, index) => compactIdleBlackboardRow(entry, index))).slice(0, blackboardLimit);
   return (
     <>
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Blackboard")}</Text>
-      </Box>
-      {blackboardRows.length ? blackboardRows.map((row) => (
-        <CompactIdleRow key={row.key} row={row} />
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Blackboard" tone="role.swarm">
+        {blackboardRows.length ? blackboardRows.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
 
-      <Box marginTop={1}>
-        <Text color="cyan" bold>{sectionLabel("Recent Messages")}</Text>
-      </Box>
-      {messages.length ? messages.slice(-recentMessages).map((message, index) => (
-        <Text key={`${message.role}-${index}`} wrap="truncate" color={roleColor(message.role)}>
-          {message.role}: {message.brief}
-        </Text>
-      )) : <Text color="gray">(none)</Text>}
+      <PaneSection title="Recent Messages" tone="text.primary">
+        {messages.length ? messages.slice(-recentMessages).map((message, index) => (
+          <Text key={`${message.role}-${index}`} wrap="truncate" color={roleColor(message.role)}>
+            {message.role}: {message.brief}
+          </Text>
+        )) : <Text color={mutedColor()}>(none)</Text>}
+      </PaneSection>
     </>
   );
 }
@@ -3910,7 +4426,7 @@ function compactResultCardLines(card: RuntimeResultCard): string[] {
   ];
 }
 
-function DetailView({ content, scroll, height, sessionId, route, source, title }: {
+function DetailView({ content, scroll, height, sessionId, route, source, title, density }: {
   content: string;
   scroll: number;
   height: number;
@@ -3918,6 +4434,7 @@ function DetailView({ content, scroll, height, sessionId, route, source, title }
   route?: string;
   source?: "ai" | "command" | "task" | "event";
   title?: string;
+  density?: TuiDensity;
 }): React.ReactElement {
   const lines = content.split(/\r?\n/);
   const visible = lines.slice(scroll, scroll + height);
@@ -3930,23 +4447,10 @@ function DetailView({ content, scroll, height, sessionId, route, source, title }
         selected={`lines ${Math.min(scroll + 1, lines.length)}-${Math.min(scroll + height, lines.length)} / ${lines.length}`}
         tabs={source === "command" ? undefined : ["output", "files", "checks", "workers", "attempts", "debug"]}
         content={visible.join("\n") || " "}
+        density={density}
       />
     </Box>
   );
-}
-
-function renderActionRowDetail(row: TuiActionRow | undefined): string {
-  if (!row) {
-    return "No action selected.";
-  }
-  return [
-    `${statusBadge(row.status)} ${row.title}`,
-    row.summary ? `summary: ${row.summary}` : undefined,
-    row.meta ? `meta: ${row.meta}` : undefined,
-    `kind: ${row.kind}`,
-    "",
-    ...(row.details.length ? row.details : ["No additional details."])
-  ].filter((line): line is string => typeof line === "string").join("\n");
 }
 
 function renderConversationMessageDetail(index: number, message: ConversationMessage): string {
@@ -4074,6 +4578,12 @@ function normalizeActionLogControlCharacter(character: string | undefined): stri
   if (!character) {
     return "";
   }
+  if (character === "\x03") {
+    return "c";
+  }
+  if (character === "\x0f") {
+    return "o";
+  }
   if (character === "\x02") {
     return "b";
   }
@@ -4083,14 +4593,48 @@ function normalizeActionLogControlCharacter(character: string | undefined): stri
   return character.toLowerCase();
 }
 
-function loopActivityColor(phase: LoopActivityState["phase"]): "cyan" | "green" | "yellow" | "red" | "gray" {
+function tuiKeyEventForInput(
+  character: string | undefined,
+  key: { ctrl?: boolean; return?: boolean; escape?: boolean }
+): Extract<RuntimeEvent, { type: "tui_focus" }>["key_event"] {
+  const normalized = normalizeActionLogControlCharacter(character);
+  if (key.return) {
+    return "return";
+  }
+  if (key.escape) {
+    return "escape";
+  }
+  if (key.ctrl && normalized === "o") {
+    return "ctrl+o";
+  }
+  if (!key.ctrl && normalized === "o") {
+    return "o";
+  }
+  if (!key.ctrl && normalized === "q") {
+    return "q";
+  }
+  return "other";
+}
+
+function loopActivityStatus(phase: LoopActivityState["phase"]): string {
   switch (phase) {
-    case "failed": return "red";
-    case "completed": return "green";
-    case "stopped": return "yellow";
-    case "waiting_approval": return "yellow";
-    case "turn_complete": return "gray";
-    default: return "cyan";
+    case "failed": return "failed";
+    case "completed": return "completed";
+    case "stopped": return "stopped";
+    case "waiting_approval": return "awaiting approval";
+    case "turn_complete": return "idle";
+    default: return "running";
+  }
+}
+
+function loopActivityTone(phase: LoopActivityState["phase"]): TuiTone {
+  switch (phase) {
+    case "failed": return "danger";
+    case "completed": return "success";
+    case "stopped": return "warning";
+    case "waiting_approval": return "pending";
+    case "turn_complete": return "muted";
+    default: return "running";
   }
 }
 
@@ -4123,11 +4667,14 @@ export function formatKernelStatusView(input: {
   const approvals = input.runtime?.listRecentApprovalsForWorkspace(8) ?? [];
   const persistedHandoffs = input.runtime?.listHandoffsForWorkspace(8) ?? [];
   const recentBlackboard = input.runtime?.listRecentBlackboardForWorkspace(8) ?? [];
+  const workBoard = input.runtime ? safeWorkspaceWorkBoard(input.runtime, 8) : undefined;
+  const swarmSurface = input.runtime ? safeSwarmSurface(input.runtime, 12) : undefined;
   const lastSnapshot = input.runtime && input.lastSessionId
     ? safeWorkSnapshot(input.runtime, input.lastSessionId)
     : undefined;
   const symphony = input.symphonyStatus;
   const lspHealthStatus = lspHealthStatusFromReport(input.lspStatusReport);
+  const extensionDiagnostics = extensionRuntimeDiagnostics(input.runtime);
   const activeDaemons = input.symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping");
   return [
     "Swarm Kernel",
@@ -4148,6 +4695,24 @@ export function formatKernelStatusView(input: {
     "",
     "Last Session Snapshot",
     ...(lastSnapshot ? compactWorkSnapshotLines(lastSnapshot) : ["(none)"]),
+    "",
+    "Work Board",
+    workBoard
+      ? `sessions=${workBoard.summary.sessions} active=${workBoard.summary.active_sessions} workers=${workBoard.summary.workers} active_workers=${workBoard.summary.active_workers} resumable=${workBoard.summary.resumable} tasks=${workBoard.summary.tasks} claims=${workBoard.summary.claims} blocked=${workBoard.summary.blocked} failed=${workBoard.summary.failed} checks=${workBoard.summary.checks} artifacts=${workBoard.summary.artifacts}`
+      : "(none)",
+    ...(workBoard?.next_actions.length
+      ? workBoard.next_actions.slice(0, 5).map((action) => `next=${action.severity} ${action.source}:${action.id} ${action.action}`)
+      : []),
+    "",
+    "Swarm Surface",
+    ...(swarmSurface
+      ? [
+        formatSwarmTopologySummary(swarmSurface),
+        ...swarmSurface.actors.slice(0, 6).map((actor) => `${actor.actor_id} [${actor.kind}/${actor.status}/${actor.heartbeat_state}] in=${actor.mailbox.inbox_total}/${actor.mailbox.inbox_pending + actor.mailbox.inbox_failed} out=${actor.mailbox.outbox_total}/${actor.mailbox.outbox_pending + actor.mailbox.outbox_failed}${actor.current_task_id ? ` task=${actor.current_task_id}` : ""}${actor.current_worker_id ? ` worker=${actor.current_worker_id}` : ""}`),
+        ...swarmSurface.ownership.slice(0, 5).map((item) => `owner=${item.kind}:${item.id} [${item.status}] agent=${item.owner ?? "-"}${item.envelope_id ? ` env=${item.envelope_id}` : ""}`),
+        ...swarmSurface.conflicts.slice(0, 5).map((item) => `conflict=${item.kind}:${item.id} severity=${item.severity} ${item.summary}`)
+      ]
+      : ["(none)"]),
     "",
     "Recent Attempts",
     ...(attempts.length
@@ -4175,17 +4740,25 @@ export function formatKernelStatusView(input: {
     symphony
       ? `sessions=${symphony.totals.sessions} running=${symphony.totals.running} retrying=${symphony.totals.retrying} capacity=${symphony.scheduler.capacity.running}/${symphony.scheduler.capacity.max_concurrent}`
       : "status=(not loaded)",
+    symphony
+      ? `live_control=${symphony.live_control.status} severity=${symphony.live_control.severity}${symphony.live_control.next_action ? ` next=${symphony.live_control.next_action}` : ""}`
+      : "live_control=unknown",
     activeDaemons.length
       ? `daemons=${activeDaemons.map((daemon) => `${daemon.daemon_id}:${daemon.status}:ticks=${daemon.tick_count}`).join(" ")}`
       : "daemons=(none)",
     ...(symphony?.scheduler.running.length
-      ? symphony.scheduler.running.slice(0, 5).map((item) => `${item.session_id} [${item.status}] ${workItemLabel(item.work_item)}`)
+      ? symphony.scheduler.running.slice(0, 5).map((item) => `${item.session_id} [${item.status}] live=${item.live_control.status}/${item.live_control.severity} ${workItemLabel(item.work_item)}`)
       : []),
     "",
     formatServiceStatusSection({
       cache: input.cacheStatus,
       gatewayStatus: "local",
+      mcpStatus: extensionDiagnostics.mcp?.state,
+      mcpSummary: extensionDiagnostics.mcp?.reason,
+      skillStatus: extensionDiagnostics.skills?.state,
+      skillSummary: extensionDiagnostics.skills?.reason,
       symphonyStatus: symphonyStatusForServiceSection(symphony),
+      symphonyLiveControl: symphony?.live_control,
       lspStatus: lspHealthStatus
     }),
     "",
@@ -4203,19 +4776,22 @@ function symphonyStatusForServiceSection(status: SymphonyStatus | undefined): st
   if (!status) {
     return "unknown";
   }
-  if (!status.workflow.ok) {
-    return "failed";
+  return status.live_control.status;
+}
+
+function extensionRuntimeDiagnostics(runtime: SwarmRuntime | undefined): {
+  mcp?: ReturnType<typeof summarizeMcpCatalog>["runtime"];
+  skills?: ReturnType<typeof summarizeSkillCatalog>["runtime"];
+} {
+  if (!runtime || typeof runtime.listMcpServers !== "function" || typeof runtime.listSkills !== "function") {
+    return {};
   }
-  if (status.totals.failed > 0) {
-    return "failed";
-  }
-  if (status.totals.retrying > 0) {
-    return "retrying";
-  }
-  if (status.totals.running > 0) {
-    return "running";
-  }
-  return "ready";
+  const mcpSettings = mcpSettingsSnapshot(runtime);
+  const skillSettings = skillSettingsSnapshot(runtime);
+  return {
+    mcp: summarizeMcpCatalog(runtime.listMcpServers(), mcpSettings).runtime,
+    skills: summarizeSkillCatalog(runtime.listSkills(), skillSettings).runtime
+  };
 }
 
 function footerPendingApprovalCount(
@@ -4239,20 +4815,45 @@ function sessionSourceKind(sourceJson: string | null | undefined): string | unde
 }
 
 function formatLspStatusReport(report: LspStatusReport): string {
+  const summary = lspStatusSummaryFromReport(report);
   return [
     "LSP",
     `workspace=${report.workspace}`,
     `generated=${report.generatedAt}`,
+    `health=${summary.health} providers=${summary.providers} ready=${summary.readyProviders} fallback=${summary.fallbackProviders} partial=${summary.partialProviders} unavailable=${summary.unavailableProviders} failed=${summary.failedProviders}`,
+    `semantic_graph=${summary.semanticGraphHealth}${summary.semanticEvidenceSources.length ? ` sources=${summary.semanticEvidenceSources.join(",")}` : ""}`,
+    summary.staleReasons.length ? `stale_reasons=${summary.staleReasons.join(",")}` : undefined,
+    summary.fallbackReasons.length ? `fallback_reasons=${summary.fallbackReasons.join(",")}` : undefined,
+    summary.nextActions.length ? `next=${summary.nextActions.join(" | ")}` : undefined,
     "",
     ...report.providers.map((provider) => [
       `${provider.providerId} [${provider.status}] detected=${provider.detected ? "yes" : "no"} available=${provider.available ? "yes" : "no"}`,
+      ...formatLspCapabilityLines(provider.capabilities),
       provider.command ? `command=${[provider.command, ...(provider.args ?? [])].join(" ")}` : undefined,
       provider.pid ? `pid=${provider.pid}` : undefined,
       provider.reason ? `reason=${provider.reason}` : undefined,
       provider.lastError ? `error=${provider.lastError}` : undefined,
       `log=${provider.logPath}`
     ].filter(Boolean).join("\n")).join("\n\n")
-  ].join("\n");
+  ].filter(Boolean).join("\n");
+}
+
+function formatLspCapabilityLines(capabilities: LspStatusReport["providers"][number]["capabilities"]): string[] {
+  if (!capabilities?.length) {
+    return [];
+  }
+  const modes = uniqueStrings(capabilities.map((capability) => capability.mode));
+  const fallbackReasons = uniqueStrings(capabilities.flatMap((capability) => capability.fallback_reason ? [capability.fallback_reason] : []));
+  const nextActions = uniqueStrings(capabilities.flatMap((capability) => capability.next_action ? [capability.next_action] : [])).slice(0, 2);
+  return [
+    `capabilities=${capabilities.filter((capability) => capability.available).length}/${capabilities.length} modes=${modes.join(",")}`,
+    fallbackReasons.length ? `fallback_reasons=${fallbackReasons.join(",")}` : undefined,
+    nextActions.length ? `next=${nextActions.join(" | ")}` : undefined
+  ].filter((line): line is string => Boolean(line));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function lspStatusReportSignature(report: LspStatusReport): string {
@@ -4266,7 +4867,14 @@ function lspStatusReportSignature(report: LspStatusReport): string {
       provider.exitCode ?? "-",
       provider.signal ?? "-",
       provider.lastError ?? "",
-      provider.reason ?? ""
+      provider.reason ?? "",
+      ...(provider.capabilities ?? []).map((capability) => [
+        capability.action,
+        capability.available ? "available" : "unavailable",
+        capability.mode,
+        capability.fallback_reason ?? "",
+        capability.next_action ?? ""
+      ].join("="))
     ].join(":"))
     .join("|");
 }
@@ -4323,6 +4931,30 @@ function safeWorkSnapshot(runtime: SwarmRuntime, sessionId: string): ReturnType<
   }
 }
 
+function safeWorkspaceWorkBoard(runtime: SwarmRuntime, limit: number): ReturnType<typeof buildWorkspaceWorkBoard> | undefined {
+  try {
+    return buildWorkspaceWorkBoard(runtime, { limit });
+  } catch {
+    return undefined;
+  }
+}
+
+function buildTuiSwarmSurface(runtime: SwarmRuntime, limit = 30): SwarmSurfaceProjection {
+  return buildSwarmSurfaceProjection({
+    runtime,
+    workBoard: safeWorkspaceWorkBoard(runtime, Math.min(limit, 12)),
+    limit
+  });
+}
+
+function safeSwarmSurface(runtime: SwarmRuntime, limit = 12): SwarmSurfaceProjection | undefined {
+  try {
+    return buildTuiSwarmSurface(runtime, limit);
+  } catch {
+    return undefined;
+  }
+}
+
 function leaseRowsForTarget(runtime: SwarmRuntime, target: string): WorkspaceLease[] {
   const byId = runtime.workspaceLeaseStore.get(target);
   if (byId) {
@@ -4367,6 +4999,7 @@ function formatSymphonyStatus(status: SymphonyStatus): string {
   return [
     status.workflow.ok ? `Workflow: ${status.workflow.workflow.path}` : `Workflow error: ${status.workflow.error.message}`,
     `Generated: ${status.generated_at}`,
+    `Live Control: status=${status.live_control.status} severity=${status.live_control.severity}${status.live_control.next_action ? ` next=${status.live_control.next_action}` : ""}`,
     "",
     "Totals",
     `sessions=${status.totals.sessions} running=${status.totals.running} completed=${status.totals.completed} failed=${status.totals.failed} cancelled=${status.totals.cancelled} retrying=${status.totals.retrying}`,
@@ -4374,17 +5007,17 @@ function formatSymphonyStatus(status: SymphonyStatus): string {
     "",
     "Running",
     ...(status.scheduler.running.length
-      ? status.scheduler.running.map((item) => `${item.session_id} [${item.status}] ${workItemLabel(item.work_item)} workspace=${item.workspace_path || "-"}`)
+      ? status.scheduler.running.map((item) => `${item.session_id} [${item.status}] live=${item.live_control.status}/${item.live_control.severity} ${workItemLabel(item.work_item)} workspace=${item.workspace_path || "-"}`)
       : ["(none)"]),
     "",
     "Retrying",
     ...(status.scheduler.retrying.length
-      ? status.scheduler.retrying.map((item) => `${workItemLabel(item.work_item)} attempt=${item.attempt} due=${item.due_at}${item.error ? ` error=${item.error}` : ""}`)
+      ? status.scheduler.retrying.map((item) => `${workItemLabel(item.work_item)} live=${item.live_control.status}/${item.live_control.severity} attempt=${item.attempt} due=${item.due_at}${item.error ? ` error=${item.error}` : ""}${item.live_control.next_action ? ` next=${item.live_control.next_action}` : ""}`)
       : ["(none)"]),
     "",
     "Recent Sessions",
     ...(status.sessions.length
-      ? status.sessions.map((session) => `${session.session_id} [${session.status}] ${workItemLabel(session.work_item)}${session.runner_attempt ? ` runner=${session.runner_attempt.status}` : ""}${session.next_retry_at ? ` retry=${session.next_retry_at}` : ""}`)
+      ? status.sessions.map((session) => `${session.session_id} [${session.status}] live=${session.live_control.status}/${session.live_control.severity} ${workItemLabel(session.work_item)}${session.runner_attempt ? ` runner=${session.runner_attempt.status}` : ""}${session.next_retry_at ? ` retry=${session.next_retry_at}` : ""}${session.live_control.next_action ? ` next=${session.live_control.next_action}` : ""}`)
       : ["(none)"])
   ].join("\n");
 }
@@ -4656,17 +5289,21 @@ function formatCapabilitySummary(capabilities: CapabilityDescriptor[], providers
 }
 
 function formatSkillsSummary(skills: SkillRecord[]): string {
-  const summary = summarizeSkillCatalog(skills);
+  const settings = defaultSkillSettingsSnapshot();
+  const summary = summarizeSkillCatalog(skills, settings);
   if (summary.totals.skills === 0) {
     return [
       "Skill summary",
+      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} evidence=${summary.runtime.evidence}` : undefined,
       "No skills discovered.",
-      "Use /skills all after adding project or user skills."
-    ].join("\n");
+      summary.runtime?.reason,
+      summary.runtime?.nextAction
+    ].filter(Boolean).join("\n");
   }
 
   return [
     "Skill summary",
+    summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} evidence=${summary.runtime.evidence}` : undefined,
     `${summary.totals.active} active skills, ${summary.totals.shadowed} shadowed.`,
     "",
     "Active skills",
@@ -4677,8 +5314,8 @@ function formatSkillsSummary(skills: SkillRecord[]): string {
       ? ["", "Diagnostics", ...summary.diagnostics.map((item) => `  ${item.name}: ${item.code ?? "diagnostic"} ${item.message}`)]
       : []),
     "",
-    "Use /skills all for the full catalog."
-  ].join("\n");
+    summary.runtime?.nextAction ?? "Use /skills all for the full catalog."
+  ].filter(Boolean).join("\n");
 }
 
 function formatSkills(skills: SkillRecord[]): string {
@@ -4848,17 +5485,21 @@ function formatPlugins(plugins: PluginRecord[]): string {
 }
 
 function formatMcpServersSummary(servers: McpServerRecord[]): string {
-  const summary = summarizeMcpCatalog(servers);
+  const settings = defaultMcpSettingsSnapshot(servers);
+  const summary = summarizeMcpCatalog(servers, settings);
   if (summary.totals.servers === 0) {
     return [
       "MCP summary",
+      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} evidence=${summary.runtime.evidence}` : undefined,
       "No MCP servers configured.",
-      "Use /mcp all after enabling MCP or adding a server."
-    ].join("\n");
+      summary.runtime?.reason,
+      summary.runtime?.nextAction
+    ].filter(Boolean).join("\n");
   }
 
   return [
     "MCP summary",
+    summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} evidence=${summary.runtime.evidence}` : undefined,
     `${summary.totals.servers} servers configured.`,
     `  connected: ${summary.totals.connected}`,
     `  pending: ${summary.totals.pending}`,
@@ -4874,8 +5515,26 @@ function formatMcpServersSummary(servers: McpServerRecord[]): string {
       ? ["", "Diagnostics", ...summary.diagnostics.map((item) => `  ${item.serverId}: ${item.code ?? "diagnostic"} ${item.message}`)]
       : []),
     "",
-    "Use /mcp all for the full catalog."
-  ].join("\n");
+    summary.runtime?.nextAction ?? "Use /mcp all for the full catalog."
+  ].filter(Boolean).join("\n");
+}
+
+function defaultSkillSettingsSnapshot(): ReturnType<typeof skillSettingsSnapshot> {
+  return {
+    enabled: true,
+    load_project_skills: "trustedWorkspaces",
+    configured_roots: [],
+    max_skills: 100
+  };
+}
+
+function defaultMcpSettingsSnapshot(servers: McpServerRecord[]): ReturnType<typeof mcpSettingsSnapshot> {
+  return {
+    enabled: servers.length > 0,
+    expose_gateway_server: false,
+    configured_servers: servers.length,
+    runtime_config: "unknown"
+  };
 }
 
 function formatActivatedSkill(skill: ActivatedSkill): string {
@@ -5091,7 +5750,7 @@ function parseBlackboardQuery(tokens: string[]): { type?: BlackboardEntry["type"
 function parseCapabilityCommandFilter(tokens: string[]): { kind?: string; providerId?: string; query?: string } {
   const filter: { kind?: string; providerId?: string; query?: string } = {};
   const query: string[] = [];
-  const knownKinds = new Set(["local_tool", "mcp_tool", "mcp_resource", "mcp_prompt", "skill", "slash_command", "agent_spec", "plugin"]);
+  const knownKinds = new Set(["local_tool", "lsp_tool", "mcp_tool", "mcp_resource", "mcp_prompt", "skill", "slash_command", "agent_spec", "plugin"]);
   for (const token of tokens) {
     if (token.startsWith("kind:")) {
       filter.kind = token.slice("kind:".length);
@@ -5107,6 +5766,92 @@ function parseCapabilityCommandFilter(tokens: string[]): { kind?: string; provid
     filter.query = query.join(" ");
   }
   return filter;
+}
+
+function parseProtocolTimelineFilter(tokens: string[]): ProtocolTimelineFilter {
+  const filter: ProtocolTimelineFilter = {};
+  const text: string[] = [];
+  for (const token of tokens) {
+    const separator = token.indexOf(":");
+    if (separator < 0) {
+      if (token.trim()) text.push(token.trim());
+      continue;
+    }
+    const key = token.slice(0, separator).toLowerCase();
+    const value = token.slice(separator + 1).trim();
+    if (!value) {
+      continue;
+    }
+    if (key === "actor" || key === "actor_id") {
+      filter.actorId = value;
+    } else if (key === "task" || key === "task_id") {
+      filter.taskId = value;
+    } else if (key === "corr" || key === "correlation" || key === "correlation_id") {
+      filter.correlationId = value;
+    } else if (key === "category" || key === "kind") {
+      if (isProtocolTimelineCategory(value)) {
+        filter.category = value;
+      } else {
+        text.push(token);
+      }
+    } else if (key === "text" || key === "q") {
+      text.push(value);
+    } else if (key === "limit") {
+      const limit = Number(value);
+      if (Number.isFinite(limit) && limit > 0) {
+        filter.limit = Math.floor(limit);
+      }
+    } else {
+      text.push(token);
+    }
+  }
+  if (text.length) {
+    filter.text = text.join(" ");
+  }
+  return filter;
+}
+
+function isProtocolTimelineCategory(value: string): value is ProtocolTimelineCategory {
+  return value === "envelope" ||
+    value === "ownership" ||
+    value === "blackboard" ||
+    value === "capability" ||
+    value === "cache";
+}
+
+function formatProtocolTimelineFilter(filter: ProtocolTimelineFilter): string {
+  return [
+    filter.actorId ? `actor=${filter.actorId}` : undefined,
+    filter.taskId ? `task=${filter.taskId}` : undefined,
+    filter.correlationId ? `correlation=${filter.correlationId}` : undefined,
+    filter.category ? `category=${filter.category}` : undefined,
+    filter.text ? `text=${filter.text}` : undefined,
+    filter.limit ? `limit=${filter.limit}` : undefined
+  ].filter(Boolean).join(" ");
+}
+
+function parseSwarmWorkbenchSelection(args: string[]): { mode: SwarmSurfaceMode; actorId?: string } {
+  const [rawMode, rawActor] = args;
+  const mode = rawMode?.trim().toLowerCase();
+  if (!mode || mode === "summary" || mode === "topology" || mode === "overview") {
+    return { mode: "summary" };
+  }
+  if (mode === "ownership" || mode === "owners" || mode === "leases") {
+    return { mode: "ownership" };
+  }
+  if (mode === "mailbox" || mode === "inbox" || mode === "outbox") {
+    if (!rawActor?.trim()) {
+      throw new Error("Usage: /swarm mailbox <actor_id>");
+    }
+    return { mode: "mailbox", actorId: rawActor.trim() };
+  }
+  if (mode === "agent" || mode === "actor" || mode === "participant") {
+    if (!rawActor?.trim()) {
+      throw new Error("Usage: /swarm agent <actor_id>");
+    }
+    return { mode: "agent", actorId: rawActor.trim() };
+  }
+  throw new Error("Usage: /swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]");
 }
 
 function parseKeyValueArgs(tokens: string[]): Record<string, string> {
@@ -5279,14 +6024,14 @@ function normalizeRunMode(value: string): RunMode {
   throw new Error("Usage: /mode auto|fast|swarm|chat");
 }
 
-function roleColor(role: ChatMessage["role"]): "cyan" | "green" | "gray" {
+function roleColor(role: ChatMessage["role"]): TuiResolvedColor {
   if (role === "assistant") {
-    return "green";
+    return visualTokenColor("text.primary");
   }
   if (role === "system") {
-    return "gray";
+    return visualTokenColor("text.muted");
   }
-  return "cyan";
+  return visualTokenColor("role.user");
 }
 
 function fieldLabel(field: OnboardField): string {
@@ -5322,15 +6067,15 @@ function mergeWorkerRecords(live: Map<string, WorkerRecord>, persisted: WorkerRe
     .slice(0, limit);
 }
 
-function workerStatusColor(status: WorkerRecord["status"]): string {
+function workerStatusColor(status: WorkerRecord["status"]): TuiColorRef {
   switch (status) {
-    case "pending": return "yellow";
-    case "running": return "cyan";
-    case "completed": return "green";
-    case "failed": return "red";
-    case "stopped": return "yellow";
+    case "pending": return "status.pending";
+    case "running": return "status.running";
+    case "completed": return "status.success";
+    case "failed": return "status.danger";
+    case "stopped": return "status.warning";
   }
-  return "white";
+  return "text.primary";
 }
 
 function shouldOfferAiDetail(detail: string): boolean {
@@ -5349,7 +6094,27 @@ function stripCommandDetailHint(value: string): string {
 function compactPreview(value: string | undefined): React.ReactElement | null {
   const preview = commandOutputPreview(value, 1, 240) ?? value;
   const line = firstLine(preview ?? "", 92);
-  return line ? <Text color="gray" wrap="truncate">{indentPreview(line, "  ")}</Text> : null;
+  return line ? <Text color={mutedColor()} wrap="truncate">{indentPreview(line, "  ")}</Text> : null;
+}
+
+function mutedColor(): TuiResolvedColor {
+  return visualTokenColor("text.muted");
+}
+
+function pendingColor(): TuiResolvedColor {
+  return visualTokenColor("status.pending");
+}
+
+function successColor(): TuiResolvedColor {
+  return visualTokenColor("status.success");
+}
+
+function dangerColor(): TuiResolvedColor {
+  return visualTokenColor("status.danger");
+}
+
+function selectedTextColor(): TuiResolvedColor {
+  return resolveTuiColor("black");
 }
 
 function shortId(value: string): string {

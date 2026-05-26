@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import test from "node:test";
 import type { RuntimeEvent } from "./events.js";
 import type { WorkProtocolRecord } from "./work-protocol.js";
@@ -9,7 +10,8 @@ import {
   gatewayPayloadRuntimeEvent,
   gatewayPayloadWorkRecord,
   gatewayTerminalStatus,
-  parseGatewayWatchProtocol
+  parseGatewayWatchProtocol,
+  consumeGatewaySessionStream
 } from "./gateway-event-stream.js";
 
 const AT = "2026-05-11T00:00:00.000Z";
@@ -146,3 +148,78 @@ test("gateway watch protocol parser defaults to work and rejects unknown protoco
   assert.equal(parseGatewayWatchProtocol("runtime"), "runtime");
   assert.throws(() => parseGatewayWatchProtocol("jsonl"), /Expected runtime or work/);
 });
+
+test("gateway stream consumer sends Last-Event-ID and tracks stream contract metadata", async () => {
+  let lastEventIdHeader: string | undefined;
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    lastEventIdHeader = Array.isArray(request.headers["last-event-id"])
+      ? request.headers["last-event-id"][0]
+      : request.headers["last-event-id"];
+    response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+    writeSse(response, 0, "ready", {
+      gateway_schema_version: "swarm.gateway.stream.v1",
+      protocol: "work",
+      replay_window: 3,
+      missed_events_hint: {
+        requested_last_event_id: 4,
+        oldest_replayable_event_id: 6,
+        replay_window: 3,
+        missed: true
+      }
+    });
+    writeSse(response, 6, "session", {
+      schema_version: "swarm.work.v1",
+      kind: "session",
+      at: AT,
+      session_id: "session-1",
+      status: "completed",
+      gateway_schema_version: "swarm.gateway.stream.v1",
+      sequence: 6,
+      last_event_id: 6,
+      replay_window: 3
+    });
+    response.end();
+  });
+  const started = await listen(server);
+  const abort = new AbortController();
+  const messages: Array<{ id?: string; sequence?: number; data: unknown }> = [];
+  try {
+    const summary = await consumeGatewaySessionStream({
+      gatewayUrl: started.url,
+      protocol: "work",
+      lastEventId: 4,
+      signal: abort.signal,
+      onMessage: (message) => messages.push(message)
+    });
+
+    assert.equal(lastEventIdHeader, "4");
+    assert.equal(summary.events, 1);
+    assert.equal(summary.sawTerminal, true);
+    assert.equal(summary.lastEventId, "6");
+    assert.equal(summary.replayWindow, 3);
+    assert.equal(summary.missedEventsHint?.missed, true);
+    assert.equal(messages[0]?.id, "6");
+    assert.equal(messages[0]?.sequence, 6);
+    assert.equal(gatewayPayloadWorkRecord("work", messages[0]?.data)?.kind, "session");
+  } finally {
+    abort.abort();
+    await closeServer(server);
+  }
+});
+
+function writeSse(response: ServerResponse, id: number, eventName: string, value: unknown): void {
+  response.write(`id: ${id}\n`);
+  response.write(`event: ${eventName}\n`);
+  response.write(`data: ${JSON.stringify(value)}\n\n`);
+}
+
+async function listen(server: ReturnType<typeof createServer>): Promise<{ url: string }> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+  return { url: `http://127.0.0.1:${address.port}` };
+}
+
+async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}

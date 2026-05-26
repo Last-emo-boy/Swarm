@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { SymphonyStatus } from "./status.js";
 import type { SwarmSession, WorkItem } from "../protocol/types.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import { RuntimeEvents } from "../runtime/events.js";
@@ -11,6 +12,7 @@ import { RunAttemptStore } from "../storage/run-attempt-store.js";
 import { SessionStore } from "../storage/session-store.js";
 import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
 import { createSymphonyPolicy } from "./kernel.js";
+import { createSymphonyActionFact, formatSymphonyActionStatus } from "./action-lifecycle.js";
 import { runSymphonyPreflight } from "./preflight.js";
 import { formatSymphonyCliStatus } from "./status-format.js";
 import { getSymphonyStatus } from "./status.js";
@@ -67,6 +69,11 @@ test("status summarizes Symphony sessions, capacity, and retry ordering from ker
       workItemKey(cancelledRetryLate)
     ]);
     assert.deepEqual(status.scheduler.retrying.map((retry) => retry.attempt), [1, 2]);
+    assert.equal(status.live_control.status, "retrying");
+    assert.equal(status.live_control.severity, "warning");
+    assert(status.live_control.next_action);
+    assert(status.scheduler.retrying.every((retry) => retry.live_control.status === "retrying"));
+    assert(status.sessions.some((session) => session.session_id === "sym_status_retry_early" && session.live_control.status === "retrying"));
     assert.equal(status.sessions.length, 5);
   } finally {
     fixture.close();
@@ -244,9 +251,10 @@ test("CLI Symphony status formatter covers success and workflow errors without p
     assert(formatted.lines.includes("Sessions: 2 running=1 completed=0 failed=1 cancelled=0 retrying=1"));
     assert(formatted.lines.includes("Capacity: 1/3"));
     assert(formatted.lines.includes("Retrying:"));
-    assert.match(formatted.lines.join("\n"), /WK-702: attempt=3 due=2026-05-11T11:00:00\.000Z error=retry later/);
+    assert.match(formatted.lines.join("\n"), /Live Control: status=retrying severity=warning/);
+    assert.match(formatted.lines.join("\n"), /WK-702: status=retrying severity=warning attempt=3 due=2026-05-11T11:00:00\.000Z error=retry later/);
     assert(formatted.lines.includes("Sessions:"));
-    assert.match(formatted.lines.join("\n"), /sym_cli_running \[running\] WK-701 runner=started/);
+    assert.match(formatted.lines.join("\n"), /sym_cli_running \[running\] live=running\/info WK-701 runner=started/);
 
     const missing = formatSymphonyCliStatus(getSymphonyStatus({
       runtime: fixture.runtime,
@@ -258,6 +266,171 @@ test("CLI Symphony status formatter covers success and workflow errors without p
   } finally {
     fixture.close();
   }
+});
+
+test("Symphony action policy summary and status formatting expose verdict, rollback, and audit fields", () => {
+  const applied = createSymphonyActionFact({
+    action_id: "action-cancel-1",
+    correlation_id: "corr-cancel-1",
+    action: "cancel",
+    status: "applied",
+    policy_verdict: "allowed",
+    risk_level: "low",
+    audit_id: "audit_cancel_1",
+    scope: ["session:session-123", "work_item:symphony:local:WK-101"],
+    target: {
+      session_id: "session-123",
+      work_item_key: "symphony:local:WK-101"
+    },
+    actor: { kind: "gateway", id: "gateway.symphony.operator" },
+    previous_status: "running",
+    next_status: "cancelled",
+    reason: "operator smoke",
+    message: "Symphony session session-123 cancelled.",
+    replay: [
+      { status: "requested", at: "2026-05-22T01:00:00.000Z", message: "operator smoke" },
+      { status: "accepted", at: "2026-05-22T01:00:01.000Z", message: "Target session session-123 resolved." },
+      { status: "applied", at: "2026-05-22T01:00:02.000Z", message: "Session status set to cancelled." }
+    ]
+  });
+  assert.equal(applied.policy_verdict, "allowed");
+  assert.equal(applied.risk_level, "low");
+  assert.equal(applied.audit_id, "audit_cancel_1");
+  assert.equal(applied.rollback_plan, "Restore session status to running.");
+
+  const denied = createSymphonyActionFact({
+    action_id: "action-pause-1",
+    correlation_id: "corr-pause-1",
+    action: "pause",
+    status: "rejected",
+    policy_verdict: "denied",
+    risk_level: "high",
+    audit_id: "audit_pause_1",
+    target: {
+      session_id: "session-456",
+      work_item_key: "symphony:local:WK-102"
+    },
+    actor: { kind: "gateway", id: "gateway.symphony.operator" },
+    previous_status: "cancelled",
+    reason: "operator smoke",
+    message: "Symphony session session-456 is already cancelled.",
+    replay: [
+      { status: "requested", at: "2026-05-22T01:00:00.000Z", message: "operator smoke" },
+      { status: "rejected", at: "2026-05-22T01:00:01.000Z", message: "already terminal" }
+    ]
+  });
+  assert.equal(denied.policy_verdict, "denied");
+  assert.equal(denied.not_rollbackable, "Symphony session session-456 is already cancelled.");
+  assert.equal(denied.rollback_plan, undefined);
+
+  const requiresConfirmation = createSymphonyActionFact({
+    action_id: "action-resume-1",
+    correlation_id: "corr-resume-1",
+    action: "resume",
+    status: "requested",
+    policy_verdict: "requires_confirmation",
+    risk_level: "medium",
+    audit_id: "audit_resume_1",
+    target: {
+      session_id: "session-789",
+      work_item_key: "symphony:local:WK-103"
+    },
+    actor: { kind: "gateway", id: "gateway.symphony.operator" },
+    reason: "operator smoke",
+    replay: [
+      { status: "requested", at: "2026-05-22T01:00:00.000Z", message: "operator smoke" }
+    ]
+  });
+  assert.match(formatSymphonyActionStatus(requiresConfirmation), /policy_verdict=requires_confirmation/);
+  assert.match(formatSymphonyActionStatus(requiresConfirmation), /risk_level=medium/);
+
+  const formatted = formatSymphonyCliStatus({
+    workflow: {
+      ok: true,
+      workflow: {
+        path: "WORKFLOW.md",
+        config: {},
+        prompt_template: "Implement"
+      }
+    },
+    generated_at: AT,
+    totals: {
+      sessions: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      retrying: 0
+    },
+    scheduler: {
+      claimed: [],
+      completed: [],
+      running: [],
+      retrying: [],
+      capacity: {
+        max_concurrent: 1,
+        running: 0,
+        available: 1
+      }
+    },
+    live_control: {
+      source: "symphony",
+      status: "running",
+      severity: "info",
+      summary: "ok"
+    },
+    latest_action: applied,
+    work_board: {
+      schema_version: "swarm.work_board.v1",
+      generated_at: AT,
+      scope: {
+        kind: "symphony"
+      },
+      summary: {
+        sessions: 0,
+        active_sessions: 0,
+        workers: 0,
+        active_workers: 0,
+        resumable_workers: 0,
+        tasks: 0,
+        claims: 0,
+        blocked: 0,
+        failed: 0,
+        resumable: 0,
+        changed_files: 0,
+        checks: 0,
+        artifacts: 0,
+        actions: 1
+      },
+      sessions: [],
+      work_items: [],
+      workers: [],
+      tasks: [],
+      claims: [],
+      blocked: [],
+      failed: [],
+      resumable: [],
+      changed_files: [],
+      checks: [],
+      artifacts: [],
+      recent_actions: [
+        {
+          action_id: applied.action_id,
+          action: applied.action,
+          status: applied.status,
+          correlation_id: applied.correlation_id,
+          target: applied.target,
+          recovery: applied.recovery
+        }
+      ],
+      next_actions: [],
+      filters: []
+    },
+    sessions: []
+  } as unknown as SymphonyStatus);
+  assert.match(formatted.lines.join("\n"), /Latest Action: action=cancel status=applied policy_verdict=allowed risk_level=low audit_id=audit_cancel_1/);
+  assert.match(formatted.lines.join("\n"), /Latest Action Policy: policy_verdict=allowed risk_level=low audit_id=audit_cancel_1 rollback_plan=Restore session status to running\./);
+  assert.match(formatted.lines.join("\n"), /scope=session:session-123,work_item:symphony:local:WK-101/);
 });
 
 type Fixture = {

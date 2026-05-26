@@ -9,6 +9,17 @@ export type MessageCursorState = {
   expandedKeys: Set<string>;
 };
 
+export type PriorityConversationMessageReason =
+  | "user"
+  | "approval"
+  | "failure"
+  | "cache"
+  | "lsp"
+  | "gateway"
+  | "recovery"
+  | "review"
+  | "result";
+
 export type MessageCursorAction =
   | { type: "previous" }
   | { type: "next" }
@@ -95,6 +106,56 @@ export function selectableMessageIndexes(messages: readonly ConversationMessage[
     .map(({ index }) => index);
 }
 
+export function priorityConversationMessageReason(
+  message: ConversationMessage
+): PriorityConversationMessageReason | undefined {
+  const text = conversationMessageSearchableText(message);
+  if (message.kind === "approval" || message.status === "pending") {
+    return "approval";
+  }
+  if (message.status === "error") {
+    return "failure";
+  }
+  if (/\b(cache_miss|cache miss|prefix_drift|prompt cache|cached_input_tokens)\b/i.test(text)) {
+    return "cache";
+  }
+  if (/\b(lsp|semantic fallback|fallback_reason|fallback_reasons|file\.grep\/file\.read)\b/i.test(text)) {
+    return "lsp";
+  }
+  if (/\b(gateway|symphony|live_control|operator action|not_supported)\b/i.test(text)) {
+    return "gateway";
+  }
+  if (/\brecovery\b|\bretry\b|next action/i.test(text)) {
+    return "recovery";
+  }
+  if (/\breview\b/i.test(text) && message.status === "warning") {
+    return "review";
+  }
+  if (
+    message.kind === "tool_result" ||
+    message.title === "Final status" ||
+    message.title === "Agent completed" ||
+    (message.kind === "progress" && message.status === "success")
+  ) {
+    return "result";
+  }
+  if (message.role === "user") {
+    return "user";
+  }
+  return undefined;
+}
+
+export function priorityConversationMessageIndexes(
+  messages: readonly ConversationMessage[]
+): Array<{ index: number; reason: PriorityConversationMessageReason }> {
+  return messages
+    .map((message, index) => {
+      const reason = priorityConversationMessageReason(message);
+      return reason ? { index, reason } : undefined;
+    })
+    .filter((item): item is { index: number; reason: PriorityConversationMessageReason } => item !== undefined);
+}
+
 function normalizeSelectedIndex(selectedIndex: number | undefined, candidates: number[]): number {
   if (selectedIndex !== undefined && candidates.includes(selectedIndex)) {
     return selectedIndex;
@@ -115,4 +176,16 @@ function clampMessageIndex(index: number, candidates: number[]): number {
   return candidates.reduce((closest, candidate) =>
     Math.abs(candidate - index) < Math.abs(closest - index) ? candidate : closest
   , candidates[0]!);
+}
+
+function conversationMessageSearchableText(message: ConversationMessage): string {
+  return [
+    message.role,
+    message.kind,
+    message.status,
+    message.title,
+    message.brief,
+    message.preview,
+    message.detail
+  ].filter(Boolean).join("\n");
 }

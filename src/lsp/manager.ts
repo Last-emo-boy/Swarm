@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { getSwarmPaths } from "../config/settings.js";
+import { lspCapabilityFactsForProvider, type LspCapabilityFact } from "./capabilities.js";
 
 export type LspProviderId = "typescript" | "python" | "rust" | "go";
 
@@ -37,6 +38,7 @@ export type LspProviderStatus = {
   detected: boolean;
   available: boolean;
   reason?: string;
+  capabilities?: LspCapabilityFact[];
 };
 
 export type LspStatusReport = {
@@ -345,7 +347,22 @@ export class LspManager {
         ? undefined
         : semanticFallback
           ? "Using in-process TypeScript semantic provider fallback."
-          : `Install ${provider.command} or set ${provider.envPrefix}_COMMAND.`
+          : `Install ${provider.command} or set ${provider.envPrefix}_COMMAND.`,
+      capabilities: lspCapabilityFactsForProvider({
+        providerId: provider.id,
+        status: command ? (external ? "external" : "stopped") : semanticFallback ? "ready" : "unavailable",
+        commandAvailable: Boolean(command),
+        semanticFallback,
+        detected: providerDetected(this.workspace, provider),
+        command: provider.command,
+        envPrefix: provider.envPrefix,
+        reason: command
+          ? undefined
+          : semanticFallback
+            ? "Using in-process TypeScript semantic provider fallback."
+            : `Install ${provider.command} or set ${provider.envPrefix}_COMMAND.`,
+        lastError: command || semanticFallback ? saved?.lastError : `Command not found: ${provider.command}`
+      })
     };
   }
 
@@ -483,7 +500,18 @@ class LspClient {
       metadataPath: this.options.metadataPath,
       lastError: this.lastError,
       detected: providerDetected(this.options.root, this.options.provider),
-      available: true
+      available: true,
+      capabilities: lspCapabilityFactsForProvider({
+        providerId: this.options.provider.id,
+        status: this.statusState,
+        commandAvailable: true,
+        semanticFallback: false,
+        detected: providerDetected(this.options.root, this.options.provider),
+        command: this.options.provider.command,
+        envPrefix: this.options.provider.envPrefix,
+        lastError: this.lastError,
+        serverCapabilities: this.capabilities
+      })
     };
   }
 

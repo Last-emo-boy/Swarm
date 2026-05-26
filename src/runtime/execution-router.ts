@@ -5,6 +5,7 @@ export type RunSandboxMode = "workspace-write" | "read-only";
 
 export type RunOptions = {
   mode?: RunMode;
+  tuiChatSessionId?: string;
   maxTurns?: number;
   maxToolCalls?: number;
   sandboxMode?: RunSandboxMode;

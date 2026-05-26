@@ -4,17 +4,33 @@ import type { WorkProtocolRecord, WorkTaskRecord } from "./work-protocol.js";
 
 const STREAM_POLL_MS = 500;
 const STREAM_IDLE_GRACE_MS = 400;
+export const SWARM_GATEWAY_STREAM_SCHEMA_VERSION = "swarm.gateway.stream.v1";
 
 export type GatewayWatchProtocol = "runtime" | "work";
 
 export type GatewayStreamMessage = {
+  id?: string;
   event: string;
   data: unknown;
+  sequence?: number;
+  lastEventId?: number;
+  replayWindow?: number;
+  missedEventsHint?: GatewayStreamReplayHint;
 };
 
 export type GatewaySessionStreamSummary = {
   events: number;
   sawTerminal: boolean;
+  lastEventId?: string;
+  replayWindow?: number;
+  missedEventsHint?: GatewayStreamReplayHint;
+};
+
+export type GatewayStreamReplayHint = {
+  requested_last_event_id?: number;
+  oldest_replayable_event_id?: number;
+  replay_window: number;
+  missed: boolean;
 };
 
 export class GatewayEventStreamError extends Error {
@@ -48,6 +64,7 @@ export async function consumeGatewaySessionStream(input: {
   gatewayUrl: string;
   sessionId?: string;
   protocol: GatewayWatchProtocol;
+  lastEventId?: string | number;
   signal: AbortSignal;
   shouldStop?: () => boolean;
   onMessage: (message: GatewayStreamMessage) => void;
@@ -56,7 +73,7 @@ export async function consumeGatewaySessionStream(input: {
   const url = input.sessionId
     ? `${input.gatewayUrl}/v1/sessions/${encodeURIComponent(input.sessionId)}/${path}`
     : `${input.gatewayUrl}/v1/${path}`;
-  const response = await openGatewayStream(url, input.gatewayUrl, input.sessionId, input.signal);
+  const response = await openGatewayStream(url, input.gatewayUrl, input.sessionId, input.signal, input.lastEventId);
   const reader = response.body?.getReader();
   if (!reader) {
     throw new GatewayEventStreamError("Swarm Gateway event stream is missing a readable body.", input.gatewayUrl, input.sessionId, response.status);
@@ -68,6 +85,9 @@ export async function consumeGatewaySessionStream(input: {
   let events = 0;
   let sawTerminal = false;
   let lastEventAt = Date.now();
+  let lastEventId: string | undefined;
+  let replayWindow: number | undefined;
+  let missedEventsHint: GatewayStreamReplayHint | undefined;
 
   while (true) {
     const outcome = await Promise.race([
@@ -110,7 +130,37 @@ export async function consumeGatewaySessionStream(input: {
     for (const block of blocks) {
       const message = parseSseMessage(block);
       if (!message || message.event === "ready") {
+        if (message?.event === "ready") {
+          const readyMeta = streamEnvelopeMeta(message.data);
+          if (readyMeta.replayWindow !== undefined) {
+            replayWindow = readyMeta.replayWindow;
+          }
+          if (readyMeta.missedEventsHint) {
+            missedEventsHint = readyMeta.missedEventsHint;
+          }
+          if (readyMeta.lastEventId !== undefined) {
+            lastEventId = String(readyMeta.lastEventId);
+          }
+        }
         continue;
+      }
+      const meta = streamEnvelopeMeta(message.data);
+      if (meta.sequence !== undefined) {
+        message.sequence = meta.sequence;
+        lastEventId = String(meta.sequence);
+      } else if (message.id) {
+        lastEventId = message.id;
+      }
+      if (meta.lastEventId !== undefined) {
+        message.lastEventId = meta.lastEventId;
+      }
+      if (meta.replayWindow !== undefined) {
+        message.replayWindow = meta.replayWindow;
+        replayWindow = meta.replayWindow;
+      }
+      if (meta.missedEventsHint) {
+        message.missedEventsHint = meta.missedEventsHint;
+        missedEventsHint = meta.missedEventsHint;
       }
       events += 1;
       lastEventAt = Date.now();
@@ -121,7 +171,7 @@ export async function consumeGatewaySessionStream(input: {
     }
   }
 
-  return { events, sawTerminal };
+  return { events, sawTerminal, lastEventId, replayWindow, missedEventsHint };
 }
 
 export function formatGatewayRuntimeWatchLine(eventName: string, payload: unknown): string | undefined {
@@ -265,11 +315,15 @@ async function openGatewayStream(
   url: string,
   gatewayUrl: string,
   sessionId: string | undefined,
-  signal: AbortSignal
+  signal: AbortSignal,
+  lastEventId?: string | number
 ): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(url, { signal });
+    response = await fetch(url, {
+      signal,
+      headers: lastEventId === undefined ? undefined : { "Last-Event-ID": String(lastEventId) }
+    });
   } catch (error) {
     if (signal.aborted) {
       throw error;
@@ -291,6 +345,7 @@ async function openGatewayStream(
 function parseSseMessage(block: string): GatewayStreamMessage | undefined {
   const lines = block.split(/\r?\n/).map((line) => line.trimEnd());
   const event = lines.find((line) => line.startsWith("event: "))?.slice(7).trim() || "message";
+  const id = lines.find((line) => line.startsWith("id: "))?.slice(4).trim();
   const data = lines
     .filter((line) => line.startsWith("data: "))
     .map((line) => line.slice(6))
@@ -299,6 +354,7 @@ function parseSseMessage(block: string): GatewayStreamMessage | undefined {
     return undefined;
   }
   return {
+    id: id || undefined,
     event,
     data: parseJsonValue(data)
   };
@@ -328,6 +384,29 @@ function gatewayErrorMessage(payload: unknown, status: number): string {
     ?? `Swarm Gateway request failed with HTTP ${status}.`;
 }
 
+function streamEnvelopeMeta(value: unknown): {
+  sequence?: number;
+  lastEventId?: number;
+  replayWindow?: number;
+  missedEventsHint?: GatewayStreamReplayHint;
+} {
+  const record = recordValue(value);
+  const hint = recordValue(record?.missed_events_hint);
+  return {
+    sequence: numberValue(record?.sequence),
+    lastEventId: numberValue(record?.last_event_id),
+    replayWindow: numberValue(record?.replay_window),
+    missedEventsHint: hint
+      ? {
+          requested_last_event_id: numberValue(hint.requested_last_event_id),
+          oldest_replayable_event_id: numberValue(hint.oldest_replayable_event_id),
+          replay_window: numberValue(hint.replay_window) ?? 0,
+          missed: hint.missed === true
+        }
+      : undefined
+  };
+}
+
 function runtimeEventValue(value: unknown): RuntimeEvent | undefined {
   return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string"
     ? value as RuntimeEvent
@@ -354,6 +433,17 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim()
     ? value.trim()
     : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function truncate(value: string, limit: number): string {

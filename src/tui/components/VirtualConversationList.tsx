@@ -1,7 +1,8 @@
 import React, { useRef } from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ui.js";
 import {
   normalizeConversationScrollOffset,
+  applyConversationDynamicLineState,
   conversationMessageFoldKey,
   renderConversationMessageLines,
   unseenTranscriptPill,
@@ -9,7 +10,12 @@ import {
   type ConversationLine,
   type ConversationMessage
 } from "../conversation-layout.js";
-import { toneColor } from "../theme.js";
+import {
+  priorityConversationMessageIndexes,
+  type PriorityConversationMessageReason
+} from "../message-folding.js";
+import { visualTokenColor } from "../theme.js";
+import { TranscriptRow } from "./TranscriptRow.js";
 
 export type ConversationRenderCacheStats = {
   hits: number;
@@ -20,6 +26,17 @@ export type ConversationRenderCache = {
   getMessageLines: (message: ConversationMessage, index: number, columns?: number, options?: ConversationRenderOptions) => ConversationLine[];
   stats: () => ConversationRenderCacheStats;
   resetStats: () => void;
+};
+
+export type VirtualConversationHandoffTarget = {
+  id: string;
+  debugName: string;
+  messageIndex: number;
+  reason: PriorityConversationMessageReason;
+  lineStart: number;
+  lineEnd: number;
+  visible: boolean;
+  mounted: boolean;
 };
 
 export type VirtualConversationLayout = {
@@ -34,6 +51,7 @@ export type VirtualConversationLayout = {
   visibleMessageCount: number;
   mountedRange: { start: number; end: number };
   visibleRange: { start: number; end: number };
+  inspectorHandoffTargets: VirtualConversationHandoffTarget[];
 };
 
 type VirtualConversationItem = {
@@ -91,6 +109,7 @@ export function buildVirtualConversationLayout(input: {
   expandedMessageKeys?: ReadonlySet<string>;
   selectedMessageIndex?: number;
   searchMatchMessageIndex?: number;
+  searchMatchQuery?: string;
   overscanRows?: number;
   cache?: ConversationRenderCache;
 }): VirtualConversationLayout {
@@ -102,7 +121,8 @@ export function buildVirtualConversationLayout(input: {
     newMessageCount: input.newMessageCount,
     expandedMessageKeys: input.expandedMessageKeys,
     selectedMessageIndex: input.selectedMessageIndex,
-    searchMatchMessageIndex: input.searchMatchMessageIndex
+    searchMatchMessageIndex: input.searchMatchMessageIndex,
+    searchMatchQuery: input.searchMatchQuery
   });
   const totalRows = items.at(-1)?.end ?? 0;
   const requestedOffset = normalizeConversationScrollOffset(totalRows, baseTranscriptLimit, input.scrollOffset ?? 0);
@@ -126,6 +146,12 @@ export function buildVirtualConversationLayout(input: {
   const bottomPill = scrollOffset > 0
     ? unseenTranscriptPill(input.newMessageCount ?? 0)
     : undefined;
+  const inspectorHandoffTargets = buildInspectorHandoffTargets({
+    messages: input.messages,
+    items,
+    visibleRange,
+    mountedRange
+  });
 
   return {
     transcript,
@@ -138,7 +164,8 @@ export function buildVirtualConversationLayout(input: {
     mountedMessageCount: countMessagesInRange(items, mountedRange.start, mountedRange.end),
     visibleMessageCount: countMessagesInRange(items, visibleRange.start, visibleRange.end),
     mountedRange,
-    visibleRange
+    visibleRange,
+    inspectorHandoffTargets
   };
 }
 
@@ -152,6 +179,7 @@ export function VirtualConversationList(input: {
   expandedMessageKeys?: ReadonlySet<string>;
   selectedMessageIndex?: number;
   searchMatchMessageIndex?: number;
+  searchMatchQuery?: string;
   tail?: React.ReactNode;
   tailRows?: number;
 }): React.ReactElement {
@@ -168,29 +196,19 @@ export function VirtualConversationList(input: {
     expandedMessageKeys: input.expandedMessageKeys,
     selectedMessageIndex: input.selectedMessageIndex,
     searchMatchMessageIndex: input.searchMatchMessageIndex,
+    searchMatchQuery: input.searchMatchQuery,
     cache: cacheRef.current
   });
 
   return (
     <Box flexDirection="column" width="100%" height={input.rows} overflow="hidden">
       {layout.stickyPrompt && (
-        <Text color="gray" wrap="truncate">
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
           ❯ {layout.stickyPrompt}
         </Text>
       )}
       <Box flexDirection="column" width="100%" flexGrow={1} flexShrink={1} overflow="hidden">
-        {layout.transcript.map((line) => (
-          <Text
-            key={line.key}
-            wrap="wrap"
-            color={lineColor(line)}
-            bold={line.bold}
-            dimColor={line.dim}
-            inverse={line.selected}
-          >
-            {line.text}
-          </Text>
-        ))}
+        {layout.transcript.map((line) => <TranscriptRow key={line.key} line={line} />)}
         <Box flexGrow={1} />
         {input.tail && (
           <Box width="100%" flexDirection="column" flexShrink={0}>
@@ -219,6 +237,7 @@ function buildVirtualConversationItems(
     expandedMessageKeys?: ReadonlySet<string>;
     selectedMessageIndex?: number;
     searchMatchMessageIndex?: number;
+    searchMatchQuery?: string;
   }
 ): VirtualConversationItem[] {
   const items: Omit<VirtualConversationItem, "start" | "end">[] = [];
@@ -237,7 +256,8 @@ function buildVirtualConversationItems(
     const lines = options.cache.getMessageLines(message, index, columns, {
       expandedMessageKeys: options.expandedMessageKeys,
       selectedMessageIndex: options.selectedMessageIndex,
-      searchMatchMessageIndex: options.searchMatchMessageIndex
+      searchMatchMessageIndex: options.searchMatchMessageIndex,
+      searchMatchQuery: options.searchMatchQuery
     });
     if (lines.length > 0) {
       items.push({
@@ -294,6 +314,45 @@ function countMessagesInRange(items: VirtualConversationItem[], start: number, e
   return count;
 }
 
+function buildInspectorHandoffTargets(input: {
+  messages: ConversationMessage[];
+  items: VirtualConversationItem[];
+  visibleRange: { start: number; end: number };
+  mountedRange: { start: number; end: number };
+}): VirtualConversationHandoffTarget[] {
+  const itemByMessage = new Map<number, VirtualConversationItem>();
+  for (const item of input.items) {
+    if (item.messageIndex !== undefined) {
+      itemByMessage.set(item.messageIndex, item);
+    }
+  }
+  return priorityConversationMessageIndexes(input.messages)
+    .map(({ index, reason }) => {
+      const item = itemByMessage.get(index);
+      if (!item) {
+        return undefined;
+      }
+      return {
+        id: `message:${index}:${reason}`,
+        debugName: `message:${index}:${reason}`,
+        messageIndex: index,
+        reason,
+        lineStart: item.start,
+        lineEnd: item.end,
+        visible: rangesOverlap(item, input.visibleRange),
+        mounted: rangesOverlap(item, input.mountedRange)
+      };
+    })
+    .filter((target): target is VirtualConversationHandoffTarget => target !== undefined);
+}
+
+function rangesOverlap(
+  first: { start: number; end: number },
+  second: { start: number; end: number }
+): boolean {
+  return first.end > second.start && first.start < second.end;
+}
+
 function stickyPromptForVirtualWindow(
   messages: ConversationMessage[],
   items: VirtualConversationItem[],
@@ -343,10 +402,7 @@ function remapMessageLines(lines: ConversationLine[], messageIndex: number): Con
 }
 
 function applyDynamicLineState(lines: ConversationLine[], messageIndex: number, options: ConversationRenderOptions): ConversationLine[] {
-  if (options.selectedMessageIndex !== messageIndex && options.searchMatchMessageIndex !== messageIndex) {
-    return lines;
-  }
-  return lines.map((line) => ({ ...line, selected: true }));
+  return applyConversationDynamicLineState(lines, messageIndex, options);
 }
 
 function unseenDividerLine(unseenStartIndex: number, newMessageCount: number): ConversationLine {
@@ -363,33 +419,4 @@ function unseenDividerLine(unseenStartIndex: number, newMessageCount: number): C
 function compactStickyPrompt(value: string): string {
   const singleLine = value.replace(/\s+/gu, " ").trim();
   return singleLine.length > 160 ? `${singleLine.slice(0, 157).trimEnd()}...` : singleLine;
-}
-
-function roleColor(role: ConversationMessage["role"]): "cyan" | "gray" | "white" {
-  if (role === "assistant") {
-    return "white";
-  }
-  if (role === "system") {
-    return "gray";
-  }
-  return "cyan";
-}
-
-function lineColor(line: ConversationLine): "cyan" | "green" | "gray" | "white" | "yellow" | "red" | "magenta" {
-  if (line.tone) {
-    return toneColor(line.tone);
-  }
-  if (line.kind === "heading") {
-    return "cyan";
-  }
-  if (line.kind === "code" || line.kind === "quote" || line.kind === "divider") {
-    return "gray";
-  }
-  if (line.kind === "table") {
-    return line.dim ? "gray" : "white";
-  }
-  if (line.kind === "list") {
-    return line.role === "assistant" ? "white" : roleColor(line.role);
-  }
-  return roleColor(line.role);
 }

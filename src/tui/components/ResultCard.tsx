@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ui.js";
 import type { ResultCard as ResultCardData } from "../../runtime/result-card.js";
 import { formatPromptCacheInline } from "../../runtime/prompt-cache-status.js";
 import { formatRecoveryAdviceInline } from "../../runtime/recovery.js";
@@ -10,19 +10,23 @@ import {
   resultSectionToken,
   routeBadge,
   sectionLabel,
-  statusBadge,
   statusTone,
   toneColor,
+  visualTokenColor,
   type ResultSectionKind,
   type TuiTone
 } from "../theme.js";
+import type { TuiDensity } from "../conversation-layout.js";
+import { SemanticTextLine, semanticToolLineSpans, type SemanticTextSpan } from "./SemanticTextLine.js";
+import { StatusIcon, statusIconText } from "./StatusIcon.js";
+import { toolResponseLineSpans } from "./ToolResponseSurface.js";
 
-export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; detailHint?: string }): React.ReactElement {
+export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; detailHint?: string; density?: TuiDensity }): React.ReactElement {
   if (!props.card) {
     return (
       <Box flexDirection="column" width="100%">
-        <Text color="cyan" bold>{sectionLabel("Result")}</Text>
-        <Text color="gray">{props.emptyLabel ?? "not finished"}</Text>
+        <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Result")}</Text>
+        <Text color={visualTokenColor("text.muted")}>{props.emptyLabel ?? "not finished"}</Text>
       </Box>
     );
   }
@@ -37,32 +41,34 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
     ...card.risks.filter((risk) => risk.level !== "high")
   ].slice(0, 2);
   const visibleRecovery = (card.recovery ?? []).slice(0, 2);
+  const density = props.density ?? "default";
+  const visibleArtifacts = card.artifacts.slice(0, density === "compact" ? 1 : 2);
   return (
     <Box flexDirection="column" width="100%">
-      <Text color="cyan" bold wrap="truncate">{sectionLabel("Result")}</Text>
+      <Text color={visualTokenColor("text.primary")} bold wrap="truncate">{sectionLabel("Result")}</Text>
       <Text wrap="truncate">
-        <Text color="gray">{compactValue(card.sessionId, 18)}</Text>
-        <Text color="gray"> </Text>
-        <Text color={toneColor(statusTone(card.status))}>{statusBadge(card.status)}</Text>
-        <Text color="gray"> </Text>
-        <Text color="cyan">{routeBadge(card.route)}</Text>
+        <Text color={visualTokenColor("text.muted")}>{compactValue(card.sessionId, 18)}</Text>
+        <Text color={visualTokenColor("text.muted")}> </Text>
+        <StatusIcon status={card.status} label="badge" />
+        <Text color={visualTokenColor("text.muted")}> </Text>
+        <Text color={visualTokenColor("text.primary")}>{routeBadge(card.route)}</Text>
       </Text>
-      <SectionLine section="summary" value={card.summary} />
+      <SectionLine section="summary" value={density === "compact" ? compactValue(card.summary, 80) : card.summary} />
       <SectionLine
         section="changed"
-        value={card.changedFiles.length ? card.changedFiles.slice(0, 3).map((file) => compactValue(file, 44)).join(", ") : "none"}
+        value={card.changedFiles.length ? card.changedFiles.slice(0, density === "compact" ? 2 : 3).map((file) => compactValue(file, 44)).join(", ") : "none"}
         meta={card.changedFiles.length > 3 ? `+${card.changedFiles.length - 3}` : undefined}
       />
       <SectionLine
         section="checks"
         tone={card.checks.some((check) => check.status === "failed") ? "danger" : card.checks.length ? "success" : "muted"}
-        value={visibleChecks.length ? visibleChecks.map((check) => `${compactValue(check.command, 36)} ${statusBadge(check.status)}`).join(", ") : "none"}
+        value={visibleChecks.length ? visibleChecks.slice(0, density === "compact" ? 2 : visibleChecks.length).map((check) => `${compactValue(check.command, 36)} ${statusIconText(check.status, "badge")}`).join(", ") : "none"}
         meta={card.checks.length > visibleChecks.length ? `+${card.checks.length - visibleChecks.length}` : undefined}
       />
       <SectionLine
         section="review"
         tone={checkStatusTone(card.review.status)}
-        value={`${statusBadge(card.review.status)} ${compactValue(card.review.summary, 96)}`}
+        value={`${statusIconText(card.review.status, "badge")} ${compactValue(card.review.summary, 96)}`}
       />
       {visibleRisks.length > 0 && (
         <SectionLine
@@ -80,8 +86,31 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
           meta={(card.recovery?.length ?? 0) > visibleRecovery.length ? `+${(card.recovery?.length ?? 0) - visibleRecovery.length}` : undefined}
         />
       )}
+      {visibleArtifacts.length > 0 && (
+        <React.Fragment>
+          <SectionLine
+            section="artifacts"
+            value={`${visibleArtifacts.length} saved`}
+            meta={card.artifacts.length > visibleArtifacts.length ? `+${card.artifacts.length - visibleArtifacts.length}` : undefined}
+          />
+          {visibleArtifacts.map((artifact, index) => (
+            <SemanticTextLine
+              key={`artifact:${index}:${artifact}`}
+              wrap="wrap"
+              spans={[
+                { text: "  ", color: "text.muted" },
+                ...toolResponseLineSpans(`artifact=${compactValue(artifact, 96)}`, {
+                  defaultColor: "text.muted",
+                  valueColor: "text.muted",
+                  fallbackLabel: "artifact"
+                })
+              ]}
+            />
+          ))}
+        </React.Fragment>
+      )}
       {card.next.length > 0 && (
-        <SectionLine section="next" value={card.next.slice(0, 2).join(" · ")} />
+        <SectionLine section="next" value={card.next.slice(0, density === "compact" ? 1 : 2).join(" · ")} />
       )}
       {card.checkpoint && (
         <SectionLine
@@ -99,7 +128,7 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
         />
       )}
       {props.detailHint ? (
-        <Text color="gray" wrap="truncate">
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
           {props.detailHint}
         </Text>
       ) : null}
@@ -115,12 +144,42 @@ function SectionLine(props: {
 }): React.ReactElement {
   const token = resultSectionToken(props.section);
   const tone = props.tone ?? token.tone;
+  const valueSpans = resultValueSpans(props.value);
   return (
-    <Text wrap="wrap">
-      <Text color={toneColor(tone)}>{token.label}</Text>
-      <Text color="gray"> </Text>
-      <Text color={toneColor(tone)}>{props.value}</Text>
-      {props.meta ? <Text color="gray"> {props.meta}</Text> : null}
-    </Text>
+    <SemanticTextLine
+      wrap="wrap"
+      spans={[
+        { text: token.label, color: tone, bold: true },
+        { text: " ", color: "text.muted" },
+        ...valueSpans,
+        ...(props.meta ? [{ text: ` ${props.meta}`, color: "text.muted" } satisfies SemanticTextSpan] : [])
+      ]}
+    />
   );
+}
+
+function resultValueSpans(value: string): SemanticTextSpan[] {
+  const parts = value.split(/(\[(?:OK|ERR|WARN|ASK|RUN|--)\])/gu);
+  return parts.flatMap((part) => {
+    if (!part) {
+      return [];
+    }
+    const badgeColor = badgeTone(part);
+    if (badgeColor) {
+      return [{ text: part, color: badgeColor, bold: true }];
+    }
+    return semanticToolLineSpans(part, { defaultColor: "text.primary" });
+  });
+}
+
+function badgeTone(value: string): SemanticTextSpan["color"] | undefined {
+  switch (value) {
+    case "[OK]": return "status.success";
+    case "[ERR]": return "status.danger";
+    case "[WARN]": return "status.warning";
+    case "[ASK]": return "status.pending";
+    case "[RUN]": return "status.running";
+    case "[--]": return "text.muted";
+    default: return undefined;
+  }
 }

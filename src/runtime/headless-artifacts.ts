@@ -5,9 +5,27 @@ import type { RuntimeEvent, SessionOutcome } from "./events.js";
 import type { ExecutionResult } from "./orchestrator.js";
 import type { ResultCard } from "./result-card.js";
 import type { ProviderUsageReport } from "../providers/openai-provider.js";
-import { promptCacheTrendFromResultCardCache, promptCacheTrendFromUsage, type PromptCacheTrend } from "./prompt-cache-status.js";
+import {
+  buildPromptCacheRoi,
+  swarmCacheImpactFromUsage,
+  evaluatePromptCacheSlo,
+  promptCacheTrendFromResultCardCache,
+  promptCacheTrendFromUsage,
+  type CacheFact,
+  type CacheMissReason,
+  type CacheRoi,
+  type SwarmCacheContextKind,
+  type SwarmCacheImpactDimension,
+  type SwarmContextCacheImpact,
+  type SwarmContextCacheImpactSegment,
+  type PromptCacheSloEvaluation,
+  type PromptCacheTrend
+} from "./prompt-cache-status.js";
+import { redactSensitive } from "./recovery.js";
 import { buildWorkRecordFromRuntimeEvent, buildWorkRunRecord, type WorkProtocolRecord } from "./work-protocol.js";
 import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-sandbox.js";
+import { buildProtocolDebugTimeline, type ProtocolTimelineSummary } from "./protocol-debug-timeline.js";
+import type { ProtocolReplayDiff } from "./protocol-replay.js";
 
 const SWARM_VERSION = loadSwarmVersion();
 
@@ -56,6 +74,89 @@ export type HeadlessRunArtifacts = {
   report: HeadlessRunReport;
   telemetry: HeadlessTelemetry;
   trajectory: HeadlessTrajectory;
+  artifactIndex: HeadlessArtifactIndex;
+};
+
+export type HeadlessArtifactKind =
+  | "report"
+  | "telemetry"
+  | "trajectory"
+  | "result"
+  | "debug_log"
+  | "eval_summary"
+  | "stdout"
+  | "stderr"
+  | "diff_summary";
+
+export type HeadlessArtifactIndex = {
+  schema_version: "swarm.artifact-index.v1";
+  session_id?: string;
+  workspace: string;
+  artifacts: Array<{
+    kind: HeadlessArtifactKind;
+    path: string;
+  }>;
+};
+
+export type ParityReleaseGateDimensionId =
+  | "interactive_trust"
+  | "coding_quality"
+  | "cache_yield"
+  | "provider_setup"
+  | "control_plane"
+  | "semantic_tooling"
+  | "artifact_debug_loop";
+
+export type ParityReleaseGateStatus = "pass" | "fail";
+export type ParityReleaseGateDimensionStatus = "pass" | "warning" | "fail";
+
+export type ParityReleaseGateDimension = {
+  id: ParityReleaseGateDimensionId;
+  label: string;
+  status: ParityReleaseGateDimensionStatus;
+  score: number;
+  reason: string;
+  evidence: string[];
+  gaps: string[];
+  next_task?: string;
+};
+
+export type ParityReleaseGateRedLine = {
+  id: string;
+  status: ParityReleaseGateStatus;
+  reason: string;
+  evidence: string[];
+  next_task?: string;
+};
+
+export type ParityReleaseGateTriageItem = {
+  failed_dimension: ParityReleaseGateDimensionId | string;
+  status: ParityReleaseGateDimensionStatus | ParityReleaseGateStatus;
+  evidence_links: string[];
+  suspected_owner_files: string[];
+  next_task_suggestion: string;
+};
+
+export type ParityReleaseGateSummary = {
+  schema_version: "swarm.parity_release_gate.v1";
+  profile: "offline_quick" | "live_provider";
+  compared_to: "Claude Code";
+  status: ParityReleaseGateStatus;
+  summary: string;
+  pass_reasons: string[];
+  fail_reasons: string[];
+  near_claude_code: string[];
+  gaps: string[];
+  dimensions: ParityReleaseGateDimension[];
+  red_lines: ParityReleaseGateRedLine[];
+  triage_queue: ParityReleaseGateTriageItem[];
+  dogfood: {
+    covered: string[];
+    artifact_kinds: string[];
+    evidence: string[];
+  };
+  commands: string[];
+  next_task?: string;
 };
 
 export type HeadlessStreamRecord =
@@ -137,11 +238,18 @@ export type HeadlessRunReport = {
     result_card?: ResultCard;
   };
   telemetry: HeadlessTelemetry;
+  protocol_timeline?: ProtocolTimelineSummary;
+  protocol_replay_diff?: ProtocolReplayDiff;
   artifacts: {
     report_path?: string;
     telemetry_path?: string;
     trajectory_path?: string;
+    stdout_path?: string;
+    stderr_path?: string;
+    diff_summary_path?: string;
   };
+  artifact_index?: HeadlessArtifactIndex;
+  release_gate?: ParityReleaseGateSummary;
   error?: {
     message: string;
   };
@@ -202,7 +310,10 @@ export type HeadlessTelemetry = {
     cache_write_rate?: number;
     cacheable_prefix_estimate: number;
     prompt_cache_diagnostics: Record<string, number>;
+    cache_roi?: HeadlessPromptCacheRoi;
+    cache_impact?: HeadlessPromptCacheImpact;
     cache_trend: HeadlessPromptCacheTrend;
+    cache_slo: HeadlessPromptCacheSlo;
   };
   outcome?: SessionOutcome;
   final?: {
@@ -214,6 +325,8 @@ export type HeadlessTelemetry = {
     final_summary?: string;
     artifact_path?: string;
   };
+  protocol_replay_diff?: ProtocolReplayDiff;
+  release_gate?: ParityReleaseGateSummary;
   error?: {
     message: string;
   };
@@ -230,7 +343,115 @@ export type HeadlessPromptCacheTrend = {
   unknown_calls: number;
   hit_rate?: number;
   write_rate?: number;
+  cached_input_tokens: number;
+  total_input_with_cache_tokens: number;
+  cache_creation_input_tokens: number;
+  uncached_input_tokens: number;
+  cacheable_prefix_tokens_estimate: number;
+  estimated_savings_tokens: number;
+  prefix_identities: string[];
   changed: string[];
+  changed_sections: string[];
+  miss_reasons: Record<string, number>;
+  normalized_miss_reasons: Record<CacheMissReason, number>;
+  facts: HeadlessPromptCacheFact[];
+};
+
+export type HeadlessPromptCacheRoi = {
+  schema_version: CacheRoi["schema_version"];
+  source: CacheRoi["source"];
+  hit_tokens: number;
+  miss_tokens: number;
+  saved_tokens: number;
+  estimated_saved_cost?: number;
+  estimated_saved_cost_currency?: string;
+  cost_source: CacheRoi["cost_source"];
+  stable_prefix_ratio?: number;
+  miss_reasons: Record<CacheMissReason, number>;
+  policy_recommendations: string[];
+};
+
+export type HeadlessPromptCacheImpact = {
+  schema_version: SwarmContextCacheImpact["schema_version"];
+  stable_prefix_hash?: string;
+  stable_prefix_tokens: number;
+  dynamic_hash?: string;
+  dynamic_tokens: number;
+  tool_schema_hash?: string;
+  mailbox_hash?: string;
+  actor_hashes: Record<string, string>;
+  context_hashes: Record<string, string>;
+  changed_dimensions: SwarmCacheImpactDimension[];
+  reasons: string[];
+  recommendations: string[];
+  retained_context: string[];
+  dropped_context: string[];
+  protected_context_retained: string[];
+  stable_segments: HeadlessPromptCacheImpactSegment[];
+  dynamic_segments: HeadlessPromptCacheImpactSegment[];
+};
+
+export type HeadlessPromptCacheImpactSegment = {
+  segment_id: string;
+  kind: SwarmCacheContextKind;
+  phase: SwarmContextCacheImpactSegment["phase"];
+  content_hash: string;
+  tokens: number;
+  retained: boolean;
+  protected: boolean;
+  changed: boolean;
+  actor_id?: string;
+  reason?: string;
+};
+
+export type HeadlessPromptCacheFact = {
+  provider_id?: string;
+  model?: string;
+  purpose?: string;
+  cache_mode?: string;
+  status: string;
+  outcome: CacheFact["outcome"];
+  hit_tokens: number;
+  miss_tokens: number;
+  write_tokens: number;
+  cacheable_tokens: number;
+  cacheable_prefix_tokens_estimate: number;
+  minimum_cacheable_tokens?: number;
+  hit_rate?: number;
+  write_rate?: number;
+  estimated_savings_tokens: number;
+  prefix_identity?: string;
+  miss_reason?: string;
+  normalized_miss_reason?: CacheMissReason;
+  changed: string[];
+  changed_sections: string[];
+  reason?: string;
+  recommendation?: string;
+};
+
+export type HeadlessPromptCacheSlo = {
+  status: PromptCacheSloEvaluation["status"];
+  state: PromptCacheSloEvaluation["state"];
+  source: PromptCacheSloEvaluation["source"];
+  summary: string;
+  failures: string[];
+  metrics: {
+    calls: number;
+    hit_tokens: number;
+    cacheable_tokens: number;
+    write_tokens: number;
+    hit_rate?: number;
+    changed_prefix_misses: number;
+    fallback_calls: number;
+    provider_usage_missing_calls: number;
+    estimated_savings_tokens: number;
+    unexplained_misses: number;
+    unexplained_miss_rate?: number;
+    min_cacheable_prefix_tokens?: number;
+    prefix_identities: string[];
+    normalized_miss_reasons: Record<CacheMissReason, number>;
+    miss_reasons: Record<string, number>;
+  };
 };
 
 export type HeadlessTrajectory = {
@@ -312,9 +533,30 @@ export function buildHeadlessRunArtifacts(input: {
   reportPath?: string;
   telemetryPath?: string;
   trajectoryPath?: string;
+  debugLogPath?: string;
+  evalSummaryPath?: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+  diffSummaryPath?: string;
+  protocolReplayDiff?: ProtocolReplayDiff;
+  releaseGate?: ParityReleaseGateSummary;
 }): HeadlessRunArtifacts {
   const telemetry = buildHeadlessTelemetry(input);
+  const protocolTimeline = buildProtocolDebugTimeline({ capturedEvents: input.capturedEvents, limit: 50 });
   const trajectory = buildHeadlessTrajectory(input, telemetry);
+  const artifactIndex = buildHeadlessArtifactIndex({
+    sessionId: input.result?.session_id ?? extractSessionId(input.capturedEvents),
+    workspace: input.workspace,
+    reportPath: input.reportPath,
+    telemetryPath: input.telemetryPath,
+    trajectoryPath: input.trajectoryPath,
+    resultArtifactPath: input.result?.artifact_path,
+    debugLogPath: input.debugLogPath,
+    evalSummaryPath: input.evalSummaryPath,
+    stdoutPath: input.stdoutPath,
+    stderrPath: input.stderrPath,
+    diffSummaryPath: input.diffSummaryPath
+  });
   const report: HeadlessRunReport = {
     schema_version: "swarm.headless.v1",
     swarm_version: SWARM_VERSION,
@@ -338,11 +580,18 @@ export function buildHeadlessRunArtifacts(input: {
     status: input.result?.status ?? (input.error ? "failed" : "completed"),
     session_id: input.result?.session_id ?? extractSessionId(input.capturedEvents),
     telemetry,
+    protocol_timeline: protocolTimeline,
+    protocol_replay_diff: input.protocolReplayDiff,
     artifacts: {
       report_path: input.reportPath,
       telemetry_path: input.telemetryPath,
-      trajectory_path: input.trajectoryPath
-    }
+      trajectory_path: input.trajectoryPath,
+      stdout_path: input.stdoutPath,
+      stderr_path: input.stderrPath,
+      diff_summary_path: input.diffSummaryPath
+    },
+    artifact_index: artifactIndex.artifacts.length ? artifactIndex : undefined,
+    release_gate: input.releaseGate
   };
 
   if (input.result) {
@@ -357,7 +606,71 @@ export function buildHeadlessRunArtifacts(input: {
     report.error = { message: input.error.message };
   }
 
-  return { report, telemetry, trajectory };
+  return { report, telemetry, trajectory, artifactIndex };
+}
+
+export function buildHeadlessArtifactIndex(input: {
+  sessionId?: string;
+  workspace: string;
+  reportPath?: string;
+  telemetryPath?: string;
+  trajectoryPath?: string;
+  resultArtifactPath?: string;
+  debugLogPath?: string;
+  evalSummaryPath?: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+  diffSummaryPath?: string;
+}): HeadlessArtifactIndex {
+  return {
+    schema_version: "swarm.artifact-index.v1",
+    session_id: input.sessionId,
+    workspace: normalizeArtifactPath(input.workspace),
+    artifacts: uniqueArtifactEntries([
+      artifactEntry("report", input.reportPath),
+      artifactEntry("telemetry", input.telemetryPath),
+      artifactEntry("trajectory", input.trajectoryPath),
+      artifactEntry("result", input.resultArtifactPath),
+      artifactEntry("debug_log", input.debugLogPath),
+      artifactEntry("eval_summary", input.evalSummaryPath),
+      artifactEntry("stdout", input.stdoutPath),
+      artifactEntry("stderr", input.stderrPath),
+      artifactEntry("diff_summary", input.diffSummaryPath)
+    ])
+  };
+}
+
+function artifactEntry(kind: HeadlessArtifactKind, path: string | undefined): HeadlessArtifactIndex["artifacts"][number] | undefined {
+  if (!path) {
+    return undefined;
+  }
+  return {
+    kind,
+    path: normalizeArtifactPath(path)
+  };
+}
+
+function uniqueArtifactEntries(
+  entries: Array<HeadlessArtifactIndex["artifacts"][number] | undefined>
+): HeadlessArtifactIndex["artifacts"] {
+  const seen = new Set<string>();
+  const output: HeadlessArtifactIndex["artifacts"] = [];
+  for (const entry of entries) {
+    if (!entry?.path) {
+      continue;
+    }
+    const key = `${entry.kind}\u0000${entry.path}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(entry);
+  }
+  return output;
+}
+
+function normalizeArtifactPath(path: string): string {
+  return redactSensitive(path).replace(/\\/g, "/");
 }
 
 export function buildHeadlessStreamRecord(
@@ -468,6 +781,8 @@ function buildHeadlessTelemetry(input: {
   capturedEvents: CapturedRuntimeEvent[];
   result?: ExecutionResult;
   error?: Error;
+  protocolReplayDiff?: ProtocolReplayDiff;
+  releaseGate?: ParityReleaseGateSummary;
 }): HeadlessTelemetry {
   const eventCounts: Record<string, number> = {};
   const providerModels = new Set<string>();
@@ -562,6 +877,9 @@ function buildHeadlessTelemetry(input: {
   const cacheTrend = providerUsages.length > 0
     ? promptCacheTrendFromUsage(providerUsages)
     : promptCacheTrendFromResultCardCache(input.result?.result_card?.cache);
+  const cacheSlo = evaluatePromptCacheSlo(cacheTrend);
+  const cacheRoi = buildPromptCacheRoi(cacheTrend);
+  const cacheImpact = swarmCacheImpactFromUsage(providerUsages, input.result?.result_card?.cache);
 
   const outcome = input.result?.outcome;
   const final = input.result ? {
@@ -618,10 +936,15 @@ function buildHeadlessTelemetry(input: {
         : undefined,
       cacheable_prefix_estimate: usageTotals.cacheablePrefixEstimate,
       prompt_cache_diagnostics: promptCacheDiagnostics,
-      cache_trend: headlessPromptCacheTrend(cacheTrend)
+      cache_roi: headlessPromptCacheRoi(cacheRoi),
+      cache_impact: headlessPromptCacheImpact(cacheImpact),
+      cache_trend: headlessPromptCacheTrend(cacheTrend),
+      cache_slo: headlessPromptCacheSlo(cacheSlo)
     },
     outcome: input.result?.outcome,
     final,
+    protocol_replay_diff: input.protocolReplayDiff,
+    release_gate: input.releaseGate,
     error: input.error ? { message: input.error.message } : undefined
   };
 }
@@ -638,7 +961,128 @@ function headlessPromptCacheTrend(trend: PromptCacheTrend): HeadlessPromptCacheT
     unknown_calls: trend.unknownCalls,
     hit_rate: trend.hitRate,
     write_rate: trend.writeRate,
-    changed: trend.changed
+    cached_input_tokens: trend.cachedInputTokens,
+    total_input_with_cache_tokens: trend.totalInputWithCacheTokens,
+    cache_creation_input_tokens: trend.cacheCreationInputTokens,
+    uncached_input_tokens: trend.uncachedInputTokens,
+    cacheable_prefix_tokens_estimate: trend.cacheablePrefixTokensEstimate,
+    estimated_savings_tokens: trend.estimatedSavingsTokens,
+    prefix_identities: trend.prefixIdentities,
+    changed: trend.changed,
+    changed_sections: trend.changedSections,
+    miss_reasons: trend.missReasons,
+    normalized_miss_reasons: trend.normalizedMissReasons,
+    facts: trend.facts.map(headlessPromptCacheFact)
+  };
+}
+
+function headlessPromptCacheRoi(roi: CacheRoi): HeadlessPromptCacheRoi {
+  return {
+    schema_version: roi.schema_version,
+    source: roi.source,
+    hit_tokens: roi.hit_tokens,
+    miss_tokens: roi.miss_tokens,
+    saved_tokens: roi.saved_tokens,
+    estimated_saved_cost: roi.estimated_saved_cost,
+    estimated_saved_cost_currency: roi.estimated_saved_cost_currency,
+    cost_source: roi.cost_source,
+    stable_prefix_ratio: roi.stable_prefix_ratio,
+    miss_reasons: roi.miss_reasons,
+    policy_recommendations: roi.policy_recommendations
+  };
+}
+
+function headlessPromptCacheImpact(impact: SwarmContextCacheImpact | undefined): HeadlessPromptCacheImpact | undefined {
+  if (!impact) {
+    return undefined;
+  }
+  return {
+    schema_version: impact.schema_version,
+    stable_prefix_hash: impact.stable_prefix_hash,
+    stable_prefix_tokens: impact.stable_prefix_tokens,
+    dynamic_hash: impact.dynamic_hash,
+    dynamic_tokens: impact.dynamic_tokens,
+    tool_schema_hash: impact.tool_schema_hash,
+    mailbox_hash: impact.mailbox_hash,
+    actor_hashes: impact.actor_hashes,
+    context_hashes: impact.context_hashes,
+    changed_dimensions: impact.changed_dimensions,
+    reasons: impact.reasons,
+    recommendations: impact.recommendations,
+    retained_context: impact.retained_context,
+    dropped_context: impact.dropped_context,
+    protected_context_retained: impact.protected_context_retained,
+    stable_segments: impact.stable_segments.map(headlessPromptCacheImpactSegment),
+    dynamic_segments: impact.dynamic_segments.map(headlessPromptCacheImpactSegment)
+  };
+}
+
+function headlessPromptCacheImpactSegment(segment: SwarmContextCacheImpactSegment): HeadlessPromptCacheImpactSegment {
+  return {
+    segment_id: segment.segment_id,
+    kind: segment.kind,
+    phase: segment.phase,
+    content_hash: segment.content_hash,
+    tokens: segment.tokens,
+    retained: segment.retained,
+    protected: segment.protected,
+    changed: segment.changed,
+    actor_id: segment.actor_id,
+    reason: segment.reason
+  };
+}
+
+function headlessPromptCacheFact(fact: CacheFact): HeadlessPromptCacheFact {
+  return {
+    provider_id: fact.providerId,
+    model: fact.model,
+    purpose: fact.purpose,
+    cache_mode: fact.cacheMode,
+    status: fact.status,
+    outcome: fact.outcome,
+    hit_tokens: fact.hitTokens,
+    miss_tokens: fact.missTokens,
+    write_tokens: fact.writeTokens,
+    cacheable_tokens: fact.cacheableTokens,
+    cacheable_prefix_tokens_estimate: fact.cacheablePrefixTokensEstimate,
+    minimum_cacheable_tokens: fact.minimumCacheableTokens,
+    hit_rate: fact.hitRate,
+    write_rate: fact.writeRate,
+    estimated_savings_tokens: fact.estimatedSavingsTokens,
+    prefix_identity: fact.prefixIdentity,
+    miss_reason: fact.missReason,
+    normalized_miss_reason: fact.normalizedMissReason,
+    changed: fact.changed,
+    changed_sections: fact.changedSections,
+    reason: fact.reason,
+    recommendation: fact.recommendation
+  };
+}
+
+function headlessPromptCacheSlo(evaluation: PromptCacheSloEvaluation): HeadlessPromptCacheSlo {
+  return {
+    status: evaluation.status,
+    state: evaluation.state,
+    source: evaluation.source,
+    summary: evaluation.summary,
+    failures: evaluation.failures,
+    metrics: {
+      calls: evaluation.metrics.calls,
+      hit_tokens: evaluation.metrics.hitTokens,
+      cacheable_tokens: evaluation.metrics.cacheableTokens,
+      write_tokens: evaluation.metrics.writeTokens,
+      hit_rate: evaluation.metrics.hitRate,
+      changed_prefix_misses: evaluation.metrics.changedPrefixMisses,
+      fallback_calls: evaluation.metrics.fallbackCalls,
+      provider_usage_missing_calls: evaluation.metrics.providerUsageMissingCalls,
+      estimated_savings_tokens: evaluation.metrics.estimatedSavingsTokens,
+      unexplained_misses: evaluation.metrics.unexplainedMisses,
+      unexplained_miss_rate: evaluation.metrics.unexplainedMissRate,
+      min_cacheable_prefix_tokens: evaluation.metrics.minCacheablePrefixTokens,
+      prefix_identities: evaluation.metrics.prefixIdentities,
+      normalized_miss_reasons: evaluation.metrics.normalizedMissReasons,
+      miss_reasons: evaluation.metrics.missReasons
+    }
   };
 }
 

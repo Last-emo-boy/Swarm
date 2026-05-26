@@ -124,6 +124,7 @@ export type WorkPermissionRecord = {
   permission_mode?: string;
   permission_name?: string;
   permission_rule?: string;
+  governance?: ToolApprovalRequest["governance"];
 };
 
 export type WorkSandboxRecord = {
@@ -426,7 +427,8 @@ function approvalWorkRecord(event: Extract<RuntimeEvent, { type: "approval" }>, 
     permission_reason: event.request.permission_reason,
     permission_mode: event.request.permission_mode,
     permission_name: event.request.permission_name,
-    permission_rule: event.request.permission_rule
+    permission_rule: event.request.permission_rule,
+    governance: event.request.governance
   });
 }
 

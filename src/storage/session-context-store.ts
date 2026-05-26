@@ -225,10 +225,16 @@ function buildExtractiveSummary(entries: SessionContextEntry[], previousSummary:
   const workers: string[] = [];
   const issues: string[] = [];
   const decisions: string[] = [];
+  const protectedContext: string[] = [];
   const tail = entries.slice(-20);
   for (const entry of entries) {
     collectPathCandidates(entry.content, importantFiles);
     collectPathCandidates(JSON.stringify(entry.metadata), importantFiles);
+    if (entry.kind === "objective" && protectedContext.length < 8) {
+      protectedContext.push(singleLine(entry.content, 320));
+    } else if (isActiveTaskEntry(entry) && protectedContext.length < 8) {
+      protectedContext.push(singleLine(entry.content, 320));
+    }
     if (entry.kind === "workspace_change") {
       collectPathCandidates(entry.content, importantFiles);
     }
@@ -248,6 +254,7 @@ function buildExtractiveSummary(entries: SessionContextEntry[], previousSummary:
   const lines = [
     previousSummary ? `Previous compacted summary:\n${previousSummary}` : undefined,
     "Compacted WorkSession memory:",
+    protectedContext.length ? `Protected objective and active task:\n${protectedContext.map((item) => `- ${item}`).join("\n")}` : undefined,
     decisions.length ? `Decisions and outcomes:\n${decisions.map((item) => `- ${item}`).join("\n")}` : undefined,
     importantFiles.size ? `Files and paths seen:\n${[...importantFiles].slice(0, 30).map((item) => `- ${item}`).join("\n")}` : undefined,
     tests.size ? `Verification and test signals:\n${[...tests].slice(0, 16).map((item) => `- ${item}`).join("\n")}` : undefined,
@@ -257,6 +264,15 @@ function buildExtractiveSummary(entries: SessionContextEntry[], previousSummary:
     ...tail.map((entry) => `- ${entry.created_at} ${entry.kind}/${entry.role}: ${singleLine(entry.content, 500)}`)
   ].filter(Boolean);
   return truncateToTokens(lines.join("\n"), maxTokens);
+}
+
+function isActiveTaskEntry(entry: SessionContextEntry): boolean {
+  const metadata = entry.metadata;
+  return metadata.active_task === true ||
+    metadata.active === true ||
+    metadata.status === "active" ||
+    metadata.task_status === "active" ||
+    metadata.kind === "active_task";
 }
 
 function collectPathCandidates(content: string, target: Set<string>): void {

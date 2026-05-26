@@ -36,6 +36,8 @@ import {
   type SandboxWritePolicy
 } from "./sandbox-policy.js";
 import { taskContractForToolAction } from "./tool-task-sandbox.js";
+import { attachApprovalGovernance, shouldRecordGovernanceEvidence } from "./safety-governance.js";
+import type { LspRange } from "../lsp/types.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -65,7 +67,31 @@ type CodingLoopToolResult = {
   errorCode?: string;
   recoverySuggestion?: string;
   recovery?: RecoveryAdvice;
+  metadata?: Record<string, unknown>;
   sandbox?: SandboxDecision;
+};
+
+type SemanticEvidencePromptItem = {
+  evidence_id: string;
+  source: string;
+  action: string;
+  status: string;
+  lsp_status?: string;
+  symbol?: string;
+  range?: LspRange;
+  confidence?: number;
+  staleness?: string;
+  stale_reason?: string;
+  fallback_used?: boolean;
+  fallback_reason?: string;
+  fallback_tools?: string[];
+  next_action?: string;
+  summary?: string;
+  result_keys?: string[];
+  primary_refs?: string[];
+  changed_files?: string[];
+  tool_result_id: string;
+  tool_status: string;
 };
 
 type DeferredToolCatalogSummary = {
@@ -122,6 +148,43 @@ export type CodingLoopFinalStatus = {
 export type CodingLoopOutcomeSignals = {
   changed_files: string[];
   intermediate_artifacts: string[];
+};
+
+export type CodingLoopCacheLabQualityVerdict = "pass" | "warning" | "fail";
+
+export type CodingLoopCacheLabReplay = {
+  label: string;
+  cacheKey?: string;
+  system: PromptBlock[];
+  user: PromptBlock[];
+  cachedInputTokens?: number;
+  totalInputWithCacheTokens?: number;
+  qualityVerdict?: CodingLoopCacheLabQualityVerdict;
+  qualityReason?: string;
+};
+
+export type CodingLoopCacheLabResult = {
+  label: string;
+  cacheKey?: string;
+  stablePrefixIdentity?: string;
+  stableSectionHashes: Record<string, string>;
+  stablePrefixTokensEstimate: number;
+  volatileTailTokensEstimate: number;
+  hitRate?: number;
+  cachedInputTokens?: number;
+  totalInputWithCacheTokens?: number;
+  prefixDrift: boolean;
+  changedSections: string[];
+  missReason?: "cold_start" | "prefix_drift" | "provider_omitted_usage" | "unknown";
+  qualityVerdict: CodingLoopCacheLabQualityVerdict;
+  qualityReason?: string;
+};
+
+export type CodingLoopCacheLabReport = {
+  baseline?: CodingLoopCacheLabResult;
+  replays: CodingLoopCacheLabResult[];
+  stablePrefixSections: string[];
+  volatileTailSections: string[];
 };
 
 type LoopActivityPhase = Extract<Parameters<RuntimeEvents["emitEvent"]>[0], { type: "loop_activity" }>["phase"];
@@ -198,6 +261,7 @@ type CodingLoopOptions = {
     }
   ) => Promise<ToolResult>;
   durableContext?: (sessionId: string) => string | Promise<string>;
+  agentMemoryContext?: (sessionId: string) => string | Promise<string>;
   systemPrompt?: string;
   appendSystemPrompt?: string;
   agentInstructions?: string;
@@ -218,6 +282,8 @@ const TOOL_RESULT_FULL_HISTORY_LIMIT = 6;
 const TOOL_RESULT_SUMMARY_PREVIEW_BYTES = 1_500;
 const TOOL_RESULT_PERSIST_PREVIEW_BYTES = 2_000;
 const TOOL_RESULT_PERSIST_THRESHOLD_BYTES = 8_000;
+const WORKSPACE_CONTEXT_BLOCK_LIMIT = 20;
+const WORKSPACE_CONTEXT_TOKEN_BUDGET = 4_000;
 const TOOL_RESULT_PER_TURN_BUDGET_BYTES = 24_000;
 const TOOL_RESULT_FRESH_BUDGET_BYTES = 8_000;
 const MODEL_OUTPUT_TOKENS_MAIN_LOOP = 8_000;
@@ -419,6 +485,7 @@ export class CodingAgentLoop {
         const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
         modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
         const durableContext = await this.options.durableContext?.(sessionId) ?? "";
+        const agentMemoryContext = await this.options.agentMemoryContext?.(sessionId) ?? "";
         const availableTools = allowedToolNames(
           this.options.allowedTools,
           this.options.disallowedTools,
@@ -460,6 +527,7 @@ export class CodingAgentLoop {
           settings: this.options.settings,
           workspace: this.options.workspace,
           durableContext,
+          agentMemoryContext,
           workspaceIndex: this.options.workspaceIndex,
           delegateAvailable,
           toolResults: budgetedToolResults,
@@ -960,12 +1028,29 @@ export class CodingAgentLoop {
         const request = createToolApprovalRequest(action, permissionDecision);
         request.session_id = sessionId;
         request.task_id = id;
+        attachApprovalGovernance(request, {
+          status: "requested",
+          decision_source: "tool.permission",
+          actor_id: this.options.workerId ?? "main_swarm"
+        });
         this.emitActivity(sessionId, "waiting_approval", `Waiting for approval: ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
         this.options.events.emitEvent({ type: "approval", request, status: "pending" });
         const approved = await this.options.approvalHandler(request);
         this.options.events.emitEvent({ type: "approval", request, status: approved ? "approved" : "denied" });
         if (!approved) {
           throw new Error(`Tool action denied: ${action.type}`);
+        }
+      } else {
+        const request = createToolApprovalRequest(action, permissionDecision);
+        request.session_id = sessionId;
+        request.task_id = id;
+        attachApprovalGovernance(request, {
+          status: "evidence",
+          decision_source: "tool.permission",
+          actor_id: this.options.workerId ?? "main_swarm"
+        });
+        if (request.governance && shouldRecordGovernanceEvidence(request)) {
+          this.options.events.emitEvent({ type: "governance", governance: request.governance });
         }
       }
 
@@ -997,7 +1082,8 @@ export class CodingAgentLoop {
         errors: rawResult.errors,
         errorCode: rawResult.errorCode,
         recoverySuggestion: rawResult.recoverySuggestion,
-        recovery
+        recovery,
+        metadata: rawResult.metadata
       };
       this.options.events.emitEvent({
         type: "tool_result",
@@ -1012,6 +1098,7 @@ export class CodingAgentLoop {
         errorCode: rawResult.errorCode,
         recoverySuggestion: rawResult.recoverySuggestion,
         recovery,
+        metadata: rawResult.metadata,
         write_policy: taskContract.write_policy,
         file_scope: taskContract.file_scope,
         sandbox: result.sandbox,
@@ -1515,6 +1602,7 @@ function codingLoopSystemPrompt(input: {
     "You are running inside Swarm's local coding-loop protocol. These protocol rules keep the CLI tool bridge working even when the behavioral system prompt is customized.",
     "Return exactly one JSON object with keys: status, summary, message, files_touched, next_actions, tool_calls.",
     "status must be continue, completed, or failed.",
+    "files_touched means files you read, inspected, or changed; it is not by itself proof of a workspace modification.",
     "Use tool_calls when you need to act. Use [] when done.",
     "status=continue must include at least one executable tool_call; when no tool is needed, use status=completed or status=failed.",
     "A failed tool result is feedback, not a global stop. Read the error, adjust inputs or command, and continue unless the task is truly blocked.",
@@ -1547,10 +1635,10 @@ function codingLoopSystemPrompt(input: {
     "Always obey the newest live user messages and control_decisions. If they redirect the task, stop pursuing the old target after the current safe boundary."
   ].filter(Boolean).join(" ");
   return [
-    { text: behaviorInstructions, cache: true },
-    { text: runtimeProtocolInstructions, cache: true },
-    ...(input.appendSystemPrompt !== undefined ? [{ text: input.appendSystemPrompt, cache: true }] : []),
-    ...(input.agentInstructions ? [{ text: input.agentInstructions, cache: false }] : [])
+    { text: behaviorInstructions, cache: true, section: "system" },
+    { text: runtimeProtocolInstructions, cache: true, section: "system" },
+    ...(input.appendSystemPrompt !== undefined ? [{ text: input.appendSystemPrompt, cache: true, section: "system" as const }] : []),
+    ...(input.agentInstructions ? [{ text: input.agentInstructions, cache: false, section: "context" as const }] : [])
   ];
 }
 
@@ -1564,6 +1652,7 @@ function codingLoopUserPrompt(input: {
   settings: SwarmSettings;
   workspace: string;
   durableContext?: string;
+  agentMemoryContext?: string;
   workspaceIndex?: WorkspaceIndex;
   delegateAvailable: boolean;
   toolResults: CodingLoopToolResult[];
@@ -1573,9 +1662,14 @@ function codingLoopUserPrompt(input: {
   remainingTurns: number;
   remainingToolCalls: number;
 }): PromptBlock[] {
-  const stablePayload = {
+  const stableSystemPayload = {
+    role: input.role
+  };
+  const stableWorkspacePayload = {
+    workspace_index: input.workspaceIndex ? renderStableWorkspaceIndexForPrompt(input.workspaceIndex) : undefined
+  };
+  const stableToolPayload = {
     role: input.role,
-    workspace_index: input.workspaceIndex ? renderStableWorkspaceIndexForPrompt(input.workspaceIndex) : undefined,
     tool_schemas: renderToolSchemas(input.availableTools, input.dynamicToolSchemas),
     tool_concurrency_classes: TOOL_CONCURRENCY_POLICY,
     available_agent_specs: input.role === "main" && input.delegateAvailable
@@ -1585,13 +1679,19 @@ function codingLoopUserPrompt(input: {
       ? codingLoopDelegationPolicy()
       : undefined
   };
-  const dynamicPayload = {
+  const taskPayload = {
     objective: input.objective,
     role: input.role,
-    parent_session_id: input.parentSessionId,
+    parent_session_id: input.parentSessionId
+  };
+  const contextPayload = {
     durable_session_context: input.durableContext ? `Durable session context:\n${input.durableContext}` : undefined,
+    agent_memory_context: input.agentMemoryContext ? `Agent memory continuity:\n${input.agentMemoryContext}` : undefined,
     workspace_state: input.workspaceIndex ? renderDynamicWorkspaceStateForPrompt(input.workspaceIndex) : undefined,
-    deferred_tool_catalog: input.deferredToolCatalog,
+    semantic_evidence: semanticEvidencePrompt(input.toolResults),
+    deferred_tool_catalog: input.deferredToolCatalog
+  };
+  const volatilePayload = {
     swarm_runtime_state: input.role === "main" && input.delegateAvailable
       ? swarmRuntimeState(input.toolResults, input.turn)
       : undefined,
@@ -1604,10 +1704,18 @@ function codingLoopUserPrompt(input: {
       remaining_tool_calls: input.remainingToolCalls
     }
   };
-  return [
-    { text: stableJsonStringify(stablePayload), cache: true },
-    { text: stableJsonStringify(dynamicPayload), cache: false }
-  ];
+  return nonEmptyPromptBlocks([
+    { text: stableJsonStringify(stableSystemPayload), cache: true, section: "system" },
+    { text: stableJsonStringify(stableToolPayload), cache: true, section: "tools" },
+    { text: stableJsonStringify(stableWorkspacePayload), cache: true, section: "workspace" },
+    { text: stableJsonStringify(taskPayload), cache: false, section: "task" },
+    { text: stableJsonStringify(contextPayload), cache: false, section: "context" },
+    { text: stableJsonStringify(volatilePayload), cache: false, section: "volatile_footer" }
+  ]);
+}
+
+function nonEmptyPromptBlocks(blocks: PromptBlock[]): PromptBlock[] {
+  return blocks.filter((block) => block.text.trim() !== "{}" && block.text.trim().length > 0);
 }
 
 function stableJsonStringify(value: unknown): string {
@@ -1629,40 +1737,165 @@ function sortJsonValue(value: unknown): unknown {
 }
 
 function renderStableWorkspaceIndexForPrompt(index: WorkspaceIndex): Record<string, unknown> {
+  const scripts = Object.fromEntries(
+    Object.entries(index.scripts)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .slice(0, 20)
+  );
   return {
     summary: stableWorkspaceIndexSummary(index),
-    detected: index.detected,
+    detected: [...index.detected].sort((left, right) => left.localeCompare(right)),
     package_manager: index.packageManager,
-    scripts: Object.fromEntries(Object.entries(index.scripts).slice(0, 20)),
-    counts: index.counts,
-    index_manifests: index.manifests
+    scripts,
+    counts: index.counts
   };
 }
 
 function renderDynamicWorkspaceStateForPrompt(index: WorkspaceIndex): Record<string, unknown> {
+  const packed = packWorkspaceContextBlocks(workspaceContextBlocks(index));
   return {
     summary: workspaceIndexSummary(index),
-    // keep paths relative to the workspace root while keeping volatile file state out of the cacheable prefix.
-    recent_files: index.recentFiles.slice(0, 20).map((file) => relative(index.root, file.path).replace(/\\/g, "/")),
+    prompt_packing: {
+      stable_prefix_sections: ["system", "tools", "workspace"],
+      dynamic_sections: ["task", "context", "volatile_footer"],
+      context_order: "source,path,relevance_desc",
+      included_context_blocks: packed.included.length,
+      dropped_context_blocks: packed.dropped,
+      context_block_limit: WORKSPACE_CONTEXT_BLOCK_LIMIT,
+      stable_prefix_budget_tokens: estimateTokenCount(stableWorkspaceIndexSummary(index)),
+      volatile_tail_budget_tokens: packed.tokenBudget,
+      included_context_tokens_estimate: packed.includedTokensEstimate,
+      dropped_context_tokens_estimate: packed.droppedTokensEstimate,
+      overflow_reason: packed.overflowReason,
+      prefix_identity_hint: stablePrefixIdentityFromText(stableWorkspaceIndexSummary(index))
+    },
+    context_blocks: packed.included,
+    recent_files: packed.included
+      .filter((block) => block.source === "recent_file")
+      .map((block) => block.path),
     git: index.git
       ? {
           branch: index.git.branch,
           head: index.git.head?.slice(0, 12),
           status: index.git.statusSummary,
-          dirty_files: index.git.dirtyFiles.slice(0, 20)
+          dirty_files: [...index.git.dirtyFiles]
+            .map((item) => normalizeWorkspacePath(index, item))
+            .sort((left, right) => left.localeCompare(right))
+            .slice(0, WORKSPACE_CONTEXT_BLOCK_LIMIT)
         }
       : undefined
   };
 }
 
 function stableWorkspaceIndexSummary(index: WorkspaceIndex): string {
-  const detected = index.detected.length ? index.detected.join(", ") : "unknown";
-  const scripts = Object.keys(index.scripts).slice(0, 4);
+  const detectedList = [...index.detected].sort((left, right) => left.localeCompare(right));
+  const detected = detectedList.length ? detectedList.join(", ") : "unknown";
+  const scripts = Object.keys(index.scripts).sort((left, right) => left.localeCompare(right)).slice(0, 4);
   return [
     `detected=${detected}`,
     `files=${index.counts.files}`,
     `scripts=${scripts.length ? scripts.join(", ") : "(none)"}`
   ].join(" | ");
+}
+
+type WorkspacePromptContextBlock = {
+  source: "git_dirty" | "recent_file";
+  path: string;
+  relevance: number;
+  reason: string;
+  size?: number;
+};
+
+function workspaceContextBlocks(index: WorkspaceIndex): WorkspacePromptContextBlock[] {
+  const recentByMtime = [...index.recentFiles]
+    .map((file) => ({
+      file,
+      path: normalizeWorkspacePath(index, file.path)
+    }))
+    .sort((left, right) => right.file.mtimeMs - left.file.mtimeMs || left.path.localeCompare(right.path))
+    .slice(0, WORKSPACE_CONTEXT_BLOCK_LIMIT);
+  const recentBlocks = recentByMtime.map((item, rank): WorkspacePromptContextBlock => ({
+    source: "recent_file",
+    path: item.path,
+    relevance: WORKSPACE_CONTEXT_BLOCK_LIMIT - rank,
+    reason: "recent_workspace_file",
+    size: item.file.size
+  }));
+  const dirtyBlocks = (index.git?.dirtyFiles ?? []).map((path): WorkspacePromptContextBlock => ({
+    source: "git_dirty",
+    path: normalizeWorkspacePath(index, path),
+    relevance: WORKSPACE_CONTEXT_BLOCK_LIMIT + 1,
+    reason: "git_dirty_file"
+  }));
+  return [...dirtyBlocks, ...recentBlocks];
+}
+
+function packWorkspaceContextBlocks(blocks: WorkspacePromptContextBlock[]): {
+  included: WorkspacePromptContextBlock[];
+  dropped: number;
+  tokenBudget: number;
+  includedTokensEstimate: number;
+  droppedTokensEstimate: number;
+  overflowReason?: "context_block_limit" | "volatile_tail_budget";
+} {
+  const byKey = new Map<string, WorkspacePromptContextBlock>();
+  for (const block of blocks) {
+    const key = `${block.source}:${block.path}`;
+    const previous = byKey.get(key);
+    if (!previous || block.relevance > previous.relevance) {
+      byKey.set(key, block);
+    }
+  }
+  const sorted = [...byKey.values()].sort(compareWorkspaceContextBlocks);
+  const included: WorkspacePromptContextBlock[] = [];
+  const droppedBlocks: WorkspacePromptContextBlock[] = [];
+  let includedTokensEstimate = 0;
+  let overflowReason: "context_block_limit" | "volatile_tail_budget" | undefined;
+  for (const block of sorted) {
+    const tokenEstimate = workspaceContextBlockTokenEstimate(block);
+    if (included.length >= WORKSPACE_CONTEXT_BLOCK_LIMIT) {
+      overflowReason ??= "context_block_limit";
+      droppedBlocks.push(block);
+      continue;
+    }
+    if (included.length > 0 && includedTokensEstimate + tokenEstimate > WORKSPACE_CONTEXT_TOKEN_BUDGET) {
+      overflowReason ??= "volatile_tail_budget";
+      droppedBlocks.push(block);
+      continue;
+    }
+    included.push(block);
+    includedTokensEstimate += tokenEstimate;
+  }
+  const droppedTokensEstimate = droppedBlocks.reduce((total, block) => total + workspaceContextBlockTokenEstimate(block), 0);
+  return {
+    included,
+    dropped: droppedBlocks.length,
+    tokenBudget: WORKSPACE_CONTEXT_TOKEN_BUDGET,
+    includedTokensEstimate,
+    droppedTokensEstimate,
+    overflowReason
+  };
+}
+
+function compareWorkspaceContextBlocks(left: WorkspacePromptContextBlock, right: WorkspacePromptContextBlock): number {
+  return left.source.localeCompare(right.source)
+    || left.path.localeCompare(right.path)
+    || right.relevance - left.relevance
+    || left.reason.localeCompare(right.reason);
+}
+
+function normalizeWorkspacePath(index: WorkspaceIndex, path: string): string {
+  const workspaceRelative = isAbsolute(path) ? relative(index.root, path) : path;
+  return workspaceRelative.replace(/\\/g, "/");
+}
+
+function workspaceContextBlockTokenEstimate(block: WorkspacePromptContextBlock): number {
+  return estimateTokenCount([
+    block.source,
+    block.path,
+    block.reason,
+    typeof block.size === "number" ? String(block.size) : ""
+  ].join(" "));
 }
 
 function codingLoopCacheKey(input: {
@@ -1678,6 +1911,237 @@ function codingLoopCacheKey(input: {
     .join("\n\n");
   const stableHash = createHash("sha256").update(stablePrompt).digest("hex").slice(0, 16);
   return `swarm:${input.role}:stable:${stableHash}`;
+}
+
+export function evaluateCodingLoopCacheLab(replays: CodingLoopCacheLabReplay[]): CodingLoopCacheLabReport {
+  const baseline = replays[0] ? codingLoopCacheLabResult(replays[0], undefined, true) : undefined;
+  return {
+    baseline,
+    replays: replays.map((replay, index) => codingLoopCacheLabResult(replay, baseline, index === 0)),
+    stablePrefixSections: ["system", "tools", "workspace"],
+    volatileTailSections: ["task", "context", "volatile_footer"]
+  };
+}
+
+export function selectBestCodingLoopCacheLabResult(report: CodingLoopCacheLabReport): CodingLoopCacheLabResult | undefined {
+  return [...report.replays].sort(compareCacheLabResultsByQualityGuard)[0];
+}
+
+export function selectTopHitCodingLoopCacheLabResult(report: CodingLoopCacheLabReport): CodingLoopCacheLabResult | undefined {
+  return [...report.replays].sort(compareCacheLabResultsByTopHit)[0];
+}
+
+export function formatCodingLoopCacheLabReport(report: CodingLoopCacheLabReport): string[] {
+  const baseline = report.baseline;
+  const best = selectBestCodingLoopCacheLabResult(report);
+  const topHit = selectTopHitCodingLoopCacheLabResult(report);
+  const guardNote = best && topHit && best.label !== topHit.label
+    ? `top hit ${topHit.label} is excluded by the quality guard because quality=${topHit.qualityVerdict}`
+    : "top hit is also the quality-safe best profile.";
+  const failureReasons = cacheLabFailureReasons(report);
+  return [
+    "Cache Lab",
+    `baseline=${baseline ? cacheLabResultSummary(baseline) : "(none)"}`,
+    `best_profile=${best ? cacheLabResultSummary(best) : "(none)"}`,
+    `top_hit_profile=${topHit ? cacheLabResultSummary(topHit) : "(none)"}`,
+    `quality_guard=${guardNote}`,
+    `profiles=${report.replays.length}`,
+    `stable_prefix_sections=${report.stablePrefixSections.join(",")}`,
+    `volatile_tail_sections=${report.volatileTailSections.join(",")}`,
+    "",
+    "Profiles",
+    ...report.replays.map((replay) => `- ${cacheLabResultSummary(replay)}${replay.qualityReason ? ` reason=${replay.qualityReason}` : ""}`),
+    "",
+    "Failure Reasons",
+    ...(failureReasons.length ? failureReasons.map((reason) => `- ${reason}`) : ["- none"]),
+    "",
+    "Recommendation",
+    ...cacheLabRecommendations(report, best, topHit)
+  ];
+}
+
+function codingLoopCacheLabResult(
+  replay: CodingLoopCacheLabReplay,
+  baseline?: CodingLoopCacheLabResult,
+  isBaseline = false
+): CodingLoopCacheLabResult {
+  const blocks = [...replay.system, ...replay.user];
+  const stableBlocks = blocks.filter((block) => block.cache === true);
+  const stablePrefix = stableBlocks.map((block) => block.text).join("\n\n");
+  const dynamicTail = blocks.filter((block) => block.cache !== true).map((block) => block.text).join("\n\n");
+  const stablePrefixIdentity = stablePrefix ? stablePrefixIdentityFromText(stablePrefix) : undefined;
+  const stableSectionHashes = promptBlockSectionHashes(stableBlocks);
+  const prefixDrift = Boolean(baseline?.stablePrefixIdentity && stablePrefixIdentity && baseline.stablePrefixIdentity !== stablePrefixIdentity);
+  const hitRate = typeof replay.cachedInputTokens === "number" && typeof replay.totalInputWithCacheTokens === "number" && replay.totalInputWithCacheTokens > 0
+    ? replay.cachedInputTokens / replay.totalInputWithCacheTokens
+    : undefined;
+  const changedSections = baseline?.stablePrefixIdentity
+    ? changedCacheSections(baseline, replay)
+    : [];
+  return {
+    label: replay.label,
+    cacheKey: replay.cacheKey,
+    stablePrefixIdentity,
+    stableSectionHashes,
+    stablePrefixTokensEstimate: estimateTokenCount(stablePrefix),
+    volatileTailTokensEstimate: estimateTokenCount(dynamicTail),
+    hitRate,
+    cachedInputTokens: replay.cachedInputTokens,
+    totalInputWithCacheTokens: replay.totalInputWithCacheTokens,
+    prefixDrift,
+    changedSections,
+    missReason: prefixDrift
+      ? "prefix_drift"
+      : isBaseline
+        ? "cold_start"
+        : hitRate === 0
+          ? "provider_omitted_usage"
+          : undefined,
+    qualityVerdict: replay.qualityVerdict ?? "pass",
+    qualityReason: replay.qualityReason
+  };
+}
+
+function changedCacheSections(baseline: CodingLoopCacheLabResult, replay: CodingLoopCacheLabReplay): string[] {
+  if (!baseline.stablePrefixIdentity) {
+    return [];
+  }
+  const sectionHashes = promptBlockSectionHashes([...replay.system, ...replay.user].filter((block) => block.cache === true));
+  const sections = new Set([...Object.keys(baseline.stableSectionHashes), ...Object.keys(sectionHashes)]);
+  return [...sections]
+    .filter((section) => baseline.stableSectionHashes[section] !== sectionHashes[section])
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function promptBlockSectionHashes(blocks: PromptBlock[]): Record<string, string> {
+  const bySection = new Map<string, string[]>();
+  for (const block of blocks) {
+    const section = block.section ?? "task";
+    bySection.set(section, [...(bySection.get(section) ?? []), block.text]);
+  }
+  return Object.fromEntries([...bySection.entries()].map(([section, texts]) => [
+    section,
+    createHash("sha256").update(texts.join("\n\n")).digest("hex").slice(0, 16)
+  ]));
+}
+
+function stablePrefixIdentityFromText(text: string): string {
+  return `pcx:${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+}
+
+function estimateTokenCount(text: string): number {
+  return text.trim() ? Math.ceil(text.length / 4) : 0;
+}
+
+function compareCacheLabResultsByQualityGuard(left: CodingLoopCacheLabResult, right: CodingLoopCacheLabResult): number {
+  const qualityRank = cacheLabQualityRank(left.qualityVerdict) - cacheLabQualityRank(right.qualityVerdict);
+  if (qualityRank !== 0) {
+    return qualityRank;
+  }
+  const hitRank = compareHitRate(right.hitRate, left.hitRate);
+  if (hitRank !== 0) {
+    return hitRank;
+  }
+  const driftRank = Number(left.prefixDrift) - Number(right.prefixDrift);
+  if (driftRank !== 0) {
+    return driftRank;
+  }
+  const tailRank = left.volatileTailTokensEstimate - right.volatileTailTokensEstimate;
+  if (tailRank !== 0) {
+    return tailRank;
+  }
+  return left.label.localeCompare(right.label);
+}
+
+function compareCacheLabResultsByTopHit(left: CodingLoopCacheLabResult, right: CodingLoopCacheLabResult): number {
+  const hitRank = compareHitRate(left.hitRate, right.hitRate);
+  if (hitRank !== 0) {
+    return hitRank;
+  }
+  const qualityRank = cacheLabQualityRank(left.qualityVerdict) - cacheLabQualityRank(right.qualityVerdict);
+  if (qualityRank !== 0) {
+    return qualityRank;
+  }
+  const driftRank = Number(left.prefixDrift) - Number(right.prefixDrift);
+  if (driftRank !== 0) {
+    return driftRank;
+  }
+  const tailRank = left.volatileTailTokensEstimate - right.volatileTailTokensEstimate;
+  if (tailRank !== 0) {
+    return tailRank;
+  }
+  return left.label.localeCompare(right.label);
+}
+
+function compareHitRate(left: number | undefined, right: number | undefined): number {
+  if (left === right) {
+    return 0;
+  }
+  if (left === undefined) {
+    return 1;
+  }
+  if (right === undefined) {
+    return -1;
+  }
+  return right - left;
+}
+
+function cacheLabQualityRank(verdict: CodingLoopCacheLabQualityVerdict): number {
+  if (verdict === "pass") {
+    return 0;
+  }
+  if (verdict === "warning") {
+    return 1;
+  }
+  return 2;
+}
+
+function cacheLabFailureReasons(report: CodingLoopCacheLabReport): string[] {
+  return report.replays.flatMap((replay) => {
+    const reasons: string[] = [];
+    if (replay.qualityVerdict === "warning") {
+      reasons.push(`${replay.label}: quality warning${replay.qualityReason ? ` - ${replay.qualityReason}` : ""}`);
+    }
+    if (replay.qualityVerdict === "fail") {
+      reasons.push(`${replay.label}: quality failure${replay.qualityReason ? ` - ${replay.qualityReason}` : ""}`);
+    }
+    if (replay.prefixDrift) {
+      reasons.push(`${replay.label}: prefix drift in ${replay.changedSections.join(", ") || "stable prefix"}`);
+    }
+    if (replay.missReason && replay.missReason !== "cold_start") {
+      reasons.push(`${replay.label}: miss reason ${replay.missReason}`);
+    }
+    return reasons;
+  });
+}
+
+function cacheLabRecommendations(
+  report: CodingLoopCacheLabReport,
+  best: CodingLoopCacheLabResult | undefined,
+  topHit: CodingLoopCacheLabResult | undefined
+): string[] {
+  if (!best) {
+    return ["- No cache lab profiles were provided."];
+  }
+  const lines = [
+    `- Prefer ${best.label} as the default profile for this lab; it balances cache gain and quality safety.`
+  ];
+  if (topHit && topHit.label !== best.label) {
+    lines.push(`- Keep ${topHit.label} as a high-cache experiment only; its quality verdict is ${topHit.qualityVerdict}.`);
+  }
+  if (report.baseline && best.label !== report.baseline.label) {
+    lines.push(`- Compare ${best.label} against baseline ${report.baseline.label} when reviewing tail churn.`);
+  }
+  return lines;
+}
+
+function cacheLabResultSummary(result: CodingLoopCacheLabResult): string {
+  const hitRate = result.hitRate === undefined ? "unknown" : `${Math.round(result.hitRate * 100)}%`;
+  const drift = result.prefixDrift ? "drift=yes" : "drift=no";
+  const quality = result.qualityVerdict;
+  const miss = result.missReason ? ` miss=${result.missReason}` : "";
+  const changed = result.changedSections.length ? ` changed=${result.changedSections.join(",")}` : "";
+  return `${result.label} quality=${quality} hit=${hitRate} ${drift}${miss}${changed}`.trim();
 }
 
 function renderAvailableAgentSpecs(source: AgentSpecSource): Array<Record<string, unknown>> {
@@ -1745,6 +2209,98 @@ function swarmRuntimeState(toolResults: CodingLoopToolResult[], turn: number): R
       ? "If the objective has separable roles or explicitly requests swarm/team execution, consider spawning appropriate Agent workers before continuing alone."
       : "Use existing worker results to coordinate, fill gaps, review, or verify before final synthesis."
   };
+}
+
+function semanticEvidencePrompt(toolResults: CodingLoopToolResult[]): Record<string, unknown> | undefined {
+  const items = toolResults
+    .slice(-20)
+    .flatMap((result) => semanticEvidencePromptItems(result))
+    .slice(-12);
+  if (!items.length) {
+    return undefined;
+  }
+  return {
+    schema_version: "swarm.semantic_evidence.prompt.v1",
+    guidance: "Use these semantic_evidence ids when planning edits. Treat staleness values other than fresh as refresh/fallback evidence, and if fallback_used=true prefer the listed fallback_tools before editing.",
+    items
+  };
+}
+
+function semanticEvidencePromptItems(result: CodingLoopToolResult): SemanticEvidencePromptItem[] {
+  const evidence = semanticEvidenceRecord(result.metadata?.semantic_evidence) ?? semanticEvidenceRecord(result.data);
+  if (!evidence) {
+    return [];
+  }
+  return [{
+    evidence_id: semanticString(evidence.evidence_id) ?? `${result.id}:${result.action}`,
+    source: semanticString(evidence.source) ?? "unknown",
+    action: semanticString(evidence.action) ?? String(result.action),
+    status: semanticString(evidence.status) ?? result.status,
+    lsp_status: semanticString(evidence.lsp_status),
+    symbol: semanticString(evidence.symbol),
+    range: semanticRange(evidence.range),
+    confidence: semanticNumber(evidence.confidence),
+    staleness: semanticString(evidence.staleness),
+    stale_reason: semanticString(evidence.stale_reason),
+    fallback_used: semanticBoolean(evidence.fallback_used),
+    fallback_reason: semanticString(evidence.fallback_reason),
+    fallback_tools: semanticStringArray(evidence.fallback_tools),
+    next_action: semanticString(evidence.next_action),
+    summary: semanticString(evidence.summary) ?? result.summary,
+    result_keys: semanticStringArray(evidence.result_keys),
+    primary_refs: semanticStringArray(evidence.primary_refs),
+    changed_files: semanticStringArray(evidence.changed_files),
+    tool_result_id: result.id,
+    tool_status: result.status
+  }];
+}
+
+function semanticEvidenceRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (value.schema_version === "swarm.semantic_evidence.v1") {
+    return value;
+  }
+  const nested = value.semantic_evidence;
+  return isRecord(nested) && nested.schema_version === "swarm.semantic_evidence.v1" ? nested : undefined;
+}
+
+function semanticString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function semanticNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function semanticBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function semanticRange(value: unknown): LspRange | undefined {
+  if (!isRecord(value) || !isRecord(value.start) || !isRecord(value.end)) {
+    return undefined;
+  }
+  const startLine = semanticNumber(value.start.line);
+  const startColumn = semanticNumber(value.start.column);
+  const endLine = semanticNumber(value.end.line);
+  const endColumn = semanticNumber(value.end.column);
+  if (startLine === undefined || startColumn === undefined || endLine === undefined || endColumn === undefined) {
+    return undefined;
+  }
+  return {
+    start: { line: startLine, column: startColumn },
+    end: { line: endLine, column: endColumn }
+  };
+}
+
+function semanticStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return items.length ? items : undefined;
 }
 
 function allowedToolNames(
@@ -2341,7 +2897,7 @@ function workspaceCompletionGapResult(
   }
   const claimedFiles = uniqueNonEmptyStrings(result.files_touched);
   const unverifiedClaims = claimedFiles.filter((file) => !changedFiles.has(file));
-  if (options.writePolicy !== "read_only" && unverifiedClaims.length > 0) {
+  if (expectsWorkspaceModification(options.expectedSideEffects) && options.writePolicy !== "read_only" && unverifiedClaims.length > 0) {
     return {
       id: `workspace_claim_unverified_${randomUUID()}`,
       action: "workspace.verify",
@@ -3102,6 +3658,7 @@ function codingLoopResultFromTool(
     errorCode: result.errorCode,
     recoverySuggestion: result.recoverySuggestion,
     recovery,
+    metadata: result.metadata,
     sandbox
   };
 }

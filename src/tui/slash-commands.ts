@@ -40,14 +40,15 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 10 },
   { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight.", completionPriority: 20 },
   { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode.", completionPriority: 40 },
+  { name: "density", group: "Core", usage: "/density [auto|compact|default|comfortable]", description: "Tune TUI information density without changing focus behavior.", completionPriority: 43 },
   { name: "view", group: "Core", usage: "/view [chat|trace|overview|output|sessions|attempts|agents|blackboard]", description: "Switch the TUI surface without exposing pane controls by default.", completionPriority: 45 },
   { name: "why", group: "Core", usage: "/why", description: "Explain recent route, delegation, review, and verification decisions." },
-  { name: "work", group: "Core", usage: "/work <sessions|attempts|output|files|checks|workers>", description: "Inspect work-session artifacts without opening the debug surface." },
-  { name: "debug", group: "Core", usage: "/debug <trace|blackboard|audit|usage|cache|events>", description: "Open advanced runtime diagnostics." },
+  { name: "work", group: "Core", usage: "/work <board|sessions|attempts|output|files|checks|workers>", description: "Inspect work-session artifacts without opening the debug surface." },
+  { name: "debug", group: "Core", usage: "/debug <latest|timeline|trace|blackboard|audit|usage|cache|events>", description: "Open advanced runtime diagnostics." },
   { name: "ext", group: "Core", usage: "/ext <capabilities|skills|plugins|mcp>", description: "Inspect extension capabilities, skills, plugins, or MCP." },
   { name: "self-review", group: "Core", usage: "/self-review", description: "Inspect recent local Swarm failures and recommendations." },
   { name: "improve-self", group: "Core", usage: "/improve-self", description: "Ask Swarm to improve its own implementation." },
-  { name: "evals", group: "Core", usage: "/evals", description: "Run local product regression evals." },
+  { name: "evals", group: "Core", usage: "/evals [--release-gate|--cache-lab|--tui-replay]", description: "Run local product regression evals, cache lab, TUI replay, or the offline parity release gate." },
   { name: "prd", group: "Core", usage: "/prd", description: "Show the local PRD." },
   { name: "reply", group: "Core", usage: "/reply <message>", description: "Send a live reply to the active run." },
   { name: "interrupt", group: "Core", usage: "/interrupt <message>", description: "Interrupt active work and ask Swarm to reassess." },
@@ -83,8 +84,11 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "audit", group: "Kernel", usage: "/audit [session_id]", description: "List audit records." },
   { name: "budget", group: "Kernel", usage: "/budget [session_id]", description: "Inspect policy budget and usage." },
   { name: "usage", group: "Kernel", usage: "/usage [session_id]", description: "Inspect usage counters." },
+  { name: "swarm", group: "Agents", usage: "/swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]", description: "Show Swarm participants, ownership, mailbox, and conflicts.", completionPriority: 35 },
+  { name: "ownership", group: "Agents", usage: "/ownership", description: "Inspect task, handoff, and blackboard ownership." },
+  { name: "mailbox", group: "Agents", usage: "/mailbox <actor_id>", description: "Inspect one actor mailbox." },
   { name: "agents", group: "Agents", usage: "/agents", description: "List available local agent specs." },
-  { name: "agent", group: "Agents", usage: "/agent <agent_spec_id>", description: "Show one agent spec." },
+  { name: "agent", group: "Agents", usage: "/agent <actor_id|agent_spec_id>", description: "Inspect one actor or show one agent spec." },
   { name: "workers", group: "Agents", usage: "/workers", description: "List local worker agents." },
   { name: "worker", group: "Agents", usage: "/worker <worker_id>", description: "Inspect one worker." },
   { name: "stop-worker", group: "Agents", usage: "/stop-worker <worker_id>", description: "Request a worker stop." },
@@ -135,8 +139,10 @@ const BASIC_SLASH_COMMAND_NAMES = new Set([
   "help",
   "doctor",
   "mode",
+  "density",
   "view",
   "model",
+  "swarm",
   "approval",
   "kernel",
   "resume",
@@ -151,6 +157,10 @@ const SLASH_HELP_NAMESPACES: Record<string, { title: string; names: string[] }> 
   work: {
     title: "Work commands",
     names: ["work", "session", "attempts", "output", "changes", "tasks", "graph", "task", "workers", "worker", "checkpoint", "revert"]
+  },
+  swarm: {
+    title: "Swarm commands",
+    names: ["swarm", "agent", "mailbox", "ownership", "agents", "workers", "worker", "handoffs", "handoff", "takeback"]
   },
   debug: {
     title: "Debug commands",
@@ -168,6 +178,7 @@ const SLASH_HELP_NAMESPACES: Record<string, { title: string; names: string[] }> 
 
 const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
   work: [
+    { name: "board", group: "Kernel", usage: "/work board [session_id] [active|blocked|failed|resumable|changed-files|checks]", description: "Show the unified work board.", completionPriority: 5 },
     { name: "sessions", group: "Kernel", usage: "/work sessions", description: "List recent work sessions.", completionPriority: 10 },
     { name: "attempts", group: "Kernel", usage: "/work attempts", description: "List run attempts.", completionPriority: 20 },
     { name: "output", group: "Tools", usage: "/work output", description: "Show recent tool output.", completionPriority: 30 },
@@ -181,7 +192,9 @@ const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
     { name: "audit", group: "Kernel", usage: "/debug audit", description: "List audit records.", completionPriority: 30 },
     { name: "usage", group: "Kernel", usage: "/debug usage", description: "Inspect usage counters.", completionPriority: 40 },
     { name: "cache", group: "Kernel", usage: "/debug cache", description: "Inspect prompt cache status.", completionPriority: 50 },
-    { name: "events", group: "Kernel", usage: "/debug events", description: "Show recent runtime events.", completionPriority: 60 }
+    { name: "timeline", group: "Kernel", usage: "/debug timeline [actor:<id>|task:<id>|correlation:<id>|category:<kind>]", description: "Show the shared protocol debug timeline.", completionPriority: 15 },
+    { name: "events", group: "Kernel", usage: "/debug events", description: "Show recent runtime events.", completionPriority: 60 },
+    { name: "latest", group: "Kernel", usage: "/debug latest", description: "Diagnose the latest run, detail target, failures, cache, and artifacts.", completionPriority: 5 }
   ],
   ext: [
     { name: "capabilities", group: "Config", usage: "/ext capabilities", description: "Summarize capabilities.", completionPriority: 10 },
@@ -236,9 +249,11 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?
     const commands = help.names
       .map((name) => slashCommands.find((command) => command.name === name))
       .filter((command): command is SlashCommandSpec => command !== undefined);
+    const subcommands = SLASH_NAMESPACE_SUBCOMMANDS[namespace] ?? [];
     return [
       help.title,
-      ...commands.map((command) => `  ${command.usage} - ${command.description}`)
+      ...commands.map((command) => `  ${command.usage} - ${command.description}`),
+      ...subcommands.map((command) => `  ${command.usage} - ${command.description}`)
     ].join("\n");
   }
   return slashCommandGroups

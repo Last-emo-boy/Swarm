@@ -57,6 +57,8 @@ export function formatRuntimeEventBrief(event: RuntimeEvent): string {
       ].filter(Boolean).join(" ");
     case "budget":
       return `budget: ${event.decision.action} ${event.decision.actor_id} pressure=${event.decision.pressure} scope=${event.decision.scope} ${truncate(event.decision.reason, 80)}`;
+    case "governance":
+      return `governance: approval ${event.governance.status} ${event.governance.action} actor=${event.governance.actor_binding.actor_id} scope=${event.governance.scope.target}`;
     case "worker":
       return `worker: ${formatWorkerBrief(event.worker)}${event.message ? ` - ${truncate(event.message, 70)}` : ""}`;
     case "agent_spawn_decision":
@@ -134,6 +136,9 @@ export function formatHeadlessProgress(event: RuntimeEvent): string | undefined 
   }
   if (event.type === "budget") {
     return `budget: ${event.decision.action} actor=${event.decision.actor_id} pressure=${event.decision.pressure} scope=${event.decision.scope} reason=${event.decision.reason}`;
+  }
+  if (event.type === "governance") {
+    return `governance: approval ${event.governance.status} actor=${event.governance.actor_binding.actor_id} scope=${event.governance.scope.target} expires=${event.governance.expires_at}`;
   }
   if (event.type === "review_completed") {
     return `review: ${event.result.verdict} ${event.result.score} - ${event.result.summary}`;
@@ -231,7 +236,8 @@ function formatPermissionSuffix(request: Extract<RuntimeEvent, { type: "approval
   const parts = [
     request.permission_name ? `permission=${request.permission_name}` : undefined,
     request.permission_rule ? `rule=${request.permission_rule}` : undefined,
-    request.permission_reason ? `reason=${truncate(request.permission_reason, 70)}` : undefined
+    request.permission_reason ? `reason=${truncate(request.permission_reason, 70)}` : undefined,
+    request.governance ? `scope=${truncate(request.governance.scope.target, 40)} ttl=${request.governance.ttl_ms}ms actor=${request.governance.actor_binding.actor_id}` : undefined
   ].filter(Boolean);
   return parts.length ? ` ${parts.join(" ")}` : "";
 }

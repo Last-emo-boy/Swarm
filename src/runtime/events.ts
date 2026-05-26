@@ -9,6 +9,7 @@ import type { SandboxDecision } from "./sandbox-policy.js";
 import type { CheckpointSummary } from "./checkpoints.js";
 import type { RecoveryAdvice } from "./recovery.js";
 import type { BudgetDecision } from "./budget-governor.js";
+import type { ApprovalGovernanceEvidence } from "./safety-governance.js";
 
 export type SessionOutcome = WorkSessionOutcome;
 
@@ -38,6 +39,7 @@ export type RuntimeEvent =
       message?: string;
     }
   | { type: "budget"; decision: BudgetDecision }
+  | { type: "governance"; governance: ApprovalGovernanceEvidence; envelope?: SwarmEnvelope }
   | { type: "worker"; worker: WorkerRecord; status: WorkerStatus; message?: string }
   | { type: "agent_spawn_decision"; worker_id: string; parent_session_id: string; decision: AgentSpawnDecision; task_packet: AgentTaskPacket }
   | { type: "agent_run_started"; worker: WorkerRecord; task_packet: AgentTaskPacket }

@@ -11,21 +11,28 @@ import {
   conversationInputCapacity,
   conversationMessageRenderedLineCount,
   conversationNewMessageCountAfterAppend,
+  conversationPaneDebugName,
   conversationPromptRows,
   conversationRenderedLineCount,
+  conversationRendererContract,
   conversationScrollOffsetAfterAppend,
   conversationTranscriptLimit,
   conversationViewportAfterAppend,
   conversationViewportAfterScroll,
+  detailOpenInputIntent,
   detailOpenTargetForPane,
   detailTitleForSource,
   fullscreenConversationRows,
   inlineInspectorTargetForPane,
   nextConversationScrollOffset,
   normalizeConversationScrollOffset,
+  resolveTuiDensity,
   resetConversationViewport,
+  shouldOpenDetailFromInput,
   stickyPromptForMessages,
-  tuiScreenMode
+  tuiFocusTransitionForInput,
+  tuiScreenMode,
+  validateConversationDomLayout
 } from "./conversation-layout.js";
 import { displayWidth } from "./display-width.js";
 import {
@@ -49,9 +56,9 @@ test("conversation-first layout keeps transcript as the default surface", () => 
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "Swarm chat ready.",
-    "❯ Simplify the TUI.",
-    "I will make the default view quieter."
+    "· system     Swarm chat ready.",
+    "❯ user       Simplify the TUI.",
+    "· assistant  I will make the default view quieter."
   ]);
   assert.deepEqual(layout.activity, []);
 });
@@ -71,10 +78,10 @@ test("conversation-first layout renders command and tool transcript rows", () =>
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "❯ /shell npm test",
-    "⏵ tool Run shell command: npm test",
-    "✓ result shell.exec: command exited 0",
-    "∴ think Swarm is thinking"
+    "❯ cmd        /shell npm test",
+    "● tool       Run shell command: npm test",
+    "✓ result     shell.exec: command exited 0",
+    "· think      Swarm is thinking"
   ]);
   assert.equal(layout.transcript[1]?.dim, true);
   assert.equal(layout.transcript[3]?.dim, true);
@@ -124,6 +131,153 @@ test("fullscreen conversation bottom slot keeps completions out of the prompt bu
   assert.equal(conversationBottomRows({ terminalRows: 20, contentRows: 3, approval: true }), 9);
 });
 
+test("conversation renderer contract fixes viewport zones across terminal fixtures", () => {
+  const fixtures = [
+    { name: "narrow", rows: 8, columns: 44, bottomRows: conversationPromptRows(0), overlayRows: 3 },
+    { name: "normal", rows: 24, columns: 96, bottomRows: conversationPromptRows(2), overlayRows: 6 },
+    { name: "tall", rows: 48, columns: 132, bottomRows: conversationPromptRows(4), overlayRows: 10 }
+  ];
+
+  for (const fixture of fixtures) {
+    const contract = conversationRendererContract({
+      rows: fixture.rows,
+      columns: fixture.columns,
+      bottomRows: fixture.bottomRows,
+      completionOverlayRows: fixture.overlayRows,
+      pane: "chat"
+    });
+
+    assert.equal(contract.rows, fixture.rows, fixture.name);
+    assert.equal(contract.columns, fixture.columns, fixture.name);
+    assert.equal(contract.activePaneDebugName, "pane:chat");
+    assert.equal(contract.zones.viewport.debugName, "zone:viewport");
+    assert.equal(contract.zones.scrollRegion.debugName, "zone:scrollRegion");
+    assert.equal(contract.zones.bottomChrome.debugName, "zone:bottomChrome");
+    assertNoOverlap(contract.zones.scrollRegion, contract.zones.bottomChrome);
+    assert(contract.zones.scrollRegion.height >= 1, fixture.name);
+    assert(contract.zones.bottomChrome.bottomExclusive <= contract.zones.viewport.bottomExclusive, fixture.name);
+    assert(contract.zones.completionOverlay, fixture.name);
+    assertZoneContains(contract.zones.scrollRegion, contract.zones.completionOverlay);
+    assert.equal(contract.zones.completionOverlay.debugName, "zone:completionOverlay");
+  }
+});
+
+test("conversation renderer contract keeps approval chrome below the overlay", () => {
+  const bottomRows = conversationBottomRows({
+    terminalRows: 20,
+    contentRows: conversationPromptRows(0),
+    approval: true
+  });
+  const contract = conversationRendererContract({
+    rows: 20,
+    columns: 100,
+    bottomRows,
+    completionOverlayRows: 12,
+    approval: true,
+    pane: "log"
+  });
+
+  assert.equal(contract.zones.bottomChrome.height, 9);
+  assert.equal(contract.zones.scrollRegion.height, 11);
+  assert.equal(contract.zones.completionOverlay?.height, 11);
+  assertNoOverlap(contract.zones.completionOverlay!, contract.zones.bottomChrome);
+  assert.equal(contract.zones.inspector, undefined);
+});
+
+test("conversation renderer contract exposes stable pane and inspector debug targets", () => {
+  assert.equal(conversationPaneDebugName("Chat"), "pane:chat");
+  assert.equal(conversationPaneDebugName("latest diagnosis"), "pane:latest-diagnosis");
+  assert.equal(conversationPaneDebugName(""), "pane:chat");
+
+  const trace = conversationRendererContract({
+    rows: 30,
+    columns: 160,
+    bottomRows: conversationPromptRows(0),
+    pane: "log"
+  });
+  assert.equal(trace.activePaneDebugName, "pane:log");
+  assert.equal(trace.zones.inspector?.debugName, "zone:inspector");
+  assertZoneContains(trace.zones.scrollRegion, trace.zones.inspector!);
+
+  const chat = conversationRendererContract({
+    rows: 30,
+    columns: 160,
+    bottomRows: conversationPromptRows(0),
+    pane: "chat"
+  });
+  assert.equal(chat.activePaneDebugName, "pane:chat");
+  assert.equal(chat.zones.inspector, undefined);
+});
+
+test("conversation DOM contract keeps dense TUI nodes stable across viewports", () => {
+  const fixtures = [
+    { name: "small", rows: 24, columns: 80, pane: "chat", inspector: false },
+    { name: "normal", rows: 30, columns: 120, pane: "chat", inspector: false },
+    { name: "wide-trace", rows: 45, columns: 160, pane: "log", inspector: true }
+  ];
+
+  for (const fixture of fixtures) {
+    const contract = conversationRendererContract({
+      rows: fixture.rows,
+      columns: fixture.columns,
+      bottomRows: conversationPromptRows(2),
+      completionOverlayRows: 5,
+      pane: fixture.pane
+    });
+
+    assert.deepEqual(validateConversationDomLayout(contract), [], fixture.name);
+    assert.equal(contract.nodes.root.role, "root", fixture.name);
+    assert.equal(contract.nodes.root.width, fixture.columns, fixture.name);
+    assert.equal(contract.nodes.root.height, fixture.rows, fixture.name);
+    assert.equal(contract.focusOwnerId, "composer", fixture.name);
+    assert.equal(contract.nodes.composer.focusable, true, fixture.name);
+    assert.equal(contract.nodes.scrollback.overflow, "scroll", fixture.name);
+    assert.equal(contract.nodes.overlay?.role, "overlay", fixture.name);
+    assertNoRectOverlap(contract.nodes.overlay!, contract.nodes.composer);
+    assert.equal(Boolean(contract.nodes.inspector), fixture.inspector, fixture.name);
+    if (contract.nodes.inspector) {
+      assert.equal(contract.nodes.inspector.focusable, false, fixture.name);
+      assert(contract.nodes.conversation.rightExclusive <= contract.nodes.inspector.left, fixture.name);
+    }
+  }
+});
+
+test("conversation DOM contract does not let overlay or inspector cover the prompt", () => {
+  const contract = conversationRendererContract({
+    rows: 24,
+    columns: 160,
+    bottomRows: conversationPromptRows(4),
+    completionOverlayRows: 99,
+    pane: "log"
+  });
+
+  assert.deepEqual(validateConversationDomLayout(contract), []);
+  assert.equal(contract.nodes.overlay?.bottomExclusive, contract.zones.scrollRegion.bottomExclusive);
+  assert.equal(contract.nodes.composer.top, contract.zones.bottomChrome.bottomExclusive - 1);
+  assertNoRectOverlap(contract.nodes.overlay!, contract.nodes.composer);
+  assertNoRectOverlap(contract.nodes.inspector!, contract.nodes.composer);
+  assert(contract.nodes.overlay!.zIndex > contract.nodes.scrollback.zIndex);
+  assert(contract.nodes.composer.zIndex < contract.nodes.overlay!.zIndex);
+});
+
+test("conversation renderer contract clamps tiny terminals without overlapping chrome", () => {
+  const contract = conversationRendererContract({
+    rows: 1,
+    columns: 20,
+    bottomRows: 10,
+    completionOverlayRows: 10,
+    pane: "chat"
+  });
+
+  assert.equal(contract.zones.viewport.height, 1);
+  assert.equal(contract.zones.scrollRegion.height, 1);
+  assert.equal(contract.zones.bottomChrome.height, 0);
+  assert.equal(contract.zones.bottomChrome.top, 1);
+  assert.equal(contract.zones.bottomChrome.bottomExclusive, 1);
+  assertZoneContains(contract.zones.scrollRegion, contract.zones.completionOverlay!);
+  assert.equal(contract.zones.bottomChrome.bottomExclusive, contract.zones.viewport.bottomExclusive);
+});
+
 test("conversation input capacity can request multiline height before the bottom slot expands", () => {
   assert.deepEqual(conversationInputCapacity({ bottomRows: conversationPromptRows(0) }), {
     maxCompletionRows: 1,
@@ -145,7 +299,7 @@ test("conversation-first layout does not inline command details into the default
     hasResult: false
   });
 
-  assert.deepEqual(layout.transcript.map((line) => line.text), ["3 recent tool outputs. Ctrl+O for details."]);
+  assert.deepEqual(layout.transcript.map((line) => line.text), ["· system     3 recent tool outputs. Ctrl+O for details."]);
   assert(!layout.transcript.some((line) => line.text.includes("tool output line")));
   assert.deepEqual(layout.activity, []);
 });
@@ -179,15 +333,15 @@ test("conversation-first layout renders assistant markdown and preserves newline
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "Done",
-    "First line",
-    "Second line",
+    "· assistant  Done",
+    "             First line",
+    "             Second line",
     "",
-    "- item one",
-    "- item two",
+    "             - item one",
+    "             - item two",
     "",
-    "[ts]",
-    "  const value = 1;"
+    "             [ts]",
+    "               const value = 1;"
   ]);
   assert.equal(layout.transcript[0]?.kind, "heading");
   assert.equal(layout.transcript[8]?.kind, "code");
@@ -238,7 +392,7 @@ test("conversation-first markdown rendering keeps technical identifiers intact",
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "Use worker_loop_state and keep foo_bar_baz unchanged."
+    "· assistant  Use worker_loop_state and keep foo_bar_baz unchanged."
   ]);
 });
 
@@ -263,13 +417,13 @@ test("conversation-first markdown rendering keeps tables and dividers readable",
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "Area  Status",
-    "---  ---",
-    "TUI  Done",
+    "· assistant  Area  Status",
+    "             ---  ---",
+    "             TUI  Done",
     "",
-    "---",
+    "             ---",
     "",
-    "Next"
+    "             Next"
   ]);
   assert.equal(layout.transcript[0]?.kind, "table");
   assert.equal(layout.transcript[1]?.kind, "table");
@@ -292,7 +446,7 @@ test("conversation-first layout crops by rendered line budget instead of message
   });
 
   assert.equal(layout.transcript.length, conversationTranscriptLimit(8, false, false));
-  assert.equal(layout.transcript[0]?.text, "line 13");
+  assert.equal(layout.transcript[0]?.text, "             line 13");
   assert(layout.transcript.at(-1)?.text.includes("line 20"));
 });
 
@@ -608,7 +762,7 @@ test("virtual conversation layout mounts only visible long-session messages", ()
     scrollOffset: 0,
     cache
   });
-  assert.equal(appended.transcript.at(-1)?.text, "fresh tail");
+  assert.equal(appended.transcript.at(-1)?.text, "· assistant  fresh tail");
   assert.equal(cache.stats().misses, 1);
   assert(cache.stats().hits >= 1000);
 });
@@ -687,6 +841,60 @@ test("detail open target keeps chat and trace shortcuts separate", () => {
   assert.equal(detailOpenTargetForPane({ pane: "chat", actionCount: 10, hasLatestDetail: false }), "none");
 });
 
+test("detail open input treats Enter as submit, not a detail shortcut", () => {
+  assert.equal(detailOpenInputIntent({ key: { return: true } }), "submit");
+  assert.equal(shouldOpenDetailFromInput({ intent: "submit", hasFocusedTarget: true }), false);
+  assert.equal(detailOpenInputIntent({ character: "o", key: {} }), "focused");
+  assert.equal(shouldOpenDetailFromInput({ intent: "focused", hasFocusedTarget: true }), true);
+  assert.equal(shouldOpenDetailFromInput({ intent: "focused", hasFocusedTarget: false }), false);
+  assert.equal(detailOpenInputIntent({ character: "o", key: { ctrl: true } }), "explicit");
+  assert.equal(shouldOpenDetailFromInput({ intent: "explicit", hasFocusedTarget: false }), true);
+});
+
+test("TUI focus transition blocks empty Enter from opening command output", () => {
+  const transition = tuiFocusTransitionForInput({
+    key: { return: true },
+    detailOpen: false,
+    pane: "chat",
+    latestDetailSource: "command",
+    hasFocusedTarget: true
+  });
+
+  assert.equal(transition.reason, "empty-enter");
+  assert.equal(transition.allowed, false);
+  assert.equal(transition.focusBefore, "input");
+  assert.equal(transition.focusAfter, "input");
+  assert.equal(transition.detailAfter, false);
+  assert.equal(transition.paneAfter, "chat");
+  assert.match(transition.blockedReason ?? "", /must not open Command Output/);
+});
+
+test("TUI focus transition keeps explicit detail open and close paths separate", () => {
+  const open = tuiFocusTransitionForInput({
+    character: "o",
+    key: { ctrl: true },
+    detailOpen: false,
+    pane: "chat",
+    latestDetailSource: "command",
+    hasFocusedTarget: true
+  });
+  assert.equal(open.reason, "explicit-open-detail");
+  assert.equal(open.allowed, true);
+  assert.equal(open.focusAfter, "detail");
+  assert.equal(open.detailAfter, true);
+
+  const close = tuiFocusTransitionForInput({
+    key: { escape: true },
+    detailOpen: true,
+    pane: "chat",
+    latestDetailSource: "command"
+  });
+  assert.equal(close.reason, "close-detail");
+  assert.equal(close.allowed, true);
+  assert.equal(close.focusAfter, "input");
+  assert.equal(close.detailAfter, false);
+});
+
 test("inline inspector avoids command-output chrome unless real command detail is selected", () => {
   assert.deepEqual(inlineInspectorTargetForPane({
     pane: "overview",
@@ -734,6 +942,7 @@ test("inline inspector avoids command-output chrome unless real command detail i
 
   assert.equal(detailTitleForSource("command"), "Command Output");
   assert.equal(detailTitleForSource("command", true), "Latest Output");
+  assert.equal(detailTitleForSource("event"), "Event Detail");
   assert.equal(detailTitleForSource("event", true), "Trace Detail");
 });
 
@@ -753,6 +962,7 @@ test("chat status rail hides operator metadata unless it is actionable", () => {
     showPermission: false,
     showSandbox: false,
     showModel: false,
+    showCache: false,
     details: []
   });
 
@@ -770,7 +980,16 @@ test("chat status rail hides operator metadata unless it is actionable", () => {
   assert.equal(trace.showPermission, true);
   assert.equal(trace.showSandbox, true);
   assert.equal(trace.showModel, true);
+  assert.equal(trace.showCache, false);
   assert.deepEqual(trace.details, ["Trace"]);
+});
+
+test("TUI density resolves from pane, width, and explicit overrides", () => {
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "chat", columns: 160 }), "compact");
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 100 }), "compact");
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 120 }), "default");
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 160 }), "comfortable");
+  assert.equal(resolveTuiDensity({ density: "compact", pane: "log", columns: 160 }), "compact");
 });
 
 test("chat status rail shows approval metadata when user action is needed", () => {
@@ -790,7 +1009,47 @@ test("chat status rail shows approval metadata when user action is needed", () =
   assert.equal(approval.showPermission, false);
   assert.equal(approval.showSandbox, true);
   assert.equal(approval.showModel, false);
+  assert.equal(approval.showCache, false);
   assert.deepEqual(approval.details, ["session session-"]);
+});
+
+test("status rail density keeps compact terse and comfortable fully labeled", () => {
+  const compact = statusRailSummary({
+    appName: "Swarm",
+    state: "running",
+    route: "coding_loop",
+    permissionMode: "ask",
+    sandboxMode: "workspace-write",
+    model: "openai/gpt",
+    sessionId: "session-123456789",
+    view: "Trace",
+    cacheStatus: "cache_miss",
+    density: "compact"
+  });
+  assert.equal(compact.showRoute, false);
+  assert.equal(compact.showModel, false);
+  assert.equal(compact.showCache, true);
+  assert.deepEqual(compact.details, ["session session-"]);
+
+  const comfortable = statusRailSummary({
+    appName: "Swarm",
+    state: "running",
+    route: "coding_loop",
+    permissionMode: "ask",
+    sandboxMode: "workspace-write",
+    model: "openai/gpt",
+    sessionId: "session-123456789",
+    view: "Trace",
+    cacheStatus: "cache_miss",
+    checkpoint: "before-tui-polish",
+    density: "comfortable"
+  });
+  assert.equal(comfortable.showRoute, true);
+  assert.equal(comfortable.showPermission, true);
+  assert.equal(comfortable.showSandbox, true);
+  assert.equal(comfortable.showModel, true);
+  assert.equal(comfortable.showCache, true);
+  assert.deepEqual(comfortable.details, ["Trace", "session session-", "checkpoint before-tui-polish"]);
 });
 
 test("screen mode keeps the default TUI conversation-first", () => {
@@ -801,6 +1060,7 @@ test("screen mode keeps the default TUI conversation-first", () => {
     hasApproval: false,
     hasPendingPlan: false
   }), {
+    density: "compact",
     compactStatus: true,
     showCurrentAction: false,
     showInspector: false,
@@ -814,9 +1074,52 @@ test("screen mode keeps the default TUI conversation-first", () => {
     hasApproval: false,
     hasPendingPlan: false
   }), {
+    density: "comfortable",
     compactStatus: false,
     showCurrentAction: false,
     showInspector: true,
     primarySurface: "trace"
   });
+
+  assert.deepEqual(tuiScreenMode({
+    pane: "log",
+    columns: 160,
+    busy: false,
+    hasApproval: false,
+    hasPendingPlan: false,
+    density: "compact"
+  }), {
+    density: "compact",
+    compactStatus: true,
+    showCurrentAction: false,
+    showInspector: false,
+    primarySurface: "trace"
+  });
 });
+
+function assertNoOverlap(
+  first: { top: number; bottomExclusive: number },
+  second: { top: number; bottomExclusive: number }
+): void {
+  assert(first.bottomExclusive <= second.top || second.bottomExclusive <= first.top);
+}
+
+function assertZoneContains(
+  parent: { top: number; bottomExclusive: number },
+  child: { top: number; bottomExclusive: number }
+): void {
+  assert(child.top >= parent.top);
+  assert(child.bottomExclusive <= parent.bottomExclusive);
+}
+
+function assertNoRectOverlap(
+  first: { left: number; top: number; rightExclusive: number; bottomExclusive: number },
+  second: { left: number; top: number; rightExclusive: number; bottomExclusive: number }
+): void {
+  assert(
+    first.rightExclusive <= second.left ||
+    second.rightExclusive <= first.left ||
+    first.bottomExclusive <= second.top ||
+    second.bottomExclusive <= first.top
+  );
+}

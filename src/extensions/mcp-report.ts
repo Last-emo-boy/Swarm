@@ -15,15 +15,18 @@ export type McpCliReport = {
 
 export function buildMcpListReport(runtime: SwarmRuntime): McpCliReport {
   const servers = runtime.listMcpServers();
-  const summary = summarizeMcpCatalog(servers);
   const settings = mcpSettingsSnapshot(runtime);
+  const summary = summarizeMcpCatalog(servers, settings);
   const lines = [
     "Swarm MCP",
     `workspace=${runtime.getWorkspacePath()}`,
     `settings enabled=${settings.enabled ? "yes" : "no"} expose_gateway=${settings.expose_gateway_server ? "yes" : "no"} configured_servers=${settings.configured_servers} runtime_config=${settings.runtime_config}`,
     `summary servers=${summary.totals.servers} connected=${summary.totals.connected} pending=${summary.totals.pending} failed=${summary.totals.failed} disabled=${summary.totals.disabled} tools=${summary.totals.tools} resources=${summary.totals.resources} prompts=${summary.totals.prompts}`,
+    summary.runtime ? `runtime ${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
+    summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
+    summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
     ""
-  ];
+  ].filter((line): line is string => typeof line === "string");
   if (!servers.length) {
     lines.push("No MCP servers configured.");
     lines.push("");
@@ -249,7 +252,7 @@ function requireMcpServer(runtime: SwarmRuntime, selector: string): McpServerRec
   return server;
 }
 
-function mcpSettingsSnapshot(runtime: SwarmRuntime): {
+export function mcpSettingsSnapshot(runtime: SwarmRuntime): {
   enabled: boolean;
   expose_gateway_server: boolean;
   configured_servers: number;

@@ -37,6 +37,9 @@ test("Gateway approval routes list, inspect, and decide a live actionable approv
     assert.equal(pendingQueue.pending_requests[0]?.action, "file.write");
     assert.equal(pendingQueue.pending_requests[0]?.permission_name, "Write");
     assert.equal(pendingQueue.pending_requests[0]?.permission_decision, "ask");
+    assert.equal(pendingQueue.pending_requests[0]?.governance?.actor_binding.actor_id, "gateway.local");
+    assert.equal(pendingQueue.pending_requests[0]?.governance?.actor_binding.session_id, "gateway-approval-session");
+    assert.equal(pendingQueue.pending_requests[0]?.governance?.scope.actions.includes("file.write"), true);
     assert(pendingQueue.approvals.some((approval) =>
       approval.approval_id === approvalId && approval.status === "pending"
     ));
@@ -59,7 +62,7 @@ test("Gateway approval routes list, inspect, and decide a live actionable approv
 
     const decision = await postJson<ApprovalDecisionPayload>(
       `${started.url}/v1/approvals/${encodeURIComponent(approvalId)}/decision`,
-      { approved: true }
+      { approved: true, correlation_id: "corr-approval-decision-1" }
     );
     assert.equal(decision.status, 200);
     assert.deepEqual(decision.body, {
@@ -67,6 +70,30 @@ test("Gateway approval routes list, inspect, and decide a live actionable approv
       status: "approved",
       session_id: "gateway-approval-session"
     });
+    const trace = server.runtime.traceStore.list("gateway-approval-session");
+    const envelope = trace.find((item) => item.intent === "gateway.approval.decision");
+    assert(envelope, "missing gateway approval decision envelope");
+    assert.equal(envelope.from.agent_id, "gateway.local");
+    assert.equal(envelope.type, "blackboard.write");
+    assert.equal(envelope.correlation_id, "corr-approval-decision-1");
+    assert.equal(envelope.auth?.actor, "gateway.local.control");
+    assert(envelope.auth?.scopes?.includes("gateway.approval.decision"));
+    assert.equal((envelope.payload as { approval_id?: string }).approval_id, approvalId);
+    assert.equal((envelope.payload as { decision?: string }).decision, "approved");
+    const grantEnvelope = trace.find((item) => item.type === "approval.grant" && (item.payload as { approval_id?: string }).approval_id === approvalId);
+    assert(grantEnvelope, "missing approval grant envelope");
+    assert.equal(grantEnvelope.from.agent_id, "gateway.local");
+    assert.equal(grantEnvelope.correlation_id, "corr-approval-decision-1");
+    assert.equal((grantEnvelope.payload as { governance?: { actor_binding?: { actor_id?: string }; scope?: { target?: string } } }).governance?.actor_binding?.actor_id, "gateway.local");
+    assert.equal((grantEnvelope.payload as { governance?: { scope?: { target?: string } } }).governance?.scope?.target, "approved.txt");
+    const deliveries = server.runtime.envelopeDeliveryStore.list({
+      sessionId: "gateway-approval-session",
+      envelopeId: envelope.id
+    });
+    assert(deliveries.some((delivery) =>
+      delivery.status === "delivered" &&
+      delivery.recipient_agent_id === "main_swarm"
+    ));
 
     const invoke = await invokePromise;
     assert.equal(invoke.status, 200);
