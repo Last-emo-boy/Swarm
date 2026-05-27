@@ -25,7 +25,11 @@ test("operator cockpit keeps cache and LSP visible while surfacing recovery acti
       semanticEvidenceSources: ["typescript_semantic_fallback"],
       staleReasons: [],
       fallbackReasons: ["provider_unavailable"],
-      nextActions: ["fall back to file.read"]
+      nextActions: ["fall back to file.read"],
+      semanticPlanningState: "degraded",
+      semanticPlanningEvidenceSources: ["lsp.workspace_symbols"],
+      semanticPlanningDegradedReason: "References are unavailable.",
+      semanticPlanningNextAction: "fall back to file.read"
     },
     route: "coding_loop",
     activeWorkItem: "TASK-005",

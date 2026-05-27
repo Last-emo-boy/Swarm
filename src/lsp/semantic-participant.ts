@@ -130,6 +130,7 @@ export async function buildLspSemanticTaskPlan(input: LspSemanticPlanningInput):
     const diagnostics = diagnosticsFromResult(diagnosticsResult);
     const conflictEvidence = await semanticConflictEvidence({
       provider,
+      root: detection.workspaceRoot,
       symbols,
       diagnostics,
       ownershipHints: input.ownershipHints ?? [],
@@ -252,6 +253,7 @@ function semanticTaskHints(input: {
 
 async function semanticConflictEvidence(input: {
   provider: TypeScriptSemanticProvider;
+  root: string;
   symbols: LspSymbol[];
   diagnostics: LspSemanticRiskHotspot[];
   ownershipHints: LspSemanticOwnershipHint[];
@@ -260,7 +262,8 @@ async function semanticConflictEvidence(input: {
   const conflicts: LspSemanticConflictEvidence[] = [];
   for (const hint of input.ownershipHints) {
     const symbol = hint.symbol ? input.symbols.find((item) => item.name === hint.symbol) : undefined;
-    const file = hint.file;
+    const file = resolve(input.root, hint.file);
+    const displayFile = displayPath(input.root, file);
     const position = hint.range?.start ?? (symbol ? { line: symbol.line, column: symbol.column } : undefined);
     const references = position
       ? referenceStrings(await input.provider.references({
@@ -271,7 +274,7 @@ async function semanticConflictEvidence(input: {
           contextLines: 0
         }).catch(() => undefined))
       : [];
-    const diagnostics = input.diagnostics.filter((diagnostic) => diagnostic.file === hint.file || (hint.symbol && diagnostic.symbol === hint.symbol));
+    const diagnostics = input.diagnostics.filter((diagnostic) => diagnostic.file === displayFile || diagnostic.file === hint.file || (hint.symbol && diagnostic.symbol === hint.symbol));
     if (!references.length && !diagnostics.length && !hint.symbol) {
       continue;
     }
@@ -279,7 +282,7 @@ async function semanticConflictEvidence(input: {
       conflict_id: stableId("semantic_conflict", hint.owner_actor_id, hint.task_id, hint.file, hint.symbol, references),
       owner_actor_id: hint.owner_actor_id,
       task_id: hint.task_id,
-      file: hint.file,
+      file: displayFile,
       symbol: hint.symbol,
       reason: hint.reason ?? `Existing ownership overlaps semantic symbol/reference evidence for ${hint.symbol ?? hint.file}.`,
       references,
@@ -351,4 +354,11 @@ function firstString(values: Array<string | undefined>): string | undefined {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))].sort();
+}
+
+function displayPath(root: string, file: string): string {
+  const normalizedRoot = resolve(root).replace(/\\/g, "/");
+  const normalizedFile = resolve(file).replace(/\\/g, "/");
+  const prefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
+  return normalizedFile.startsWith(prefix) ? normalizedFile.slice(prefix.length) || "." : normalizedFile;
 }

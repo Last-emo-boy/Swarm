@@ -23,6 +23,7 @@ import type { CapabilityFilter } from "../extensions/types.js";
 import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog, summarizeSkillCatalog } from "../extensions/catalog-summary.js";
 import { mcpSettingsSnapshot } from "../extensions/mcp-report.js";
 import { skillSettingsSnapshot } from "../extensions/skill-report.js";
+import { getGlobalLspManager } from "../lsp/manager.js";
 import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
 import { buildSessionSnapshot, buildWorkspaceSnapshot } from "./session-view.js";
 import {
@@ -216,6 +217,7 @@ const PUBLIC_API_SURFACE = [
   "/v1/mcp/servers/:id/resources/read",
   "/v1/mcp/servers/:id/prompts",
   "/v1/mcp/servers/:id/prompts/get",
+  "/v1/lsp/status",
   "/v1/symphony/preview",
   "/v1/symphony/tick",
   "/v1/symphony/status",
@@ -560,6 +562,11 @@ export class SwarmGatewayServer {
       return;
     }
 
+    if (resource === "lsp") {
+      await this.handleLsp(request, response, url, id);
+      return;
+    }
+
     if (resource === "symphony") {
       await this.handleSymphony(request, response, url, id, child);
       return;
@@ -616,6 +623,22 @@ export class SwarmGatewayServer {
       ? buildSessionWorkBoard(this.runtime, targetSessionId)
       : buildWorkspaceWorkBoard(this.runtime, { limit });
     sendJson(response, 200, board);
+  }
+
+  private async handleLsp(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    action?: string
+  ): Promise<void> {
+    if (request.method === "GET" && (!action || action === "status")) {
+      const provider = optionalString(url.searchParams.get("provider"));
+      const report = await getGlobalLspManager(this.runtime.workspaceRoot()).status(provider);
+      sendJson(response, 200, report);
+      return;
+    }
+
+    throw new HttpError(404, "Unknown LSP route.");
   }
 
   private async handleSymphony(

@@ -7,6 +7,7 @@ import { defaultSwarmSettings } from "../config/settings.js";
 import { normalizeToolAction, runLocalTool } from "../tools/local-tools.js";
 import type { LocalToolContext } from "../tools/types.js";
 import { detectLspWorkspaceRoot, languageForFile } from "./root-detection.js";
+import { buildLspSemanticTaskPlan } from "./semantic-participant.js";
 
 test("detectLspWorkspaceRoot finds nearest TypeScript project root", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "swarm-lsp-root-"));
@@ -174,6 +175,95 @@ test("LSP semantic evidence marks partial rename previews stale with changed fil
     assert.match(String(evidence.stale_reason), /truncated|partial/);
     assert.deepEqual(evidence.changed_files, ["src/use.ts"]);
     assert.deepEqual(evidence.range, { start: { line: 2, column: 22 }, end: { line: 2, column: 25 } });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("LSP semantic planning participant produces TypeScript task hints", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-lsp-planning-"));
+  try {
+    await writeFixtureProject(workspace);
+
+    const plan = await buildLspSemanticTaskPlan({
+      workspace,
+      objective: "Refactor add usage and fix arithmetic diagnostics",
+      query: "add",
+      files: ["src/use.ts"]
+    });
+
+    assert.equal(plan.schema_version, "swarm.lsp_semantic_task_plan.v1");
+    assert.equal(plan.participant_id, "capability:lsp:planning");
+    assert.equal(plan.state, "active");
+    assert.equal(plan.language, "typescript");
+    assert.equal(plan.provider, "typescript-language-service");
+    assert.equal(plan.conflict_report.status, "clear");
+    assert(plan.task_hints.some((hint) => hint.kind === "semantic_task_scope" && hint.affected_symbols.some((symbol) => symbol.name === "add")));
+    assert(plan.task_hints.some((hint) => hint.kind === "diagnostic_hotspot" && hint.risk_hotspots.some((hotspot) => /assignable|类型|参数/i.test(hotspot.message))));
+    assert(plan.task_hints.some((hint) => hint.candidate_files.includes("src/use.ts") || hint.candidate_files.includes("src/math.ts")));
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("LSP semantic planning degrades without failing for unsupported languages", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-lsp-planning-unsupported-"));
+  try {
+    await writeFile(join(workspace, "pyproject.toml"), "[project]\nname = \"fixture\"\n", "utf8");
+    await writeFile(join(workspace, "service.py"), "def handler():\n    return 1\n", "utf8");
+
+    const plan = await buildLspSemanticTaskPlan({
+      workspace,
+      objective: "Plan Python handler update",
+      files: ["service.py"]
+    });
+
+    assert.equal(plan.state, "degraded");
+    assert.equal(plan.language, "python");
+    assert.match(plan.degraded_reason ?? "", /python/);
+    assert.match(plan.recovery_suggestion ?? "", /file\.grep/);
+    assert.match(plan.recovery_suggestion ?? "", /file\.read/);
+    assert.equal(plan.conflict_report.status, "degraded");
+    assert.deepEqual(plan.task_hints, []);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("LSP semantic planning conflict report includes symbol and reference evidence", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-lsp-planning-conflict-"));
+  try {
+    await writeFixtureProject(workspace);
+
+    const plan = await buildLspSemanticTaskPlan({
+      workspace,
+      objective: "Change add contract safely",
+      query: "add",
+      files: ["src/use.ts"],
+      ownershipHints: [{
+        owner_actor_id: "actor:worker-a",
+        task_id: "TASK-A",
+        file: "src/math.ts",
+        symbol: "add",
+        range: {
+          start: { line: 2, column: 17 },
+          end: { line: 2, column: 20 }
+        },
+        reason: "actor:worker-a owns the add API change"
+      }]
+    });
+
+    assert.equal(plan.state, "active");
+    assert.equal(plan.conflict_report.status, "conflict");
+    const conflict = plan.conflict_report.conflicts[0];
+    assert.equal(conflict.owner_actor_id, "actor:worker-a");
+    assert.equal(conflict.task_id, "TASK-A");
+    assert.equal(conflict.file, "src/math.ts");
+    assert.equal(conflict.symbol, "add");
+    assert.match(conflict.reason, /add API/);
+    assert(conflict.references.some((reference) => reference.includes("src/math.ts")));
+    assert(conflict.references.some((reference) => reference.includes("src/use.ts")));
+    assert(plan.task_hints.some((hint) => hint.kind === "ownership_conflict" && hint.summary.includes("actor:worker-a")));
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

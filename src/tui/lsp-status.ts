@@ -1,4 +1,5 @@
 import type { LspProviderStatus, LspStatusReport } from "../lsp/manager.js";
+import type { LspSemanticPlanningState } from "../lsp/types.js";
 
 export type TuiLspHealthStatus =
   | "disabled"
@@ -27,6 +28,11 @@ export type TuiLspStatusSummary = {
   staleReasons: string[];
   fallbackReasons: string[];
   nextActions: string[];
+  semanticPlanningState: LspSemanticPlanningState | "unknown";
+  semanticPlanningParticipant?: string;
+  semanticPlanningDegradedReason?: string;
+  semanticPlanningNextAction?: string;
+  semanticPlanningEvidenceSources: string[];
 };
 
 export function lspHealthStatusFromReport(report: LspStatusReport | undefined): TuiLspHealthStatus {
@@ -34,13 +40,14 @@ export function lspHealthStatusFromReport(report: LspStatusReport | undefined): 
 }
 
 export function lspStatusSummaryFromReport(report: LspStatusReport | undefined): TuiLspStatusSummary {
+  const semanticPlanning = report?.semanticPlanning;
   const relevant = report?.providers.filter((provider) => provider.detected) ?? [];
   if (relevant.length === 0) {
     const providers = report?.providers ?? [];
     if (providers.length > 0 && providers.every((provider) => !provider.detected)) {
-      return emptySummary("no-provider", uniqueStrings(providers.map((provider) => provider.reason ?? `${provider.providerId} provider not detected.`)));
+      return emptySummary("no-provider", uniqueStrings(providers.map((provider) => provider.reason ?? `${provider.providerId} provider not detected.`)), semanticPlanning);
     }
-    return emptySummary("unknown");
+    return emptySummary("unknown", [], semanticPlanning);
   }
   const failedProviders = relevant.filter((provider) => provider.status === "failed" || provider.status === "exited");
   const unavailableProviders = relevant.filter((provider) => provider.status === "unavailable" || !provider.available);
@@ -63,7 +70,6 @@ export function lspStatusSummaryFromReport(report: LspStatusReport | undefined):
   const nextActions = uniqueStrings(relevant.flatMap((provider) =>
     provider.capabilities?.flatMap((capability) => capability.next_action ? [capability.next_action] : []) ?? []
   )).slice(0, 4);
-
   let health: TuiLspHealthStatus = "unknown";
   if (relevant.some((provider) => provider.status === "failed" || provider.status === "exited")) {
     health = "failed";
@@ -98,7 +104,12 @@ export function lspStatusSummaryFromReport(report: LspStatusReport | undefined):
     semanticEvidenceSources,
     staleReasons,
     fallbackReasons,
-    nextActions
+    nextActions,
+    semanticPlanningState: semanticPlanning?.state ?? "unknown",
+    semanticPlanningParticipant: semanticPlanning?.participant_id,
+    semanticPlanningDegradedReason: semanticPlanning?.degraded_reason,
+    semanticPlanningNextAction: semanticPlanning?.next_action,
+    semanticPlanningEvidenceSources: uniqueStrings(semanticPlanning?.providers.flatMap((provider) => provider.evidence_sources) ?? [])
   };
 }
 
@@ -140,7 +151,11 @@ function providerHasPartialCapability(provider: LspProviderStatus): boolean {
   ) ?? false;
 }
 
-function emptySummary(health: TuiLspHealthStatus, nextActions: string[] = []): TuiLspStatusSummary {
+function emptySummary(
+  health: TuiLspHealthStatus,
+  nextActions: string[] = [],
+  semanticPlanning?: LspStatusReport["semanticPlanning"]
+): TuiLspStatusSummary {
   return {
     health,
     providers: 0,
@@ -153,7 +168,12 @@ function emptySummary(health: TuiLspHealthStatus, nextActions: string[] = []): T
     semanticEvidenceSources: [],
     staleReasons: [],
     fallbackReasons: [],
-    nextActions
+    nextActions,
+    semanticPlanningState: semanticPlanning?.state ?? "unknown",
+    semanticPlanningParticipant: semanticPlanning?.participant_id,
+    semanticPlanningDegradedReason: semanticPlanning?.degraded_reason,
+    semanticPlanningNextAction: semanticPlanning?.next_action,
+    semanticPlanningEvidenceSources: uniqueStrings(semanticPlanning?.providers.flatMap((provider) => provider.evidence_sources) ?? [])
   };
 }
 

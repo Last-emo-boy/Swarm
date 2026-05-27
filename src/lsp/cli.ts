@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { LspManager, type LspLogReport, type LspProviderStatus, type LspStatusReport } from "./manager.js";
+import type { LspSemanticPlanningState } from "./types.js";
 
 type LspCliStatusSummary = {
   health: string;
@@ -14,6 +15,11 @@ type LspCliStatusSummary = {
   staleReasons: string[];
   fallbackReasons: string[];
   nextActions: string[];
+  semanticPlanningState: LspSemanticPlanningState | "unknown";
+  semanticPlanningParticipant?: string;
+  semanticPlanningDegradedReason?: string;
+  semanticPlanningNextAction?: string;
+  semanticPlanningEvidenceSources: string[];
 };
 
 export async function runLspCommand(values: string[]): Promise<void> {
@@ -59,6 +65,9 @@ export function formatLspStatusReport(report: LspStatusReport): string {
     "LSP",
     `workspace=${report.workspace}`,
     `health=${summary.health} semantic_graph=${summary.semanticGraphHealth} providers=${summary.providers} ready=${summary.readyProviders} fallback=${summary.fallbackProviders} partial=${summary.partialProviders} unavailable=${summary.unavailableProviders} failed=${summary.failedProviders}`,
+    `semantic_planning=${summary.semanticPlanningState}${summary.semanticPlanningParticipant ? ` participant=${summary.semanticPlanningParticipant}` : ""}${summary.semanticPlanningEvidenceSources.length ? ` sources=${summary.semanticPlanningEvidenceSources.join(",")}` : ""}`,
+    summary.semanticPlanningDegradedReason ? `semantic_planning_reason=${summary.semanticPlanningDegradedReason}` : undefined,
+    summary.semanticPlanningNextAction ? `semantic_planning_next=${summary.semanticPlanningNextAction}` : undefined,
     summary.semanticEvidenceSources.length ? `semantic_sources=${summary.semanticEvidenceSources.join(",")}` : undefined,
     summary.staleReasons.length ? `stale_reasons=${summary.staleReasons.join(",")}` : undefined,
     summary.fallbackReasons.length ? `fallback_reasons=${summary.fallbackReasons.join(",")}` : undefined,
@@ -90,6 +99,7 @@ function lspStatusSummary(report: LspStatusReport): LspCliStatusSummary {
       !capability.available && capability.fallback_reason ? [capability.fallback_reason] : []
     ) ?? []
   ));
+  const semanticPlanning = report.semanticPlanning;
   return {
     health: lspHealth({
       failed: failedProviders.length,
@@ -118,7 +128,12 @@ function lspStatusSummary(report: LspStatusReport): LspCliStatusSummary {
     fallbackReasons,
     nextActions: uniqueStrings(relevant.flatMap((provider) =>
       provider.capabilities?.flatMap((capability) => capability.next_action ? [capability.next_action] : []) ?? []
-    )).slice(0, 4)
+    )).slice(0, 4),
+    semanticPlanningState: semanticPlanning?.state ?? "unknown",
+    semanticPlanningParticipant: semanticPlanning?.participant_id,
+    semanticPlanningDegradedReason: semanticPlanning?.degraded_reason,
+    semanticPlanningNextAction: semanticPlanning?.next_action,
+    semanticPlanningEvidenceSources: uniqueStrings(semanticPlanning?.providers.flatMap((provider) => provider.evidence_sources) ?? [])
   };
 }
 

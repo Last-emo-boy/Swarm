@@ -126,6 +126,45 @@ test("lsp summary ignores undetected provider capability fallbacks", () => {
   assert.deepEqual(summary.nextActions, []);
 });
 
+test("lsp summary exposes semantic planning participant state", () => {
+  const summary = lspStatusSummaryFromReport({
+    workspace: "E:\\Playground\\Swarm",
+    generatedAt: "2026-05-21T00:00:00.000Z",
+    providers: [
+      provider({
+        providerId: "typescript",
+        status: "ready",
+        detected: true,
+        available: true
+      })
+    ],
+    semanticPlanning: {
+      schema_version: "swarm.lsp_semantic_planning.v1",
+      participant_id: "capability:lsp:planning",
+      state: "degraded",
+      generated_at: "2026-05-21T00:00:00.000Z",
+      providers: [{
+        provider_id: "typescript",
+        state: "degraded",
+        language_ids: ["typescript"],
+        evidence_sources: ["lsp.workspace_symbols", "lsp.diagnostics"],
+        reason: "References are not available.",
+        next_action: "Use file.grep/file.read for conflict evidence."
+      }],
+      task_hint_capable: true,
+      conflict_evidence_capable: false,
+      degraded_reason: "References are not available.",
+      next_action: "Use file.grep/file.read for conflict evidence."
+    }
+  });
+
+  assert.equal(summary.semanticPlanningState, "degraded");
+  assert.equal(summary.semanticPlanningParticipant, "capability:lsp:planning");
+  assert.equal(summary.semanticPlanningDegradedReason, "References are not available.");
+  assert.equal(summary.semanticPlanningNextAction, "Use file.grep/file.read for conflict evidence.");
+  assert.deepEqual(summary.semanticPlanningEvidenceSources, ["lsp.workspace_symbols", "lsp.diagnostics"]);
+});
+
 function report(providers: LspProviderStatus[]): LspStatusReport {
   return {
     workspace: "E:\\Playground\\Swarm",

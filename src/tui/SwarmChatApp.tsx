@@ -4822,6 +4822,9 @@ function formatLspStatusReport(report: LspStatusReport): string {
     `generated=${report.generatedAt}`,
     `health=${summary.health} providers=${summary.providers} ready=${summary.readyProviders} fallback=${summary.fallbackProviders} partial=${summary.partialProviders} unavailable=${summary.unavailableProviders} failed=${summary.failedProviders}`,
     `semantic_graph=${summary.semanticGraphHealth}${summary.semanticEvidenceSources.length ? ` sources=${summary.semanticEvidenceSources.join(",")}` : ""}`,
+    `semantic_planning=${summary.semanticPlanningState}${summary.semanticPlanningParticipant ? ` participant=${summary.semanticPlanningParticipant}` : ""}${summary.semanticPlanningEvidenceSources.length ? ` sources=${summary.semanticPlanningEvidenceSources.join(",")}` : ""}`,
+    summary.semanticPlanningDegradedReason ? `semantic_planning_reason=${summary.semanticPlanningDegradedReason}` : undefined,
+    summary.semanticPlanningNextAction ? `semantic_planning_next=${summary.semanticPlanningNextAction}` : undefined,
     summary.staleReasons.length ? `stale_reasons=${summary.staleReasons.join(",")}` : undefined,
     summary.fallbackReasons.length ? `fallback_reasons=${summary.fallbackReasons.join(",")}` : undefined,
     summary.nextActions.length ? `next=${summary.nextActions.join(" | ")}` : undefined,
@@ -4857,7 +4860,25 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function lspStatusReportSignature(report: LspStatusReport): string {
-  return report.providers
+  const semanticPlanning = report.semanticPlanning
+    ? [
+        "semantic",
+        report.semanticPlanning.state,
+        report.semanticPlanning.participant_id,
+        report.semanticPlanning.degraded_reason ?? "",
+        report.semanticPlanning.next_action ?? "",
+        ...report.semanticPlanning.providers.map((provider) => [
+          provider.provider_id,
+          provider.state,
+          provider.reason ?? "",
+          provider.next_action ?? "",
+          provider.evidence_sources.join(",")
+        ].join("="))
+      ].join(":")
+    : "semantic:none";
+  return [
+    semanticPlanning,
+    ...report.providers
     .map((provider) => [
       provider.providerId,
       provider.status,
@@ -4876,7 +4897,7 @@ function lspStatusReportSignature(report: LspStatusReport): string {
         capability.next_action ?? ""
       ].join("="))
     ].join(":"))
-    .join("|");
+  ].join("|");
 }
 
 function routeStateFromControllerEvent(event: ControllerEvent): RouteState | undefined {

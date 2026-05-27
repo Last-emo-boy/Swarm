@@ -111,13 +111,26 @@ test("lsp cli status emits json provider report", async () => {
     });
 
     assert.equal(result.code, 0, result.stderr);
-    const parsed = JSON.parse(result.stdout) as { workspace: string; providers: Array<{ providerId: string; detected: boolean; available: boolean; status: string }> };
+    const parsed = JSON.parse(result.stdout) as {
+      workspace: string;
+      providers: Array<{ providerId: string; detected: boolean; available: boolean; status: string }>;
+      semanticPlanning?: {
+        participant_id: string;
+        state: string;
+        task_hint_capable: boolean;
+        conflict_evidence_capable: boolean;
+      };
+    };
     assert.equal(parsed.workspace, fixture.workspace);
     assert.equal(parsed.providers.length, 1);
     assert.equal(parsed.providers[0].providerId, "typescript");
     assert.equal(parsed.providers[0].detected, true);
     assert.equal(parsed.providers[0].available, true);
     assert.equal(parsed.providers[0].status, "ready");
+    assert.equal(parsed.semanticPlanning?.participant_id, "capability:lsp:planning");
+    assert.equal(parsed.semanticPlanning?.state, "active");
+    assert.equal(parsed.semanticPlanning?.task_hint_capable, true);
+    assert.equal(parsed.semanticPlanning?.conflict_evidence_capable, true);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
