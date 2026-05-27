@@ -137,6 +137,84 @@ export type SemanticEvidence = {
   changed_files?: string[];
 };
 
+export type LspSemanticPlanningState = "active" | "degraded" | "unavailable";
+
+export type LspSemanticPlanningProvider = {
+  provider_id: string;
+  state: LspSemanticPlanningState;
+  language_ids: string[];
+  evidence_sources: string[];
+  reason?: string;
+  next_action?: string;
+};
+
+export type LspSemanticPlanningStatus = {
+  schema_version: "swarm.lsp_semantic_planning.v1";
+  participant_id: "capability:lsp:planning";
+  state: LspSemanticPlanningState;
+  generated_at: string;
+  providers: LspSemanticPlanningProvider[];
+  task_hint_capable: boolean;
+  conflict_evidence_capable: boolean;
+  degraded_reason?: string;
+  next_action?: string;
+};
+
+export type LspSemanticOwnershipHint = {
+  owner_actor_id: string;
+  task_id?: string;
+  file: string;
+  symbol?: string;
+  range?: LspRange;
+  reason?: string;
+};
+
+export type LspSemanticRiskHotspot = {
+  file: string;
+  severity: LspDiagnostic["severity"] | "unknown";
+  message: string;
+  symbol?: string;
+  range?: LspRange;
+};
+
+export type LspSemanticTaskHint = {
+  hint_id: string;
+  kind: "semantic_task_scope" | "diagnostic_hotspot" | "ownership_conflict";
+  summary: string;
+  confidence: number;
+  affected_symbols: LspSymbol[];
+  candidate_files: string[];
+  risk_hotspots: LspSemanticRiskHotspot[];
+};
+
+export type LspSemanticConflictEvidence = {
+  conflict_id: string;
+  owner_actor_id: string;
+  task_id?: string;
+  file: string;
+  symbol?: string;
+  reason: string;
+  references: string[];
+  diagnostics: LspSemanticRiskHotspot[];
+};
+
+export type LspSemanticTaskPlan = {
+  schema_version: "swarm.lsp_semantic_task_plan.v1";
+  participant_id: "capability:lsp:planning";
+  state: LspSemanticPlanningState;
+  objective: string;
+  root: string;
+  language?: string;
+  provider?: string;
+  degraded_reason?: string;
+  recovery_suggestion?: string;
+  task_hints: LspSemanticTaskHint[];
+  conflict_report: {
+    status: "clear" | "conflict" | "degraded";
+    conflicts: LspSemanticConflictEvidence[];
+  };
+};
+
 export type LspOperationStatus = {
   code: "ready" | "partial" | "symbol_not_found" | "unsupported_language" | "request_timeout" | "failed" | string;
   language?: string;

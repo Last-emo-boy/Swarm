@@ -7,6 +7,8 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { getSwarmPaths } from "../config/settings.js";
 import { lspCapabilityFactsForProvider, type LspCapabilityFact } from "./capabilities.js";
+import { buildLspSemanticPlanningStatus } from "./semantic-participant.js";
+import type { LspSemanticPlanningStatus } from "./types.js";
 
 export type LspProviderId = "typescript" | "python" | "rust" | "go";
 
@@ -45,6 +47,7 @@ export type LspStatusReport = {
   workspace: string;
   generatedAt: string;
   providers: LspProviderStatus[];
+  semanticPlanning?: LspSemanticPlanningStatus;
 };
 
 export type LspLogReport = {
@@ -135,11 +138,13 @@ export class LspManager {
   }
 
   async status(providerId?: string): Promise<LspStatusReport> {
-    const providers = selectedProviders(providerId).map((provider) => this.providerStatus(provider));
+    const generatedAt = new Date().toISOString();
+    const providers = await Promise.all(selectedProviders(providerId).map((provider) => this.providerStatus(provider)));
     return {
       workspace: this.workspace,
-      generatedAt: new Date().toISOString(),
-      providers: await Promise.all(providers)
+      generatedAt,
+      providers,
+      semanticPlanning: buildLspSemanticPlanningStatus({ providers }, generatedAt)
     };
   }
 
@@ -155,10 +160,12 @@ export class LspManager {
         statuses.push(await this.providerStatus(provider));
       }
     }
+    const generatedAt = new Date().toISOString();
     return {
       workspace: this.workspace,
-      generatedAt: new Date().toISOString(),
-      providers: statuses
+      generatedAt,
+      providers: statuses,
+      semanticPlanning: buildLspSemanticPlanningStatus({ providers: statuses }, generatedAt)
     };
   }
 
