@@ -156,7 +156,7 @@ export type RunBoardAction =
   | { type: "evidence/append"; evidence: RunBoardEvidence }
   | { type: "attention/upsert"; item: AttentionItemPatch; at: string }
   | { type: "attention/resolve"; id: string; at: string; resolution?: string }
-  | { type: "attention/materialize-slow"; at: string; workerIds?: string[]; resolution?: string }
+  | { type: "attention/archive-derived-slow"; at: string; workerIds?: string[]; resolution?: string }
   | { type: "result/preview"; preview: Partial<ResultPreview>; at: string }
   | { type: "result/final"; card: ResultCard; at: string };
 

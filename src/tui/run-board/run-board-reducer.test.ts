@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createInitialRunBoardState, reduceRunBoardActions, runBoardReducer } from "./run-board-reducer.js";
 import { formatWorkerRow } from "./run-board-row-format.js";
-import { selectAttentionHistory, selectAttentionItems, selectRunBoardPhase, selectWorkerRows, summarizeRunBoardCounts } from "./run-board-selectors.js";
+import { selectAttentionHistory, selectAttentionItems, selectRunBoardPhase, selectRunBoardSurface, selectWorkerRows, summarizeRunBoardCounts } from "./run-board-selectors.js";
 
 const AT = "2026-05-28T00:00:00.000Z";
 
@@ -71,6 +71,24 @@ test("run board reducer links attention and evidence", () => {
 
   assert.equal(state.phase, "waiting-attention");
   assert.deepEqual(selectAttentionItems(state).map((item) => item.evidence), [["npm test failed"]]);
+});
+
+test("run board surface focuses active attention without a subject worker", () => {
+  const state = runBoardReducer(createInitialRunBoardState({ now: AT }), {
+    type: "attention/upsert",
+    at: AT,
+    item: {
+      id: "approval:1",
+      kind: "approval",
+      severity: "blocking",
+      title: "Approval needed",
+      summary: "Allow shell command",
+      recommendation: "Approve only if the command matches the objective.",
+      actions: [{ key: "d", label: "details" }]
+    }
+  });
+
+  assert.equal(selectRunBoardSurface(state, { now: AT }).focus, "Approval needed");
 });
 
 test("run board reducer ignores repeated display-equivalent evidence", () => {
@@ -215,7 +233,7 @@ test("selectors derive slow attention from stale active workers", () => {
   assert.equal(summarizeRunBoardCounts(state, { now: "2026-05-28T00:01:12.000Z" }).stuck, 1);
 });
 
-test("run board reducer materializes resolved slow attention for result history", () => {
+test("run board reducer archives resolved slow attention for result history", () => {
   const stale = reduceRunBoardActions(createInitialRunBoardState({
     now: AT,
     config: { slowThresholdMs: 60_000 }
@@ -245,7 +263,7 @@ test("run board reducer materializes resolved slow attention for result history"
   ]);
 
   const withHistory = reduceRunBoardActions(stale, [{
-    type: "attention/materialize-slow",
+    type: "attention/archive-derived-slow",
     at: "2026-05-28T00:01:12.000Z",
     workerIds: ["worker:test"],
     resolution: "waited; command completed successfully"

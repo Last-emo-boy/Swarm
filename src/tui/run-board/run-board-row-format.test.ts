@@ -26,6 +26,7 @@ test("worker row formatter respects terminal width budgets", () => {
     assert.match(line, /Test Runner/);
     assert.match(line, /01:12/);
     assert(line.indexOf("running") < line.indexOf("01:12"), `${columns}: expected action before elapsed age`);
+    assert.doesNotMatch(line, /\bactive\b/);
   }
 });
 

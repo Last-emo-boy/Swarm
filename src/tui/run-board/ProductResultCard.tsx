@@ -8,63 +8,87 @@ import {
   statusBadge,
   visualTokenColor
 } from "../theme.js";
-import type { AttentionItemView, ResultPreview, RunBoardResultAction } from "./run-board-types.js";
 import type { ResultCard } from "../../runtime/result-card.js";
 import type { TuiDensity } from "../conversation-layout.js";
 import { RunBoardPanel } from "./RunBoardSurface.js";
 import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
+import {
+  productResultCardViewFromParts,
+  type ProductResultCardView
+} from "./product-result-card-selectors.js";
+import type { AttentionItemView, ResultPreview, RunBoardResultAction } from "./run-board-types.js";
 
 export function ProductResultCard(props: {
+  view?: ProductResultCardView;
   card?: ResultCard;
-  preview: ResultPreview;
-  attentionHistory: AttentionItemView[];
+  preview?: ResultPreview;
+  attentionHistory?: AttentionItemView[];
   detailHint?: string;
   density?: TuiDensity;
   onNextAction?: (action: RunBoardResultAction) => void;
 }): React.ReactElement {
+  const view = props.view ?? productResultCardViewFromParts({
+    card: props.card,
+    preview: props.preview ?? emptyPreview(),
+    attentionHistory: props.attentionHistory ?? [],
+    detailHint: props.detailHint
+  });
   return (
     <Box flexDirection="column" width="100%">
-      <RunBoardPanel title={props.card ? "Result" : "Result Preview"}>
-        {props.card
-          ? <ProductResultBody card={props.card} detailHint={props.detailHint} density={props.density} />
+      <RunBoardPanel title={view.title}>
+        {view.finished
+          ? <ProductResultBody view={view} density={props.density} />
           : <Text color={visualTokenColor("text.muted")}>Not finished. Enter an objective or use /continue.</Text>}
       </RunBoardPanel>
-      {props.card ? <WorkerSummary preview={props.preview} density={props.density} /> : null}
-      {props.card ? <AttentionHistory items={props.attentionHistory} density={props.density} /> : null}
-      {props.card ? <NextActions actions={resultNextActions(props.card.next)} onAction={props.onNextAction} density={props.density} /> : null}
+      {view.finished ? <WorkerSummary view={view} density={props.density} /> : null}
+      {view.finished ? <AttentionHistory view={view} density={props.density} /> : null}
+      {view.finished ? <NextActions actions={view.nextActions} onAction={props.onNextAction} density={props.density} /> : null}
     </Box>
   );
 }
 
+function emptyPreview(): ResultPreview {
+  return {
+    status: "empty",
+    summary: "Pending. No run evidence yet.",
+    changedFiles: [],
+    checks: [],
+    artifacts: [],
+    blockers: [],
+    confidence: "low",
+    contributors: [],
+    risks: [],
+    nextActions: []
+  };
+}
+
 function ProductResultBody(props: {
-  card: ResultCard;
-  detailHint?: string;
+  view: ProductResultCardView;
   density?: TuiDensity;
 }): React.ReactElement {
-  const card = props.card;
+  const view = props.view;
   const changedLimit = props.density === "compact" ? 2 : 4;
   const checkLimit = props.density === "compact" ? 2 : 4;
-  const riskLimit = props.density === "compact" ? 1 : 2;
   return (
     <Box flexDirection="column" width="100%">
       <ResultLine label="Status" spans={[
-        { text: statusBadge(card.status), color: card.status === "completed" ? "status.success" : card.status === "failed" ? "status.danger" : "status.warning", bold: true },
+        { text: statusBadge(view.status), color: view.status === "success" ? "status.success" : view.status === "failed" ? "status.danger" : "status.warning", bold: true },
         { text: " ", color: "text.muted" },
-        { text: card.status, color: "text.primary" }
+        { text: view.runtimeStatus ?? view.status, color: "text.primary" }
       ]} />
-      <ResultLine label="Session" value={`${compactValue(card.sessionId, 18)}  route: ${routeBadge(card.route)}`} />
-      <ResultLine label="Risk" value={formatRiskSummary(card)} tone={card.risks.some((risk) => risk.level === "high") ? "status.danger" : card.risks.length ? "status.warning" : "status.success"} />
-      <ResultLine label="Summary" value={card.summary} />
-      <ResultList label="Changed" empty="none" values={card.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, card.changedFiles.length - changedLimit)} />
+      {view.sessionId && view.route ? <ResultLine label="Session" value={`${compactValue(view.sessionId, 18)}  route: ${routeBadge(view.route)}`} /> : null}
+      <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
+      <ResultLine label="Summary" value={view.summary} />
+      <ResultList label="Changed" empty="none" values={view.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, view.changedFiles.length - changedLimit)} />
       <ResultList
         label="Verified"
         empty="none"
-        values={card.checks.slice(0, checkLimit).map((check) => `${statusBadge(check.status)} ${check.command}`)}
-        remaining={Math.max(0, card.checks.length - checkLimit)}
+        values={view.checks.slice(0, checkLimit).map((check) => `${statusBadge(check.status)} ${check.command}`)}
+        remaining={Math.max(0, view.checks.length - checkLimit)}
         badgeAware
       />
-      {card.review.summary ? <ResultLine label="Review" value={`${statusBadge(card.review.status)} ${card.review.summary}`} badgeAware tone={checkStatusTone(card.review.status)} /> : null}
-      {props.detailHint ? <Text color={visualTokenColor("text.muted")} wrap="truncate">{props.detailHint}</Text> : null}
+      {view.review?.summary ? <ResultLine label="Review" value={`${statusBadge(view.review.status)} ${view.review.summary}`} badgeAware tone={checkStatusTone(view.review.status)} /> : null}
+      {view.detailHint ? <Text color={visualTokenColor("text.muted")} wrap="truncate">{view.detailHint}</Text> : null}
     </Box>
   );
 }
@@ -123,22 +147,12 @@ function badgeColor(value: string): SemanticTextSpan["color"] | undefined {
   }
 }
 
-function formatRiskSummary(card: ResultCard): string {
-  if (!card.risks.length) {
-    return "low";
-  }
-  return card.risks.slice(0, 2).map((risk) => {
-    const message = "message" in risk ? risk.message : "";
-    return message ? `${risk.level}: ${message}` : risk.level;
-  }).join(" | ");
-}
-
-function WorkerSummary(props: { preview: ResultPreview; density?: TuiDensity }): React.ReactElement | null {
-  if (!props.preview.contributors.length) {
+function WorkerSummary(props: { view: ProductResultCardView; density?: TuiDensity }): React.ReactElement | null {
+  if (!props.view.workerSummary.length) {
     return null;
   }
   const limit = props.density === "compact" ? 2 : 4;
-  const visible = props.preview.contributors.slice(0, limit);
+  const visible = props.view.workerSummary.slice(0, limit);
   return (
     <RunBoardPanel title="Worker Summary">
       {visible.map((contributor) => (
@@ -146,28 +160,28 @@ function WorkerSummary(props: { preview: ResultPreview; density?: TuiDensity }):
           [OK] {contributor.label} {contributor.contribution}
         </Text>
       ))}
-      {props.preview.contributors.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.preview.contributors.length - visible.length} more workers</Text>
+      {props.view.workerSummary.length > visible.length ? (
+        <Text color={visualTokenColor("text.muted")}>+{props.view.workerSummary.length - visible.length} more workers</Text>
       ) : null}
     </RunBoardPanel>
   );
 }
 
-function AttentionHistory(props: { items: AttentionItemView[]; density?: TuiDensity }): React.ReactElement | null {
-  if (!props.items.length) {
+function AttentionHistory(props: { view: ProductResultCardView; density?: TuiDensity }): React.ReactElement | null {
+  if (!props.view.attentionHistory.length) {
     return null;
   }
   const limit = props.density === "compact" ? 1 : 3;
-  const visible = props.items.slice(0, limit);
+  const visible = props.view.attentionHistory.slice(0, limit);
   return (
     <RunBoardPanel title="Attention History">
       {visible.map((item) => (
-        <Text key={item.id} color={visualTokenColor(item.resolvedAt ? "text.muted" : "status.warning")} wrap="truncate">
+        <Text key={item.id} color={visualTokenColor(item.resolved ? "text.muted" : "status.warning")} wrap="truncate">
           [WARN] {item.summary}{item.resolution ? `; ${item.resolution}` : ""}
         </Text>
       ))}
-      {props.items.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.items.length - visible.length} more attention items</Text>
+      {props.view.attentionHistory.length > visible.length ? (
+        <Text color={visualTokenColor("text.muted")}>+{props.view.attentionHistory.length - visible.length} more attention items</Text>
       ) : null}
     </RunBoardPanel>
   );
@@ -198,12 +212,4 @@ function NextActions(props: {
       ))}
     </Box>
   );
-}
-
-function resultNextActions(commands: string[]): RunBoardResultAction[] {
-  return commands.map((command) => ({
-    command,
-    label: command,
-    source: "final"
-  }));
 }

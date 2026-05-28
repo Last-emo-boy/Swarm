@@ -70,8 +70,8 @@ export function runBoardReducer(previous: RunBoardState, action: RunBoardAction)
       return upsertAttention(previous, action);
     case "attention/resolve":
       return resolveAttention(previous, action);
-    case "attention/materialize-slow":
-      return materializeSlowAttention(previous, action);
+    case "attention/archive-derived-slow":
+      return archiveDerivedSlowAttention(previous, action);
     case "result/preview":
       return {
         ...previous,
@@ -219,9 +219,9 @@ function upsertAttention(previous: RunBoardState, action: Extract<RunBoardAction
   };
 }
 
-function materializeSlowAttention(
+function archiveDerivedSlowAttention(
   previous: RunBoardState,
-  action: Extract<RunBoardAction, { type: "attention/materialize-slow" }>
+  action: Extract<RunBoardAction, { type: "attention/archive-derived-slow" }>
 ): RunBoardState {
   const slowItems = derivedSlowAttentionItems(previous, {
     now: action.at,

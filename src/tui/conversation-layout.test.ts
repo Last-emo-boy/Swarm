@@ -1097,6 +1097,21 @@ test("screen mode keeps the default TUI conversation-first", () => {
   });
 
   assert.deepEqual(tuiScreenMode({
+    pane: "chat",
+    columns: 160,
+    busy: false,
+    hasApproval: false,
+    hasPendingPlan: false,
+    hasRunBoard: true
+  }), {
+    density: "compact",
+    compactStatus: true,
+    showCurrentAction: true,
+    showInspector: false,
+    primarySurface: "operator"
+  });
+
+  assert.deepEqual(tuiScreenMode({
     pane: "log",
     columns: 160,
     busy: false,

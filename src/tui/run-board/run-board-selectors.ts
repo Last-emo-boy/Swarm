@@ -159,6 +159,9 @@ function selectRunBoardFocus(state: RunBoardState, input: { now?: string } = {})
   if (subjectWorkerId) {
     return state.workersById.get(subjectWorkerId)?.label ?? attention[0]?.title;
   }
+  if (attention[0]) {
+    return attention[0].title;
+  }
   const activeWorker = [...state.workersById.values()]
     .sort((left, right) => roleRankFor(left.role) - roleRankFor(right.role))
     .find((worker) => worker.status === "active" || worker.status === "blocked" || worker.status === "stuck");

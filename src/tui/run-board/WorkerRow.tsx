@@ -36,8 +36,6 @@ export function workerRowSpans(row: WorkerBoardRowData, selected = false): Seman
     { text: `${row.label.padEnd(15, " ")} `, color: selected ? "brand.focus" : "text.primary", bold: selected },
     { text: row.currentAction, color: "text.primary" },
     { text: "  ", color: "text.muted" },
-    { text: row.status.padEnd(8, " "), color: tone },
-    { text: " ", color: "text.muted" },
     { text: formatElapsed(row.elapsedMs), color: "text.muted" },
     ...(evidence
       ? [
