@@ -26,6 +26,7 @@ export type ProductResultCardView = {
   workerSummary: Array<{ workerId: string; label: string; contribution: string; status: "done" | "failed" | "cancelled" }>;
   attentionHistory: Array<{ id: string; kind: AttentionItemView["kind"]; summary: string; resolution?: string; resolved: boolean }>;
   artifacts: string[];
+  decisionTrail?: ResultCard["decisionTrail"];
   nextActions: RunBoardResultAction[];
   detailHint?: string;
   finished: boolean;
@@ -66,6 +67,7 @@ export function productResultCardViewFromParts(input: {
       workerSummary: workerSummaryFromPreview(input.preview),
       attentionHistory: attentionHistoryView(input.attentionHistory),
       artifacts: input.preview.artifacts,
+      decisionTrail: undefined,
       nextActions: input.preview.nextActions.map((command) => ({ command, label: command, source: "preview" })),
       detailHint: input.detailHint,
       finished: false
@@ -87,6 +89,7 @@ export function productResultCardViewFromParts(input: {
     workerSummary: workerSummaryFromPreview(input.preview),
     attentionHistory: attentionHistoryView(input.attentionHistory),
     artifacts: card.artifacts,
+    decisionTrail: card.decisionTrail,
     nextActions: card.next.map((command) => ({ command, label: command, source: "final" })),
     detailHint: input.detailHint,
     finished: true

@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "../ui.js";
 import { visualTokenColor } from "../theme.js";
 import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
+import { collaborationRoleDescriptor, collaborationRoleForWorker } from "../collaboration-role.js";
 import type { WorkerBoardRow as WorkerBoardRowData } from "./run-board-types.js";
 import { formatElapsed, statusBadge } from "./run-board-row-format.js";
 
@@ -30,7 +31,10 @@ export function WorkerRow(props: {
 export function workerRowSpans(row: WorkerBoardRowData, selected = false): SemanticTextSpan[] {
   const tone = statusToneForRow(row.status);
   const evidence = row.lastEvidence ?? (row.waitingOn ? `waiting on ${row.waitingOn}` : undefined);
+  const role = collaborationRoleDescriptor(collaborationRoleForWorker(row));
   return [
+    { text: role.badge, color: role.color, bold: true },
+    { text: " ", color: "text.muted" },
     { text: statusBadge(row.status), color: tone, bold: true },
     { text: " ", color: "text.muted" },
     { text: `${row.label.padEnd(15, " ")} `, color: selected ? "brand.focus" : "text.primary", bold: selected },

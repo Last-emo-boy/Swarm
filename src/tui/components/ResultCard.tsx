@@ -21,7 +21,14 @@ import { SemanticTextLine, semanticToolLineSpans, type SemanticTextSpan } from "
 import { StatusIcon, statusIconText } from "./StatusIcon.js";
 import { toolResponseLineSpans } from "./ToolResponseSurface.js";
 
-export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; detailHint?: string; density?: TuiDensity }): React.ReactElement {
+export function ResultCard(props: {
+  card?: ResultCardData;
+  emptyLabel?: string;
+  detailHint?: string;
+  density?: TuiDensity;
+  decisionTrailExpanded?: boolean;
+  onDecisionTrailToggle?: () => void;
+}): React.ReactElement {
   if (!props.card) {
     return (
       <Box flexDirection="column" width="100%">
@@ -112,6 +119,14 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
       {card.next.length > 0 && (
         <SectionLine section="next" value={card.next.slice(0, density === "compact" ? 1 : 2).join(" · ")} />
       )}
+      {card.decisionTrail && (
+        <DecisionTrailSection
+          card={card}
+          density={density}
+          expanded={Boolean(props.decisionTrailExpanded)}
+          onToggle={props.onDecisionTrailToggle}
+        />
+      )}
       {card.checkpoint && (
         <SectionLine
           section="checkpoint"
@@ -136,11 +151,52 @@ export function ResultCard(props: { card?: ResultCardData; emptyLabel?: string; 
   );
 }
 
+function DecisionTrailSection(props: {
+  card: ResultCardData;
+  density: TuiDensity;
+  expanded: boolean;
+  onToggle?: () => void;
+}): React.ReactElement | null {
+  const trail = props.card.decisionTrail;
+  if (!trail) {
+    return null;
+  }
+  const sections = (["split", "assign", "verify", "decide", "risk"] as const)
+    .map((section) => ({ section, items: trail[section] ?? [] }))
+    .filter((entry) => entry.items.length > 0);
+  if (!sections.length) {
+    return null;
+  }
+  const visible = props.expanded
+    ? sections
+    : props.density === "compact" ? sections.slice(0, 2) : sections.slice(0, 3);
+  return (
+    <React.Fragment>
+      <SectionLine
+        section="trail"
+        value={props.expanded
+          ? `expanded ${sections.length} sections`
+          : `${sections.length} sections. Enter/click to expand`}
+        onClick={props.onToggle}
+      />
+      {visible.map((entry) => (
+        <SectionLine
+          key={`trail:${entry.section}`}
+          section="trail"
+          value={`${entry.section}: ${entry.items.slice(0, props.expanded ? 4 : 1).join(" | ")}`}
+          onClick={props.onToggle}
+        />
+      ))}
+    </React.Fragment>
+  );
+}
+
 function SectionLine(props: {
   section: ResultSectionKind;
   value: string;
   meta?: string;
   tone?: TuiTone;
+  onClick?: () => void;
 }): React.ReactElement {
   const token = resultSectionToken(props.section);
   const tone = props.tone ?? token.tone;
@@ -148,6 +204,7 @@ function SectionLine(props: {
   return (
     <SemanticTextLine
       wrap="wrap"
+      onClick={props.onClick}
       spans={[
         { text: token.label, color: tone, bold: true },
         { text: " ", color: "text.muted" },

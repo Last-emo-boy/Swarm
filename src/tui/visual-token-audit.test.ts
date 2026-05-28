@@ -12,6 +12,7 @@ const UI_SURFACE_FILES = [
   "src/tui/components/ConversationFirstPane.tsx",
   "src/tui/components/ConversationFullscreenLayout.tsx",
   "src/tui/components/ConversationLogo.tsx",
+  "src/tui/components/CollaborationOverlayPanel.tsx",
   "src/tui/components/CurrentActionRow.tsx",
   "src/tui/components/InspectorPane.tsx",
   "src/tui/components/PlanApprovalOverlay.tsx",
@@ -42,6 +43,18 @@ test("TUI UI surfaces use semantic visual tokens instead of bare ANSI colors", (
   const violations = UI_SURFACE_FILES.flatMap((file) => bareColorViolations(file));
 
   assert.deepEqual(violations, []);
+});
+
+test("collaboration role visual tokens are registered for color and monochrome labels", () => {
+  const source = readFileSync("src/tui/theme.ts", "utf8");
+  const roles = readFileSync("src/tui/collaboration-role.ts", "utf8");
+
+  for (const token of ["role.planner", "role.worker", "role.reviewer", "role.aggregator"]) {
+    assert.match(source, new RegExp(`"${token}"`, "u"));
+  }
+  for (const badge of ["[PLAN]", "[WORK]", "[REV]", "[AGG]"]) {
+    assert.match(roles, new RegExp(badge.replace("[", "\\[").replace("]", "\\]"), "u"));
+  }
 });
 
 function bareColorViolations(file: string): string[] {

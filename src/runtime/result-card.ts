@@ -71,6 +71,15 @@ export type ResultCard = {
     revertAvailable: boolean;
   };
   cache?: ResultCardPromptCacheStatus;
+  decisionTrail?: DecisionTrail;
+};
+
+export type DecisionTrail = {
+  split?: string[];
+  assign?: string[];
+  verify?: string[];
+  decide?: string[];
+  risk?: string[];
 };
 
 export type ResultCardInput = {
@@ -137,7 +146,8 @@ export function buildResultCard(input: ResultCardInput): ResultCard {
       : undefined,
     contracts: snapshot ? buildContractCard(snapshot) : undefined,
     checkpoint: input.checkpoint,
-    cache: input.cache
+    cache: input.cache,
+    decisionTrail: buildDecisionTrail(snapshot, input.result)
   };
 }
 
@@ -201,6 +211,10 @@ export function formatResultCardText(card: ResultCard): string {
     `Next (${card.next.length})`,
     ...formatList(card.next),
   ];
+  const decisionTrail = formatDecisionTrailText(card.decisionTrail);
+  if (decisionTrail.length) {
+    lines.push("", "Decision Trail", ...decisionTrail);
+  }
   if (card.checkpoint) {
     lines.push(
       "",
@@ -212,6 +226,57 @@ export function formatResultCardText(card: ResultCard): string {
     lines.push("", `Cache: ${formatPromptCacheInline(card.cache)?.replace(/^cache:/, "") ?? card.cache.status}${roi ? ` | ROI ${roi.saved_tokens}t${typeof roi.stable_prefix_ratio === "number" ? ` ${Math.round(roi.stable_prefix_ratio * 100)}% stable` : ""}` : ""}`);
   }
   return lines.join("\n");
+}
+
+function buildDecisionTrail(snapshot: WorkSnapshot | undefined, result: ResultCardInput["result"]): DecisionTrail | undefined {
+  const trail: DecisionTrail = {};
+  if (snapshot?.session.objective) {
+    trail.split = [`Objective adopted: ${firstLine(snapshot.session.objective, 160)}`];
+  }
+  const activeWorkers = snapshot?.work_contracts.active_workers.map((worker) => `${worker.worker_id} owns ${formatDecisionTrailWorkerScope(worker)}`) ?? [];
+  const resumableWorkers = snapshot?.work_contracts.resumable_workers.map((worker) => `${worker.worker_id} resumable ${formatDecisionTrailWorkerScope(worker)}`) ?? [];
+  if (activeWorkers.length || resumableWorkers.length) {
+    trail.assign = uniqueStrings([...activeWorkers, ...resumableWorkers]).slice(0, 5);
+  }
+  const checks = [
+    ...(snapshot?.checks ?? []),
+    ...(result.outcome?.tests_run ?? [])
+  ];
+  if (checks.length) {
+    trail.verify = uniqueStrings(checks).slice(0, 5);
+  } else if (snapshot?.verification) {
+    trail.verify = [typeof snapshot.verification === "string" ? firstLine(snapshot.verification, 160) : "Verification evidence recorded"];
+  }
+  if (snapshot?.review) {
+    trail.decide = [`Review ${snapshot.review.verdict} score=${snapshot.review.score}: ${firstLine(snapshot.review.summary, 160)}`];
+  } else if (snapshot?.final_outcome?.final_summary ?? result.outcome?.final_summary) {
+    trail.decide = [firstLine(snapshot?.final_outcome?.final_summary ?? result.outcome?.final_summary ?? "", 160)];
+  }
+  const risks = buildRisks(snapshot, result);
+  if (risks.length) {
+    trail.risk = risks.map((risk) => `${risk.level}: ${risk.message}`);
+  }
+  return Object.values(trail).some((items) => (items?.length ?? 0) > 0) ? trail : undefined;
+}
+
+function formatDecisionTrailWorkerScope(worker: WorkSnapshot["work_contracts"]["active_workers"][number]): string {
+  return worker.role_title ?? worker.capability ?? firstLine(worker.objective, 80) ?? "work";
+}
+
+function formatDecisionTrailText(trail: DecisionTrail | undefined): string[] {
+  if (!trail) {
+    return [];
+  }
+  return (["split", "assign", "verify", "decide", "risk"] as const).flatMap((section) => {
+    const items = trail[section] ?? [];
+    if (!items.length) {
+      return [];
+    }
+    return [
+      `  ${section}:`,
+      ...items.map((item) => `    - ${item}`)
+    ];
+  });
 }
 
 function buildContractCard(snapshot: WorkSnapshot): NonNullable<ResultCard["contracts"]> {

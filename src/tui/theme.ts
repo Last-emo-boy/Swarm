@@ -38,7 +38,7 @@ export type TuiResolvedColor = TuiColor | string | undefined;
 export type TuiPrimitiveStatus = "success" | "error" | "warning" | "info" | "pending" | "loading";
 export type TuiRole = "user" | "assistant" | "tool" | "gateway" | "swarm" | "system";
 export type TranscriptEventKind = "message" | "logo" | "command" | "tool_use" | "tool_result" | "thinking" | "approval" | "progress";
-export type ResultSectionKind = "summary" | "changed" | "checks" | "review" | "risks" | "recovery" | "artifacts" | "memory" | "contracts" | "checkpoint" | "cache" | "next";
+export type ResultSectionKind = "summary" | "changed" | "checks" | "review" | "trail" | "risks" | "recovery" | "artifacts" | "memory" | "contracts" | "checkpoint" | "cache" | "next";
 export const TUI_VISUAL_TOKENS = [
   "text.primary",
   "text.muted",
@@ -55,6 +55,10 @@ export const TUI_VISUAL_TOKENS = [
   "role.tool",
   "role.gateway",
   "role.swarm",
+  "role.planner",
+  "role.worker",
+  "role.reviewer",
+  "role.aggregator",
   "status.success",
   "status.running",
   "status.pending",
@@ -113,6 +117,10 @@ const SWARM_DARK_PROFILE: TuiThemeProfile = {
     "role.tool": "rgb(212,140,255)",
     "role.gateway": "rgb(130,168,255)",
     "role.swarm": "rgb(229,191,92)",
+    "role.planner": "rgb(92,200,215)",
+    "role.worker": "rgb(212,140,255)",
+    "role.reviewer": "rgb(245,190,80)",
+    "role.aggregator": "rgb(104,208,134)",
     "status.success": "rgb(104,208,134)",
     "status.running": "rgb(92,200,215)",
     "status.pending": "rgb(245,190,80)",
@@ -164,6 +172,10 @@ const SWARM_CONTRAST_PROFILE: TuiThemeProfile = {
     "role.tool": "brightMagenta",
     "role.gateway": "brightBlue",
     "role.swarm": "brightYellow",
+    "role.planner": "brightCyan",
+    "role.worker": "brightMagenta",
+    "role.reviewer": "brightYellow",
+    "role.aggregator": "brightGreen",
     "status.success": "brightGreen",
     "status.running": "brightCyan",
     "status.pending": "brightYellow",
@@ -292,6 +304,10 @@ export function defaultVisualTokenColor(token: TuiVisualToken): TuiColor {
     case "role.tool": return "magenta";
     case "role.gateway": return "blue";
     case "role.swarm": return "yellow";
+    case "role.planner": return "cyan";
+    case "role.worker": return "magenta";
+    case "role.reviewer": return "yellow";
+    case "role.aggregator": return "green";
     case "status.success": return "green";
     case "status.running": return "cyan";
     case "status.pending": return "yellow";
@@ -516,6 +532,7 @@ export function resultSectionToken(section: ResultSectionKind): {
     case "changed": return { label: "CHANGED", tone: "gateway" };
     case "checks": return { label: "CHECKS", tone: "success" };
     case "review": return { label: "REVIEW", tone: "pending" };
+    case "trail": return { label: "TRAIL", tone: "swarm" };
     case "risks": return { label: "RISKS", tone: "warning" };
     case "recovery": return { label: "RECOVERY", tone: "warning" };
     case "artifacts": return { label: "ARTIFACTS", tone: "neutral" };

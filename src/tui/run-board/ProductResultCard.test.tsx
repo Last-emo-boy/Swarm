@@ -93,6 +93,53 @@ test("ProductResultCard dispatches final next action clicks", () => {
   root.unmount();
 });
 
+test("ProductResultCard renders decision trail from VM and toggles by click", () => {
+  const clicked: string[] = [];
+  const root = createTuiRoot({
+    columns: 120,
+    rows: 20,
+    terminalCapabilities: { mouse: true }
+  });
+  root.render(React.createElement(ProductResultCard, {
+    card: {
+      status: "completed",
+      sessionId: "sess-1",
+      route: "team",
+      summary: "Fixed session restore.",
+      changedFiles: ["src/runtime/session-row.ts"],
+      checks: [{ command: "npm test -- session-row", status: "passed" }],
+      review: { status: "passed", summary: "review passed" },
+      risks: [],
+      artifacts: [],
+      next: ["/diff"],
+      decisionTrail: {
+        split: ["Objective adopted"],
+        assign: ["Code Worker owns patch"],
+        verify: ["focused test passed"],
+        decide: ["Reviewer approved"],
+        risk: ["low: narrow change"]
+      }
+    },
+    preview: emptyPreview(),
+    attentionHistory: [],
+    decisionTrailExpanded: false,
+    onDecisionTrailToggle: () => clicked.push("trail")
+  }));
+
+  const frame = root.getFrame();
+  assert(frame);
+  const text = frameText(frame);
+  assert.match(text, /Trail\s+5 sections\. Enter\/click to expand/);
+  assert.match(text, /split\s+Objective adopted/);
+  const target = findLastCell(frame, "Trail");
+  assert(target, "expected trail row to render");
+
+  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
+
+  assert.deepEqual(clicked, ["trail"]);
+  root.unmount();
+});
+
 function emptyPreview(): ResultPreview {
   return {
     status: "ready",

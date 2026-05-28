@@ -62,3 +62,21 @@ test("TUI replay failure trace points at the last focus detail pane and selected
   assert.equal(result.finalState.focus, "input");
   assert.equal(result.finalState.detailOpen, false);
 });
+
+test("TUI replay keeps collaboration overlay inline and returns with Esc", () => {
+  const result = runTuiInteractionReplay({
+    name: "collaboration-overlay-inline",
+    messages: [{ role: "system", brief: "Swarm chat ready." }],
+    events: [
+      { type: "collaboration-key", character: "o", key: {}, inputIsEmpty: true },
+      { type: "close-detail", via: "escape" }
+    ]
+  });
+
+  assert.equal(result.status, "pass");
+  assert.equal(result.trace[0]?.collaborationOverlay, "ownership");
+  assert.equal(result.trace[0]?.detailOpen, false);
+  assert.equal(result.trace[0]?.focus, "input");
+  assert.equal(result.finalState.collaborationOverlay, undefined);
+  assert.equal(result.finalState.detailOpen, false);
+});

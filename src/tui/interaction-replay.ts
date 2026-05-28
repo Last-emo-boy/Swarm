@@ -26,6 +26,10 @@ import {
 } from "./message-folding.js";
 import { parseSlashCommandLine } from "./slash-commands.js";
 import {
+  collaborationShortcutActionForInput,
+  type CollaborationOverlayTarget
+} from "./collaboration-cockpit.js";
+import {
   buildTranscriptSearchIndex,
   closeTranscriptSearch,
   createTranscriptSearchState,
@@ -40,6 +44,7 @@ export type TuiReplayDetailSource = "none" | "ai" | "command" | "task" | "event"
 
 export type TuiReplayEvent =
   | { type: "key"; label?: string; character?: string; key: { ctrl?: boolean; return?: boolean; escape?: boolean }; hasFocusedTarget?: boolean }
+  | { type: "collaboration-key"; label?: string; character?: string; key: { ctrl?: boolean; return?: boolean; escape?: boolean }; enabled?: boolean; inputIsEmpty?: boolean }
   | { type: "slash"; commandLine: string; pane?: string; detailSource?: TuiReplayDetailSource }
   | { type: "select-action"; index: number; actionCount?: number; pane?: string; detailSource?: TuiReplayDetailSource }
   | { type: "open-detail"; via?: "ctrl+o" | "focused"; hasFocusedTarget?: boolean }
@@ -79,6 +84,7 @@ export type TuiReplayTraceEntry = {
   pane: string;
   selectedRow?: number;
   selectedActionRow?: number;
+  collaborationOverlay?: CollaborationOverlayTarget;
   search?: string;
   currentSearchMessageIndex?: number;
   scrollOffset: number;
@@ -103,6 +109,7 @@ export type TuiReplayFinalState = {
   pane: string;
   selectedRow?: number;
   selectedActionRow?: number;
+  collaborationOverlay?: CollaborationOverlayTarget;
   scrollOffset: number;
 };
 
@@ -137,6 +144,7 @@ type MutableTuiReplayState = {
   selectedActionRow?: number;
   scrollOffset: number;
   search: TranscriptSearchState;
+  collaborationOverlay?: CollaborationOverlayTarget;
   cursor: MessageCursorState;
   actionCount: number;
   cache: ConversationRenderCache;
@@ -185,6 +193,7 @@ export function runTuiInteractionReplay(scenario: TuiReplayScenario): TuiReplayR
       pane: state.pane,
       selectedRow: state.selectedRow,
       selectedActionRow: state.selectedActionRow,
+      collaborationOverlay: state.collaborationOverlay,
       scrollOffset: state.scrollOffset
     },
     maxMountedMessageCount: Math.max(0, ...trace.map((entry) => entry.mountedMessageCount)),
@@ -350,6 +359,8 @@ function applyTuiReplayEvent(state: MutableTuiReplayState, event: TuiReplayEvent
   switch (event.type) {
     case "key":
       return applyFocusTransition(state, event.character, event.key, event.hasFocusedTarget);
+    case "collaboration-key":
+      return applyCollaborationReplayEvent(state, event);
     case "slash":
       return applySlashReplayEvent(state, event);
     case "select-action":
@@ -379,6 +390,7 @@ function applyTuiReplayEvent(state: MutableTuiReplayState, event: TuiReplayEvent
       );
     }
     case "close-detail":
+      state.collaborationOverlay = undefined;
       return applyCloseDetail(state, event.via ?? "escape");
     case "search":
       return applySearchReplayEvent(state, event);
@@ -401,6 +413,30 @@ function applyTuiReplayEvent(state: MutableTuiReplayState, event: TuiReplayEvent
       state.messages.push(event.message);
       return [];
   }
+}
+
+function applyCollaborationReplayEvent(
+  state: MutableTuiReplayState,
+  event: Extract<TuiReplayEvent, { type: "collaboration-key" }>
+): TuiReplayFailure[] {
+  const action = collaborationShortcutActionForInput({
+    character: event.character,
+    key: event.key,
+    enabled: event.enabled ?? true,
+    inputIsEmpty: event.inputIsEmpty ?? true
+  });
+  if (!action) {
+    return [];
+  }
+  state.collaborationOverlay = action === "open"
+    ? "ownership"
+    : action === "reassign"
+      ? "ownership"
+      : action;
+  state.focus = "input";
+  state.detailOpen = false;
+  state.latestDetailSource = "none";
+  return [];
 }
 
 function applyFocusTransition(
@@ -497,6 +533,7 @@ function buildTuiReplayTraceEntry(
     pane: state.pane,
     selectedRow: state.selectedRow,
     selectedActionRow: state.selectedActionRow,
+    collaborationOverlay: state.collaborationOverlay,
     search: transcriptSearchSummary(state.search),
     currentSearchMessageIndex: match?.messageIndex,
     scrollOffset: layout.scrollOffset,
@@ -534,6 +571,13 @@ function validateTuiReplayStep(
     failures.push({
       kind: "detail",
       message: "detail pane opened without a traceable detail source",
+      lastTrace: trace
+    });
+  }
+  if (event.type === "collaboration-key" && state.collaborationOverlay && state.detailOpen) {
+    failures.push({
+      kind: "focus",
+      message: "collaboration overlay must not open fullscreen detail or hide prompt",
       lastTrace: trace
     });
   }
@@ -605,6 +649,8 @@ function describeTuiReplayEvent(event: TuiReplayEvent): string {
   switch (event.type) {
     case "key":
       return `key:${event.label ?? keyEventLabel(event)}`;
+    case "collaboration-key":
+      return `collaboration:${event.label ?? keyEventLabel(event)}`;
     case "slash":
       return `slash:${event.commandLine}`;
     case "select-action":
@@ -626,7 +672,7 @@ function describeTuiReplayEvent(event: TuiReplayEvent): string {
   }
 }
 
-function keyEventLabel(event: Extract<TuiReplayEvent, { type: "key" }>): string {
+function keyEventLabel(event: Extract<TuiReplayEvent, { type: "key" | "collaboration-key" }>): string {
   if (event.key.return) {
     return "return";
   }

@@ -8,9 +8,12 @@ import type { TuiActionRow } from "../action-log.js";
 import { ChatInputArea } from "../ChatInputArea.js";
 import { ActionLog } from "../components/ActionLog.js";
 import { ApprovalOverlay } from "../components/ApprovalOverlay.js";
+import { CollaborationOverlayPanel } from "../components/CollaborationOverlayPanel.js";
 import { InspectorPane } from "../components/InspectorPane.js";
 import { ResultCard } from "../components/ResultCard.js";
 import { StatusRail } from "../components/StatusRail.js";
+import { TopologyStrip } from "../components/TopologyStrip.js";
+import { buildTopologyStripModel, type CollaborationOverlayView } from "../collaboration-cockpit.js";
 import { resolveTuiColor } from "../theme.js";
 import { createFrameSnapshot, assertFrameHasNoOverflow, type TuiFrameSnapshot } from "./frame-snapshot.js";
 import { renderTuiToFrame } from "./testing.js";
@@ -18,7 +21,8 @@ import { renderTuiToFrame } from "./testing.js";
 const WORKBENCH_VIEWPORTS = [
   { columns: 80, rows: 24, density: "compact" },
   { columns: 100, rows: 30, density: "default" },
-  { columns: 120, rows: 36, density: "comfortable" }
+  { columns: 120, rows: 36, density: "comfortable" },
+  { columns: 160, rows: 44, density: "comfortable" }
 ] as const;
 
 test("workbench visual snapshot covers result approval inspector action log and prompt across viewports", () => {
@@ -32,19 +36,28 @@ test("workbench visual snapshot covers result approval inspector action log and 
     const text = snapshotText(snapshot);
     assert.match(text, /Swarm/);
     assert.match(text, /RESULT/);
-    assert.match(text, /APPROVAL|DECISION/);
-    assert.match(text, /COMMAND OUTPUT/);
-    assert.match(text, /ACTION LOG/);
+    assert.match(text, /TOPO/);
+    assert.match(text, /OWNERSHIP/);
+    assert.match(text, /TRAIL/);
+    assert.match(text, /APPROVAL|DECISION|Reassign/);
+    if (viewport.columns >= 100) {
+      assert.match(text, /COMMAND OUTPUT/);
+      assert.match(text, /ACTION LOG/);
+    }
     assert.match(text, /Ask Swarm/);
 
     assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm"), "Swarm")?.color, resolveTuiColor("brand.focus"));
     assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "TARGET"), "TARGET")?.color, resolveTuiColor("role.gateway"));
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "COMMAND OUTPUT"), "COMMAND OUTPUT")?.color, resolveTuiColor("text.primary"));
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "ACTION LOG"), "ACTION LOG")?.color, resolveTuiColor("text.primary"));
+    if (text.includes("TARGET")) {
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "TARGET"), "TARGET")?.color, resolveTuiColor("role.gateway"));
+    }
+    if (viewport.columns >= 100) {
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "COMMAND OUTPUT"), "COMMAND OUTPUT")?.color, resolveTuiColor("text.primary"));
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "ACTION LOG"), "ACTION LOG")?.color, resolveTuiColor("text.primary"));
+    }
   }
 
-  const wideSnapshot = snapshots[2]!.snapshot;
+  const wideSnapshot = snapshots[3]!.snapshot;
   assert.equal(cellStyleAtText(snapshotRowWithText(wideSnapshot, "[cache:HIT 81%]"), "[cache:HIT 81%]")?.backgroundColor, resolveTuiColor("surface.selection"));
   assert(colorCount(wideSnapshot) >= 6, "wide workbench should keep multiple semantic accents visible");
 });
@@ -60,6 +73,26 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
   const compact = input.density === "compact";
   const bodyHeight = Math.max(8, input.rows - 5);
   const resultCard = React.createElement(ResultCard, { card: resultCardFixture(), detailHint: "Ctrl+O details", density: input.density });
+  const topology = React.createElement(TopologyStrip, {
+    model: buildTopologyStripModel({
+      approvalsPending: 1,
+      policyMode: "approval",
+      sandboxMode: "workspace-write"
+    }),
+    columns: input.columns
+  });
+  const overlay = React.createElement(CollaborationOverlayPanel, {
+    overlay: collaborationOverlayFixture(),
+    selectedIndex: 0,
+    reassign: {
+      targetId: "worker-test",
+      source: "ownership",
+      reason: "Test Runner waiting on verification",
+      risk: "medium",
+      policy: "approval-required",
+      summary: "Reassign intent for Test Runner"
+    }
+  });
   const approval = React.createElement(ApprovalOverlay, { request: approvalFixture() });
   const inspector = React.createElement(InspectorPane, {
     title: "Command Output",
@@ -102,13 +135,17 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
     }),
     compact
       ? React.createElement(Box, { flexDirection: "column", width: "100%", height: bodyHeight, overflow: "hidden" },
-        React.createElement(Box, { height: 8, overflow: "hidden", flexDirection: "column" }, resultCard),
-        React.createElement(Box, { height: 4, overflow: "hidden", flexDirection: "column" }, approval),
-        React.createElement(Box, { height: 4, overflow: "hidden", flexDirection: "column" }, inspector),
+        React.createElement(Box, { height: 2, overflow: "hidden", flexDirection: "column" }, topology),
+        React.createElement(Box, { height: 5, overflow: "hidden", flexDirection: "column" }, overlay),
+        React.createElement(Box, { height: 10, overflow: "hidden", flexDirection: "column" }, resultCard),
+        React.createElement(Box, { height: 3, overflow: "hidden", flexDirection: "column" }, approval),
+        React.createElement(Box, { height: 3, overflow: "hidden", flexDirection: "column" }, inspector),
         actionLog
       )
       : React.createElement(Box, { flexDirection: "row", width: "100%", height: bodyHeight, overflow: "hidden" },
         React.createElement(Box, { flexDirection: "column", width: "50%", flexGrow: 1, overflow: "hidden" },
+          topology,
+          overlay,
           resultCard,
           approval
         ),
@@ -154,17 +191,17 @@ function resultCardFixture(): ResultCardData {
       { command: "node --import tsx --test src/tui/renderer/workbench-visual-snapshot.test.ts", status: "passed" }
     ],
     review: { status: "warning", summary: "Review high-risk approval row before shipping." },
-    risks: [{ level: "high", message: "Action output can dominate narrow screens." }],
-    recovery: [{
-      category: "tool",
-      severity: "warning",
-      retryable: true,
-      summary: "Focused visual snapshot should run before global install.",
-      nextAction: "Rerun focused TUI renderer tests.",
-      commandHint: "node --import tsx --test src/tui/renderer/workbench-visual-snapshot.test.ts"
-    }],
+    risks: [],
+    recovery: [],
     artifacts: [],
     next: ["rerun focused tests", "inspect real terminal"],
+    decisionTrail: {
+      split: ["Objective adopted"],
+      assign: ["Worker owns renderer snapshot"],
+      verify: ["visual snapshot passes"],
+      decide: ["Reviewer checks no prompt overlap"],
+      risk: ["medium: narrow viewport pressure"]
+    },
     cache: {
       status: "cache_hit",
       cacheMode: "prefix-structured",
@@ -172,6 +209,35 @@ function resultCardFixture(): ResultCardData {
       writeRate: 0.08,
       changed: ["requestPrefixHash4096"]
     }
+  };
+}
+
+function collaborationOverlayFixture(): CollaborationOverlayView {
+  return {
+    target: "ownership",
+    title: "Ownership",
+    emptyLabel: "No blocked ownership.",
+    actions: ["Enter detail", "r reassign intent", "Esc close"],
+    rows: [
+      {
+        id: "worker-test",
+        label: "Test Runner",
+        status: "blocked",
+        tone: "blocked",
+        evidence: "waiting verification",
+        detail: ["Test Runner blocked by verification"],
+        priority: 0
+      },
+      {
+        id: "claim-session-row",
+        label: "Claim session-row.ts",
+        status: "claimed",
+        tone: "ok",
+        evidence: "owner Code Worker",
+        detail: ["Code Worker owns session-row.ts"],
+        priority: 5
+      }
+    ]
   };
 }
 

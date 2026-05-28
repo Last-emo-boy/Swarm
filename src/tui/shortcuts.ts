@@ -16,6 +16,10 @@ export type TuiShortcutId =
   | "approval.allow_target"
   | "approval.deny"
   | "approval.cancel"
+  | "collab.ownership"
+  | "collab.negotiation"
+  | "collab.blackboard"
+  | "collab.reassign"
   | "action.select"
   | "action.details"
   | "action.page";
@@ -24,7 +28,7 @@ export type TuiShortcut = {
   id: TuiShortcutId;
   keys: readonly string[];
   label: string;
-  scope: "global" | "prompt" | "command" | "approval" | "action";
+  scope: "global" | "prompt" | "command" | "approval" | "action" | "collaboration";
 };
 
 export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Object.freeze({
@@ -129,6 +133,30 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
     keys: ["Esc"],
     label: "Esc cancel",
     scope: "approval"
+  },
+  "collab.ownership": {
+    id: "collab.ownership",
+    keys: ["O"],
+    label: "O ownership",
+    scope: "collaboration"
+  },
+  "collab.negotiation": {
+    id: "collab.negotiation",
+    keys: ["N"],
+    label: "N negotiations",
+    scope: "collaboration"
+  },
+  "collab.blackboard": {
+    id: "collab.blackboard",
+    keys: ["B"],
+    label: "B blackboard",
+    scope: "collaboration"
+  },
+  "collab.reassign": {
+    id: "collab.reassign",
+    keys: ["R"],
+    label: "R reassign",
+    scope: "collaboration"
   },
   "action.select": {
     id: "action.select",

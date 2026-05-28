@@ -26,6 +26,8 @@ export function ProductResultCard(props: {
   detailHint?: string;
   density?: TuiDensity;
   onNextAction?: (action: RunBoardResultAction) => void;
+  decisionTrailExpanded?: boolean;
+  onDecisionTrailToggle?: () => void;
 }): React.ReactElement {
   const view = props.view ?? productResultCardViewFromParts({
     card: props.card,
@@ -37,7 +39,12 @@ export function ProductResultCard(props: {
     <Box flexDirection="column" width="100%">
       <RunBoardPanel title={view.title}>
         {view.finished
-          ? <ProductResultBody view={view} density={props.density} />
+          ? <ProductResultBody
+              view={view}
+              density={props.density}
+              decisionTrailExpanded={Boolean(props.decisionTrailExpanded)}
+              onDecisionTrailToggle={props.onDecisionTrailToggle}
+            />
           : <Text color={visualTokenColor("text.muted")}>Not finished. Enter an objective or use /continue.</Text>}
       </RunBoardPanel>
       {view.finished ? <WorkerSummary view={view} density={props.density} /> : null}
@@ -65,6 +72,8 @@ function emptyPreview(): ResultPreview {
 function ProductResultBody(props: {
   view: ProductResultCardView;
   density?: TuiDensity;
+  decisionTrailExpanded?: boolean;
+  onDecisionTrailToggle?: () => void;
 }): React.ReactElement {
   const view = props.view;
   const changedLimit = props.density === "compact" ? 2 : 4;
@@ -88,8 +97,51 @@ function ProductResultBody(props: {
         badgeAware
       />
       {view.review?.summary ? <ResultLine label="Review" value={`${statusBadge(view.review.status)} ${view.review.summary}`} badgeAware tone={checkStatusTone(view.review.status)} /> : null}
+      <DecisionTrailLines
+        view={view}
+        density={props.density}
+        expanded={Boolean(props.decisionTrailExpanded)}
+        onToggle={props.onDecisionTrailToggle}
+      />
       {view.detailHint ? <Text color={visualTokenColor("text.muted")} wrap="truncate">{view.detailHint}</Text> : null}
     </Box>
+  );
+}
+
+function DecisionTrailLines(props: {
+  view: ProductResultCardView;
+  density?: TuiDensity;
+  expanded: boolean;
+  onToggle?: () => void;
+}): React.ReactElement | null {
+  const trail = props.view.decisionTrail;
+  if (!trail) {
+    return null;
+  }
+  const sections = (["split", "assign", "verify", "decide", "risk"] as const)
+    .map((section) => ({ section, items: trail[section] ?? [] }))
+    .filter((entry) => entry.items.length > 0);
+  if (!sections.length) {
+    return null;
+  }
+  const visibleSections = props.expanded
+    ? sections
+    : props.density === "compact" ? sections.slice(0, 2) : sections.slice(0, 3);
+  const value = props.expanded
+    ? `expanded ${sections.length} sections`
+    : `${sections.length} sections. Enter/click to expand`;
+  return (
+    <React.Fragment>
+      <ResultLine label="Trail" value={value} onClick={props.onToggle} />
+      {visibleSections.map((entry) => (
+        <ResultLine
+          key={`trail:${entry.section}`}
+          label={entry.section}
+          value={entry.items.slice(0, props.expanded ? 4 : 1).join(" | ")}
+          onClick={props.onToggle}
+        />
+      ))}
+    </React.Fragment>
   );
 }
 
@@ -99,10 +151,12 @@ function ResultLine(props: {
   spans?: SemanticTextSpan[];
   tone?: SemanticTextSpan["color"];
   badgeAware?: boolean;
+  onClick?: () => void;
 }): React.ReactElement {
   return (
     <SemanticTextLine
       wrap="truncate"
+      onClick={props.onClick}
       spans={[
         { text: `${props.label.padEnd(8, " ")} `, color: "text.muted", bold: true },
         ...(props.spans ?? valueSpans(props.value ?? "", props.badgeAware, props.tone))

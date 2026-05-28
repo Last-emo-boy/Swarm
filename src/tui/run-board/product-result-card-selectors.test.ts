@@ -41,7 +41,14 @@ test("product result selector projects final card worker summary and attention h
         review: { status: "passed", summary: "review passed" },
         risks: [{ level: "medium", message: "broader verification pending" }],
         artifacts: [],
-        next: ["/diff", "/commit"]
+        next: ["/diff", "/commit"],
+        decisionTrail: {
+          split: ["Objective adopted"],
+          assign: ["Code Worker owns patch"],
+          verify: ["focused test passed"],
+          decide: ["Reviewer approved"],
+          risk: ["medium: broader verification pending"]
+        }
       }
     }
   ]);
@@ -54,5 +61,6 @@ test("product result selector projects final card worker summary and attention h
   assert.deepEqual(view.changedFiles, ["src/runtime/session-row.ts"]);
   assert.deepEqual(view.workerSummary.map((item) => item.label), ["Code Worker"]);
   assert.deepEqual(view.attentionHistory.map((item) => item.resolution), ["waited; command completed successfully"]);
+  assert.deepEqual(view.decisionTrail?.assign, ["Code Worker owns patch"]);
   assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["final:/diff", "final:/commit"]);
 });

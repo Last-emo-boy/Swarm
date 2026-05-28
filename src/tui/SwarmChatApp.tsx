@@ -96,6 +96,8 @@ import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
 import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
+import { CollaborationOverlayPanel } from "./components/CollaborationOverlayPanel.js";
+import { TopologyStrip } from "./components/TopologyStrip.js";
 import {
   compactValue,
   policyBadge,
@@ -186,6 +188,14 @@ import {
   type TranscriptSearchState
 } from "./transcript-search.js";
 import { appendDetailShortcut, detailOpenHint, transcriptSearchHint } from "./shortcuts.js";
+import {
+  buildCollaborationCockpitView,
+  buildCollaborationTelemetryEvent,
+  collaborationShortcutActionForInput,
+  selectCollaborationOverlay,
+  type CollaborationOverlayRow,
+  type CollaborationOverlayTarget
+} from "./collaboration-cockpit.js";
 import {
   createMessageCursorState,
   messageCursorReducer,
@@ -342,6 +352,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [busy, setBusy] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailScroll, setDetailScroll] = useState(0);
+  const [collaborationOverlayTarget, setCollaborationOverlayTarget] = useState<CollaborationOverlayTarget | undefined>();
+  const [collaborationOverlayIndex, setCollaborationOverlayIndex] = useState(0);
+  const [decisionTrailExpanded, setDecisionTrailExpanded] = useState(false);
   const [latestDetail, setLatestDetail] = useState("");
   const [latestDetailSource, setLatestDetailSource] = useState<"none" | "ai" | "task" | "command" | "event">("none");
   const [onboard, setOnboard] = useState<OnboardState>(() => createOnboardState(needsOnboarding));
@@ -781,17 +794,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           tuiKeyEventForInput(character, key)
         );
         setDetailOpen(false);
+        setCollaborationOverlayTarget(undefined);
         return;
       }
       handleDetailInput(key);
       return;
     }
 
-    if (handleRunBoardAttentionKey(character, key)) {
+    if (approval && handleApprovalInput(character, key)) {
       return;
     }
 
-    if (approval && handleApprovalInput(character, key)) {
+    if (handleCollaborationOverlayInput(character, key)) {
+      return;
+    }
+
+    if (handleCollaborationShortcutInput(character, key)) {
+      return;
+    }
+
+    if (handleRunBoardAttentionKey(character, key)) {
       return;
     }
 
@@ -858,6 +880,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (key.ctrl && character === "t") {
       openTaskDetail();
+      return;
+    }
+
+    if (handleCollaborationShortcutInput(character, key)) {
       return;
     }
 
@@ -1060,6 +1086,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   function clearDetailState(): void {
     setDetailOpen(false);
+    closeCollaborationOverlay();
     setLatestDetail("");
     setLatestDetailSource("none");
     setDetailScroll(0);
@@ -1179,6 +1206,229 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       action.command
     ].join("\n"));
     setDetailOpen(true);
+  }
+
+  function openCollaborationDetail(target: CollaborationOverlayTarget): void {
+    executeCollaborationAction(target);
+  }
+
+  function executeCollaborationAction(target: CollaborationOverlayTarget | "reassign"): void {
+    if (!isCollaborationUiEnabled()) {
+      return;
+    }
+    if (target === "reassign") {
+      recordCollaborationReassignIntent();
+      return;
+    }
+    setCollaborationOverlayTarget(target);
+    setCollaborationOverlayIndex(0);
+    logCollaborationTelemetry("tui.topology.open", {
+      target,
+      result: "opened"
+    });
+    if (target === "approval") {
+      void openFooterDetail("approvals");
+    }
+  }
+
+  function closeCollaborationOverlay(): void {
+    setCollaborationOverlayTarget(undefined);
+    setCollaborationOverlayIndex(0);
+  }
+
+  function handleCollaborationOverlayInput(
+    character: string | undefined,
+    key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }
+  ): boolean {
+    if (!collaborationOverlayTarget) {
+      return false;
+    }
+    if (key.escape) {
+      closeCollaborationOverlay();
+      return true;
+    }
+    if (key.upArrow) {
+      setCollaborationOverlayIndex((value) => Math.max(0, value - 1));
+      return true;
+    }
+    if (key.downArrow) {
+      const overlay = currentCollaborationOverlayView();
+      setCollaborationOverlayIndex((value) => Math.min(Math.max(0, (overlay?.rows.length ?? 1) - 1), value + 1));
+      return true;
+    }
+    if (key.return) {
+      openSelectedCollaborationOverlayRow();
+      return true;
+    }
+    if (key.ctrl || key.meta) {
+      return false;
+    }
+    const normalized = normalizeActionLogControlCharacter(character);
+    if (normalized === "r" || normalized === "a" || normalized === "t" || normalized === "c") {
+      recordCollaborationReassignIntent();
+      return true;
+    }
+    if (normalized === "y" && collaborationOverlayTarget === "blackboard") {
+      recordCollaborationOverlayCopyId();
+      return true;
+    }
+    return false;
+  }
+
+  function handleCollaborationShortcutInput(
+    character: string | undefined,
+    key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean }
+  ): boolean {
+    const action = collaborationShortcutActionForInput({
+      character,
+      key,
+      enabled: isCollaborationUiEnabled(),
+      inputIsEmpty: !approval
+        && !pendingPlan
+        && chatInputState.current.input.value.length === 0
+        && !transcriptSearch.active
+        && footerNavigation.selectedId === undefined
+        && messageCursor.selectedIndex === undefined
+    });
+    if (!action) {
+      return false;
+    }
+    logCollaborationTelemetry("tui.collab.shortcut", {
+      action,
+      source: "keyboard"
+    });
+    if (action === "reassign") {
+      executeCollaborationAction("reassign");
+      return true;
+    }
+    executeCollaborationAction(action === "open" ? "ownership" : action);
+    return true;
+  }
+
+  function currentCollaborationOverlayView() {
+    const cockpit = buildCollaborationCockpitView({
+      enabled: isCollaborationUiEnabled(),
+      swarmSurface: runtimeRef.current ? safeSwarmSurface(runtimeRef.current, 30) : undefined,
+      runBoard: selectRunBoardSurface(runBoardState, {
+        now: new Date().toISOString(),
+        repo: "Swarm",
+        mode: lastRoute?.mode ?? latestResultCard?.route ?? "work",
+        risk: runSandboxMode,
+        session: latestResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
+      }),
+      approvalsPending: footerPendingApprovalCount(approval, idlePaneSnapshot.approvals),
+      policyMode: settingsSnapshot.permissions.defaultMode,
+      sandboxMode: runSandboxMode
+    });
+    return selectCollaborationOverlay(cockpit, collaborationOverlayTarget);
+  }
+
+  function openSelectedCollaborationOverlayRow(): void {
+    const overlay = currentCollaborationOverlayView();
+    const row = overlay?.rows[collaborationOverlayIndex];
+    if (!row) {
+      return;
+    }
+    openCollaborationOverlayRow(row, collaborationOverlayIndex);
+  }
+
+  function openCollaborationOverlayRow(row: CollaborationOverlayRow, index: number): void {
+    setCollaborationOverlayIndex(index);
+    const detail = [
+      row.label,
+      "",
+      `status=${row.status}`,
+      row.evidence ? `evidence=${row.evidence}` : undefined,
+      "",
+      ...row.detail
+    ].filter((line): line is string => Boolean(line)).join("\n");
+    recordEventDetail(detail);
+    logCollaborationTelemetry("tui.topology.open", {
+      target: collaborationOverlayTarget ?? "topology",
+      row: row.id,
+      result: "opened"
+    });
+  }
+
+  function recordCollaborationReassignIntent(): void {
+    const cockpit = buildCollaborationCockpitView({
+      enabled: isCollaborationUiEnabled(),
+      swarmSurface: runtimeRef.current ? safeSwarmSurface(runtimeRef.current, 30) : undefined,
+      runBoard: selectRunBoardSurface(runBoardState, {
+        now: new Date().toISOString(),
+        repo: "Swarm",
+        mode: lastRoute?.mode ?? latestResultCard?.route ?? "work",
+        risk: runSandboxMode,
+        session: latestResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
+      }),
+      approvalsPending: footerPendingApprovalCount(approval, idlePaneSnapshot.approvals),
+      policyMode: settingsSnapshot.permissions.defaultMode,
+      sandboxMode: runSandboxMode
+    });
+    const intent = cockpit.reassign;
+    if (!intent || intent.policy === "no-target") {
+      appendChatMessage({ role: "system", brief: "No blocked worker or ownership item is available to reassign." });
+      logCollaborationTelemetry("tui.reassign.intent", { result: "noop" });
+      return;
+    }
+    setCollaborationOverlayTarget("ownership");
+    const result = intent.policy === "denied" ? "denied" : "queued";
+    appendChatMessage({
+      role: "system",
+      brief: `${intent.summary}: ${intent.policy}.`,
+      detail: [
+        "Reassign intent",
+        `target=${intent.targetId}`,
+        `source=${intent.source}`,
+        `risk=${intent.risk}`,
+        `policy=${intent.policy}`,
+        `reason=${intent.reason}`
+      ].join("\n")
+    });
+    logCollaborationTelemetry("tui.reassign.intent", {
+      target: intent.targetId,
+      source: intent.source,
+      risk: intent.risk,
+      policy: intent.policy,
+      result
+    });
+  }
+
+  function recordCollaborationOverlayCopyId(): void {
+    const overlay = currentCollaborationOverlayView();
+    const row = overlay?.rows[collaborationOverlayIndex];
+    if (!row) {
+      return;
+    }
+    appendChatMessage({ role: "system", brief: `Copied collaboration id ${row.id}.` });
+    logCollaborationTelemetry("tui.collab.shortcut", {
+      action: "copy-id",
+      target: row.id,
+      result: "queued"
+    });
+  }
+
+  function toggleDecisionTrail(): void {
+    setDecisionTrailExpanded((value) => !value);
+    logCollaborationTelemetry("tui.decision_trail.expand", {
+      result: decisionTrailExpanded ? "collapsed" : "expanded"
+    });
+  }
+
+  function logCollaborationTelemetry(event: string, payload: Record<string, unknown>): void {
+    const telemetry = buildCollaborationTelemetryEvent({
+      event: event as Parameters<typeof buildCollaborationTelemetryEvent>[0]["event"],
+      overlay: typeof payload.target === "string" ? payload.target as CollaborationOverlayTarget : collaborationOverlayTarget,
+      action: typeof payload.action === "string" ? payload.action : undefined,
+      target: typeof payload.row === "string" ? payload.row : typeof payload.target === "string" ? payload.target : undefined,
+      source: typeof payload.source === "string" ? payload.source : undefined,
+      result: typeof payload.result === "string" ? payload.result : undefined,
+      durationMs: typeof payload.durationMs === "number" ? payload.durationMs : 0
+    });
+    runtimeRef.current?.debug?.debug("tui-collaboration", event, {
+      ...telemetry,
+      session_id: latestResultCard?.sessionId ?? lastSessionId
+    });
   }
 
   function handleActionLogInput(character: string | undefined, key: { ctrl?: boolean; pageUp?: boolean; pageDown?: boolean; upArrow?: boolean; downArrow?: boolean; return?: boolean }): boolean {
@@ -3376,6 +3626,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     session: displayedResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
   });
   const runBoardPhase = runBoardView.phase;
+  const collaborationCockpit = buildCollaborationCockpitView({
+    enabled: isCollaborationUiEnabled(),
+    swarmSurface,
+    runBoard: runBoardView,
+    approvalsPending: footerPendingApprovalCount(approval, idlePaneSnapshot.approvals),
+    policyMode: settingsSnapshot.permissions.defaultMode,
+    sandboxMode: runSandboxMode
+  });
+  const activeCollaborationOverlay = selectCollaborationOverlay(collaborationCockpit, collaborationOverlayTarget);
   const shouldRenderRunBoard = busy
     || Boolean(approval)
     || Boolean(pendingPlan)
@@ -3414,6 +3673,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     ? `Approve ${approval.summary}`
     : pendingPlan
       ? "approve with y or cancel with n"
+      : activeCollaborationOverlay
+        ? `${activeCollaborationOverlay.title}: Enter detail, Esc close`
       : runBoardView.attention[0]
         ? runBoardView.attention[0].recommendation
         : "no";
@@ -3430,9 +3691,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined
   });
   const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedResultCard);
+  const topologyStrip = collaborationCockpit.enabled ? (
+    <TopologyStrip
+      model={collaborationCockpit.topology}
+      columns={terminalColumns}
+      onOpen={openCollaborationDetail}
+    />
+  ) : null;
+  const collaborationOverlayPanel = activeCollaborationOverlay ? (
+    <CollaborationOverlayPanel
+      overlay={activeCollaborationOverlay}
+      selectedIndex={collaborationOverlayIndex}
+      reassign={collaborationCockpit.reassign}
+      onRowClick={openCollaborationOverlayRow}
+    />
+  ) : null;
   const overviewSurface = shouldRenderRunBoard
     ? (
       <Box flexDirection="column" width="100%">
+        {topologyStrip}
+        {collaborationOverlayPanel}
         <RunBoardSurface
           view={runBoardView}
           workerLimit={screenDensity === "compact" ? 4 : 6}
@@ -3453,17 +3731,25 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     )
     : displayedResultCard
       ? <Box flexDirection="column" width="100%">
+        {topologyStrip}
+        {collaborationOverlayPanel}
         <ProductResultCard
           view={productResultCardView}
           density={screenDensity}
           onNextAction={handleRunBoardResultAction}
+          decisionTrailExpanded={decisionTrailExpanded}
+          onDecisionTrailToggle={toggleDecisionTrail}
         />
         <SwarmSurfacePanel surface={swarmSurface} limit={3} />
       </Box>
       : <Box flexDirection="column" width="100%">
+        {topologyStrip}
+        {collaborationOverlayPanel}
         <ProductResultCard
           view={productResultCardView}
           density={screenDensity}
+          decisionTrailExpanded={decisionTrailExpanded}
+          onDecisionTrailToggle={toggleDecisionTrail}
         />
         <SwarmSurfacePanel surface={swarmSurface} limit={4} />
       </Box>;
@@ -4848,6 +5134,11 @@ function toneForRunBoardPhase(phase: RunBoardPhase, resultStatus?: string): TuiC
   if (phase === "done") return statusTone(resultStatus ?? "completed") as TuiColorRef;
   if (phase === "failed") return "status.danger";
   return statusTone(resultStatus ?? "idle") as TuiColorRef;
+}
+
+function isCollaborationUiEnabled(): boolean {
+  const value = process.env.SWARM_TUI_EXPERIMENTAL_COLLAB;
+  return value !== "0" && value?.toLowerCase() !== "false" && value?.toLowerCase() !== "off";
 }
 
 async function formatDoctorReport(runtime: SwarmRuntime | undefined, workflowPath?: string): Promise<string> {

@@ -187,6 +187,38 @@ test("Result cards surface recovery from attempts, result content, and cache sta
   assert(text.includes("[cache/info/retry]"));
 });
 
+test("Result cards build decision trail from worker and verification evidence", () => {
+  const snapshot = workSnapshot({
+    checks: ["npm run check"],
+    review: reviewResult({
+      verdict: "approve",
+      score: 96,
+      summary: "Patch is narrow and verified."
+    }),
+    activeWorker: {
+      worker_id: "worker-code",
+      display_name: "Code Worker",
+      role_title: "Code Worker",
+      status: "running",
+      capability: "code",
+      objective: "Patch restore path",
+      file_scope: ["src/runtime/session-row.ts"],
+      updated_at: AT
+    }
+  });
+
+  const card = buildResultCardFromSnapshot(snapshot, "work");
+  const text = formatResultCardText(card);
+
+  assert.deepEqual(card.decisionTrail?.split, ["Objective adopted: Surface review and verification evidence"]);
+  assert.deepEqual(card.decisionTrail?.assign, ["worker-code owns Code Worker"]);
+  assert.deepEqual(card.decisionTrail?.verify, ["npm run check"]);
+  assert.match(card.decisionTrail?.decide?.[0] ?? "", /Review approve score=96/);
+  assert.match(text, /Decision Trail/);
+  assert.match(text, /assign:/);
+  assert.match(text, /worker-code owns Code Worker/);
+});
+
 function reviewResult(input: {
   verdict: ReviewResult["verdict"];
   score: number;
@@ -208,6 +240,7 @@ function workSnapshot(input: {
   attempts?: RunAttempt[];
   review?: ReviewResult;
   verification?: unknown;
+  activeWorker?: WorkSnapshot["work_contracts"]["active_workers"][number];
 } = {}): WorkSnapshot {
   return {
     session: {
@@ -254,7 +287,7 @@ function workSnapshot(input: {
         workspace_write: 0,
         scoped_targets: []
       },
-      active_workers: [],
+      active_workers: input.activeWorker ? [input.activeWorker] : [],
       resumable_workers: [],
       active_handoffs: []
     },

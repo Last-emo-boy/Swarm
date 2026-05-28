@@ -10,7 +10,8 @@ import { InspectorPane } from "./components/InspectorPane.js";
 import { ResultCard as ResultCardPanel } from "./components/ResultCard.js";
 import { StatusRail } from "./components/StatusRail.js";
 import type { TuiFrame } from "./renderer/frame.js";
-import { renderTuiToFrame } from "./renderer/testing.js";
+import { createTuiRoot } from "./renderer/root.js";
+import { frameText, renderTuiToFrame } from "./renderer/testing.js";
 import { resolveTuiColor } from "./theme.js";
 
 test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint detail", async () => {
@@ -67,6 +68,81 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /NEXT rerun focused tests/);
   assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);
   assert.match(plain, /CACHE cache:cache_hit hit 64%, write 12%/);
+});
+
+test("ResultCard renders collapsed and expanded decision trail", () => {
+  const card = {
+    sessionId: "session-result-card-trail",
+    status: "completed",
+    route: "team",
+    summary: "Swarm completed the run.",
+    changedFiles: ["src/tui/components/ResultCard.tsx"],
+    checks: [{ command: "npm run check", status: "passed" }],
+    review: { status: "passed", summary: "review passed" },
+    risks: [],
+    recovery: [],
+    artifacts: [],
+    next: ["/diff"],
+    decisionTrail: {
+      split: ["Objective adopted"],
+      assign: ["Code Worker owns patch"],
+      verify: ["npm run check"],
+      decide: ["Reviewer approved"],
+      risk: ["low: narrow change"]
+    }
+  } satisfies ResultCard;
+
+  const collapsed = frameText(renderTuiToFrame(React.createElement(ResultCardPanel, {
+    card,
+    decisionTrailExpanded: false
+  }), { columns: 100, rows: 12 }));
+  const expanded = frameText(renderTuiToFrame(React.createElement(ResultCardPanel, {
+    card,
+    decisionTrailExpanded: true
+  }), { columns: 100, rows: 16 }));
+
+  assert.match(collapsed, /TRAIL 5 sections\. Enter\/click to expand/);
+  assert.match(collapsed, /split: Objective adopted/);
+  assert.doesNotMatch(collapsed, /risk: low: narrow change/);
+  assert.match(expanded, /TRAIL expanded 5 sections/);
+  assert.match(expanded, /risk: low: narrow change/);
+});
+
+test("ResultCard decision trail hint dispatches mouse toggle", () => {
+  const toggled: string[] = [];
+  const root = createTuiRoot({
+    columns: 100,
+    rows: 12,
+    terminalCapabilities: { mouse: true }
+  });
+  root.render(React.createElement(ResultCardPanel, {
+    card: {
+      sessionId: "session-result-card-trail-click",
+      status: "completed",
+      route: "team",
+      summary: "Swarm completed the run.",
+      changedFiles: [],
+      checks: [],
+      review: { status: "passed", summary: "review passed" },
+      risks: [],
+      recovery: [],
+      artifacts: [],
+      next: [],
+      decisionTrail: {
+        split: ["Objective adopted"]
+      }
+    },
+    onDecisionTrailToggle: () => toggled.push("trail")
+  } satisfies React.ComponentProps<typeof ResultCardPanel>));
+
+  const frame = root.getFrame();
+  assert(frame);
+  const target = findCell(frame, "TRAIL");
+  assert(target);
+  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
+
+  assert.deepEqual(toggled, ["trail"]);
+  root.unmount();
 });
 
 test("ResultCard colors section labels and status badges without tinting values", () => {
@@ -327,6 +403,17 @@ function colorAtTextAfter(frame: TuiFrame, anchor: string, needle: string): stri
     if (index >= 0) {
       const offset = [...needle].findIndex((char) => char.trim().length > 0);
       return row[index + Math.max(0, offset)]?.style.color;
+    }
+  }
+  return undefined;
+}
+
+function findCell(frame: TuiFrame, needle: string): { x: number; y: number } | undefined {
+  for (let y = 0; y < frame.screen.height; y += 1) {
+    const line = frame.screen.cells[y]?.map((cell) => cell.char).join("") ?? "";
+    const x = line.indexOf(needle);
+    if (x >= 0) {
+      return { x, y };
     }
   }
   return undefined;
