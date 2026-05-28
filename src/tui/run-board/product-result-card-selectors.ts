@@ -1,0 +1,136 @@
+import type { ResultCard } from "../../runtime/result-card.js";
+import type {
+  AttentionItemView,
+  ResultPreview,
+  RunBoardResultAction,
+  RunBoardState,
+  RunBoardRisk
+} from "./run-board-types.js";
+import { selectAttentionHistory } from "./run-board-selectors.js";
+
+export type ProductResultCardViewStatus = "success" | "partial" | "failed" | "cancelled" | "preview";
+
+export type ProductResultCardView = {
+  status: ProductResultCardViewStatus;
+  runtimeStatus?: ResultCard["status"];
+  title: string;
+  objective?: string;
+  sessionId?: string;
+  route?: ResultCard["route"];
+  summary: string;
+  changedFiles: string[];
+  checks: Array<{ command: string; status: "passed" | "failed" | "skipped" | "unknown" | "running" }>;
+  review?: ResultCard["review"];
+  risk: RunBoardRisk;
+  riskSummary: string;
+  workerSummary: Array<{ workerId: string; label: string; contribution: string; status: "done" | "failed" | "cancelled" }>;
+  attentionHistory: Array<{ id: string; kind: AttentionItemView["kind"]; summary: string; resolution?: string; resolved: boolean }>;
+  artifacts: string[];
+  nextActions: RunBoardResultAction[];
+  detailHint?: string;
+  finished: boolean;
+};
+
+export function selectProductResultCardView(state: RunBoardState, input: {
+  card?: ResultCard;
+  detailHint?: string;
+} = {}): ProductResultCardView {
+  return productResultCardViewFromParts({
+    card: state.finalResult ?? input.card,
+    preview: state.resultPreview,
+    attentionHistory: selectAttentionHistory(state),
+    objective: state.objective,
+    detailHint: input.detailHint
+  });
+}
+
+export function productResultCardViewFromParts(input: {
+  card?: ResultCard;
+  preview: ResultPreview;
+  attentionHistory: AttentionItemView[];
+  objective?: string;
+  detailHint?: string;
+}): ProductResultCardView {
+  const card = input.card;
+  const risk = selectRisk(card, input.preview);
+  if (!card) {
+    return {
+      status: "preview",
+      title: "Result Preview",
+      objective: input.objective,
+      summary: input.preview.summary,
+      changedFiles: input.preview.changedFiles,
+      checks: input.preview.checks,
+      risk,
+      riskSummary: risk,
+      workerSummary: workerSummaryFromPreview(input.preview),
+      attentionHistory: attentionHistoryView(input.attentionHistory),
+      artifacts: input.preview.artifacts,
+      nextActions: input.preview.nextActions.map((command) => ({ command, label: command, source: "preview" })),
+      detailHint: input.detailHint,
+      finished: false
+    };
+  }
+  return {
+    status: productStatus(card.status),
+    runtimeStatus: card.status,
+    title: "Result",
+    objective: input.objective,
+    sessionId: card.sessionId,
+    route: card.route,
+    summary: card.summary,
+    changedFiles: card.changedFiles,
+    checks: card.checks,
+    review: card.review,
+    risk,
+    riskSummary: formatRiskSummary(card, risk),
+    workerSummary: workerSummaryFromPreview(input.preview),
+    attentionHistory: attentionHistoryView(input.attentionHistory),
+    artifacts: card.artifacts,
+    nextActions: card.next.map((command) => ({ command, label: command, source: "final" })),
+    detailHint: input.detailHint,
+    finished: true
+  };
+}
+
+function productStatus(status: ResultCard["status"]): ProductResultCardViewStatus {
+  if (status === "completed") return "success";
+  if (status === "stopped") return "cancelled";
+  return "failed";
+}
+
+function selectRisk(card: ResultCard | undefined, preview: ResultPreview): RunBoardRisk {
+  const levels = [
+    ...(card?.risks.map((risk) => risk.level) ?? []),
+    ...preview.risks.map((risk) => risk.level)
+  ];
+  if (levels.includes("high")) return "high";
+  if (levels.includes("medium")) return "medium";
+  return "low";
+}
+
+function formatRiskSummary(card: ResultCard, fallback: RunBoardRisk): string {
+  if (!card.risks.length) {
+    return fallback;
+  }
+  return card.risks.slice(0, 2).map((risk) => risk.message ? `${risk.level}: ${risk.message}` : risk.level).join(" | ");
+}
+
+function workerSummaryFromPreview(preview: ResultPreview): ProductResultCardView["workerSummary"] {
+  return preview.contributors.map((contributor) => ({
+    workerId: contributor.workerId,
+    label: contributor.label,
+    contribution: contributor.contribution,
+    status: "done"
+  }));
+}
+
+function attentionHistoryView(items: AttentionItemView[]): ProductResultCardView["attentionHistory"] {
+  return items.map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    summary: item.summary,
+    resolution: item.resolution,
+    resolved: Boolean(item.resolvedAt)
+  }));
+}

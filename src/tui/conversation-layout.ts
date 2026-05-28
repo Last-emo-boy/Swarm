@@ -1623,6 +1623,7 @@ export function tuiScreenMode(input: {
   hasApproval: boolean;
   hasPendingPlan: boolean;
   hasResult?: boolean;
+  hasRunBoard?: boolean;
   density?: TuiDensityPreference;
 }): TuiScreenMode {
   const density = resolveTuiDensity({
@@ -1630,7 +1631,7 @@ export function tuiScreenMode(input: {
     pane: input.pane,
     columns: input.columns
   });
-  const needsRunBoardSurface = input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasResult);
+  const needsRunBoardSurface = input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasResult) || Boolean(input.hasRunBoard);
   const primarySurface = input.pane === "log"
     ? "trace"
     : input.pane === "chat" && !needsRunBoardSurface
@@ -1639,7 +1640,7 @@ export function tuiScreenMode(input: {
   return {
     density,
     compactStatus: density === "compact",
-    showCurrentAction: input.busy || input.hasApproval || input.hasPendingPlan,
+    showCurrentAction: input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasRunBoard),
     showInspector: density !== "compact" && input.pane !== "chat" && !input.hasApproval && !input.hasPendingPlan && (
       density === "comfortable" ? input.columns >= 120 : input.columns >= 128
     ),

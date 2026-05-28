@@ -194,11 +194,13 @@ import {
 } from "./message-folding.js";
 import { createInitialRunBoardState, reduceRunBoardActions } from "./run-board/run-board-reducer.js";
 import { runBoardActionsFromRuntimeEvent } from "./run-board/runtime-event-to-run-board.js";
-import { selectAttentionHistory, selectDebugRefsForRow, selectRunBoardSurface } from "./run-board/run-board-selectors.js";
+import { selectDebugRefsForRow, selectRunBoardSurface } from "./run-board/run-board-selectors.js";
+import { selectProductResultCardView } from "./run-board/product-result-card-selectors.js";
+import { runBoardAttentionActionForKey } from "./run-board/attention-key-routing.js";
 import { RunBoardSurface } from "./run-board/RunBoardSurface.js";
 import { ProductResultCard } from "./run-board/ProductResultCard.js";
 import { formatElapsed } from "./run-board/run-board-row-format.js";
-import type { AttentionAction, AttentionItemView, RunBoardResultAction, RunBoardState, WorkerBoardRow } from "./run-board/run-board-types.js";
+import type { AttentionAction, AttentionItemView, RunBoardPhase, RunBoardResultAction, RunBoardState, WorkerBoardRow } from "./run-board/run-board-types.js";
 
 type ChatMessage = ConversationMessage;
 
@@ -435,7 +437,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const workerId = runBoardWorkerIdFromRuntimeEvent(event);
         const withResolvedSlow = workerId
           ? reduceRunBoardActions(previous, [{
-              type: "attention/materialize-slow",
+              type: "attention/archive-derived-slow",
               at: eventTimestampForRunBoard(event),
               workerIds: [workerId],
               resolution: "Worker produced new evidence after the slow period."
@@ -772,11 +774,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   useInput((character, key) => {
-    if (approval) {
-      handleApprovalInput(character, key);
-      return;
-    }
-
     if (detailOpen) {
       if (key.escape || (key.ctrl && (character === "o" || character === "c")) || character === "q") {
         emitTuiFocusTransition(
@@ -787,6 +784,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         return;
       }
       handleDetailInput(key);
+      return;
+    }
+
+    if (handleRunBoardAttentionKey(character, key)) {
+      return;
+    }
+
+    if (approval && handleApprovalInput(character, key)) {
       return;
     }
 
@@ -1000,7 +1005,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
     const at = new Date().toISOString();
     setRunBoardState((previous) => reduceRunBoardActions(previous, [{
-      type: "attention/materialize-slow",
+      type: "attention/archive-derived-slow",
       at,
       resolution: "Run completed after the slow period."
     }, {
@@ -1107,7 +1112,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setDetailOpen(true);
   }
 
-  function handleRunBoardAttentionAction(item: AttentionItemView, action: AttentionAction): void {
+  function executeRunBoardAttentionAction(item: AttentionItemView, action: AttentionAction): void {
     if (action.enabled === false) {
       return;
     }
@@ -1135,6 +1140,32 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     ].join("\n");
     recordEventDetail(detail);
     setDetailOpen(true);
+  }
+
+  function handleRunBoardAttentionAction(item: AttentionItemView, action: AttentionAction): void {
+    executeRunBoardAttentionAction(item, action);
+  }
+
+  function handleRunBoardAttentionKey(character: string | undefined, key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean }): boolean {
+    if (key.ctrl || key.meta || key.return || key.escape) {
+      return false;
+    }
+    if (chatInputState.current.input.value.length > 0) {
+      return false;
+    }
+    const item = selectRunBoardSurface(runBoardState, {
+      now: new Date().toISOString(),
+      repo: "Swarm",
+      mode: routeLabel,
+      risk: runSandboxMode,
+      session: latestResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
+    }).attention[0];
+    const action = runBoardAttentionActionForKey(item, character, key);
+    if (!action) {
+      return false;
+    }
+    executeRunBoardAttentionAction(item, action);
+    return true;
   }
 
   function handleRunBoardResultAction(action: RunBoardResultAction): void {
@@ -2047,6 +2078,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         chatSessionId.current = createChatSessionId();
         resetDebugLogger();
         setPendingPlan(undefined);
+        setRunBoardState(createInitialRunBoardState());
         setEvents([]);
         replaceChatTranscript(initialSystemMessage);
         lastActionLogEventSignatureRef.current = undefined;
@@ -3290,15 +3322,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setApproval(undefined);
   }
 
-  function handleApprovalInput(character: string | undefined, key: { ctrl?: boolean; escape?: boolean }): void {
+  function handleApprovalInput(character: string | undefined, key: { ctrl?: boolean; escape?: boolean }): boolean {
     const decision = approvalInputDecision(character ?? "", key);
     if (!decision.handled) {
-      return;
+      return false;
     }
     resolveApprovalDecision({
       approved: decision.approved,
       rememberForSession: decision.rememberForSession
     });
+    return true;
   }
 
   if (detailOpen) {
@@ -3335,49 +3368,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const routeLabel = displayedResultCard?.route
     ?? lastRoute?.mode
     ?? (runMode === "chat" ? "ask" : runMode === "full_swarm" ? "team" : "work");
-  const currentAction = loopActivity
-    ? formatLoopActivityLine(loopActivity)
-    : busy
-      ? "Starting local coding loop..."
-      : pendingPlan
-        ? "Awaiting approval for the plan."
-        : displayedResultCard
-          ? displayedResultCard.summary
-          : "Idle";
-  const currentPhase = loopActivity
-    ? loopActivity.phase.replace(/_/g, " ")
-    : pendingPlan
-      ? "awaiting approval"
-      : busy
-        ? "running"
-        : displayedResultCard
-          ? displayedResultCard.status
-          : "idle";
-  const screenMode = tuiScreenMode({
-    pane: mainPane,
-    columns: terminalColumns,
-    busy,
-    hasApproval: Boolean(approval),
-    hasPendingPlan: Boolean(pendingPlan),
-    hasResult: Boolean(displayedResultCard),
-    density: tuiDensity
-  });
-  const showCurrentAction = screenMode.showCurrentAction;
-  const needYou = approval
-    ? `Approve ${approval.summary}`
-    : pendingPlan
-      ? "approve with y or cancel with n"
-      : "no";
-  const progress = busy
-    ? `${progressBar(taskCompleted, taskTotal || 0, 10)} tasks ${taskCompleted}/${taskTotal || 0} | tools ${toolResults.length}`
-    : displayedResultCard
-      ? `${displayedResultCard.changedFiles.length} changed files | ${displayedResultCard.checks.length} checks`
-      : "no active tasks";
-  const timelineItems = busy
-    ? loopActivityTimeline.slice(-5).map(formatLoopActivityLine)
-    : displayedResultCard
-      ? compactResultCardLines(displayedResultCard)
-      : messages.slice(-3).map((message) => `${message.role}: ${message.brief}`);
   const runBoardView = selectRunBoardSurface(runBoardState, {
     now: new Date().toISOString(),
     repo: "Swarm",
@@ -3385,11 +3375,62 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     risk: runSandboxMode,
     session: displayedResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
   });
+  const runBoardPhase = runBoardView.phase;
+  const shouldRenderRunBoard = busy
+    || Boolean(approval)
+    || Boolean(pendingPlan)
+    || isActiveRunBoardPhase(runBoardPhase);
+  const displayedRunBoardPhase = approval || pendingPlan
+    ? "waiting-attention"
+    : shouldRenderRunBoard && runBoardPhase === "idle"
+      ? "planning"
+      : runBoardPhase;
+  const currentAction = loopActivity
+    ? formatLoopActivityLine(loopActivity)
+    : runBoardView.focus
+      ? runBoardView.focus
+      : busy
+        ? "Starting local coding loop..."
+        : pendingPlan
+          ? "Awaiting approval for the plan."
+          : displayedResultCard
+            ? displayedResultCard.summary
+            : "Idle";
+  const currentPhase = displayedRunBoardPhase === "idle" && displayedResultCard
+    ? displayedResultCard.status
+    : displayedRunBoardPhase;
+  const screenMode = tuiScreenMode({
+    pane: mainPane,
+    columns: terminalColumns,
+    busy,
+    hasApproval: Boolean(approval),
+    hasPendingPlan: Boolean(pendingPlan),
+    hasResult: Boolean(displayedResultCard),
+    hasRunBoard: shouldRenderRunBoard,
+    density: tuiDensity
+  });
+  const showCurrentAction = screenMode.showCurrentAction;
+  const needYou = approval
+    ? `Approve ${approval.summary}`
+    : pendingPlan
+      ? "approve with y or cancel with n"
+      : runBoardView.attention[0]
+        ? runBoardView.attention[0].recommendation
+        : "no";
+  const progress = `${progressBar(runBoardView.resultPreview.checks.filter((check) => check.status === "passed").length, runBoardView.resultPreview.checks.length || 0, 10)} workers ${runBoardView.workers.length} | files ${runBoardView.resultPreview.changedFiles.length}`;
+  const timelineItems = busy
+    ? loopActivityTimeline.slice(-5).map(formatLoopActivityLine)
+    : displayedResultCard
+      ? compactResultCardLines(displayedResultCard)
+      : messages.slice(-3).map((message) => `${message.role}: ${message.brief}`);
   const bodyRows = Math.max(12, terminalRows - (showCurrentAction ? 8 : 6) - completionRows);
   const timelineLimit = bodyRows >= 30 ? 5 : 3;
-  const resultAttentionHistory = selectAttentionHistory(runBoardState);
-  const shouldShowRunBoardSurface = busy || Boolean(displayedResultCard) || Boolean(approval) || Boolean(pendingPlan);
-  const overviewSurface = busy
+  const productResultCardView = selectProductResultCardView(runBoardState, {
+    card: displayedResultCard,
+    detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined
+  });
+  const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedResultCard);
+  const overviewSurface = shouldRenderRunBoard
     ? (
       <Box flexDirection="column" width="100%">
         <RunBoardSurface
@@ -3413,10 +3454,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     : displayedResultCard
       ? <Box flexDirection="column" width="100%">
         <ProductResultCard
-          card={displayedResultCard}
-          preview={runBoardView.resultPreview}
-          attentionHistory={resultAttentionHistory}
-          detailHint={latestDetailSource !== "none" ? detailOpenHint() : undefined}
+          view={productResultCardView}
           density={screenDensity}
           onNextAction={handleRunBoardResultAction}
         />
@@ -3424,8 +3462,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       </Box>
       : <Box flexDirection="column" width="100%">
         <ProductResultCard
-          preview={runBoardView.resultPreview}
-          attentionHistory={resultAttentionHistory}
+          view={productResultCardView}
           density={screenDensity}
         />
         <SwarmSurfacePanel surface={swarmSurface} limit={4} />
@@ -3581,8 +3618,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           <CurrentActionRow
             message={currentAction}
             phase={currentPhase}
-            status={loopActivity ? loopActivityStatus(loopActivity.phase) : busy ? "running" : displayedResultCard ? displayedResultCard.status : "idle"}
-            tone={loopActivity ? loopActivityTone(loopActivity.phase) : busy ? "running" : displayedResultCard ? statusTone(displayedResultCard.status) : "muted"}
+            status={loopActivity ? loopActivityStatus(loopActivity.phase) : statusForRunBoardPhase(displayedRunBoardPhase, displayedResultCard?.status)}
+            tone={loopActivity ? loopActivityTone(loopActivity.phase) : toneForRunBoardPhase(displayedRunBoardPhase, displayedResultCard?.status)}
             progress={progress}
             needYou={needYou === "no" ? undefined : needYou}
             motionFrame={shouldAnimate ? motionTick : undefined}
@@ -4787,6 +4824,30 @@ function loopActivityTone(phase: LoopActivityState["phase"]): TuiTone {
     case "turn_complete": return "muted";
     default: return "running";
   }
+}
+
+function isActiveRunBoardPhase(phase: RunBoardPhase): boolean {
+  return phase === "planning"
+    || phase === "working"
+    || phase === "reviewing"
+    || phase === "waiting-attention"
+    || phase === "verifying";
+}
+
+function statusForRunBoardPhase(phase: RunBoardPhase, resultStatus?: string): string {
+  if (phase === "waiting-attention") return "awaiting approval";
+  if (phase === "planning" || phase === "working" || phase === "reviewing" || phase === "verifying") return "running";
+  if (phase === "done") return resultStatus ?? "completed";
+  if (phase === "failed") return "failed";
+  return resultStatus ?? "idle";
+}
+
+function toneForRunBoardPhase(phase: RunBoardPhase, resultStatus?: string): TuiColorRef {
+  if (phase === "waiting-attention") return "status.pending";
+  if (phase === "planning" || phase === "working" || phase === "reviewing" || phase === "verifying") return "status.running";
+  if (phase === "done") return statusTone(resultStatus ?? "completed") as TuiColorRef;
+  if (phase === "failed") return "status.danger";
+  return statusTone(resultStatus ?? "idle") as TuiColorRef;
 }
 
 async function formatDoctorReport(runtime: SwarmRuntime | undefined, workflowPath?: string): Promise<string> {

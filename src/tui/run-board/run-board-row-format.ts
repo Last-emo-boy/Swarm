@@ -11,12 +11,11 @@ export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
     return clipDisplay(`${badge} ${padRight(clipDisplay(row.label, 16), 16)} ${clipDisplay(action, 32)} ${elapsed}`, width);
   }
   const label = padRight(clipDisplay(row.label, 18), 18);
-  const status = row.status.padEnd(8).slice(0, 8);
-  const fixedWidth = displayWidth(`${badge} ${label} ${status} ${elapsed}`);
+  const fixedWidth = displayWidth(`${badge} ${label} ${elapsed}`);
   const evidenceBudget = width >= 120 ? 28 : 18;
-  const actionBudget = Math.max(18, width - fixedWidth - evidenceBudget - 5);
+  const actionBudget = Math.max(18, width - fixedWidth - evidenceBudget - 4);
   const evidence = suffix ? clipDisplay(suffix.replace(/^ · /, ""), evidenceBudget) : "";
-  return clipDisplay(`${badge} ${label} ${clipDisplay(action, actionBudget)} ${status} ${elapsed}${evidence ? `  ${evidence}` : ""}`, width);
+  return clipDisplay(`${badge} ${label} ${clipDisplay(action, actionBudget)} ${elapsed}${evidence ? `  ${evidence}` : ""}`, width);
 }
 
 export function formatAttentionItem(item: AttentionItemView, columns = 100): string[] {
