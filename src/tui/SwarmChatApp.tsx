@@ -3698,11 +3698,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const displayedResultCard = latestResultCard
     ?? (latestSnapshot?.final_outcome ? buildResultCardFromSnapshot(latestSnapshot) : undefined);
   const collaborationUiEnabled = isCollaborationUiEnabled();
-  const displayedProductResultCard = collaborationUiEnabled
-    ? displayedResultCard
-    : displayedResultCard
-      ? { ...displayedResultCard, decisionTrail: undefined }
-      : undefined;
+  const displayedProductResultCard = displayedResultCard;
   const swarmSurface = runtime ? safeSwarmSurface(runtime, 12) : undefined;
   const promptCacheStatus = runtime?.getPromptCacheStatus();
   const cacheStatus = promptCacheStatus?.status ?? displayedProductResultCard?.cache?.status;
@@ -3784,7 +3780,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const timelineLimit = bodyRows >= 30 ? 5 : 3;
   const productResultCardView = selectProductResultCardView(runBoardState, {
     card: displayedProductResultCard,
-    detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined
+    detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined,
+    decisionTrailEnabled: collaborationUiEnabled
   });
   const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedProductResultCard);
   const topologyStrip = collaborationCockpit.enabled ? (

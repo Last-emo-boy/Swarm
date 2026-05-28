@@ -35,14 +35,25 @@ export type ProductResultCardView = {
 export function selectProductResultCardView(state: RunBoardState, input: {
   card?: ResultCard;
   detailHint?: string;
+  decisionTrailEnabled?: boolean;
 } = {}): ProductResultCardView {
+  const card = input.decisionTrailEnabled === false
+    ? withoutDecisionTrail(state.finalResult ?? input.card)
+    : state.finalResult ?? input.card;
   return productResultCardViewFromParts({
-    card: state.finalResult ?? input.card,
+    card,
     preview: state.resultPreview,
     attentionHistory: selectAttentionHistory(state),
     objective: state.objective,
     detailHint: input.detailHint
   });
+}
+
+function withoutDecisionTrail(card: ResultCard | undefined): ResultCard | undefined {
+  if (!card?.decisionTrail) {
+    return card;
+  }
+  return { ...card, decisionTrail: undefined };
 }
 
 export function productResultCardViewFromParts(input: {

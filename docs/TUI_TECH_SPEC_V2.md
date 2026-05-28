@@ -126,6 +126,29 @@ type DecisionTrail = {
   - 80/100/120/160 列快照
   - dark/contrast/monochrome 对比
 
+## 5.1 Implementation Evidence
+
+当前 PR-1 实现锚点：
+
+- Collaboration cockpit VM、overlay action intent、filter、telemetry schema：`src/tui/collaboration-cockpit.ts`
+- Topology Strip 组件与 mouse hit target：`src/tui/components/TopologyStrip.tsx`
+- Ownership / negotiation / blackboard inline overlay：`src/tui/components/CollaborationOverlayPanel.tsx`
+- `o/n/b/r` keyboard routing、overlay action routing、blackboard filter、feature flag rollback：`src/tui/SwarmChatApp.tsx`
+- Decision Trail runtime 数据与文本输出：`src/runtime/result-card.ts`
+- Result Card / Product Result Card 折叠、点击展开与 selector VM：`src/tui/components/ResultCard.tsx`、`src/tui/run-board/ProductResultCard.tsx`、`src/tui/run-board/product-result-card-selectors.ts`
+- Planner / Worker / Reviewer / Aggregator role tokens：`src/tui/collaboration-role.ts`、`src/tui/theme.ts`
+
+当前测试锚点：
+
+- Cockpit projection、快捷键、overlay action intent、filter、telemetry redaction：`src/tui/collaboration-cockpit.test.ts`
+- Topology full / abbreviated / token layouts、NO_COLOR、mouse enabled/disabled：`src/tui/components/TopologyStrip.test.tsx`
+- Overlay rows、filter chrome、mouse row click：`src/tui/components/CollaborationOverlayPanel.test.tsx`
+- Decision Trail 折叠/展开与 mouse toggle：`src/tui/result-card-render.test.ts`、`src/tui/run-board/ProductResultCard.test.tsx`
+- Product result selector 和 collaboration rollback：`src/tui/run-board/product-result-card-selectors.test.ts`
+- Prompt focus、empty Enter guard、collaboration overlay replay：`src/tui/interaction-replay.test.ts`
+- 80/100/120/160 列视觉快照：`src/tui/renderer/workbench-visual-snapshot.test.ts`
+- Role / visual token audit：`src/tui/visual-token-audit.test.ts`
+
 ## 6. 发布门禁（沿用并新增）
 
 必跑：

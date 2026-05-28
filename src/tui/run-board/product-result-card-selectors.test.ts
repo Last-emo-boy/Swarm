@@ -64,3 +64,31 @@ test("product result selector projects final card worker summary and attention h
   assert.deepEqual(view.decisionTrail?.assign, ["Code Worker owns patch"]);
   assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["final:/diff", "final:/commit"]);
 });
+
+test("product result selector can disable decision trail for collaboration rollback", () => {
+  const state = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
+    {
+      type: "result/final",
+      at: "2026-05-28T00:02:00.000Z",
+      card: {
+        status: "completed",
+        sessionId: "sess-rollback",
+        route: "team",
+        summary: "Fixed session restore.",
+        changedFiles: [],
+        checks: [],
+        review: { status: "passed", summary: "review passed" },
+        risks: [],
+        artifacts: [],
+        next: [],
+        decisionTrail: {
+          split: ["Objective adopted"],
+          assign: ["Code Worker owns patch"]
+        }
+      }
+    }
+  ]);
+
+  assert.equal(selectProductResultCardView(state, { decisionTrailEnabled: true }).decisionTrail?.split?.[0], "Objective adopted");
+  assert.equal(selectProductResultCardView(state, { decisionTrailEnabled: false }).decisionTrail, undefined);
+});
