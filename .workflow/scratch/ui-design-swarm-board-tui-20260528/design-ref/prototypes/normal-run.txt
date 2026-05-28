@@ -1,0 +1,33 @@
+120-column prototype: normal run
+
+╭─ SWARM BOARD ───────────────────────── repo: Swarm  mode:auto  risk:workspace-write ╮
+│ Objective  Fix failing tests with the smallest safe change                           │
+│ Phase      Editing                                                                   │
+│ Focus      session resume freshness                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ WORKER BOARD ───────────────────────────────────────────────────────────────────────╮
+│ [RUN] Main Swarm      coordinating patch strategy             00:03  next step       │
+│ [RUN] Code Worker     editing restoreSessionFromRow           00:28  session-row.ts  │
+│ [OK]  Test Runner     reproduced failing test                 00:41  npm test ...    │
+│ [ASK] Reviewer        waiting for patch diff                  00:18  Code Worker     │
+│ [OK]  Memory Checker  found freshness metadata path           00:09  memory state    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ CURRENT WORKER: CODE WORKER ────────────────────────────────────────────────────────╮
+│ Action   Editing restoreSessionFromRow                                               │
+│ Why      Restored sessions lose compacted memory freshness metadata                  │
+│ File     src/runtime/session-row.ts                                                  │
+│ Next     Run focused test                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ RESULT PREVIEW ─────────────────────────────────────────────────────────────────────╮
+│ Hypothesis  Restore path drops memory freshness metadata                             │
+│ Changed     1 file                                                                   │
+│ Verified    pending                                                                  │
+│ Confidence  medium                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+[Workers 5] [Blocked 0] [Files 1] [Checks 0/1] [Approvals 0] [Detail Enter]
+>
+
+Mouse targets:
+- Click any worker row to open worker detail.
+- Click Detail to open `/workers`.
+- Wheel over Worker Board scrolls rows when overflow exists.

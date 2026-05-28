@@ -1,0 +1,44 @@
+{
+  "topic": "Swarm Board terminal TUI",
+  "selected_variant": "operational-workroom",
+  "selected_at": "2026-05-28",
+  "stack": "react-terminal-renderer",
+  "targets": [
+    "normal-run",
+    "attention-needed",
+    "finished-result",
+    "debug-detail"
+  ],
+  "variants": [
+    {
+      "id": "operational-workroom",
+      "name": "Operational Workroom",
+      "score": 0.93,
+      "density": "dense",
+      "mood": "calm, accountable, controllable",
+      "reason": "Best matches the product promise: a local agent workroom where process, exception, and settlement are visible without becoming a log stream."
+    },
+    {
+      "id": "command-center",
+      "name": "Command Center",
+      "score": 0.78,
+      "density": "medium",
+      "mood": "bold, status-heavy, dashboard-like",
+      "reason": "Clear state signaling, but risks feeling like an ops dashboard and over-exposing system chrome."
+    },
+    {
+      "id": "conversation-led",
+      "name": "Conversation Led",
+      "score": 0.61,
+      "density": "low",
+      "mood": "chat-first, minimal, narrative",
+      "reason": "Good for idle chat, but does not satisfy the user's requirement that running work be presented as board state rather than log output."
+    }
+  ],
+  "decision_rules": [
+    "Idle uses conversation-first transcript.",
+    "Running, attention, approval, and result states use Swarm Board first.",
+    "Trace/log output is a detail surface, not the default run surface.",
+    "Every mouse target has an equal keyboard path."
+  ]
+}

@@ -1,5 +1,5 @@
 import React from "react";
-import type { TuiElement } from "./dom.js";
+import { clampScrollTop, type TuiElement } from "./dom.js";
 import type { TuiFrame } from "./frame.js";
 import { RendererAppProvider } from "./hooks/use-app.js";
 import { createInputRegistry, RendererInputProvider, type RendererKey } from "./hooks/use-input.js";
@@ -7,13 +7,15 @@ import { RendererStdoutProvider } from "./hooks/use-stdout.js";
 import { TuiDomEventDispatcher } from "./events/dispatcher.js";
 import { TuiKeyboardEvent } from "./events/terminal-event.js";
 import { isInTree, TuiFocusManager } from "./focus.js";
+import { hitTestDom } from "./hit-test.js";
 import { buildTerminalPatch, diffScreens, type TuiFrameDiff, type TuiTerminalPatch } from "./output.js";
 import { createTuiReactRoot } from "./reconciler.js";
 import { renderDomToFrame } from "./renderer.js";
-import type { TuiParsedInput } from "./input-parser.js";
+import type { TuiMouseInput, TuiParsedInput } from "./input-parser.js";
 import { TuiTerminalInputController, type TuiTerminalInputDelivery } from "./terminal-input.js";
 import { detectTuiTerminalCapabilities, type TuiTerminalCapabilities } from "./terminal-capabilities.js";
 import { acquireTerminalLifecycleForStream, type TerminalLifecycleSnapshot } from "./terminal.js";
+import { TuiClickEvent } from "./events/click-event.js";
 
 export type TuiRootOptions = {
   stdout?: NodeJS.WriteStream;
@@ -41,6 +43,7 @@ export type TuiRoot = {
   getTerminalLifecycleSnapshot: () => TerminalLifecycleSnapshot;
   focusElement: (node: TuiElement) => void;
   dispatchInput: (input: string | undefined, key?: RendererKey) => void;
+  dispatchMouse: (mouse: TuiMouseInput) => void;
   dispatchParsedInput: (events: readonly TuiParsedInput[]) => TuiTerminalInputDelivery;
   dispatchRawInput: (chunk: string | Buffer, options?: { flush?: boolean }) => TuiTerminalInputDelivery;
   flushRawInput: () => TuiTerminalInputDelivery;
@@ -174,6 +177,40 @@ export function createTuiRoot(options: TuiRootOptions = {}): TuiRoot {
       }
       inputRegistry.dispatch(input, key);
     },
+    dispatchMouse(mouse) {
+      if (!terminalCapabilities.mouse || !frame) {
+        return;
+      }
+      if (mouse.button === "wheel-up" || mouse.button === "wheel-down") {
+        const target = hitTestDom(reactRoot.root, mouse.x, mouse.y);
+        const scrollTarget = target ? nearestScrollable(target) : undefined;
+        if (scrollTarget?.scroll) {
+          const delta = mouse.button === "wheel-up" ? -3 : 3;
+          scrollTarget.scroll.pendingDelta += delta;
+          scrollTarget.scroll.scrollTop = clampScrollTop(scrollTarget.scroll, scrollTarget.scroll.scrollTop + delta);
+          forceNextFullReset = true;
+          if (currentNode !== undefined) {
+            root.render(currentNode);
+          }
+        }
+        return;
+      }
+      if (mouse.button !== "left" || mouse.action !== "press") {
+        return;
+      }
+      const target = hitTestDom(reactRoot.root, mouse.x, mouse.y);
+      if (!target) {
+        return;
+      }
+      const event = new TuiClickEvent({ x: mouse.x, y: mouse.y, button: mouse.button });
+      const shouldContinue = domDispatcher.dispatch(target, event);
+      if (!shouldContinue) {
+        return;
+      }
+      if (target.focusable) {
+        focusManager.focus(target);
+      }
+    },
     dispatchParsedInput(events) {
       return terminalInput.deliver(events);
     },
@@ -217,7 +254,7 @@ export function createTuiRoot(options: TuiRootOptions = {}): TuiRoot {
 class RootTerminalInput {
   private readonly controller: TuiTerminalInputController;
 
-  constructor(private readonly root: Pick<TuiRoot, "dispatchInput">) {
+  constructor(private readonly root: Pick<TuiRoot, "dispatchInput" | "dispatchMouse">) {
     this.controller = new TuiTerminalInputController(root);
   }
 
@@ -247,6 +284,17 @@ function ensureActiveFocus(root: TuiElement, focusManager: TuiFocusManager): voi
     focusManager.blur();
   }
   focusManager.focusFirst(root);
+}
+
+function nearestScrollable(node: TuiElement): TuiElement | undefined {
+  let current: TuiElement | undefined = node;
+  while (current) {
+    if (current.scroll) {
+      return current;
+    }
+    current = current.parentNode;
+  }
+  return undefined;
 }
 
 function damageArea(damage: TuiFrameDiff["damage"]): number {

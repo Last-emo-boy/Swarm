@@ -93,7 +93,6 @@ import { ApprovalOverlay, type ApprovalOverlayDecision } from "./components/Appr
 import { CurrentActionRow } from "./components/CurrentActionRow.js";
 import { InspectorPane } from "./components/InspectorPane.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
-import { ResultCard as ResultCardPanel } from "./components/ResultCard.js";
 import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
@@ -193,6 +192,13 @@ import {
   selectedConversationMessage,
   type MessageCursorState
 } from "./message-folding.js";
+import { createInitialRunBoardState, reduceRunBoardActions } from "./run-board/run-board-reducer.js";
+import { runBoardActionsFromRuntimeEvent } from "./run-board/runtime-event-to-run-board.js";
+import { selectAttentionHistory, selectDebugRefsForRow, selectRunBoardSurface } from "./run-board/run-board-selectors.js";
+import { RunBoardSurface } from "./run-board/RunBoardSurface.js";
+import { ProductResultCard } from "./run-board/ProductResultCard.js";
+import { formatElapsed } from "./run-board/run-board-row-format.js";
+import type { AttentionAction, AttentionItemView, RunBoardResultAction, RunBoardState, WorkerBoardRow } from "./run-board/run-board-types.js";
 
 type ChatMessage = ConversationMessage;
 
@@ -355,6 +361,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [lastSessionId, setLastSessionId] = useState<string | undefined>();
   const [lastRoute, setLastRoute] = useState<RouteState | undefined>();
   const [latestResultCard, setLatestResultCard] = useState<RuntimeResultCard | undefined>();
+  const [runBoardState, setRunBoardState] = useState<RunBoardState>(() => createInitialRunBoardState());
   const [runMode, setRunMode] = useState<RunMode>("auto");
   const [runSandboxMode, setRunSandboxMode] = useState<RunSandboxMode>("workspace-write");
   const [tuiDensity, setTuiDensity] = useState<TuiDensityPreference>("auto");
@@ -424,6 +431,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     symphonyDaemonManager.current = new SymphonyDaemonManager(runtime);
     const unsubscribe = runtime.events.onEvent((event) => {
       setEvents((previous) => appendTuiRuntimeEvent(previous, event));
+      setRunBoardState((previous) => {
+        const workerId = runBoardWorkerIdFromRuntimeEvent(event);
+        const withResolvedSlow = workerId
+          ? reduceRunBoardActions(previous, [{
+              type: "attention/materialize-slow",
+              at: eventTimestampForRunBoard(event),
+              workerIds: [workerId],
+              resolution: "Worker produced new evidence after the slow period."
+            }])
+          : previous;
+        return reduceRunBoardActions(withResolvedSlow, runBoardActionsFromRuntimeEvent(event, {
+          latestResultCard
+        }));
+      });
       appendRuntimeLogEvent(event);
       appendRuntimeTranscriptEvent(event);
       const work = buildWorkRecordFromRuntimeEvent(event, new Date().toISOString());
@@ -474,6 +495,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setLastSessionId(event.session_id);
         setTaskWorkState({ taskStates: new Map(), taskTotal: event.plan.tasks.length, taskCompleted: 0 });
         setToolResults([]);
+        setRunBoardState((previous) => reduceRunBoardActions(previous, [
+          { type: "run/reset", runId: event.session_id, at: new Date().toISOString() },
+          ...runBoardActionsFromRuntimeEvent(event)
+        ]));
       }
       if (event.type === "final") {
         setLastSessionId(event.session_id);
@@ -903,6 +928,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode, tuiChatSessionId: chatSessionId.current });
       const display = formatExecutionResultDisplay(result, runtime);
       setLatestResultCard(result.result_card);
+      recordRunBoardResultCard(result.result_card);
       recordAiDetail(display.detail);
       appendChatMessage({
         role: "assistant",
@@ -932,6 +958,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const result = await runtime.execute(planned);
       const display = formatExecutionResultDisplay(result, runtime);
       setLatestResultCard(result.result_card);
+      recordRunBoardResultCard(result.result_card);
       recordAiDetail(display.detail);
       appendChatMessage({
         role: "assistant",
@@ -965,6 +992,22 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setLatestDetailSource("ai");
     setDetailScroll(0);
     setDetailOpen(false);
+  }
+
+  function recordRunBoardResultCard(card: RuntimeResultCard | undefined): void {
+    if (!card) {
+      return;
+    }
+    const at = new Date().toISOString();
+    setRunBoardState((previous) => reduceRunBoardActions(previous, [{
+      type: "attention/materialize-slow",
+      at,
+      resolution: "Run completed after the slow period."
+    }, {
+      type: "result/final",
+      card,
+      at
+    }]));
   }
 
   function recordCommandDetail(detail: string, open = false): void {
@@ -1041,6 +1084,70 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (fullscreen) {
       setDetailOpen(true);
     }
+  }
+
+  function openRunBoardWorkerDetail(row: WorkerBoardRow): void {
+    const refs = selectDebugRefsForRow(runBoardState, row.id);
+    const lines = [
+      `${row.label} ${row.status}`,
+      "",
+      `Action: ${row.currentAction}`,
+      `Age: ${formatElapsed(row.elapsedMs)}`,
+      `Risk: ${row.risk}`,
+      row.waitingOn ? `Waiting on: ${row.waitingOn}` : undefined,
+      row.lastEvidence ? `Evidence: ${row.lastEvidence}` : undefined,
+      row.owns.length ? `Owns: ${row.owns.join(", ")}` : undefined,
+      refs.length ? "" : undefined,
+      refs.length ? "Debug refs:" : undefined,
+      ...refs.map((ref) => `  ${ref}`)
+    ].filter((line): line is string => line !== undefined);
+    setLatestDetail(lines.join("\n"));
+    setLatestDetailSource("event");
+    setDetailScroll(0);
+    setDetailOpen(true);
+  }
+
+  function handleRunBoardAttentionAction(item: AttentionItemView, action: AttentionAction): void {
+    if (action.enabled === false) {
+      return;
+    }
+    if (action.command) {
+      void handleSlashCommand(action.command);
+      return;
+    }
+    if (item.kind === "approval" && approval) {
+      if (action.key === "y") {
+        resolveApprovalDecision({ approved: true, rememberForSession: false });
+        return;
+      }
+      if (action.key === "n") {
+        resolveApprovalDecision({ approved: false, rememberForSession: false });
+        return;
+      }
+    }
+    const detail = [
+      item.title,
+      "",
+      item.summary,
+      "",
+      `Recommendation: ${item.recommendation}`,
+      ...item.evidence.map((evidence) => `Evidence: ${evidence}`)
+    ].join("\n");
+    recordEventDetail(detail);
+    setDetailOpen(true);
+  }
+
+  function handleRunBoardResultAction(action: RunBoardResultAction): void {
+    if (action.command.startsWith("/")) {
+      void handleSlashCommand(action.command);
+      return;
+    }
+    recordEventDetail([
+      `Next action: ${action.label}`,
+      "",
+      action.command
+    ].join("\n"));
+    setDetailOpen(true);
   }
 
   function handleActionLogInput(character: string | undefined, key: { ctrl?: boolean; pageUp?: boolean; pageDown?: boolean; upArrow?: boolean; downArrow?: boolean; return?: boolean }): boolean {
@@ -2028,6 +2135,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       void runPromise.then((result) => {
         const display = formatExecutionResultDisplay(result, runtime);
         setLatestResultCard(result.result_card);
+        recordRunBoardResultCard(result.result_card);
         recordAiDetail(display.detail);
         setLastSessionId(result.session_id);
         appendChatMessage({
@@ -3251,6 +3359,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     busy,
     hasApproval: Boolean(approval),
     hasPendingPlan: Boolean(pendingPlan),
+    hasResult: Boolean(displayedResultCard),
     density: tuiDensity
   });
   const showCurrentAction = screenMode.showCurrentAction;
@@ -3269,11 +3378,28 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     : displayedResultCard
       ? compactResultCardLines(displayedResultCard)
       : messages.slice(-3).map((message) => `${message.role}: ${message.brief}`);
+  const runBoardView = selectRunBoardSurface(runBoardState, {
+    now: new Date().toISOString(),
+    repo: "Swarm",
+    mode: routeLabel,
+    risk: runSandboxMode,
+    session: displayedResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
+  });
   const bodyRows = Math.max(12, terminalRows - (showCurrentAction ? 8 : 6) - completionRows);
   const timelineLimit = bodyRows >= 30 ? 5 : 3;
+  const resultAttentionHistory = selectAttentionHistory(runBoardState);
+  const shouldShowRunBoardSurface = busy || Boolean(displayedResultCard) || Boolean(approval) || Boolean(pendingPlan);
   const overviewSurface = busy
     ? (
       <Box flexDirection="column" width="100%">
+        <RunBoardSurface
+          view={runBoardView}
+          workerLimit={screenDensity === "compact" ? 4 : 6}
+          attentionLimit={screenDensity === "compact" ? 1 : 2}
+          onWorkerClick={openRunBoardWorkerDetail}
+          onAttentionAction={handleRunBoardAttentionAction}
+          onResultAction={handleRunBoardResultAction}
+        />
         <ActiveWorkSummary
           taskStates={taskStates}
           taskCompleted={taskCompleted}
@@ -3286,15 +3412,22 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     )
     : displayedResultCard
       ? <Box flexDirection="column" width="100%">
-        <ResultCardPanel
+        <ProductResultCard
           card={displayedResultCard}
+          preview={runBoardView.resultPreview}
+          attentionHistory={resultAttentionHistory}
           detailHint={latestDetailSource !== "none" ? detailOpenHint() : undefined}
           density={screenDensity}
+          onNextAction={handleRunBoardResultAction}
         />
         <SwarmSurfacePanel surface={swarmSurface} limit={3} />
       </Box>
       : <Box flexDirection="column" width="100%">
-        <ResultCardPanel emptyLabel="Not finished. Enter an objective or use /continue." density={screenDensity} />
+        <ProductResultCard
+          preview={runBoardView.resultPreview}
+          attentionHistory={resultAttentionHistory}
+          density={screenDensity}
+        />
         <SwarmSurfacePanel surface={swarmSurface} limit={4} />
       </Box>;
   const wideWorkbench = screenMode.showInspector;
@@ -3364,6 +3497,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
             footerSandboxLabel={sandboxBadge(runSandboxMode)}
             footerSandboxTone={sandboxTone(runSandboxMode)}
+            onFooterItemClick={(id) => {
+              emitTuiFocusTransition(
+                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
+                "other",
+                `footer:${id}`
+              );
+              void openFooterDetail(id);
+            }}
             onInputTelemetry={logTuiInputTelemetry}
             completionPlacement="overlay"
             density={screenDensity}
@@ -3463,16 +3604,18 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
               />
             ) : (
               <>
-                <ActivityTimeline
-                  title={busy ? "Progress" : displayedResultCard ? "Result" : "Recent"}
-                  items={timelineItems}
-                  emptyLabel="(none)"
-                  limit={timelineLimit}
-                  density={screenDensity}
-                />
+                {!shouldShowRunBoardSurface && (
+                  <ActivityTimeline
+                    title={busy ? "Progress" : displayedResultCard ? "Result" : "Recent"}
+                    items={timelineItems}
+                    emptyLabel="(none)"
+                    limit={timelineLimit}
+                    density={screenDensity}
+                  />
+                )}
 
-                <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={1}>
-                  {mainPane === "overview" ? (
+                <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={shouldShowRunBoardSurface ? 0 : 1}>
+                  {shouldShowRunBoardSurface || mainPane === "overview" ? (
                     overviewSurface
                   ) : (
                     <IdleKernelView
@@ -3539,6 +3682,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
             footerSandboxLabel={sandboxBadge(runSandboxMode)}
             footerSandboxTone={sandboxTone(runSandboxMode)}
+            onFooterItemClick={(id) => {
+              emitTuiFocusTransition(
+                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
+                "other",
+                `footer:${id}`
+              );
+              void openFooterDetail(id);
+            }}
             onInputTelemetry={logTuiInputTelemetry}
             density={screenDensity}
             columns={terminalColumns}
@@ -4800,6 +4951,38 @@ function footerPendingApprovalCount(
 ): number {
   const persisted = recentApprovals.filter((approval) => approval.status === "pending").length;
   return Math.max(persisted, activeApproval ? 1 : 0);
+}
+
+function runBoardWorkerIdFromRuntimeEvent(event: RuntimeEvent): string | undefined {
+  if (event.type === "worker" || event.type === "agent_run_started" || event.type === "agent_run_completed") {
+    return `worker:${event.worker.worker_id}`;
+  }
+  if (event.type === "handoff_started" || event.type === "handoff_returned" || event.type === "handoff_taken_back") {
+    return `worker:${event.handoff.worker_id}`;
+  }
+  if (event.type === "task" || event.type === "task_attempt") {
+    return `task:${event.task_id}`;
+  }
+  if (event.type === "tool_result") {
+    return event.agent?.worker_id ? `worker:${event.agent.worker_id}` : `task:${event.task_id}`;
+  }
+  if (event.type === "loop_activity" && event.agent?.worker_id) {
+    return `worker:${event.agent.worker_id}`;
+  }
+  if (event.type === "verification_completed" && event.result.worker_id) {
+    return `worker:${event.result.worker_id}`;
+  }
+  return undefined;
+}
+
+function eventTimestampForRunBoard(event: RuntimeEvent): string {
+  if (event.type === "worker" || event.type === "agent_run_started" || event.type === "agent_run_completed") {
+    return event.worker.updated_at;
+  }
+  if (event.type === "handoff_started" || event.type === "handoff_returned" || event.type === "handoff_taken_back") {
+    return event.handoff.updated_at;
+  }
+  return new Date().toISOString();
 }
 
 function sessionSourceKind(sourceJson: string | null | undefined): string | undefined {

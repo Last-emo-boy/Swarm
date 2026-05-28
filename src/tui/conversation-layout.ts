@@ -1622,6 +1622,7 @@ export function tuiScreenMode(input: {
   busy: boolean;
   hasApproval: boolean;
   hasPendingPlan: boolean;
+  hasResult?: boolean;
   density?: TuiDensityPreference;
 }): TuiScreenMode {
   const density = resolveTuiDensity({
@@ -1629,6 +1630,12 @@ export function tuiScreenMode(input: {
     pane: input.pane,
     columns: input.columns
   });
+  const needsRunBoardSurface = input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasResult);
+  const primarySurface = input.pane === "log"
+    ? "trace"
+    : input.pane === "chat" && !needsRunBoardSurface
+      ? "conversation"
+      : "operator";
   return {
     density,
     compactStatus: density === "compact",
@@ -1636,7 +1643,7 @@ export function tuiScreenMode(input: {
     showInspector: density !== "compact" && input.pane !== "chat" && !input.hasApproval && !input.hasPendingPlan && (
       density === "comfortable" ? input.columns >= 120 : input.columns >= 128
     ),
-    primarySurface: input.pane === "chat" ? "conversation" : input.pane === "log" ? "trace" : "operator"
+    primarySurface
   };
 }
 

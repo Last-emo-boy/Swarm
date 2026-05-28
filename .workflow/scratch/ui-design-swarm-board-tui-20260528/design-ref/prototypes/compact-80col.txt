@@ -1,0 +1,29 @@
+80-column prototype: compact running board
+
+╭─ SWARM BOARD ───────────────────────────────────────────────────────────╮
+│ Objective  Fix failing tests with the smallest safe change              │
+│ Phase      Running verification                                        │
+│ Focus      session resume freshness                                    │
+╰─────────────────────────────────────────────────────────────────────────╯
+╭─ WORKER BOARD ──────────────────────────────────────────────────────────╮
+│ [RUN] Main Swarm      coordinating next step              00:03        │
+│ [OK]  Code Worker     patched restore path               00:41        │
+│ [WARN] Test Runner    no output from focused test         01:12        │
+│ [ASK] Reviewer        waiting for verification            00:44        │
+│ [OK]  Memory Checker  freshness path confirmed            00:13        │
+╰─────────────────────────────────────────────────────────────────────────╯
+╭─ ATTENTION ─────────────────────────────────────────────────────────────╮
+│ Test Runner may be stuck. No output for 72s; process is alive.          │
+│ Recommend: wait 60s more before stopping.                              │
+│ [w] wait  [v] output  [s] stop  [r] retry                              │
+╰─────────────────────────────────────────────────────────────────────────╯
+╭─ RESULT PREVIEW ────────────────────────────────────────────────────────╮
+│ Patch ready, verification blocked by slow test command.                 │
+╰─────────────────────────────────────────────────────────────────────────╯
+[Workers 5] [Stuck 1] [Files 2] [Checks 0/1] [Detail]
+>
+
+80-column rules:
+- Hide row evidence unless selected.
+- Keep Attention short.
+- Do not show raw logs by default.

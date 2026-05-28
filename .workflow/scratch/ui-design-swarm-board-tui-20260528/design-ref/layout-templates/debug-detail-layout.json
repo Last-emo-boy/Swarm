@@ -1,0 +1,31 @@
+{
+  "target": "debug-detail",
+  "layout": "explicit-detail-surface",
+  "regions": [
+    {
+      "id": "public-worker-state",
+      "component": "WorkerDetail.PublicState",
+      "priority": 1
+    },
+    {
+      "id": "transcript-excerpt",
+      "component": "WorkerDetail.TranscriptExcerpt",
+      "priority": 2
+    },
+    {
+      "id": "internal-debug",
+      "component": "WorkerDetail.InternalDebug",
+      "priority": 3
+    },
+    {
+      "id": "actions",
+      "component": "WorkerDetail.Actions",
+      "priority": 1
+    }
+  ],
+  "rules": [
+    "Internal protocol language is allowed only in this explicit detail surface.",
+    "Debug detail opens by row click, Enter, `/workers`, or `/debug workers`.",
+    "Esc returns to the board without losing run state."
+  ]
+}

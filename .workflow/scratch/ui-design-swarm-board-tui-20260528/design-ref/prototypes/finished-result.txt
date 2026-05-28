@@ -1,0 +1,40 @@
+120-column prototype: finished result
+
+╭─ RESULT: TESTS FIXED ────────────────────────────────────────────────────────────────╮
+│ Status      success                                                                  │
+│ Objective   Fix failing tests with the smallest safe change                           │
+│ Risk        low                                                                      │
+│ Session     sess_abc123                                                              │
+│                                                                                      │
+│ Summary                                                                              │
+│   Preserved memory freshness metadata when restoring persisted sessions.              │
+│                                                                                      │
+│ Changed                                                                              │
+│   M src/runtime/session-row.ts                                                       │
+│   M src/runtime/session-row.test.ts                                                  │
+│                                                                                      │
+│ Verified                                                                             │
+│   [OK] npm test -- src/runtime/session-row.test.ts                                    │
+│   [OK] npm run check                                                                 │
+│                                                                                      │
+│ Worker Summary                                                                       │
+│   [OK] Main Swarm      selected smallest safe fix                                     │
+│   [OK] Code Worker     implemented patch                                              │
+│   [OK] Test Runner     reproduced and verified failure                                │
+│   [OK] Reviewer        found no broad regression risk                                 │
+│   [OK] Memory Checker  confirmed freshness behavior                                   │
+│                                                                                      │
+│ Attention History                                                                    │
+│   [WARN] Test Runner was slow for 72s; waited; command completed successfully         │
+│                                                                                      │
+│ Next                                                                                 │
+│   /diff       inspect patch                                                           │
+│   /continue   run broader tests                                                       │
+│   /commit     draft commit message                                                    │
+│   /workers    inspect worker details                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+>
+
+Mouse targets:
+- Click next action to fill or run the command path.
+- Click Worker Summary row to open contributing worker transcript.

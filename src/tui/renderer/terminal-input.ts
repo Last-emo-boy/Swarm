@@ -1,8 +1,10 @@
 import type { TuiRoot } from "./root.js";
-import { TuiInputParser, type TuiParsedInput } from "./input-parser.js";
+import { TuiInputParser, type TuiMouseInput, type TuiParsedInput } from "./input-parser.js";
 import { TuiTerminalQuerier } from "./terminal-query.js";
 
-export type TuiTerminalInputSink = Pick<TuiRoot, "dispatchInput">;
+export type TuiTerminalInputSink = Pick<TuiRoot, "dispatchInput"> & {
+  dispatchMouse?: (mouse: TuiMouseInput) => void;
+};
 
 export type TuiTerminalInputDelivery = {
   delivered: number;
@@ -64,6 +66,7 @@ export function deliverParsedInput(
         summary.responses += 1;
         break;
       case "mouse":
+        sink.dispatchMouse?.(event.mouse);
         summary.mouse += 1;
         break;
       case "terminal-focus":

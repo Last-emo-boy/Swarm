@@ -46,6 +46,7 @@ export function ChatInputArea({
   footerActivityLabel,
   footerActivityValue,
   footerActivityTone,
+  onFooterItemClick,
   inputActive = true,
   completionPlacement = "inline",
   density = "default",
@@ -75,6 +76,7 @@ export function ChatInputArea({
   footerActivityLabel?: string;
   footerActivityValue?: string;
   footerActivityTone?: TuiColorRef;
+  onFooterItemClick?: (id: FooterPillId) => void;
   inputActive?: boolean;
   completionPlacement?: "inline" | "overlay";
   density?: TuiDensity;
@@ -230,6 +232,7 @@ export function ChatInputArea({
         activityLabel={footerActivityLabel}
         activityValue={footerActivityValue}
         activityTone={footerActivityTone}
+        onFooterItemClick={onFooterItemClick}
         density={density}
         columns={columns}
       />
@@ -351,6 +354,7 @@ export function ChatInputFooter({
   activityLabel,
   activityValue,
   activityTone,
+  onFooterItemClick,
   density = "default",
   columns
 }: {
@@ -367,6 +371,7 @@ export function ChatInputFooter({
   activityLabel?: string;
   activityValue?: string;
   activityTone?: TuiColorRef;
+  onFooterItemClick?: (id: FooterPillId) => void;
   density?: TuiDensity;
   columns?: number;
 }): React.ReactElement | null {
@@ -395,7 +400,7 @@ export function ChatInputFooter({
       justifyContent="flex-start"
       flexShrink={0}
     >
-      <FooterPillZone pills={layout.left} />
+      <FooterPillZone pills={layout.left} onFooterItemClick={onFooterItemClick} />
       {!layout.compact && layout.rightHint ? (
         <Text color={visualTokenColor("text.muted")}>
           {" ".repeat(layout.spacerWidth)}
@@ -410,22 +415,58 @@ export function ChatInputFooter({
   );
 }
 
-function FooterPillZone({ pills }: { pills: FooterDisplayPill[] }): React.ReactElement {
+function FooterPillZone({ pills, onFooterItemClick }: {
+  pills: FooterDisplayPill[];
+  onFooterItemClick?: (id: FooterPillId) => void;
+}): React.ReactElement {
   return (
-    <Text wrap="truncate">
+    <Box flexDirection="row">
       {pills.map((item, index) => (
         <React.Fragment key={item.key}>
           {index > 0 ? <Text color={visualTokenColor("text.muted")}> </Text> : null}
-          <TonePill
-            label={item.label}
-            value={item.value}
-            tone={item.tone}
-            selected={item.selected}
-          />
+          <FooterPillView item={item} onFooterItemClick={onFooterItemClick} />
         </React.Fragment>
       ))}
-    </Text>
+    </Box>
   );
+}
+
+function FooterPillView({ item, onFooterItemClick }: {
+  item: FooterDisplayPill;
+  onFooterItemClick?: (id: FooterPillId) => void;
+}): React.ReactElement {
+  if (isFooterPillId(item.key) && onFooterItemClick) {
+    const id = item.key;
+    return (
+      <TonePill
+        label={item.label}
+        value={item.value}
+        tone={item.tone}
+        selected={item.selected}
+        focusable
+        onClick={() => onFooterItemClick(id)}
+      />
+    );
+  }
+  return (
+    <TonePill
+      label={item.label}
+      value={item.value}
+      tone={item.tone}
+      selected={item.selected}
+    />
+  );
+}
+
+function isFooterPillId(value: string): value is FooterPillId {
+  return value === "tasks" ||
+    value === "approvals" ||
+    value === "cache" ||
+    value === "gateway" ||
+    value === "mcp" ||
+    value === "skills" ||
+    value === "symphony" ||
+    value === "lsp";
 }
 
 function footerActivityPills(input: {

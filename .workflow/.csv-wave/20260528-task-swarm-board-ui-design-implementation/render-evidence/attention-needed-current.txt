@@ -1,0 +1,31 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ SWARM BOARD                                                                                                          │
+│ Objective  Fix failing tests with the smallest safe change   repo: Swarm  mode: auto  risk: workspace-write          │
+│ Phase      waiting-attention                                                                                         │
+│ Focus      Test Runner                                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ WORKER BOARD                                                                                                         │
+│ [ASK] Main Swarm      waiting for test result  waiting  00:52                                                        │
+│ [OK] Code Worker     patch ready  done     01:04  2 files                                                            │
+│ [WARN] Test Runner     no output from focused test  stuck    01:12  npm test -- src/runtime/session-row.test.ts      │
+│ [ASK] Reviewer        waiting for verification  waiting  00:44  waiting on Test Runner                               │
+│ [OK] Memory Checker  freshness path confirmed  done     00:13  memory freshness                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ATTENTION                                                                                                            │
+│ [WARN] Test Runner may be stuck: No output from focused test for 72s; process is alive.                              │
+│   evidence: npm test -- src/runtime/session-row.test.ts                                                              │
+│   recommend: Wait 60s more before stopping.                                                                          │
+│   [w] wait  [v] view output  [s] stop  [r] retry                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ RESULT PREVIEW                                                                                                       │
+│ blocked Patch ready, verification blocked by slow test command.                                                      │
+│ Hypothesis Restore path drops memory freshness metadata                                                              │
+│ Changed src/runtime/session-row.ts, src/runtime/session-row.test.ts                                                  │
+│ Blockers slow test command                                                                                           │
+│ Confidence medium                                                                                                    │
+│ Contributors Memory Checker: found freshness metadata path                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+[Workers 5] [Stuck 2] [Files 2] [Checks 0/0] [Approvals 0] [Detail Enter]

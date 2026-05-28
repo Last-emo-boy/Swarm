@@ -7,6 +7,7 @@ import { useRendererApp } from "./hooks/use-app.js";
 import { useRendererInput } from "./hooks/use-input.js";
 import { useRendererStdout } from "./hooks/use-stdout.js";
 import { createTuiRoot } from "./root.js";
+import ScrollBox from "./components/ScrollBox.js";
 import { terminalPatchToString } from "./output.js";
 import { screenToLines } from "./screen.js";
 
@@ -256,6 +257,86 @@ test("TuiRoot routes input through focused DOM handlers before input registry fa
   root.dispatchInput("z");
 
   assert.deepEqual(calls, ["prompt:a", "modal:return", "fallback:z"]);
+  root.unmount();
+});
+
+test("TuiRoot dispatches raw SGR mouse clicks through hit-tested DOM handlers", () => {
+  const calls: string[] = [];
+  const root = createTuiRoot({
+    columns: 40,
+    rows: 6,
+    terminalCapabilities: { mouse: true }
+  });
+
+  function Harness(): React.ReactElement {
+    return React.createElement(Box, { flexDirection: "column" },
+      React.createElement(Box, {
+        onClick: (event: { x: number; y: number; preventDefault: () => void }) => {
+          calls.push(`row:${event.x},${event.y}`);
+          event.preventDefault();
+        }
+      } as never, React.createElement(Text, null, "clickable worker row")),
+      React.createElement(Text, null, "plain")
+    );
+  }
+
+  root.render(React.createElement(Harness));
+  const summary = root.dispatchRawInput("\u001B[<0;2;1M");
+
+  assert.deepEqual(summary, {
+    delivered: 0,
+    responses: 0,
+    mouse: 1,
+    focus: 0,
+    malformed: 0
+  });
+  assert.deepEqual(calls, ["row:1,0"]);
+  root.unmount();
+});
+
+test("TuiRoot ignores mouse dispatch when capability is disabled", () => {
+  const calls: string[] = [];
+  const root = createTuiRoot({
+    columns: 40,
+    rows: 6,
+    terminalCapabilities: { mouse: false }
+  });
+
+  root.render(React.createElement(Box, {
+    onClick: (() => calls.push("clicked")) as never
+  } as never, React.createElement(Text, null, "clickable")));
+
+  root.dispatchRawInput("\u001B[<0;2;1M");
+
+  assert.deepEqual(calls, []);
+  root.unmount();
+});
+
+test("TuiRoot applies wheel input to the nearest scroll region", () => {
+  const root = createTuiRoot({
+    columns: 40,
+    rows: 6,
+    terminalCapabilities: { mouse: true }
+  });
+  root.render(React.createElement(ScrollBox, {
+    width: 30,
+    height: 5,
+    scrollTop: 0,
+    scrollHeight: 20,
+    viewportHeight: 3
+  }, React.createElement(Box, { flexDirection: "column" },
+    React.createElement(Text, null, "scroll target"),
+    React.createElement(Text, null, "more content")
+  )));
+
+  const scroll = root.getDom().childNodes[0];
+  assert(scroll && scroll.nodeName !== "#text");
+  assert.equal(scroll.scroll?.scrollTop, 0);
+
+  root.dispatchMouse({ x: 1, y: 0, button: "wheel-down", action: "press" });
+
+  assert.equal(scroll.scroll?.scrollTop, 3);
+  assert.equal(scroll.scroll?.pendingDelta, 3);
   root.unmount();
 });
 

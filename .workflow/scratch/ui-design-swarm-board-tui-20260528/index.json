@@ -1,0 +1,17 @@
+{
+  "topic": "Swarm Board terminal TUI",
+  "created_at": "2026-05-28",
+  "mode": "scratch",
+  "design_ref": {
+    "status": "complete",
+    "path": "design-ref",
+    "selected_variant": "operational-workroom",
+    "stack": "react-terminal-renderer",
+    "targets": [
+      "normal-run",
+      "attention-needed",
+      "finished-result",
+      "debug-detail"
+    ]
+  }
+}

@@ -20,6 +20,7 @@ export type SemanticTextLineProps = {
   bold?: boolean;
   dim?: boolean;
   inverse?: boolean;
+  onClick?: () => void;
 };
 
 export function SemanticTextLine({
@@ -29,11 +30,12 @@ export function SemanticTextLine({
   color,
   bold,
   dim,
-  inverse
+  inverse,
+  onClick
 }: SemanticTextLineProps): React.ReactElement {
   const resolvedSpans = spans?.length ? spans : [{ text: text ?? " ", color, bold, dim }];
   return (
-    <Text wrap={wrap} color={resolveTuiColor(color)} bold={bold} dimColor={dim} inverse={inverse}>
+    <Text wrap={wrap} color={resolveTuiColor(color)} bold={bold} dimColor={dim} inverse={inverse} onClick={onClick as never} focusable={Boolean(onClick)}>
       {resolvedSpans.map((span, index) => (
         <Text
           key={`${index}:${span.text}`}

@@ -1,0 +1,27 @@
+120-column prototype: debug detail
+
+╭─ WORKER DETAIL: TEST RUNNER ────────────────────────────────────────────────────────╮
+│ Public label   Test Runner                                                          │
+│ Status         slow                                                                  │
+│ Current        running focused test                                                  │
+│ Waiting on     command output                                                        │
+│ Command        npm test -- src/runtime/session-row.test.ts                           │
+│ Last progress  Read test header                                                      │
+│                                                                                      │
+│ Transcript excerpt                                                                   │
+│   > npm test -- src/runtime/session-row.test.ts                                      │
+│   PASS setup loaded                                                                  │
+│   ... no output for 72s ...                                                          │
+│                                                                                      │
+│ Internal debug                                                                        │
+│   workerId      worker_test_02                                                       │
+│   runtimeEvent  tool_result.pending                                                  │
+│   lease         command:test-runner                                                   │
+│   handoff       verification-request                                                  │
+│                                                                                      │
+│ [Esc] back  [o] full output  [s] stop  [r] retry                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+
+Debug rules:
+- Internal protocol terms are allowed here.
+- Default Worker Board must continue to use user-readable labels.

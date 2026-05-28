@@ -1,0 +1,46 @@
+{
+  "target": "normal-run",
+  "layout": "vertical-board",
+  "regions": [
+    {
+      "id": "header",
+      "component": "SwarmBoardHeader",
+      "priority": 1,
+      "height": "3-5 rows",
+      "collapse": "clip metadata before objective"
+    },
+    {
+      "id": "workers",
+      "component": "WorkerBoard",
+      "priority": 2,
+      "height": "min(visible workers + border, available * 0.45)",
+      "collapse": "hide evidence at 80 columns"
+    },
+    {
+      "id": "current-worker",
+      "component": "CurrentWorkerPanel",
+      "priority": 4,
+      "height": "optional 4-6 rows",
+      "collapse": "remove first on short terminals"
+    },
+    {
+      "id": "result-preview",
+      "component": "ResultPreview",
+      "priority": 3,
+      "height": "2-5 rows",
+      "collapse": "single summary row"
+    },
+    {
+      "id": "footer",
+      "component": "RunBoardFooter",
+      "priority": 1,
+      "height": "1 row",
+      "collapse": "show counters only"
+    }
+  ],
+  "rules": [
+    "Keep a single vertical flow by default.",
+    "Do not place logs above Worker Board.",
+    "Use detail split only after explicit user action."
+  ]
+}

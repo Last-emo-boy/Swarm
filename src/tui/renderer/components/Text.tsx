@@ -15,6 +15,7 @@ export type RendererTextProps = {
   minHeight?: number;
   maxHeight?: number;
   wrap?: "wrap" | "truncate";
+  focusable?: boolean;
 };
 
 export function Text({ children, ...props }: RendererTextProps): React.ReactElement {

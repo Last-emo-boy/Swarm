@@ -265,6 +265,26 @@ function applyKnownAttribute(node: TuiElement, key: string, value: TuiNodeAttrib
     node.hidden = Boolean(value);
     return;
   }
+  if (key === "scrollTop") {
+    updateScrollFields(node, { scrollTop: Number(value) });
+    return;
+  }
+  if (key === "scrollHeight") {
+    updateScrollFields(node, { scrollHeight: Number(value) });
+    return;
+  }
+  if (key === "viewportHeight") {
+    updateScrollFields(node, { viewportHeight: Number(value) });
+    return;
+  }
+  if (key === "viewportTop") {
+    updateScrollFields(node, { viewportTop: Number(value) });
+    return;
+  }
+  if (key === "stickyScroll") {
+    updateScrollFields(node, { sticky: Boolean(value) });
+    return;
+  }
   if (key === "dimColor") {
     node.style = { ...node.style, dim: Boolean(value) };
     return;

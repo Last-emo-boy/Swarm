@@ -6,6 +6,7 @@ import { render } from "./ui.js";
 import { ChatCommandCandidates, ChatInputArea } from "./ChatInputArea.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout } from "./components/ConversationFullscreenLayout.js";
+import { createTuiRoot } from "./renderer/root.js";
 import { renderTuiToFrame } from "./renderer/testing.js";
 import { chatInputCompletionCandidates, createChatInputControllerState, selectedChatInputCompletionIndex } from "./chat-input-controller.js";
 import { displayWidth } from "./display-width.js";
@@ -384,6 +385,71 @@ test("chat input footer renders cc-style semantic status pills and muted hint", 
   assert.equal(footerRow![cacheIndex]?.style.backgroundColor, resolveTuiColor("surface.selection"));
   assert.equal(footerRow![cacheIndex]?.style.inverse, undefined);
   assert.equal(footerRow![yoloIndex]?.style.color, resolveTuiColor("status.danger"));
+});
+
+test("chat input footer dispatches mouse clicks on service pills", () => {
+  const clicked: string[] = [];
+  const root = createTuiRoot({
+    columns: 120,
+    rows: 5,
+    terminalCapabilities: { mouse: true }
+  });
+  root.render(React.createElement(ChatInputArea, {
+    onSubmit: () => undefined,
+    onCompletionRowsChange: () => undefined,
+    inputActive: false,
+    footerModeLabel: "WORK",
+    footerSandboxLabel: "RW",
+    footerItems: [
+      { id: "tasks", label: "tasks", value: "1/2", tone: "running" },
+      { id: "cache", label: "cache", value: "HIT", tone: "success" }
+    ],
+    selectedFooterItem: "cache",
+    onFooterItemClick: (id) => clicked.push(id),
+    footerHint: "Left/Right footer | [/] message | / search",
+    columns: 120,
+    maxRows: 4
+  }));
+
+  const frame = root.getFrame();
+  assert(frame);
+  const target = findCell(frame, "[cache:HIT]");
+  assert(target, "expected cache footer pill to render");
+
+  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
+
+  assert.deepEqual(clicked, ["cache"]);
+  root.unmount();
+});
+
+test("chat input footer mouse clicks are disabled with terminal mouse capability off", () => {
+  const clicked: string[] = [];
+  const root = createTuiRoot({
+    columns: 120,
+    rows: 5,
+    terminalCapabilities: { mouse: false }
+  });
+  root.render(React.createElement(ChatInputArea, {
+    onSubmit: () => undefined,
+    onCompletionRowsChange: () => undefined,
+    inputActive: false,
+    footerItems: [
+      { id: "cache", label: "cache", value: "HIT", tone: "success" }
+    ],
+    onFooterItemClick: (id) => clicked.push(id),
+    columns: 120,
+    maxRows: 4
+  }));
+
+  const frame = root.getFrame();
+  assert(frame);
+  const target = findCell(frame, "[cache:HIT]");
+  assert(target, "expected cache footer pill to render");
+
+  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
+
+  assert.deepEqual(clicked, []);
+  root.unmount();
 });
 
 test("chat input footer uses a two-zone service surface on wide terminals", () => {
@@ -1032,6 +1098,17 @@ function cellStyleAtText(row: FrameRow, text: string): FrameRow[number]["style"]
   const index = rowText(row).indexOf(text);
   assert(index >= 0, `Expected row to contain ${text}`);
   return row[index]?.style;
+}
+
+function findCell(frame: NonNullable<ReturnType<ReturnType<typeof createTuiRoot>["getFrame"]>>, needle: string): { x: number; y: number } | undefined {
+  for (let y = 0; y < frame.screen.height; y += 1) {
+    const line = frame.screen.cells[y]?.map((cell) => cell.char).join("") ?? "";
+    const x = line.indexOf(needle);
+    if (x >= 0) {
+      return { x, y };
+    }
+  }
+  return undefined;
 }
 
 function rowText(row: FrameRow): string {
