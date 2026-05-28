@@ -80,3 +80,18 @@ test("TUI replay keeps collaboration overlay inline and returns with Esc", () =>
   assert.equal(result.finalState.collaborationOverlay, undefined);
   assert.equal(result.finalState.detailOpen, false);
 });
+
+test("TUI replay does not claim collaboration shortcut while prompt has text", () => {
+  const result = runTuiInteractionReplay({
+    name: "collaboration-shortcut-prompt-text-guard",
+    messages: [{ role: "system", brief: "Swarm chat ready." }],
+    events: [
+      { type: "collaboration-key", character: "o", key: {}, inputIsEmpty: false }
+    ]
+  });
+
+  assert.equal(result.status, "pass");
+  assert.equal(result.trace[0]?.collaborationOverlay, undefined);
+  assert.equal(result.finalState.collaborationOverlay, undefined);
+  assert.equal(result.finalState.focus, "input");
+});

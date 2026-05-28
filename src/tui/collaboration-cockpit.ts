@@ -6,6 +6,7 @@ import { redactSensitive } from "../runtime/recovery.js";
 export type CollaborationOverlayTarget = "topology" | "ownership" | "negotiation" | "blackboard" | "approval" | "policy";
 export type CollaborationShortcutAction = "open" | "ownership" | "negotiation" | "blackboard" | "reassign";
 export type CollaborationActionResult = "opened" | "queued" | "denied" | "noop";
+export type CollaborationOverlayActionKind = "detail" | "take-over" | "reassign" | "resolve" | "copy-id" | "filter";
 
 export type TopologyStripModel = {
   squadsActive: number;
@@ -60,6 +61,19 @@ export type ReassignIntentView = {
   summary: string;
 };
 
+export type CollaborationActionIntentView = {
+  action: Exclude<CollaborationOverlayActionKind, "detail" | "filter">;
+  overlay: CollaborationOverlayTarget;
+  targetId?: string;
+  label: string;
+  summary: string;
+  reason: string;
+  risk: "low" | "medium" | "high";
+  policy: ReassignIntentView["policy"];
+  result: CollaborationActionResult | "approval-required";
+  detail: string[];
+};
+
 export type CollaborationTelemetryEvent = {
   event: "tui.topology.open" | "tui.collab.shortcut" | "tui.decision_trail.expand" | "tui.reassign.intent";
   overlay?: CollaborationOverlayTarget;
@@ -87,6 +101,35 @@ export function collaborationShortcutActionForInput(input: {
   if (normalized === "n") return "negotiation";
   if (normalized === "b") return "blackboard";
   if (normalized === "r") return "reassign";
+  return undefined;
+}
+
+export function collaborationOverlayActionForInput(input: {
+  target: CollaborationOverlayTarget | undefined;
+  character?: string;
+  key: { ctrl?: boolean; meta?: boolean; return?: boolean };
+}): CollaborationOverlayActionKind | undefined {
+  if (!input.target || input.key.ctrl || input.key.meta) {
+    return undefined;
+  }
+  if (input.key.return) {
+    return "detail";
+  }
+  const normalized = input.character?.toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (input.target === "ownership") {
+    if (normalized === "t") return "take-over";
+    if (normalized === "a" || normalized === "r") return "reassign";
+  }
+  if (input.target === "negotiation" && normalized === "c") {
+    return "resolve";
+  }
+  if (input.target === "blackboard") {
+    if (normalized === "y") return "copy-id";
+    if (normalized === "/") return "filter";
+  }
   return undefined;
 }
 
@@ -212,6 +255,29 @@ export function selectCollaborationOverlay(view: CollaborationCockpitView, targe
     return undefined;
   }
   return view.overlays.find((overlay) => overlay.target === target);
+}
+
+export function filterCollaborationOverlayView(view: CollaborationOverlayView | undefined, query: string): CollaborationOverlayView | undefined {
+  if (!view) {
+    return undefined;
+  }
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return view;
+  }
+  const rows = view.rows.filter((row) => [
+    row.id,
+    row.label,
+    row.status,
+    row.evidence,
+    row.actionHint,
+    ...row.detail
+  ].filter((part): part is string => Boolean(part)).join("\n").toLowerCase().includes(normalized));
+  return {
+    ...view,
+    rows,
+    emptyLabel: `No ${view.title.toLowerCase()} rows matched "${redactSensitive(query)}".`
+  };
 }
 
 export function buildCollaborationOverlayViews(input: {
@@ -393,6 +459,75 @@ export function buildReassignIntentView(input: {
   };
 }
 
+export function buildCollaborationActionIntent(input: {
+  action: Exclude<CollaborationOverlayActionKind, "detail" | "filter">;
+  overlay: CollaborationOverlayView;
+  row?: CollaborationOverlayRow;
+  reassign?: ReassignIntentView;
+  policyMode?: PermissionMode | string;
+}): CollaborationActionIntentView {
+  if (input.action === "reassign") {
+    const intent = input.reassign;
+    if (!intent || intent.policy === "no-target") {
+      return {
+        action: "reassign",
+        overlay: input.overlay.target,
+        label: "Reassign intent",
+        summary: "No blocked worker or ownership item is available to reassign.",
+        reason: "No blocked worker or ownership item is active.",
+        risk: "low",
+        policy: "no-target",
+        result: "noop",
+        detail: ["Reassign intent", "result=noop", "reason=No blocked worker or ownership item is active."]
+      };
+    }
+    return {
+      action: "reassign",
+      overlay: input.overlay.target,
+      targetId: intent.targetId,
+      label: "Reassign intent",
+      summary: intent.summary,
+      reason: intent.reason,
+      risk: intent.risk,
+      policy: intent.policy,
+      result: actionResultForPolicy(intent.policy),
+      detail: [
+        "Reassign intent",
+        intent.targetId ? `target=${redactSensitive(intent.targetId)}` : undefined,
+        `source=${intent.source}`,
+        `risk=${intent.risk}`,
+        `policy=${intent.policy}`,
+        `reason=${redactSensitive(intent.reason)}`
+      ].filter((line): line is string => Boolean(line))
+    };
+  }
+
+  const row = input.row;
+  const policy = policyForIntent(String(input.policyMode ?? "unknown"));
+  const actionLabel = input.action === "take-over" ? "Take-over intent" : input.action === "resolve" ? "Resolve proposal intent" : "Copy collaboration id";
+  const reason = row?.evidence ?? row?.label ?? "No selected collaboration row.";
+  return {
+    action: input.action,
+    overlay: input.overlay.target,
+    targetId: row?.id,
+    label: actionLabel,
+    summary: row ? `${actionLabel} for ${row.label}` : `${actionLabel}: no selected row`,
+    reason,
+    risk: row?.tone === "blocked" ? "high" : row?.tone === "attention" ? "medium" : "low",
+    policy: input.action === "copy-id" ? "queued" : policy,
+    result: input.action === "copy-id" ? "queued" : actionResultForPolicy(policy),
+    detail: [
+      actionLabel,
+      row?.id ? `target=${redactSensitive(row.id)}` : undefined,
+      `overlay=${input.overlay.target}`,
+      row?.status ? `status=${row.status}` : undefined,
+      `risk=${row?.tone === "blocked" ? "high" : row?.tone === "attention" ? "medium" : "low"}`,
+      `policy=${input.action === "copy-id" ? "queued" : policy}`,
+      `reason=${redactSensitive(reason)}`
+    ].filter((line): line is string => Boolean(line))
+  };
+}
+
 export function buildCollaborationTelemetryEvent(input: {
   event: CollaborationTelemetryEvent["event"];
   overlay?: CollaborationOverlayTarget;
@@ -458,6 +593,13 @@ function productBlackboardLabel(type: string, tags: string[]): string {
 function policyForIntent(policyMode: string): ReassignIntentView["policy"] {
   if (policyMode === "read-only") return "denied";
   if (policyMode === "approval" || policyMode === "ask") return "approval-required";
+  return "queued";
+}
+
+function actionResultForPolicy(policy: ReassignIntentView["policy"]): CollaborationActionIntentView["result"] {
+  if (policy === "denied") return "denied";
+  if (policy === "approval-required") return "approval-required";
+  if (policy === "no-target") return "noop";
   return "queued";
 }
 

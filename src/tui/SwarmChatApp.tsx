@@ -189,11 +189,15 @@ import {
 } from "./transcript-search.js";
 import { appendDetailShortcut, detailOpenHint, transcriptSearchHint } from "./shortcuts.js";
 import {
+  buildCollaborationActionIntent,
   buildCollaborationCockpitView,
   buildCollaborationTelemetryEvent,
+  collaborationOverlayActionForInput,
   collaborationShortcutActionForInput,
+  filterCollaborationOverlayView,
   selectCollaborationOverlay,
   type CollaborationOverlayRow,
+  type CollaborationActionIntentView,
   type CollaborationOverlayTarget
 } from "./collaboration-cockpit.js";
 import {
@@ -354,6 +358,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [detailScroll, setDetailScroll] = useState(0);
   const [collaborationOverlayTarget, setCollaborationOverlayTarget] = useState<CollaborationOverlayTarget | undefined>();
   const [collaborationOverlayIndex, setCollaborationOverlayIndex] = useState(0);
+  const [collaborationOverlayFilter, setCollaborationOverlayFilter] = useState("");
+  const [collaborationOverlayFiltering, setCollaborationOverlayFiltering] = useState(false);
   const [decisionTrailExpanded, setDecisionTrailExpanded] = useState(false);
   const [latestDetail, setLatestDetail] = useState("");
   const [latestDetailSource, setLatestDetailSource] = useState<"none" | "ai" | "task" | "command" | "event">("none");
@@ -1222,6 +1228,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
     setCollaborationOverlayTarget(target);
     setCollaborationOverlayIndex(0);
+    setCollaborationOverlayFilter("");
+    setCollaborationOverlayFiltering(false);
     logCollaborationTelemetry("tui.topology.open", {
       target,
       result: "opened"
@@ -1234,17 +1242,42 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   function closeCollaborationOverlay(): void {
     setCollaborationOverlayTarget(undefined);
     setCollaborationOverlayIndex(0);
+    setCollaborationOverlayFilter("");
+    setCollaborationOverlayFiltering(false);
   }
 
   function handleCollaborationOverlayInput(
     character: string | undefined,
-    key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean }
+    key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; backspace?: boolean; delete?: boolean; upArrow?: boolean; downArrow?: boolean }
   ): boolean {
     if (!collaborationOverlayTarget) {
       return false;
     }
     if (key.escape) {
-      closeCollaborationOverlay();
+      if (collaborationOverlayFiltering || collaborationOverlayFilter) {
+        setCollaborationOverlayFiltering(false);
+        setCollaborationOverlayFilter("");
+      } else {
+        closeCollaborationOverlay();
+      }
+      return true;
+    }
+    if (collaborationOverlayFiltering) {
+      if (key.return) {
+        setCollaborationOverlayFiltering(false);
+        setCollaborationOverlayIndex(0);
+        return true;
+      }
+      if (key.backspace || (key.delete && !character)) {
+        setCollaborationOverlayFilter((value) => value.slice(0, -1));
+        setCollaborationOverlayIndex(0);
+        return true;
+      }
+      if (!key.ctrl && !key.meta && character && character.length === 1) {
+        setCollaborationOverlayFilter((value) => value + character);
+        setCollaborationOverlayIndex(0);
+        return true;
+      }
       return true;
     }
     if (key.upArrow) {
@@ -1260,19 +1293,50 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       openSelectedCollaborationOverlayRow();
       return true;
     }
-    if (key.ctrl || key.meta) {
+    const action = collaborationOverlayActionForInput({ target: collaborationOverlayTarget, character, key });
+    if (!action) {
       return false;
     }
-    const normalized = normalizeActionLogControlCharacter(character);
-    if (normalized === "r" || normalized === "a" || normalized === "t" || normalized === "c") {
-      recordCollaborationReassignIntent();
+    if (action === "detail") {
+      openSelectedCollaborationOverlayRow();
       return true;
     }
-    if (normalized === "y" && collaborationOverlayTarget === "blackboard") {
-      recordCollaborationOverlayCopyId();
+    if (action === "filter") {
+      setCollaborationOverlayFiltering(true);
       return true;
     }
-    return false;
+    executeCollaborationOverlayAction(action);
+    return true;
+  }
+
+  function executeCollaborationOverlayAction(action: "take-over" | "reassign" | "resolve" | "copy-id"): void {
+    const overlay = currentCollaborationOverlayView();
+    if (!overlay) {
+      return;
+    }
+    const row = overlay.rows[collaborationOverlayIndex];
+    const intent = buildCollaborationActionIntent({
+      action,
+      overlay,
+      row,
+      reassign: collaborationCockpit.reassign,
+      policyMode: settingsSnapshot.permissions.defaultMode
+    });
+    if (action === "reassign") {
+      recordCollaborationReassignIntent(intent);
+      return;
+    }
+    appendChatMessage({
+      role: "system",
+      brief: `${intent.summary}: ${intent.result}.`,
+      detail: intent.detail.join("\n")
+    });
+    logCollaborationTelemetry(action === "copy-id" ? "tui.collab.shortcut" : "tui.reassign.intent", {
+      action,
+      target: intent.targetId,
+      source: "keyboard",
+      result: intent.result
+    });
   }
 
   function handleCollaborationShortcutInput(
@@ -1320,7 +1384,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       policyMode: settingsSnapshot.permissions.defaultMode,
       sandboxMode: runSandboxMode
     });
-    return selectCollaborationOverlay(cockpit, collaborationOverlayTarget);
+    return filterCollaborationOverlayView(
+      selectCollaborationOverlay(cockpit, collaborationOverlayTarget),
+      collaborationOverlayFilter
+    );
   }
 
   function openSelectedCollaborationOverlayRow(): void {
@@ -1350,7 +1417,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     });
   }
 
-  function recordCollaborationReassignIntent(): void {
+  function recordCollaborationReassignIntent(prebuiltIntent?: CollaborationActionIntentView): void {
+    if (prebuiltIntent) {
+      if (prebuiltIntent.result === "noop") {
+        appendChatMessage({ role: "system", brief: prebuiltIntent.summary, detail: prebuiltIntent.detail.join("\n") });
+      } else {
+        setCollaborationOverlayTarget("ownership");
+        appendChatMessage({
+          role: "system",
+          brief: `${prebuiltIntent.summary}: ${prebuiltIntent.result}.`,
+          detail: prebuiltIntent.detail.join("\n")
+        });
+      }
+      logCollaborationTelemetry("tui.reassign.intent", {
+        action: prebuiltIntent.action,
+        target: prebuiltIntent.targetId,
+        source: prebuiltIntent.overlay,
+        result: prebuiltIntent.result
+      });
+      return;
+    }
     const cockpit = buildCollaborationCockpitView({
       enabled: isCollaborationUiEnabled(),
       swarmSurface: runtimeRef.current ? safeSwarmSurface(runtimeRef.current, 30) : undefined,
@@ -1365,32 +1451,33 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       policyMode: settingsSnapshot.permissions.defaultMode,
       sandboxMode: runSandboxMode
     });
-    const intent = cockpit.reassign;
-    if (!intent || intent.policy === "no-target") {
-      appendChatMessage({ role: "system", brief: "No blocked worker or ownership item is available to reassign." });
+    const ownershipOverlay = cockpit.overlays.find((overlay) => overlay.target === "ownership");
+    if (!ownershipOverlay) {
+      return;
+    }
+    const intent = buildCollaborationActionIntent({
+      action: "reassign",
+      overlay: ownershipOverlay,
+      reassign: cockpit.reassign,
+      policyMode: settingsSnapshot.permissions.defaultMode
+    });
+    if (intent.result === "noop") {
+      appendChatMessage({ role: "system", brief: intent.summary, detail: intent.detail.join("\n") });
       logCollaborationTelemetry("tui.reassign.intent", { result: "noop" });
       return;
     }
     setCollaborationOverlayTarget("ownership");
-    const result = intent.policy === "denied" ? "denied" : "queued";
     appendChatMessage({
       role: "system",
-      brief: `${intent.summary}: ${intent.policy}.`,
-      detail: [
-        "Reassign intent",
-        `target=${intent.targetId}`,
-        `source=${intent.source}`,
-        `risk=${intent.risk}`,
-        `policy=${intent.policy}`,
-        `reason=${intent.reason}`
-      ].join("\n")
+      brief: `${intent.summary}: ${intent.result}.`,
+      detail: intent.detail.join("\n")
     });
     logCollaborationTelemetry("tui.reassign.intent", {
       target: intent.targetId,
-      source: intent.source,
+      source: intent.overlay,
       risk: intent.risk,
       policy: intent.policy,
-      result
+      result: intent.result
     });
   }
 
@@ -3610,12 +3697,18 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const latestSnapshot = runtime && lastSessionId ? safeWorkSnapshot(runtime, lastSessionId) : undefined;
   const displayedResultCard = latestResultCard
     ?? (latestSnapshot?.final_outcome ? buildResultCardFromSnapshot(latestSnapshot) : undefined);
+  const collaborationUiEnabled = isCollaborationUiEnabled();
+  const displayedProductResultCard = collaborationUiEnabled
+    ? displayedResultCard
+    : displayedResultCard
+      ? { ...displayedResultCard, decisionTrail: undefined }
+      : undefined;
   const swarmSurface = runtime ? safeSwarmSurface(runtime, 12) : undefined;
   const promptCacheStatus = runtime?.getPromptCacheStatus();
-  const cacheStatus = promptCacheStatus?.status ?? displayedResultCard?.cache?.status;
-  const cacheHitRate = promptCacheStatus?.hitRate ?? displayedResultCard?.cache?.hitRate;
-  const checkpointLabel = runtime?.getLastCheckpoint()?.name ?? displayedResultCard?.checkpoint?.name;
-  const routeLabel = displayedResultCard?.route
+  const cacheStatus = promptCacheStatus?.status ?? displayedProductResultCard?.cache?.status;
+  const cacheHitRate = promptCacheStatus?.hitRate ?? displayedProductResultCard?.cache?.hitRate;
+  const checkpointLabel = runtime?.getLastCheckpoint()?.name ?? displayedProductResultCard?.checkpoint?.name;
+  const routeLabel = displayedProductResultCard?.route
     ?? lastRoute?.mode
     ?? (runMode === "chat" ? "ask" : runMode === "full_swarm" ? "team" : "work");
   const runBoardView = selectRunBoardSurface(runBoardState, {
@@ -3623,18 +3716,21 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     repo: "Swarm",
     mode: routeLabel,
     risk: runSandboxMode,
-    session: displayedResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
+    session: displayedProductResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
   });
   const runBoardPhase = runBoardView.phase;
   const collaborationCockpit = buildCollaborationCockpitView({
-    enabled: isCollaborationUiEnabled(),
+    enabled: collaborationUiEnabled,
     swarmSurface,
     runBoard: runBoardView,
     approvalsPending: footerPendingApprovalCount(approval, idlePaneSnapshot.approvals),
     policyMode: settingsSnapshot.permissions.defaultMode,
     sandboxMode: runSandboxMode
   });
-  const activeCollaborationOverlay = selectCollaborationOverlay(collaborationCockpit, collaborationOverlayTarget);
+  const activeCollaborationOverlay = filterCollaborationOverlayView(
+    selectCollaborationOverlay(collaborationCockpit, collaborationOverlayTarget),
+    collaborationOverlayFilter
+  );
   const shouldRenderRunBoard = busy
     || Boolean(approval)
     || Boolean(pendingPlan)
@@ -3652,11 +3748,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         ? "Starting local coding loop..."
         : pendingPlan
           ? "Awaiting approval for the plan."
-          : displayedResultCard
-            ? displayedResultCard.summary
+          : displayedProductResultCard
+            ? displayedProductResultCard.summary
             : "Idle";
-  const currentPhase = displayedRunBoardPhase === "idle" && displayedResultCard
-    ? displayedResultCard.status
+  const currentPhase = displayedRunBoardPhase === "idle" && displayedProductResultCard
+    ? displayedProductResultCard.status
     : displayedRunBoardPhase;
   const screenMode = tuiScreenMode({
     pane: mainPane,
@@ -3664,7 +3760,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     busy,
     hasApproval: Boolean(approval),
     hasPendingPlan: Boolean(pendingPlan),
-    hasResult: Boolean(displayedResultCard),
+    hasResult: Boolean(displayedProductResultCard),
     hasRunBoard: shouldRenderRunBoard,
     density: tuiDensity
   });
@@ -3681,16 +3777,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const progress = `${progressBar(runBoardView.resultPreview.checks.filter((check) => check.status === "passed").length, runBoardView.resultPreview.checks.length || 0, 10)} workers ${runBoardView.workers.length} | files ${runBoardView.resultPreview.changedFiles.length}`;
   const timelineItems = busy
     ? loopActivityTimeline.slice(-5).map(formatLoopActivityLine)
-    : displayedResultCard
-      ? compactResultCardLines(displayedResultCard)
+    : displayedProductResultCard
+      ? compactResultCardLines(displayedProductResultCard)
       : messages.slice(-3).map((message) => `${message.role}: ${message.brief}`);
   const bodyRows = Math.max(12, terminalRows - (showCurrentAction ? 8 : 6) - completionRows);
   const timelineLimit = bodyRows >= 30 ? 5 : 3;
   const productResultCardView = selectProductResultCardView(runBoardState, {
-    card: displayedResultCard,
+    card: displayedProductResultCard,
     detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined
   });
-  const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedResultCard);
+  const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedProductResultCard);
   const topologyStrip = collaborationCockpit.enabled ? (
     <TopologyStrip
       model={collaborationCockpit.topology}
@@ -3703,6 +3799,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       overlay={activeCollaborationOverlay}
       selectedIndex={collaborationOverlayIndex}
       reassign={collaborationCockpit.reassign}
+      filter={collaborationOverlayFilter}
+      filtering={collaborationOverlayFiltering}
       onRowClick={openCollaborationOverlayRow}
     />
   ) : null;
@@ -3729,7 +3827,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         <SwarmSurfacePanel surface={swarmSurface} limit={3} />
       </Box>
     )
-    : displayedResultCard
+    : displayedProductResultCard
       ? <Box flexDirection="column" width="100%">
         {topologyStrip}
         {collaborationOverlayPanel}
@@ -3798,7 +3896,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         busy={busy}
         activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
         motionFrame={shouldAnimate ? motionTick : undefined}
-        resultCard={displayedResultCard}
+        resultCard={displayedProductResultCard}
         detailAvailable={latestDetailSource !== "none"}
         input={
           <ChatInputArea
@@ -3868,12 +3966,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             selectedMessageIndex={messageCursor.selectedIndex}
             searchMatchMessageIndex={activeSearchMatch?.messageIndex}
             searchMatchQuery={transcriptSearch.query}
-            tailRows={conversationTailRows({ busy, hasResult: Boolean(displayedResultCard) })}
+            tailRows={conversationTailRows({ busy, hasResult: Boolean(displayedProductResultCard) })}
             tail={conversationTail({
               busy,
               activity: loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined,
               motionFrame: shouldAnimate ? motionTick : undefined,
-              resultCard: displayedResultCard,
+              resultCard: displayedProductResultCard,
               detailAvailable: latestDetailSource !== "none"
             })}
           />
@@ -3886,7 +3984,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     <Box width={terminalColumns} height={terminalRows} flexDirection="column" overflow="hidden" paddingX={1}>
       <StatusRail
         appName="Swarm"
-        state={approval ? "awaiting approval" : busy ? "running" : displayedResultCard ? "done" : "idle"}
+        state={approval ? "awaiting approval" : busy ? "running" : displayedProductResultCard ? "done" : "idle"}
         route={routeLabel}
         permissionMode={settingsSnapshot.permissions.defaultMode}
         sandboxMode={runSandboxMode}
@@ -3904,8 +4002,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           <CurrentActionRow
             message={currentAction}
             phase={currentPhase}
-            status={loopActivity ? loopActivityStatus(loopActivity.phase) : statusForRunBoardPhase(displayedRunBoardPhase, displayedResultCard?.status)}
-            tone={loopActivity ? loopActivityTone(loopActivity.phase) : toneForRunBoardPhase(displayedRunBoardPhase, displayedResultCard?.status)}
+            status={loopActivity ? loopActivityStatus(loopActivity.phase) : statusForRunBoardPhase(displayedRunBoardPhase, displayedProductResultCard?.status)}
+            tone={loopActivity ? loopActivityTone(loopActivity.phase) : toneForRunBoardPhase(displayedRunBoardPhase, displayedProductResultCard?.status)}
             progress={progress}
             needYou={needYou === "no" ? undefined : needYou}
             motionFrame={shouldAnimate ? motionTick : undefined}
@@ -3929,7 +4027,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
               <>
                 {!shouldShowRunBoardSurface && (
                   <ActivityTimeline
-                    title={busy ? "Progress" : displayedResultCard ? "Result" : "Recent"}
+                    title={busy ? "Progress" : displayedProductResultCard ? "Result" : "Recent"}
                     items={timelineItems}
                     emptyLabel="(none)"
                     limit={timelineLimit}

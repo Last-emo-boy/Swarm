@@ -50,6 +50,23 @@ test("CollaborationOverlayPanel row click selects through shared handler", () =>
   root.unmount();
 });
 
+test("CollaborationOverlayPanel renders active filter without hiding prompt-compatible actions", () => {
+  const frame = renderTuiToFrame(React.createElement(CollaborationOverlayPanel, {
+    overlay: {
+      ...overlayFixture(),
+      rows: [],
+      emptyLabel: "No ownership rows matched \"reviewer\"."
+    },
+    filter: "reviewer",
+    filtering: true
+  }), { columns: 100, rows: 8 });
+  const text = frameText(frame);
+
+  assert.match(text, /Enter detail \| r reassign intent \| Esc close/);
+  assert.match(text, /Filter: \/reviewer/);
+  assert.match(text, /No ownership rows matched "reviewer"\./);
+});
+
 function overlayFixture(): CollaborationOverlayView {
   return {
     target: "ownership",
@@ -90,4 +107,3 @@ function findCell(frame: NonNullable<ReturnType<ReturnType<typeof createTuiRoot>
   }
   return undefined;
 }
-

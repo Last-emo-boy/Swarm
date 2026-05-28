@@ -13,6 +13,8 @@ export function CollaborationOverlayPanel(props: {
   overlay: CollaborationOverlayView;
   selectedIndex?: number;
   reassign?: ReassignIntentView;
+  filter?: string;
+  filtering?: boolean;
   onRowClick?: (row: CollaborationOverlayRow, index: number) => void;
 }): React.ReactElement {
   const selectedIndex = Math.max(0, Math.min(props.selectedIndex ?? 0, Math.max(0, props.overlay.rows.length - 1)));
@@ -28,6 +30,11 @@ export function CollaborationOverlayPanel(props: {
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
         {props.overlay.actions.join(" | ")}
       </Text>
+      {(props.filtering || props.filter) ? (
+        <Text color={visualTokenColor(props.filtering ? "brand.focus" : "text.muted")} wrap="truncate">
+          Filter: /{props.filter}
+        </Text>
+      ) : null}
       {props.overlay.rows.length ? props.overlay.rows.map((row, index) => (
         <OverlayRow
           key={`${row.id}:${index}`}
@@ -84,4 +91,3 @@ function reassignTone(policy: ReassignIntentView["policy"]): TuiVisualToken {
   if (policy === "queued") return "status.success";
   return "text.muted";
 }
-

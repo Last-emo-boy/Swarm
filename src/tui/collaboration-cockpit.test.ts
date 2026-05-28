@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildCollaborationActionIntent,
   buildCollaborationCockpitView,
   buildCollaborationTelemetryEvent,
   buildTopologyStripModel,
+  collaborationOverlayActionForInput,
   collaborationShortcutActionForInput,
+  filterCollaborationOverlayView,
   isCollaborationCockpitEnabled
 } from "./collaboration-cockpit.js";
 import type { RunBoardSurfaceView } from "./run-board/run-board-types.js";
@@ -124,6 +127,18 @@ test("collaboration shortcuts only claim empty prompt plain keys", () => {
   }), undefined);
 });
 
+test("collaboration overlay actions map product keys without collapsing every action to reassign", () => {
+  assert.equal(collaborationOverlayActionForInput({ target: "ownership", character: "t", key: {} }), "take-over");
+  assert.equal(collaborationOverlayActionForInput({ target: "ownership", character: "a", key: {} }), "reassign");
+  assert.equal(collaborationOverlayActionForInput({ target: "ownership", character: "r", key: {} }), "reassign");
+  assert.equal(collaborationOverlayActionForInput({ target: "negotiation", character: "c", key: {} }), "resolve");
+  assert.equal(collaborationOverlayActionForInput({ target: "blackboard", character: "y", key: {} }), "copy-id");
+  assert.equal(collaborationOverlayActionForInput({ target: "blackboard", character: "/", key: {} }), "filter");
+  assert.equal(collaborationOverlayActionForInput({ target: "negotiation", character: "r", key: {} }), undefined);
+  assert.equal(collaborationOverlayActionForInput({ target: "ownership", character: "t", key: { ctrl: true } }), undefined);
+  assert.equal(collaborationOverlayActionForInput({ target: "ownership", key: { return: true } }), "detail");
+});
+
 test("collaboration cockpit builds ownership overlays and reassign target from product evidence", () => {
   const runBoard = {
     title: "Swarm Board",
@@ -228,6 +243,95 @@ test("collaboration cockpit projects negotiation and blackboard overlay rows", (
   assert.match(negotiation?.rows[0]?.evidence ?? "", /Reviewer/);
   assert.match(blackboard?.rows[0]?.label ?? "", /Proposal|Decision/);
   assert.match(blackboard?.rows[0]?.detail.join("\n") ?? "", /key=proposal\/1/);
+});
+
+test("collaboration overlay filter keeps matching evidence and produces low-noise empty state", () => {
+  const view = buildCollaborationCockpitView({
+    swarmSurface: {
+      generated_at: "2026-05-28T00:00:00.000Z",
+      actors: [],
+      ownership: [],
+      conflicts: [],
+      negotiations: [],
+      squads: [],
+      handoffs: [],
+      blackboard: [{
+        entry_id: "bb-1",
+        swarm_id: "swarm-1",
+        session_id: "sess-1",
+        key: "proposal/small-patch",
+        value: { summary: "Use smaller patch" },
+        type: "decision",
+        created_by: { agent_id: "reviewer" },
+        created_at: "2026-05-28T00:00:00.000Z",
+        visibility: "team",
+        version: 1,
+        tags: ["proposal", "decision"],
+        metadata: { kind: "decision" }
+      }],
+      summary: {
+        participants: 0,
+        active_participants: 0,
+        stale_participants: 0,
+        inbox_pending: 0,
+        outbox_pending: 0,
+        ownership_items: 0,
+        conflicts: 0,
+        negotiations: 0,
+        squads: 0
+      }
+    }
+  });
+  const blackboard = view.overlays.find((overlay) => overlay.target === "blackboard");
+
+  assert.equal(filterCollaborationOverlayView(blackboard, "small-patch")?.rows.length, 1);
+  const empty = filterCollaborationOverlayView(blackboard, "missing");
+  assert.equal(empty?.rows.length, 0);
+  assert.match(empty?.emptyLabel ?? "", /No blackboard timeline rows matched "missing"/);
+});
+
+test("collaboration action intents preserve policy-bound action semantics", () => {
+  const overlay = {
+    target: "ownership" as const,
+    title: "Ownership",
+    emptyLabel: "No blocked ownership.",
+    actions: ["Enter detail", "t take over intent", "r reassign intent", "Esc close"],
+    rows: [{
+      id: "worker:test",
+      label: "Test Runner",
+      status: "blocked",
+      tone: "blocked" as const,
+      evidence: "waiting npm test",
+      detail: ["Test Runner blocked"],
+      priority: 0
+    }]
+  };
+
+  const takeover = buildCollaborationActionIntent({
+    action: "take-over",
+    overlay,
+    row: overlay.rows[0],
+    policyMode: "read-only"
+  });
+  const reassign = buildCollaborationActionIntent({
+    action: "reassign",
+    overlay,
+    reassign: {
+      targetId: "worker:test",
+      source: "ownership",
+      reason: "waiting npm test",
+      risk: "medium",
+      policy: "approval-required",
+      summary: "Reassign intent for Test Runner"
+    }
+  });
+
+  assert.equal(takeover.action, "take-over");
+  assert.equal(takeover.result, "denied");
+  assert.match(takeover.detail.join("\n"), /Take-over intent/);
+  assert.equal(reassign.action, "reassign");
+  assert.equal(reassign.result, "approval-required");
+  assert.match(reassign.detail.join("\n"), /policy=approval-required/);
 });
 
 test("collaboration telemetry schema redacts targets and preserves duration", () => {
