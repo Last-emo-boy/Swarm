@@ -6,8 +6,3 @@ export const ENABLE_FOCUS_REPORTING = `${CSI}?1004h`;
 export const DISABLE_FOCUS_REPORTING = `${CSI}?1004l`;
 export const ENABLE_MOUSE_TRACKING = `${CSI}?1000h${CSI}?1006h`;
 export const DISABLE_MOUSE_TRACKING = `${CSI}?1006l${CSI}?1000l`;
-
-export function isDecPrivateModeResponse(value: string): boolean {
-  return /^\u001B\[\?\d+(?:;\d+)*[hl$y]$/u.test(value);
-}
-

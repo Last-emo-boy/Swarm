@@ -26,23 +26,6 @@ export type ProviderProbeCode =
   | "provider_error"
   | "unknown";
 
-export type ModelPolicy =
-  | "default"
-  | "cheap-fast"
-  | "deep-reasoning"
-  | "cache-friendly"
-  | "offline-test";
-
-export type ModelRouteDecision = {
-  policy: ModelPolicy;
-  chosen_model: string;
-  fallback_model?: string;
-  reason: string;
-  risk: "low" | "medium" | "high";
-  cache_expected: boolean;
-  cooldown_until?: string;
-};
-
 export type ProviderProfile = {
   providerId: string;
   name: string;
@@ -87,28 +70,6 @@ export function buildProviderProfiles(input: {
     .filter((provider) => selected.has(provider.id) || provider.id === input.settings.models.defaultProvider)
     .map((provider) => providerProfile(provider, selected.get(provider.id) ?? [], input.settings, input.config))
     .sort((left, right) => left.providerId.localeCompare(right.providerId));
-}
-
-export function routeModelPolicy(input: {
-  policy?: ModelPolicy;
-  providerId: string;
-  model: string;
-  fallbackModel?: string;
-  cacheExpected?: boolean;
-  risk?: "low" | "medium" | "high";
-  cooldownUntil?: string;
-  reason?: string;
-}): ModelRouteDecision {
-  const policy = input.policy ?? "default";
-  return {
-    policy,
-    chosen_model: input.model,
-    fallback_model: input.fallbackModel,
-    reason: input.reason ?? defaultPolicyReason(policy, input.providerId, input.model, input.fallbackModel),
-    risk: input.risk ?? defaultPolicyRisk(policy),
-    cache_expected: input.cacheExpected ?? (policy === "cache-friendly" || policy === "offline-test"),
-    cooldown_until: input.cooldownUntil
-  };
 }
 
 export function explainProviderProbeError(input: {
@@ -372,36 +333,4 @@ function compactDetail(value: string | undefined, maxLength = 240): string | und
     return undefined;
   }
   return line.length > maxLength ? `${line.slice(0, Math.max(0, maxLength - 3))}...` : line;
-}
-
-function defaultPolicyReason(policy: ModelPolicy, providerId: string, model: string, fallbackModel?: string): string {
-  if (policy === "cheap-fast") {
-    return `Prefer a lower-cost, faster model on ${providerId} for routine work${fallbackModel ? ` with fallback to ${fallbackModel}` : ""}.`;
-  }
-  if (policy === "deep-reasoning") {
-    return `Prefer the strongest available model on ${providerId} for hard planning and synthesis.`;
-  }
-  if (policy === "cache-friendly") {
-    return `Prefer the model on ${providerId} with the strongest prompt-cache behavior and stable prefix reuse.`;
-  }
-  if (policy === "offline-test") {
-    return `Use a deterministic offline-safe route on ${providerId} for local evals and regression tests.`;
-  }
-  return `Use ${model} on ${providerId} as the default route${fallbackModel ? ` with fallback to ${fallbackModel}` : ""}.`;
-}
-
-function defaultPolicyRisk(policy: ModelPolicy): "low" | "medium" | "high" {
-  if (policy === "deep-reasoning") {
-    return "medium";
-  }
-  if (policy === "cheap-fast") {
-    return "low";
-  }
-  if (policy === "cache-friendly") {
-    return "low";
-  }
-  if (policy === "offline-test") {
-    return "low";
-  }
-  return "medium";
 }

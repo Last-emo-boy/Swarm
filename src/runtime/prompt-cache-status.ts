@@ -552,16 +552,6 @@ export function buildPromptCacheRoi(
   };
 }
 
-export function buildPromptCacheRoiFromStatus(
-  status: ResultCardPromptCacheStatus | undefined,
-  options: { price?: CacheRoiPrice } = {}
-): CacheRoi | undefined {
-  if (!status) {
-    return undefined;
-  }
-  return buildPromptCacheRoi(promptCacheTrendFromResultCardCache(status), options);
-}
-
 export function formatPromptCacheRoiInline(roi: CacheRoi | undefined): string | undefined {
   if (!roi) {
     return undefined;

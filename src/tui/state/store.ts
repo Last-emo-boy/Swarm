@@ -1,5 +1,3 @@
-import React from "react";
-
 export type TuiStoreListener = () => void;
 export type TuiStoreEquality<T> = (left: T, right: T) => boolean;
 
@@ -67,22 +65,3 @@ export function createTuiStore<TState>(
     }
   };
 }
-
-export function useTuiStoreSelector<TState, TSelected>(
-  store: TuiStore<TState>,
-  selector: (state: TState) => TSelected,
-  equality: TuiStoreEquality<TSelected> = Object.is
-): TSelected {
-  const [selected, setSelected] = React.useState(() => selector(store.getState()));
-  const selectedRef = React.useRef(selected);
-  React.useEffect(() => store.subscribe(() => {
-    const next = selector(store.getState());
-    if (equality(selectedRef.current, next)) {
-      return;
-    }
-    selectedRef.current = next;
-    setSelected(next);
-  }), [equality, selector, store]);
-  return selected;
-}
-

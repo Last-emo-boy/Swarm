@@ -25,8 +25,3 @@ export function parseOscSequence(raw: string): OscSequence | undefined {
     payload: body.slice(separator + 1)
   };
 }
-
-export function sanitizeOscPayload(value: string): string {
-  return value.replace(/[\u0007\u001B]/gu, "");
-}
-

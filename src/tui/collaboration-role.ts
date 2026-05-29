@@ -53,8 +53,3 @@ export function collaborationRoleForWorker(row: Pick<WorkerBoardRow, "role" | "l
   }
   return "worker";
 }
-
-export function collaborationRoleBadgeForWorker(row: Pick<WorkerBoardRow, "role" | "label">): string {
-  return collaborationRoleDescriptor(collaborationRoleForWorker(row)).badge;
-}
-

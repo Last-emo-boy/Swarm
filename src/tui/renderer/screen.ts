@@ -94,22 +94,6 @@ export function screenToString(screen: TuiScreen, options: { trimRight?: boolean
   return screenToLines(screen, options).join("\n");
 }
 
-export function cloneScreen(screen: TuiScreen): TuiScreen {
-  return {
-    width: screen.width,
-    height: screen.height,
-    damage: screen.damage ? { ...screen.damage } : undefined,
-    cells: screen.cells.map((row) => row.map((cell) => ({
-      char: cell.char,
-      style: { ...cell.style },
-      hyperlink: cell.hyperlink,
-      noSelect: cell.noSelect,
-      ownerChain: cell.ownerChain ? [...cell.ownerChain] : undefined,
-      nodeName: cell.nodeName
-    })))
-  };
-}
-
 export function clearRegion(screen: TuiScreen, x: number, y: number, width: number, height: number): void {
   const rect = clampRect(screen, { x, y, width, height });
   if (!rect) {
@@ -214,10 +198,6 @@ function clearWideBoundary(screen: TuiScreen, x: number, y: number): void {
     const head = row[x - 1];
     row[x - 1] = createCell(" ", head?.style, head ? cellMetadataFromCell(head) : undefined);
   }
-}
-
-export function clearDamage(screen: TuiScreen): void {
-  screen.damage = undefined;
 }
 
 export function unionDamage(left: TuiDamageRect, right: TuiDamageRect): TuiDamageRect {
