@@ -328,7 +328,7 @@ function previewAfterEvidence(previous: ResultPreview, evidence: RunBoardEvidenc
 export function emptyResultPreview(): ResultPreview {
   return {
     status: "empty",
-    summary: "Pending. No run evidence yet.",
+    summary: "Waiting for your first task.",
     changedFiles: [],
     checks: [],
     artifacts: [],

@@ -1,6 +1,7 @@
 import { relative, resolve } from "node:path";
 import { SKILL_ACTIVATE_CAPABILITY_ID } from "../extensions/skills.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
+import { isReadOnlyPowerShellCommand, isReadOnlyShellCommand } from "../tools/command-safety.js";
 import type { ToolAction } from "../tools/types.js";
 
 export type SandboxWritePolicy = "read_only" | "scoped_write" | "workspace_write";
@@ -220,11 +221,25 @@ export function isReadOnlySandboxAction(action: ToolAction): boolean {
     case "process.grep":
     case "web.search":
     case "web.fetch":
+    case "config.get":
+    case "mcp.resources":
+    case "mcp.read":
+    case "mcp.auth":
+    case "ask_user_question":
+    case "plan.enter":
+    case "plan.exit":
     case "blackboard.read":
     case "blackboard.search":
     case "blackboard.list":
     case "agent.list":
     case "agent.status":
+    case "task.get":
+    case "task.list":
+    case "task.output":
+    case "runtime.sleep":
+    case "structured.output":
+    case "repl.mode":
+    case "schedule.list":
     case "code.test":
     case "code.lint":
     case "code.build":
@@ -239,6 +254,10 @@ export function isReadOnlySandboxAction(action: ToolAction): boolean {
     case "lsp.rename_preview":
     case "lsp.format":
       return true;
+    case "shell.exec":
+      return isReadOnlyShellCommand(action.command);
+    case "powershell.exec":
+      return isReadOnlyPowerShellCommand(action.command);
     case "git.branch":
       return !action.action || action.action === "list";
     default:

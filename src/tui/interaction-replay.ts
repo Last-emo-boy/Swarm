@@ -44,12 +44,13 @@ export type TuiReplayDetailSource = "none" | "ai" | "command" | "task" | "event"
 
 export type TuiReplayEvent =
   | { type: "key"; label?: string; character?: string; key: { ctrl?: boolean; return?: boolean; escape?: boolean }; hasFocusedTarget?: boolean }
+  | { type: "transcript-key"; label?: string; character?: string; key: { ctrl?: boolean; home?: boolean; end?: boolean; pageUp?: boolean; pageDown?: boolean } }
   | { type: "collaboration-key"; label?: string; character?: string; key: { ctrl?: boolean; return?: boolean; escape?: boolean }; enabled?: boolean; inputIsEmpty?: boolean }
   | { type: "slash"; commandLine: string; pane?: string; detailSource?: TuiReplayDetailSource }
   | { type: "select-action"; index: number; actionCount?: number; pane?: string; detailSource?: TuiReplayDetailSource }
   | { type: "open-detail"; via?: "ctrl+o" | "focused"; hasFocusedTarget?: boolean }
   | { type: "close-detail"; via?: "escape" | "ctrl+o" | "q" }
-  | { type: "search"; query: string; delta?: number; close?: boolean }
+  | { type: "search"; query?: string; delta?: number; close?: boolean }
   | { type: "fold"; index?: number; action?: "toggle" | "open" }
   | { type: "scroll"; delta: number }
   | { type: "layout"; rows?: number; columns?: number; pane?: string }
@@ -284,7 +285,7 @@ export function defaultTuiReplayScenarios(): TuiReplayScenario[] {
       ],
       events: [
         { type: "key", label: "debug-empty-enter", key: { return: true }, hasFocusedTarget: true },
-        { type: "slash", commandLine: "/view trace", pane: "log" },
+        { type: "slash", commandLine: "/view trace", pane: "trace" },
         { type: "select-action", index: 2, actionCount: 4 },
         { type: "open-detail", via: "ctrl+o" },
         { type: "close-detail", via: "q" }
@@ -359,12 +360,14 @@ function applyTuiReplayEvent(state: MutableTuiReplayState, event: TuiReplayEvent
   switch (event.type) {
     case "key":
       return applyFocusTransition(state, event.character, event.key, event.hasFocusedTarget);
+    case "transcript-key":
+      return applyTranscriptKeyReplayEvent(state, event);
     case "collaboration-key":
       return applyCollaborationReplayEvent(state, event);
     case "slash":
       return applySlashReplayEvent(state, event);
     case "select-action":
-      state.pane = event.pane ?? "log";
+      state.pane = event.pane ?? "trace";
       state.focus = "action-log";
       state.selectedActionRow = Math.max(0, Math.floor(event.index));
       state.actionCount = Math.max(state.selectedActionRow + 1, event.actionCount ?? state.actionCount);
@@ -439,6 +442,41 @@ function applyCollaborationReplayEvent(
   return [];
 }
 
+function applyTranscriptKeyReplayEvent(
+  state: MutableTuiReplayState,
+  event: Extract<TuiReplayEvent, { type: "transcript-key" }>
+): TuiReplayFailure[] {
+  const normalized = normalizeControlCharacter(event.character);
+  const viewportLines = replayTranscriptRows(state);
+  const pageRows = Math.max(4, viewportLines - 2);
+  const halfPageRows = Math.max(2, Math.floor(pageRows / 2));
+  if (event.key.end || (event.key.ctrl && normalized === "e") || event.character === "G") {
+    state.scrollOffset = 0;
+    return [];
+  }
+  const delta = event.key.home || event.character === "g"
+    ? Number.POSITIVE_INFINITY
+    : event.key.pageUp || (event.key.ctrl && normalized === "b")
+      ? pageRows
+      : event.key.pageDown || (event.key.ctrl && normalized === "f")
+        ? -pageRows
+        : event.key.ctrl && normalized === "u"
+          ? halfPageRows
+          : event.key.ctrl && normalized === "d"
+            ? -halfPageRows
+            : undefined;
+  if (delta === undefined) {
+    return [{ kind: "focus", message: `unsupported transcript key: ${event.label ?? event.character ?? "other"}` }];
+  }
+  state.scrollOffset = nextConversationScrollOffset({
+    totalLines: replayVirtualLayout(state).totalRows,
+    viewportLines,
+    currentOffset: state.scrollOffset,
+    delta
+  });
+  return [];
+}
+
 function applyFocusTransition(
   state: MutableTuiReplayState,
   character: string | undefined,
@@ -476,7 +514,7 @@ function applySlashReplayEvent(state: MutableTuiReplayState, event: Extract<TuiR
     return [{ kind: "slash", message: `invalid slash command: ${event.commandLine}` }];
   }
   if (parsed.command === "view" && parsed.args[0]) {
-    state.pane = parsed.args[0] === "trace" ? "log" : parsed.args[0];
+    state.pane = parsed.args[0];
   }
   state.pane = event.pane ?? state.pane;
   state.latestDetailSource = event.detailSource ?? state.latestDetailSource;
@@ -491,13 +529,15 @@ function applySearchReplayEvent(state: MutableTuiReplayState, event: Extract<Tui
     return [];
   }
   const index = buildTranscriptSearchIndex(state.messages);
-  state.search = updateTranscriptSearch(state.search, index, event.query);
+  state.search = event.query === undefined
+    ? { ...state.search, active: true }
+    : updateTranscriptSearch(state.search, index, event.query);
   if (event.delta) {
     state.search = stepTranscriptSearch(state.search, event.delta);
   }
   const match = currentTranscriptSearchMatch(state.search);
   if (!match) {
-    return [{ kind: "search", message: `query did not match transcript: ${event.query}` }];
+    return [{ kind: "search", message: `query did not match transcript: ${event.query ?? state.search.query}` }];
   }
   state.selectedRow = match.messageIndex;
   state.scrollOffset = scrollOffsetToRevealMessage(state, match.messageIndex);
@@ -649,6 +689,8 @@ function describeTuiReplayEvent(event: TuiReplayEvent): string {
   switch (event.type) {
     case "key":
       return `key:${event.label ?? keyEventLabel(event)}`;
+    case "transcript-key":
+      return `transcript-key:${event.label ?? keyEventLabel(event)}`;
     case "collaboration-key":
       return `collaboration:${event.label ?? keyEventLabel(event)}`;
     case "slash":
@@ -660,7 +702,7 @@ function describeTuiReplayEvent(event: TuiReplayEvent): string {
     case "close-detail":
       return `close-detail:${event.via ?? "escape"}`;
     case "search":
-      return `search:${event.query}`;
+      return `search:${event.query ?? "repeat"}`;
     case "fold":
       return `fold:${event.index ?? "selected"}`;
     case "scroll":
@@ -672,17 +714,36 @@ function describeTuiReplayEvent(event: TuiReplayEvent): string {
   }
 }
 
-function keyEventLabel(event: Extract<TuiReplayEvent, { type: "key" | "collaboration-key" }>): string {
-  if (event.key.return) {
+function keyEventLabel(event: Extract<TuiReplayEvent, { type: "key" | "collaboration-key" | "transcript-key" }>): string {
+  if ("home" in event.key && event.key.home) {
+    return "home";
+  }
+  if ("end" in event.key && event.key.end) {
+    return "end";
+  }
+  if ("pageUp" in event.key && event.key.pageUp) {
+    return "pageUp";
+  }
+  if ("pageDown" in event.key && event.key.pageDown) {
+    return "pageDown";
+  }
+  if ("return" in event.key && event.key.return) {
     return "return";
   }
-  if (event.key.escape) {
+  if ("escape" in event.key && event.key.escape) {
     return "escape";
   }
   if (event.key.ctrl && event.character) {
     return `ctrl+${event.character.toLowerCase()}`;
   }
   return event.character ?? "other";
+}
+
+function normalizeControlCharacter(character: string | undefined): string {
+  if (!character) {
+    return "";
+  }
+  return character.toLowerCase();
 }
 
 function isEmptyEnter(event: TuiReplayEvent): boolean {

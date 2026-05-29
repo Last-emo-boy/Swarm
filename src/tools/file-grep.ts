@@ -15,6 +15,10 @@ export type ShellCommandResult = {
   timedOut: boolean;
   truncated: boolean;
   error?: string;
+  persistedOutputPath?: string;
+  persistedOutputSize?: number;
+  preview?: string;
+  hasMore?: boolean;
 };
 
 export type GrepMatch = {
@@ -36,7 +40,8 @@ export async function grepLocalFilesWithRipgrep(input: {
   action: Extract<ToolAction, { type: "file.grep" }>;
   context: LocalToolContext;
   maxMatches: number;
-  contextLines: number;
+  beforeContext: number;
+  afterContext: number;
   runCommand: ShellCommandRunner;
   displayPath: GrepDisplayPath;
   isPathDenied: GrepPathDenied;
@@ -45,8 +50,12 @@ export async function grepLocalFilesWithRipgrep(input: {
     root: input.root,
     pattern: input.action.pattern,
     include: input.action.include,
+    fileType: input.action.fileType,
+    caseInsensitive: input.action.caseInsensitive,
+    multiline: input.action.multiline,
     maxMatches: input.maxMatches,
-    contextLines: input.contextLines,
+    beforeContext: input.beforeContext,
+    afterContext: input.afterContext,
     workspace: input.context.workspace,
     runCommand: input.runCommand
   });
@@ -75,6 +84,7 @@ export async function grepLocalFilesWithRipgrep(input: {
       root: input.displayPath(input.root, input.context.workspace),
       requestedRoot: input.action.root || ".",
       engine: "ripgrep",
+      outputMode: input.action.outputMode ?? "content",
       truncated: result.truncated
     }
   };
@@ -84,8 +94,12 @@ async function runRipgrep(input: {
   root: string;
   pattern: string;
   include?: string;
+  fileType?: string;
+  caseInsensitive?: boolean;
+  multiline?: boolean;
   maxMatches: number;
-  contextLines: number;
+  beforeContext: number;
+  afterContext: number;
   workspace: string;
   runCommand: ShellCommandRunner;
 }): Promise<ShellCommandResult | undefined> {
@@ -94,9 +108,24 @@ async function runRipgrep(input: {
     "--line-number",
     "--color",
     "never",
+    "--hidden",
+    "--glob",
+    "!.git",
+    "--glob",
+    "!.svn",
+    "--glob",
+    "!.hg",
+    "--glob",
+    "!.jj",
+    "--max-columns",
+    "500",
     "--max-count",
     String(input.maxMatches),
-    ...(input.contextLines > 0 ? ["--context", String(input.contextLines)] : []),
+    ...(input.caseInsensitive ? ["--ignore-case"] : []),
+    ...(input.multiline ? ["--multiline", "--multiline-dotall"] : []),
+    ...(input.beforeContext > 0 ? ["--before-context", String(input.beforeContext)] : []),
+    ...(input.afterContext > 0 ? ["--after-context", String(input.afterContext)] : []),
+    ...(input.fileType ? ["--type", input.fileType] : []),
     ...(input.include ? ["--glob", input.include] : []),
     "--",
     input.pattern,

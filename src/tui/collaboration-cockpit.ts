@@ -180,7 +180,7 @@ export function buildTopologyStripModel(input: {
   const approvalsPending = Math.max(input.approvalsPending ?? 0, runBoard?.attention.filter((item) => item.kind === "approval" && !item.resolvedAt).length ?? 0);
   const policyMode = input.policyMode ?? "unknown";
   const evidence = [
-    surface ? `Swarm projection: participants ${surface.summary.participants}, squads ${surface.summary.squads}, ownership ${surface.summary.ownership_items}` : undefined,
+    surface ? `Shared Board: participants ${surface.summary.participants}, squads ${surface.summary.squads}, workspace claims ${surface.summary.ownership_items}` : undefined,
     runBoard ? `Run Board: workers ${runBoard.workers.length}, attention ${unresolvedAttention}` : undefined,
     approvalsPending ? `Approvals pending: ${approvalsPending}` : undefined,
     `Policy: ${policyMode}${input.sandboxMode ? `, sandbox ${input.sandboxMode}` : ""}`
@@ -207,7 +207,7 @@ export function buildTopologyStripModel(input: {
         label: "OW",
         value: ownershipBlocked,
         status: ownershipBlocked > 0 ? "blocked" : "ok",
-        evidence: ownershipBlocked > 0 ? `${ownershipBlocked} blocked ownership/work items` : "No blocked ownership"
+        evidence: ownershipBlocked > 0 ? `${ownershipBlocked} blocked workspace claims/work items` : "No blocked workspace claims"
       },
       {
         id: "negotiation",
@@ -287,7 +287,7 @@ export function buildCollaborationOverlayViews(input: {
   return [
     buildOwnershipOverlay(input),
     buildNegotiationOverlay(input),
-    buildBlackboardOverlay(input)
+    buildBoardOverlay(input)
   ];
 }
 
@@ -306,7 +306,7 @@ function buildOwnershipOverlay(input: {
       item.policy ? `policy ${item.policy}` : undefined
     ].filter((part): part is string => Boolean(part)).join(", ") || item.summary,
     detail: [
-      `Ownership ${item.id}`,
+      `Workspace Claim ${item.id}`,
       `kind=${productOwnershipKind(item.kind)}`,
       `status=${item.status}`,
       item.owner ? `owner=${item.owner}` : undefined,
@@ -338,8 +338,8 @@ function buildOwnershipOverlay(input: {
     })) ?? [];
   return {
     target: "ownership",
-    title: "Ownership",
-    emptyLabel: "No blocked ownership.",
+    title: "Workspace Claims",
+    emptyLabel: "No blocked workspace claims.",
     rows: [...surfaceRows, ...runBoardRows].sort(compareOverlayRows).slice(0, 12),
     actions: ["Enter detail", "t take over intent", "r reassign intent", "Esc close"]
   };
@@ -378,9 +378,9 @@ function buildNegotiationOverlay(input: { swarmSurface?: SwarmSurfaceProjection 
   };
 }
 
-function buildBlackboardOverlay(input: { swarmSurface?: SwarmSurfaceProjection }): CollaborationOverlayView {
+function buildBoardOverlay(input: { swarmSurface?: SwarmSurfaceProjection }): CollaborationOverlayView {
   const rows = input.swarmSurface?.blackboard.map((entry, index) => {
-    const label = productBlackboardLabel(entry.type, entry.tags ?? []);
+    const label = productBoardLabel(entry.type, entry.tags ?? []);
     const important = entry.metadata?.kind === "claim_conflict" || entry.metadata?.claim_status === "conflict" || entry.type === "decision";
     return {
       id: entry.key,
@@ -389,7 +389,7 @@ function buildBlackboardOverlay(input: { swarmSurface?: SwarmSurfaceProjection }
       tone: important ? "attention" as const : "muted" as const,
       evidence: (entry.tags ?? []).slice(0, 3).join(", ") || entry.created_by?.agent_id,
       detail: [
-        `Blackboard ${label}`,
+        `Board ${label}`,
         `key=${entry.key}`,
         `type=${entry.type}`,
         entry.tags?.length ? `tags=${entry.tags.join(",")}` : undefined,
@@ -402,7 +402,7 @@ function buildBlackboardOverlay(input: { swarmSurface?: SwarmSurfaceProjection }
   }).sort(compareOverlayRows).slice(0, 12) ?? [];
   return {
     target: "blackboard",
-    title: "Blackboard Timeline",
+    title: "Board Timeline",
     emptyLabel: "No recent collaboration facts.",
     rows,
     actions: ["/ filter", "Enter detail", "y copy id", "Esc close"]
@@ -452,7 +452,7 @@ export function buildReassignIntentView(input: {
   }
   return {
     source: "none",
-    reason: "No blocked worker or ownership item is active.",
+    reason: "No blocked worker or workspace claim is active.",
     risk: "low",
     policy: "no-target",
     summary: "No reassign target"
@@ -473,12 +473,12 @@ export function buildCollaborationActionIntent(input: {
         action: "reassign",
         overlay: input.overlay.target,
         label: "Reassign intent",
-        summary: "No blocked worker or ownership item is available to reassign.",
-        reason: "No blocked worker or ownership item is active.",
+        summary: "No blocked worker or workspace claim is available to reassign.",
+        reason: "No blocked worker or workspace claim is active.",
         risk: "low",
         policy: "no-target",
         result: "noop",
-        detail: ["Reassign intent", "result=noop", "reason=No blocked worker or ownership item is active."]
+        detail: ["Reassign intent", "result=noop", "reason=No blocked worker or workspace claim is active."]
       };
     }
     return {
@@ -582,7 +582,7 @@ function negotiationPriority(status: string): number {
   return 2;
 }
 
-function productBlackboardLabel(type: string, tags: string[]): string {
+function productBoardLabel(type: string, tags: string[]): string {
   if (tags.includes("claim") || /claim/iu.test(type)) return "Claim";
   if (tags.includes("proposal") || /proposal/iu.test(type)) return "Proposal";
   if (type === "decision" || tags.includes("decision")) return "Decision";

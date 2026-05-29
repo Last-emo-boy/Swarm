@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { defaultSwarmSettings, type PermissionMode, type SwarmSettings } from "../config/settings.js";
 import { attachApprovalGovernance } from "../runtime/safety-governance.js";
+import { isDestructiveCommand } from "./command-safety.js";
 import type { LocalToolContext, ToolAction, ToolApprovalRequest } from "./types.js";
 import type { RiskClass } from "../protocol/types.js";
 
@@ -136,7 +137,22 @@ export function decideToolPermission(action: ToolAction, settings: SwarmSettings
           permission_name: permissionName
         };
   }
-  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue" || action.type === "agent.message") {
+    return skipsApproval(mode)
+      ? {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "ask",
+          reason: `${action.type} requires approval unless permission mode skips approvals.`,
+          mode,
+          permission_name: permissionName
+        };
+  }
+  if (action.type === "task.create" || action.type === "task.update" || action.type === "task.stop" || action.type === "worktree.enter" || action.type === "worktree.exit") {
     return skipsApproval(mode)
       ? {
           decision: "allow",
@@ -192,6 +208,21 @@ export function decideToolPermission(action: ToolAction, settings: SwarmSettings
       : {
           decision: "allow",
           reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        };
+  }
+  if (action.type === "config.set" || action.type === "mcp.call" || action.type === "skill.invoke" || isAutomationLifecycleAction(action)) {
+    return skipsApproval(mode)
+      ? {
+          decision: "allow",
+          reason: `Allowed by ${mode} permission mode.`,
+          mode,
+          permission_name: permissionName
+        }
+      : {
+          decision: "ask",
+          reason: `${action.type} requires approval unless permission mode skips approvals.`,
           mode,
           permission_name: permissionName
         };
@@ -257,7 +288,7 @@ export function createToolApprovalRequest(action: ToolAction, decision?: ToolPer
       actor_id: "main_swarm"
     });
   }
-  if (action.type === "shell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.build" || action.type === "process.start") {
+  if (action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.build" || action.type === "process.start") {
     return attachApprovalGovernance({
       ...base,
       summary: approvalSummary(action),
@@ -281,19 +312,34 @@ export function createToolApprovalRequest(action: ToolAction, decision?: ToolPer
 }
 
 export function riskClassForAction(action: ToolAction): RiskClass {
-  if ((action.type === "shell.exec" || action.type === "exec" || action.type === "code.build" || action.type === "process.start") && isDestructiveCommand(action.command)) {
+  if ((action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "exec" || action.type === "code.build" || action.type === "process.start") && isDestructiveCommand(action.command)) {
     return "r4";
+  }
+  if (action.type === "mcp.call") {
+    return "r2";
   }
   if (action.type === "package.install" || action.type === "web.fetch") {
     return "r2";
   }
+  if (action.type === "ask_user_question" || action.type === "plan.enter" || action.type === "plan.exit" || action.type === "config.get" || action.type === "mcp.resources" || action.type === "mcp.read" || action.type === "mcp.auth" || action.type === "runtime.sleep" || action.type === "repl.mode") {
+    return "r0";
+  }
+  if (action.type === "structured.output") {
+    return "r0";
+  }
+  if (action.type === "schedule.list") {
+    return "r0";
+  }
+  if (action.type === "config.set" || action.type === "skill.invoke" || isAutomationLifecycleAction(action)) {
+    return "r1";
+  }
   if (action.type === "git.branch" && action.action !== "list") {
     return "r2";
   }
-  if (action.type === "shell.exec" || action.type === "exec" || action.type === "process.start" || action.type === "process.stop") {
+  if (action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "exec" || action.type === "process.start" || action.type === "process.stop") {
     return "r2";
   }
-  if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
+  if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue" || action.type === "agent.message") {
     return "r1";
   }
   return "r0";
@@ -491,6 +537,9 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "shell.exec") {
     return "Bash";
   }
+  if (action.type === "powershell.exec") {
+    return "PowerShell";
+  }
   if (action.type === "exec") {
     return "Exec";
   }
@@ -533,6 +582,21 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "web.fetch") {
     return "WebFetch";
   }
+  if (action.type === "config.get") {
+    return "ConfigRead";
+  }
+  if (action.type === "config.set") {
+    return "ConfigSet";
+  }
+  if (action.type === "mcp.resources" || action.type === "mcp.read" || action.type === "mcp.auth") {
+    return "McpRead";
+  }
+  if (action.type === "mcp.call") {
+    return "McpCall";
+  }
+  if (action.type === "skill.invoke") {
+    return "SkillInvoke";
+  }
   if (action.type === "file.list") {
     return "LS";
   }
@@ -563,11 +627,47 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "package.install") {
     return "PackageInstall";
   }
-  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
+  if (action.type === "ask_user_question") {
+    return "AskUserQuestion";
+  }
+  if (action.type === "plan.enter") {
+    return "PlanMode";
+  }
+  if (action.type === "plan.exit") {
+    return "PlanApproval";
+  }
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue" || action.type === "agent.message") {
     return "Agent";
+  }
+  if (action.type === "runtime.sleep") {
+    return "RuntimeSleep";
+  }
+  if (action.type === "structured.output") {
+    return "StructuredOutput";
+  }
+  if (action.type === "repl.mode") {
+    return "ReplMode";
+  }
+  if (action.type === "schedule.create" || action.type === "schedule.list" || action.type === "schedule.delete") {
+    return "Schedule";
+  }
+  if (action.type === "remote.trigger") {
+    return "RemoteTrigger";
+  }
+  if (action.type === "team.create" || action.type === "team.delete") {
+    return "Team";
   }
   if (action.type === "agent.list" || action.type === "agent.status") {
     return "AgentRead";
+  }
+  if (action.type === "task.get" || action.type === "task.list" || action.type === "task.output") {
+    return "TaskRead";
+  }
+  if (action.type === "task.create" || action.type === "task.update" || action.type === "task.stop") {
+    return "Task";
+  }
+  if (action.type === "worktree.enter" || action.type === "worktree.exit") {
+    return "Worktree";
   }
   if (action.type === "blackboard.write") {
     return "BlackboardWrite";
@@ -709,6 +809,9 @@ function approvalSummary(action: ToolAction): string {
   if (action.type === "shell.exec") {
     return `${isDestructiveShellAction(action) ? "Run destructive shell command" : "Run shell command"}: ${action.command}`;
   }
+  if (action.type === "powershell.exec") {
+    return `${isDestructiveShellAction(action) ? "Run destructive PowerShell command" : "Run PowerShell command"}: ${action.command}`;
+  }
   if (action.type === "file.write") {
     return `Write file: ${action.path}`;
   }
@@ -739,6 +842,27 @@ function approvalSummary(action: ToolAction): string {
   if (action.type === "web.fetch") {
     return `Fetch URL: ${action.url}`;
   }
+  if (action.type === "config.get") {
+    return `Read config: ${action.setting ?? "safe settings"}`;
+  }
+  if (action.type === "config.set") {
+    return `Set config: ${action.setting}`;
+  }
+  if (action.type === "mcp.resources") {
+    return `List MCP resources${action.server ? `: ${action.server}` : ""}`;
+  }
+  if (action.type === "mcp.read") {
+    return `Read MCP resource: ${action.server}:${action.uri}`;
+  }
+  if (action.type === "mcp.auth") {
+    return `Inspect MCP auth${action.server ? `: ${action.server}` : ""}`;
+  }
+  if (action.type === "mcp.call") {
+    return `Call MCP tool: ${action.capabilityId ?? `${action.server ?? "server"}:${action.tool ?? "tool"}`}`;
+  }
+  if (action.type === "skill.invoke") {
+    return `Activate skill: ${action.name}`;
+  }
   if (action.type === "web.search") {
     return `Search web: ${action.query}`;
   }
@@ -750,6 +874,15 @@ function approvalSummary(action: ToolAction): string {
   }
   if (action.type === "package.install") {
     return `Install packages: ${action.command}`;
+  }
+  if (action.type === "ask_user_question") {
+    return `Ask user question: ${action.prompt}`;
+  }
+  if (action.type === "plan.enter") {
+    return `Enter plan mode${action.objective ? `: ${action.objective}` : ""}`;
+  }
+  if (action.type === "plan.exit") {
+    return `Request plan approval${action.summary ? `: ${action.summary}` : ""}`;
   }
   if (action.type === "exec") {
     return `${isDestructiveShellAction(action) ? "Run destructive command" : "Run exec command"}: ${action.command}`;
@@ -787,6 +920,60 @@ function approvalSummary(action: ToolAction): string {
   if (action.type === "agent.continue") {
     return `Continue agent: ${action.worker_id}`;
   }
+  if (action.type === "agent.message") {
+    return `Message agent: ${action.worker_id ?? action.agent_id ?? action.role ?? action.capability}`;
+  }
+  if (action.type === "runtime.sleep") {
+    return `Wait ${action.duration_ms} ms${action.reason ? `: ${action.reason}` : ""}`;
+  }
+  if (action.type === "structured.output") {
+    return `Structured output${action.label ? `: ${action.label}` : ""}`;
+  }
+  if (action.type === "repl.mode") {
+    return `REPL mode guidance${action.mode ? `: ${action.mode}` : ""}`;
+  }
+  if (action.type === "schedule.create") {
+    return `Create schedule: ${action.cron}`;
+  }
+  if (action.type === "schedule.list") {
+    return `List schedules${action.status ? `: ${action.status}` : ""}`;
+  }
+  if (action.type === "schedule.delete") {
+    return `Delete schedule: ${action.schedule_id}`;
+  }
+  if (action.type === "remote.trigger") {
+    return `Trigger remote automation: ${action.endpoint ?? action.capability ?? "unconfigured"}`;
+  }
+  if (action.type === "team.create") {
+    return `Create team: ${action.name ?? action.objective}`;
+  }
+  if (action.type === "team.delete") {
+    return `Delete team: ${action.team_id}`;
+  }
+  if (action.type === "task.create") {
+    return `Create task: ${action.title}`;
+  }
+  if (action.type === "task.update") {
+    return `Update task: ${action.task_id}`;
+  }
+  if (action.type === "task.get") {
+    return `Inspect task: ${action.task_id}`;
+  }
+  if (action.type === "task.list") {
+    return `List tasks${action.session_id ? ` for ${action.session_id}` : ""}`;
+  }
+  if (action.type === "task.output") {
+    return `Read task output: ${action.output_ref ?? action.worker_id ?? action.task_id ?? "latest"}`;
+  }
+  if (action.type === "task.stop") {
+    return `Stop task: ${action.task_id}`;
+  }
+  if (action.type === "worktree.enter") {
+    return `Enter worktree${action.name ? `: ${action.name}` : ""}`;
+  }
+  if (action.type === "worktree.exit") {
+    return `Exit worktree${action.lease_id ? `: ${action.lease_id}` : ""}`;
+  }
   if (action.type === "blackboard.write") {
     return `Write blackboard entry: ${action.key}`;
   }
@@ -815,6 +1002,21 @@ function approvalTarget(action: ToolAction): string {
   if (action.type === "web.fetch") {
     return action.url;
   }
+  if (action.type === "config.get" || action.type === "config.set") {
+    return action.setting ?? "safe settings";
+  }
+  if (action.type === "mcp.resources" || action.type === "mcp.auth") {
+    return action.server ?? "MCP servers";
+  }
+  if (action.type === "mcp.read") {
+    return `${action.server}:${action.uri}`;
+  }
+  if (action.type === "mcp.call") {
+    return action.capabilityId ?? `${action.server ?? "server"}:${action.tool ?? "tool"}`;
+  }
+  if (action.type === "skill.invoke") {
+    return action.name;
+  }
   if (action.type === "web.search") {
     return action.query;
   }
@@ -826,6 +1028,15 @@ function approvalTarget(action: ToolAction): string {
   }
   if (action.type === "package.install") {
     return action.command;
+  }
+  if (action.type === "ask_user_question") {
+    return action.prompt;
+  }
+  if (action.type === "plan.enter") {
+    return action.objective ?? "planning mode";
+  }
+  if (action.type === "plan.exit") {
+    return action.summary ?? "plan approval";
   }
   if (action.type === "process.start") {
     return action.command;
@@ -844,6 +1055,36 @@ function approvalTarget(action: ToolAction): string {
   }
   if (action.type === "agent.status" || action.type === "agent.stop" || action.type === "agent.continue") {
     return action.worker_id;
+  }
+  if (action.type === "agent.message") {
+    return action.worker_id ?? action.agent_id ?? action.role ?? action.capability ?? "agent";
+  }
+  if (action.type === "runtime.sleep") {
+    return `${action.duration_ms}ms`;
+  }
+  if (action.type === "structured.output") {
+    return action.label ?? "structured output";
+  }
+  if (action.type === "repl.mode") {
+    return action.mode ?? "repl mode";
+  }
+  if (action.type === "task.create") {
+    return action.task_id ?? action.title;
+  }
+  if (action.type === "task.update" || action.type === "task.get" || action.type === "task.stop") {
+    return action.task_id;
+  }
+  if (action.type === "task.list") {
+    return action.session_id ?? action.status ?? "tasks";
+  }
+  if (action.type === "task.output") {
+    return action.output_ref ?? action.worker_id ?? action.task_id ?? "task output";
+  }
+  if (action.type === "worktree.enter") {
+    return action.path ?? action.name ?? action.branch ?? "worktree";
+  }
+  if (action.type === "worktree.exit") {
+    return action.lease_id ?? action.session_id ?? "worktree";
   }
   if (action.type === "blackboard.write") {
     return action.key;
@@ -873,7 +1114,7 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   if (action.type === "notebook.edit") {
     return `Edits notebook file ${action.notebookPath}.`;
   }
-  if (action.type === "shell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start") {
+  if (action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start") {
     return `Runs a local command in ${"cwd" in action ? action.cwd ?? "." : "."}; effects depend on the command.`;
   }
   if (action.type === "process.stop") {
@@ -881,6 +1122,36 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   }
   if (action.type === "web.fetch") {
     return `Fetches network content from ${action.url}.`;
+  }
+  if (action.type === "config.set") {
+    return `Updates safe Swarm setting ${action.setting}; secrets and credentials are not accessible through this tool.`;
+  }
+  if (action.type === "mcp.call") {
+    return "Calls a configured MCP server tool; effects depend on the server tool and permission policy.";
+  }
+  if (action.type === "schedule.create" || action.type === "schedule.delete") {
+    return "Previews a schedule lifecycle request; this runtime has no durable schedule daemon/store yet.";
+  }
+  if (action.type === "schedule.list") {
+    return "Checks schedule lifecycle availability; this runtime has no durable schedule inventory yet.";
+  }
+  if (action.type === "remote.trigger") {
+    return "Previews a remote automation trigger; explicit endpoint configuration is required before execution.";
+  }
+  if (action.type === "team.create" || action.type === "team.delete") {
+    return "Previews a team lifecycle request over existing task/agent primitives without a separate team store.";
+  }
+  if (action.type === "skill.invoke") {
+    return "Activates a trusted Agent Skill and adds its instructions to durable session context.";
+  }
+  if (action.type === "ask_user_question") {
+    return "Pauses the run until the user answers a structured question.";
+  }
+  if (action.type === "plan.enter") {
+    return "Switches the agent into planning mode without changing workspace files.";
+  }
+  if (action.type === "plan.exit") {
+    return "Presents the plan and waits for user approval before implementation.";
   }
   if (action.type === "package.install") {
     return "Installs or changes project dependencies and may contact package registries.";
@@ -893,6 +1164,30 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   }
   if (action.type === "agent.continue") {
     return "Recalls a prior worker by spawning a continuation with historical context.";
+  }
+  if (action.type === "agent.message") {
+    return "Sends a runtime mailbox message to an existing Swarm actor or worker.";
+  }
+  if (action.type === "runtime.sleep") {
+    return `Waits up to ${Math.min(Math.max(0, Math.floor(action.duration_ms)), 30000)} ms before the next tool step.`;
+  }
+  if (action.type === "structured.output") {
+    return "Records schema-validated structured output for a headless or schema-enabled run.";
+  }
+  if (action.type === "repl.mode") {
+    return "Reports current REPL/headless tool visibility guidance without changing runtime state.";
+  }
+  if (action.type === "task.create" || action.type === "task.update") {
+    return "Changes tracked Swarm task state for the current session.";
+  }
+  if (action.type === "task.stop") {
+    return "Requests cancellation of a tracked Swarm task or matching worker.";
+  }
+  if (action.type === "worktree.enter") {
+    return action.dry_run ? "Previews worktree entry without changing git state." : "Creates or enters a scoped workspace lease and may create a git worktree.";
+  }
+  if (action.type === "worktree.exit") {
+    return action.dry_run ? "Previews worktree exit without changing git state." : "Exits a workspace lease and may remove a Swarm-created git worktree when requested.";
   }
   if (action.type === "blackboard.write") {
     return "Writes shared Swarm session state visible to other agents.";
@@ -907,8 +1202,17 @@ function rollbackPlan(action: ToolAction, riskClass: RiskClass): string {
   if (action.type === "package.install") {
     return "Restore lockfiles/package manifests from git or rerun the package manager with the previous dependency set.";
   }
+  if (action.type === "agent.message") {
+    return "Follow up with a corrective mailbox message, or inspect agent.list/agent.status if the target did not receive it.";
+  }
+  if (action.type === "structured.output") {
+    return "Submit a corrected structured.output value, or ignore the rejected output and return a normal final response.";
+  }
   if (action.type === "git.branch") {
     return "Switch back to the previous branch or delete the created branch if needed.";
+  }
+  if (isAutomationLifecycleAction(action)) {
+    return "No persistent automation/team lifecycle state is changed by the current design-only implementation.";
   }
   if (riskClass === "r4") {
     return "No automatic rollback is guaranteed; deny unless explicitly intended.";
@@ -917,13 +1221,16 @@ function rollbackPlan(action: ToolAction, riskClass: RiskClass): string {
 }
 
 function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
-  if (action.type === "web.search" || action.type === "web.fetch") {
+  if (action.type === "web.search" || action.type === "web.fetch" || action.type === "mcp.resources" || action.type === "mcp.read" || action.type === "mcp.auth" || action.type === "mcp.call") {
     return "web";
   }
   if (action.type === "package.install") {
     return "install";
   }
-  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue" || action.type === "agent.message") {
+    return "delegate";
+  }
+  if (action.type === "task.create" || action.type === "task.update" || action.type === "task.stop" || action.type === "worktree.enter" || action.type === "worktree.exit" || isAutomationLifecycleAction(action)) {
     return "delegate";
   }
   if (isShellLikeAction(action) || action.type === "exec" || action.type === "git.branch") {
@@ -933,11 +1240,19 @@ function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
 }
 
 function isShellLikeAction(action: ToolAction): boolean {
-  return action.type === "shell.exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start" || action.type === "process.stop";
+  return action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "process.start" || action.type === "process.stop";
+}
+
+function isAutomationLifecycleAction(action: ToolAction): boolean {
+  return action.type === "schedule.create" ||
+    action.type === "schedule.delete" ||
+    action.type === "remote.trigger" ||
+    action.type === "team.create" ||
+    action.type === "team.delete";
 }
 
 function isDestructiveShellAction(action: ToolAction): boolean {
-  return (action.type === "shell.exec" || action.type === "exec" || action.type === "code.build" || action.type === "process.start")
+  return (action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "exec" || action.type === "code.build" || action.type === "process.start")
     && riskClassForAction(action) === "r4";
 }
 
@@ -948,7 +1263,7 @@ function approvalAttentionNote(action: ToolAction): string | undefined {
   return "Destructive shell command detected. Review the command literally before approving.";
 }
 
-function commandApprovalDetail(action: Extract<ToolAction, { type: "shell.exec" | "exec" | "code.test" | "code.build" | "process.start" }>): string {
+function commandApprovalDetail(action: Extract<ToolAction, { type: "shell.exec" | "powershell.exec" | "exec" | "code.test" | "code.build" | "process.start" }>): string {
   return [
     approvalAttentionNote(action) ? `Warning: ${approvalAttentionNote(action)}` : undefined,
     `Command: ${action.command}`,
@@ -965,165 +1280,6 @@ function isWriteLikeAction(action: ToolAction): boolean {
     action.type === "file.copy" ||
     action.type === "file.delete" ||
     action.type === "file.patch";
-}
-
-function isDestructiveCommand(command: string): boolean {
-  return commandRiskScanCandidates(command).some((candidate) => isDestructiveCommandCandidate(candidate));
-}
-
-function isDestructiveCommandCandidate(command: string): boolean {
-  const trimmed = command.trim();
-  if (!trimmed) {
-    return false;
-  }
-  return [
-    /(?:^|[;&|]\s*)(?:sudo\s+)?rm\b/i,
-    /(?:^|[;&|]\s*)(?:sudo\s+)?unlink\b/i,
-    /(?:^|[;&|]\s*)(?:del|erase|rmdir|rd)\b/i,
-    /(?:^|[;&|]\s*)remove-item\b/i,
-    /(?:^|[;&|]\s*)format(?:\.com)?(?:\s|$)/i,
-    /(?:^|[;&|]\s*)diskpart\b/i,
-    /(?:^|[;&|]\s*)git\s+reset\s+--hard\b/i
-  ].some((pattern) => pattern.test(trimmed));
-}
-
-function commandRiskScanCandidates(command: string): string[] {
-  const pending = [command];
-  const seen = new Set<string>();
-  const candidates: string[] = [];
-  while (pending.length > 0) {
-    const raw = pending.pop();
-    if (!raw) {
-      continue;
-    }
-    const current = stripOuterQuotes(raw.trim());
-    if (!current || seen.has(current)) {
-      continue;
-    }
-    seen.add(current);
-    candidates.push(current);
-    const withoutSudo = unwrapLeadingSudo(current);
-    if (withoutSudo) {
-      pending.push(withoutSudo);
-    }
-    const unwrapped = unwrapShellLauncher(current);
-    if (unwrapped) {
-      pending.push(unwrapped);
-    }
-  }
-  return candidates;
-}
-
-function unwrapLeadingSudo(command: string): string | undefined {
-  const tokens = tokenizeCommand(command);
-  if (normalizeCommandToken(tokens[0]) !== "sudo" || tokens.length < 2) {
-    return undefined;
-  }
-  return joinCommandTokens(tokens.slice(1));
-}
-
-function unwrapShellLauncher(command: string): string | undefined {
-  const tokens = tokenizeCommand(command);
-  if (tokens.length < 2) {
-    return undefined;
-  }
-  const executable = normalizeCommandToken(tokens[0]);
-  if (executable === "cmd" || executable === "cmd.exe") {
-    return ["/c", "/k"].includes(normalizeCommandToken(tokens[1]))
-      ? joinCommandTokens(tokens.slice(2))
-      : undefined;
-  }
-  if (executable === "powershell" || executable === "powershell.exe" || executable === "pwsh" || executable === "pwsh.exe") {
-    for (let index = 1; index < tokens.length; index += 1) {
-      const option = normalizeCommandToken(tokens[index]);
-      if (option === "-encodedcommand" || option === "-ec") {
-        return undefined;
-      }
-      if (option === "-command" || option === "-c") {
-        return joinCommandTokens(tokens.slice(index + 1));
-      }
-    }
-    return undefined;
-  }
-  if (["bash", "sh", "zsh", "fish"].includes(executable)) {
-    return /^-\w*c\w*$/i.test(tokens[1])
-      ? joinCommandTokens(tokens.slice(2))
-      : undefined;
-  }
-  if (executable === "wsl" || executable === "wsl.exe") {
-    return unwrapWslLauncher(tokens);
-  }
-  return undefined;
-}
-
-function unwrapWslLauncher(tokens: string[]): string | undefined {
-  for (let index = 1; index < tokens.length; index += 1) {
-    const option = normalizeCommandToken(tokens[index]);
-    if (option === "--" || option === "-e" || option === "--exec") {
-      return joinCommandTokens(tokens.slice(index + 1));
-    }
-    if (option === "-d" || option === "--distribution" || option === "-u" || option === "--user" || option === "--cd" || option === "--shell-type") {
-      index += 1;
-      continue;
-    }
-    if (/^--(?:distribution|user|cd|shell-type)=/i.test(tokens[index])) {
-      continue;
-    }
-    if (option.startsWith("-")) {
-      continue;
-    }
-    return joinCommandTokens(tokens.slice(index));
-  }
-  return undefined;
-}
-
-function tokenizeCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: "'" | "\"" | undefined;
-  for (const character of command.trim()) {
-    if (quote) {
-      if (character === quote) {
-        quote = undefined;
-      } else {
-        current += character;
-      }
-      continue;
-    }
-    if (character === "'" || character === "\"") {
-      quote = character;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += character;
-  }
-  if (current) {
-    tokens.push(current);
-  }
-  return tokens;
-}
-
-function joinCommandTokens(tokens: string[]): string | undefined {
-  const joined = stripOuterQuotes(tokens.join(" ").trim());
-  return joined || undefined;
-}
-
-function stripOuterQuotes(value: string): string {
-  let current = value.trim();
-  while (current.length >= 2 && ((current.startsWith("\"") && current.endsWith("\"")) || (current.startsWith("'") && current.endsWith("'")))) {
-    current = current.slice(1, -1).trim();
-  }
-  return current;
-}
-
-function normalizeCommandToken(token: string | undefined): string {
-  return stripOuterQuotes(token ?? "").toLowerCase();
 }
 
 function permissionRuleContentForAction(action: ToolAction): string | undefined {
@@ -1164,6 +1320,21 @@ function permissionRuleContentsForAction(action: ToolAction): Array<{ value: str
   if (action.type === "web.fetch") {
     return [{ value: action.url, pathLike: false }];
   }
+  if (action.type === "config.get" || action.type === "config.set") {
+    return [{ value: action.setting ?? "safe settings", pathLike: false }];
+  }
+  if (action.type === "mcp.resources" || action.type === "mcp.auth") {
+    return [{ value: action.server ?? "MCP servers", pathLike: false }];
+  }
+  if (action.type === "mcp.read") {
+    return [{ value: `${action.server}:${action.uri}`, pathLike: false }];
+  }
+  if (action.type === "mcp.call") {
+    return [{ value: action.capabilityId ?? `${action.server ?? "server"}:${action.tool ?? "tool"}`, pathLike: false }];
+  }
+  if (action.type === "skill.invoke") {
+    return [{ value: action.name, pathLike: false }];
+  }
   if (action.type === "git.branch") {
     return [{ value: [action.action ?? "list", action.name].filter(Boolean).join(" "), pathLike: false }];
   }
@@ -1181,6 +1352,63 @@ function permissionRuleContentsForAction(action: ToolAction): Array<{ value: str
   }
   if (action.type === "agent.status" || action.type === "agent.stop" || action.type === "agent.continue") {
     return [{ value: action.worker_id, pathLike: false }];
+  }
+  if (action.type === "agent.message") {
+    return [{ value: action.worker_id ?? action.agent_id ?? action.role ?? action.capability ?? "agent", pathLike: false }];
+  }
+  if (action.type === "runtime.sleep") {
+    return [{ value: `${action.duration_ms}ms`, pathLike: false }];
+  }
+  if (action.type === "structured.output") {
+    return [{ value: action.label ?? "structured output", pathLike: false }];
+  }
+  if (action.type === "repl.mode") {
+    return [{ value: action.mode ?? "repl mode", pathLike: false }];
+  }
+  if (action.type === "schedule.create") {
+    return [{ value: action.cron, pathLike: false }];
+  }
+  if (action.type === "schedule.list") {
+    return [{ value: action.status ?? "schedules", pathLike: false }];
+  }
+  if (action.type === "schedule.delete") {
+    return [{ value: action.schedule_id, pathLike: false }];
+  }
+  if (action.type === "remote.trigger") {
+    return [{ value: action.endpoint ?? action.capability ?? "remote trigger", pathLike: false }];
+  }
+  if (action.type === "team.create") {
+    return [{ value: action.name ?? action.objective, pathLike: false }];
+  }
+  if (action.type === "team.delete") {
+    return [{ value: action.team_id, pathLike: false }];
+  }
+  if (action.type === "task.create") {
+    return [{ value: action.task_id ?? action.title, pathLike: false }];
+  }
+  if (action.type === "task.update" || action.type === "task.get" || action.type === "task.stop") {
+    return [{ value: action.task_id, pathLike: false }];
+  }
+  if (action.type === "task.list") {
+    return [{ value: action.session_id ?? action.status ?? "tasks", pathLike: false }];
+  }
+  if (action.type === "task.output") {
+    return [{ value: action.output_ref ?? action.worker_id ?? action.task_id ?? "task output", pathLike: Boolean(action.output_ref) }];
+  }
+  if (action.type === "worktree.enter") {
+    return [{ value: action.path ?? action.name ?? action.branch ?? "worktree", pathLike: Boolean(action.path) }];
+  }
+  if (action.type === "worktree.exit") {
+    return [{ value: action.lease_id ?? action.session_id ?? "worktree", pathLike: false }];
+  }
+  if (action.type === "ask_user_question") {
+    return [{ value: action.prompt, pathLike: false }];
+  }
+  if (action.type === "plan.enter") {
+    return [{ value: action.objective ?? "planning mode", pathLike: false }];
+  }
+  if (action.type === "plan.exit") {
+    return [{ value: action.summary ?? "plan approval", pathLike: false }];
   }
   if (action.type === "blackboard.write") {
     return [{ value: action.key, pathLike: false }];

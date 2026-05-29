@@ -51,6 +51,9 @@ export type CapabilityBrokerInput = {
   }) => void;
   delegate?: (action: AgentDelegateAction, sessionId: string, taskId: string) => Promise<ToolResult>;
   agentControl?: LocalToolContext["agentControl"];
+  taskControl?: LocalToolContext["taskControl"];
+  worktreeControl?: LocalToolContext["worktreeControl"];
+  runtimeControl?: LocalToolContext["runtimeControl"];
   onWorkspaceChange?: (sessionId: string | undefined, change: WorkspaceChangeMetadata) => void;
   onFileLock?: (event: FileLockEvent) => void;
   activateSkill: (name: string, sessionId?: string, reason?: string) => {
@@ -232,6 +235,10 @@ export class CapabilityBroker {
         serverWebSearch: this.input.serverWebSearch,
         blackboard: this.input.blackboard,
         agentControl: this.input.agentControl,
+        taskControl: this.input.taskControl,
+        worktreeControl: this.input.worktreeControl,
+        runtimeControl: this.input.runtimeControl,
+        externalContext: undefined,
         onWorkspaceChange: (change) => this.input.onWorkspaceChange?.(sessionId, change),
         onFileLock: this.input.onFileLock,
         delegate: options.allowDelegate && sessionId && this.input.delegate

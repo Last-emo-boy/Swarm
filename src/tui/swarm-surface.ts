@@ -160,7 +160,7 @@ export function formatSwarmSurface(
   const actor = options.actorId ? surface.actors.find((item) => item.actor_id === options.actorId) : undefined;
   if ((mode === "agent" || mode === "mailbox") && options.actorId && !actor) {
     return [
-      "Swarm Surface",
+      "Shared Board",
       summaryLine(surface),
       "",
       `${mode === "agent" ? "Agent" : "Mailbox"} ${options.actorId}`,
@@ -168,7 +168,7 @@ export function formatSwarmSurface(
     ].join("\n");
   }
   return [
-    "Swarm Surface",
+    "Shared Board",
     summaryLine(surface),
     surface.work_board ? `work_board sessions=${surface.work_board.summary.sessions} workers=${surface.work_board.summary.workers} claims=${surface.work_board.summary.claims} blocked=${surface.work_board.summary.blocked} failed=${surface.work_board.summary.failed}` : undefined,
     "",
@@ -209,14 +209,14 @@ export function formatSwarmWorkbench(
         ? workbenchOwnershipSection(surface, limit)
         : workbenchSummarySection(surface, limit);
   const lines = [
-    "Swarm Workbench",
+    "Shared Board",
     summaryLine(surface),
     surface.work_board ? `Work Board sessions=${surface.work_board.summary.sessions} active=${surface.work_board.summary.active_sessions} workers=${surface.work_board.summary.workers} claims=${surface.work_board.summary.claims} blocked=${surface.work_board.summary.blocked} failed=${surface.work_board.summary.failed}` : undefined,
     "",
     ...body,
     "",
     "Evidence",
-    "source=swarm.protocol_projection.v1 actors=agentActorStore mailbox=agentActorStore ownership=work-board/handoff/blackboard"
+    "source=swarm.protocol_projection.v1 actors=agentActorStore mailbox=agentActorStore claims=work-board/handoff/board"
   ].filter((line): line is string => line !== undefined);
   return lines
     .slice(0, rows)
@@ -225,7 +225,7 @@ export function formatSwarmWorkbench(
 }
 
 function summaryLine(surface: SwarmSurfaceProjection): string {
-  return `participants=${surface.summary.participants} active=${surface.summary.active_participants} stale=${surface.summary.stale_participants} inbox_pending=${surface.summary.inbox_pending} outbox_pending=${surface.summary.outbox_pending} ownership=${surface.summary.ownership_items} negotiations=${surface.summary.negotiations} squads=${surface.summary.squads} conflicts=${surface.summary.conflicts}`;
+  return `participants=${surface.summary.participants} active=${surface.summary.active_participants} inactive=${surface.summary.stale_participants} inbox=${surface.summary.inbox_pending} outbox=${surface.summary.outbox_pending} Workspace Claims=${surface.summary.ownership_items} negotiations=${surface.summary.negotiations} squads=${surface.summary.squads} warnings=${surface.summary.conflicts}`;
 }
 
 function summarySections(surface: SwarmSurfaceProjection, limit: number): string[] {
@@ -241,7 +241,7 @@ function summarySections(surface: SwarmSurfaceProjection, limit: number): string
     "Squads",
     ...(surface.squads.length ? surface.squads.slice(0, limit).map(formatSquadLine) : ["(none)"]),
     "",
-    "Conflicts",
+    "Warnings",
     ...(surface.conflicts.length ? surface.conflicts.slice(0, limit).map(formatConflictLine) : ["(none)"])
   ];
 }
@@ -268,12 +268,12 @@ function workbenchSummarySection(surface: SwarmSurfaceProjection, limit: number)
       ? surface.squads.slice(0, Math.min(limit, 6)).map(formatSquadLine)
       : ["(none)"]),
     "",
-    "Blackboard",
+    "Board",
     ...(surface.blackboard.length
       ? surface.blackboard.slice(0, Math.min(limit, 6)).map(formatBlackboardLine)
       : ["(none)"]),
     "",
-    "Conflicts",
+    "Warnings",
     ...(surface.conflicts.length ? surface.conflicts.slice(0, limit).map(formatConflictLine) : ["(none)"])
   ];
 }
@@ -296,7 +296,7 @@ function workbenchAgentSection(
     formatActorMemoryDetailLine(actor),
     `capabilities=${actor.capabilities.length ? actor.capabilities.join(",") : "-"}`,
     `current_task=${actor.current_task_id ?? "-"} current_worker=${actor.current_worker_id ?? "-"} session=${actor.current_session_id ?? "-"}`,
-    actor.current_ownership ? `ownership=${JSON.stringify(actor.current_ownership)}` : undefined,
+    actor.current_ownership ? `claims=${JSON.stringify(actor.current_ownership)}` : undefined,
     "",
     ...workbenchOwnershipSection({
       ...surface,
@@ -329,7 +329,7 @@ function workbenchMailboxSection(actor: SwarmSurfaceActor | undefined, actorId: 
 
 function workbenchOwnershipSection(surface: SwarmSurfaceProjection, limit: number): string[] {
   return [
-    "Ownership",
+    "Workspace Claims",
     ...(surface.ownership.length ? surface.ownership.slice(0, limit).map(formatOwnershipLine) : ["(none)"])
   ];
 }
@@ -345,9 +345,9 @@ function agentSection(actor: SwarmSurfaceActor | undefined, surface: SwarmSurfac
     formatActorMemoryDetailLine(actor),
     `capabilities=${actor.capabilities.length ? actor.capabilities.join(",") : "-"}`,
     `current_task=${actor.current_task_id ?? "-"} current_worker=${actor.current_worker_id ?? "-"} session=${actor.current_session_id ?? "-"}`,
-    actor.current_ownership ? `ownership=${JSON.stringify(actor.current_ownership)}` : undefined,
+    actor.current_ownership ? `claims=${JSON.stringify(actor.current_ownership)}` : undefined,
     "",
-    "Ownership",
+    "Workspace Claims",
     ...(ownership.length ? ownership.slice(0, limit).map(formatOwnershipLine) : ["(none)"]),
     "",
     ...mailboxSection(actor, limit)
@@ -373,7 +373,7 @@ function mailboxSection(actor: SwarmSurfaceActor | undefined, limit: number): st
 
 function ownershipSection(surface: SwarmSurfaceProjection, limit: number): string[] {
   return [
-    "Ownership",
+    "Workspace Claims",
     ...(surface.ownership.length ? surface.ownership.slice(0, limit).map(formatOwnershipLine) : ["(none)"])
   ];
 }
@@ -662,13 +662,16 @@ function proposalIdFromKey(key: string): string | undefined {
 
 function actorConflictItem(actor: SwarmSurfaceActor): SwarmConflictItem {
   const blockedReason = typeof actor.metadata.blocked_reason === "string" ? actor.metadata.blocked_reason : undefined;
+  const reason = blockedReason ? `: ${blockedReason}` : "";
   return {
     kind: "heartbeat",
     id: actor.actor_id,
     owner: actor.actor_id,
     session_id: actor.current_session_id,
     severity: actor.heartbeat_state === "blocked" || actor.heartbeat_state === "stale" ? "warning" : "error",
-    summary: `${actor.heartbeat_state} heartbeat${blockedReason ? `: ${blockedReason}` : ""}`
+    summary: actor.heartbeat_state === "offline"
+      ? `worker disconnected${reason}`
+      : `worker heartbeat missed${reason}`
   };
 }
 
@@ -691,7 +694,7 @@ function blackboardConflictItem(entry: BlackboardEntry): SwarmConflictItem {
     owner: entry.metadata?.owner_agent_id ?? entry.created_by.agent_id,
     session_id: entry.session_id,
     severity: "warning",
-    summary: entry.metadata?.conflict_reason ? String(entry.metadata.conflict_reason) : `blackboard conflict ${entry.key}`,
+    summary: entry.metadata?.conflict_reason ? String(entry.metadata.conflict_reason) : `board conflict ${entry.key}`,
     envelope_id: entry.metadata?.source_envelope_id
   };
 }
@@ -736,7 +739,7 @@ function projectSurfaceActorMemory(memory: AgentMemoryProjection): SwarmSurfaceA
 
 function formatOwnershipLine(item: SwarmOwnershipItem): string {
   return [
-    `${severityBadge(item.severity)} ${item.kind}:${item.id} [${item.status}]`,
+    `${severityBadge(item.severity)} ${ownershipDisplayKind(item.kind)}:${item.id} [${item.status}]`,
     item.policy ? `policy=${item.policy}` : undefined,
     item.waiting_for ? `waiting=${item.waiting_for}` : undefined,
     item.owner ? `owner=${item.owner}` : undefined,
@@ -746,6 +749,14 @@ function formatOwnershipLine(item: SwarmOwnershipItem): string {
     item.task_id ? `task=${item.task_id}` : undefined,
     item.summary
   ].filter(Boolean).join(" ");
+}
+
+function ownershipDisplayKind(kind: SwarmOwnershipItem["kind"]): string {
+  if (kind === "actor_task") return "Task";
+  if (kind === "handoff") return "Handoff";
+  if (kind === "blackboard_claim") return "Claim";
+  if (kind === "blackboard_decision") return "Decision";
+  return "Work";
 }
 
 function formatConflictLine(item: SwarmConflictItem): string {

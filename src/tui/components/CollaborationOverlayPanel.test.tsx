@@ -21,7 +21,7 @@ test("CollaborationOverlayPanel renders blocked rows first with product labels",
   }), { columns: 120, rows: 10 });
   const text = frameText(frame);
 
-  assert.match(text, /OWNERSHIP/);
+  assert.match(text, /WORKSPACE CLAIMS/);
   assert.match(text, /> \[blocked\] Test Runner/);
   assert.match(text, /Reassign: Reassign intent for Test Runner \[approval-required\] risk=medium/);
   assert.doesNotMatch(text, /handoff contract id|lease participant|ASP/);
@@ -55,7 +55,7 @@ test("CollaborationOverlayPanel renders active filter without hiding prompt-comp
     overlay: {
       ...overlayFixture(),
       rows: [],
-      emptyLabel: "No ownership rows matched \"reviewer\"."
+      emptyLabel: "No workspace claims matched \"reviewer\"."
     },
     filter: "reviewer",
     filtering: true
@@ -64,14 +64,14 @@ test("CollaborationOverlayPanel renders active filter without hiding prompt-comp
 
   assert.match(text, /Enter detail \| r reassign intent \| Esc close/);
   assert.match(text, /Filter: \/reviewer/);
-  assert.match(text, /No ownership rows matched "reviewer"\./);
+  assert.match(text, /No workspace claims matched "reviewer"\./);
 });
 
 function overlayFixture(): CollaborationOverlayView {
   return {
     target: "ownership",
-    title: "Ownership",
-    emptyLabel: "No blocked ownership.",
+    title: "Workspace Claims",
+    emptyLabel: "No blocked workspace claims.",
     actions: ["Enter detail", "r reassign intent", "Esc close"],
     rows: [
       {

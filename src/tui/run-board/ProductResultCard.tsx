@@ -45,7 +45,12 @@ export function ProductResultCard(props: {
               decisionTrailExpanded={Boolean(props.decisionTrailExpanded)}
               onDecisionTrailToggle={props.onDecisionTrailToggle}
             />
-          : <Text color={visualTokenColor("text.muted")}>Not finished. Enter an objective or use /continue.</Text>}
+          : (
+            <>
+              <Text color={visualTokenColor("text.muted")}>{view.summary || "Waiting for your first task."}</Text>
+              <Text color={visualTokenColor("text.muted")}>No activity yet.</Text>
+            </>
+          )}
       </RunBoardPanel>
       {view.finished ? <WorkerSummary view={view} density={props.density} /> : null}
       {view.finished ? <AttentionHistory view={view} density={props.density} /> : null}
@@ -57,7 +62,7 @@ export function ProductResultCard(props: {
 function emptyPreview(): ResultPreview {
   return {
     status: "empty",
-    summary: "Pending. No run evidence yet.",
+    summary: "Waiting for your first task.",
     changedFiles: [],
     checks: [],
     artifacts: [],
@@ -129,7 +134,7 @@ function DecisionTrailLines(props: {
     : props.density === "compact" ? sections.slice(0, 2) : sections.slice(0, 3);
   const value = props.expanded
     ? `expanded ${sections.length} sections`
-    : `${sections.length} sections. Enter/click to expand`;
+    : `${sections.length} sections. Ctrl+O details`;
   return (
     <React.Fragment>
       <ResultLine label="Trail" value={value} onClick={props.onToggle} />

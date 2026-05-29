@@ -1,28 +1,45 @@
-export type MainPaneId = "chat" | "log" | "overview" | "output" | "sessions" | "attempts" | "agents" | "blackboard";
+export type MainPaneId = "chat" | "plan" | "activity" | "output" | "sessions" | "workers" | "trace" | "board";
 
-export const mainPaneOrder: MainPaneId[] = ["chat", "log", "overview", "output", "sessions", "attempts", "agents", "blackboard"];
+export const mainPaneOrder: MainPaneId[] = ["chat", "plan", "activity", "output", "sessions", "workers", "trace", "board"];
 
 export const mainPaneLabels: Record<MainPaneId, string> = {
   chat: "Chat",
-  log: "Trace",
-  overview: "Overview",
+  plan: "Plan",
+  activity: "Activity",
   output: "Output",
   sessions: "Sessions",
-  attempts: "Attempts",
-  agents: "Activity",
-  blackboard: "Blackboard"
+  workers: "Workers",
+  trace: "Trace",
+  board: "Board"
 };
 
 export const mainPaneShortLabels: Record<MainPaneId, string> = {
   chat: "Chat",
-  log: "Tr",
-  overview: "Ov",
+  plan: "Plan",
+  activity: "Act",
   output: "Out",
   sessions: "Ses",
-  attempts: "Att",
-  agents: "Act",
-  blackboard: "Blk"
+  workers: "Wrk",
+  trace: "Tr",
+  board: "Brd"
 };
+
+export const mainPaneAliases: Record<string, MainPaneId> = {
+  agents: "activity",
+  attempts: "trace",
+  blackboard: "board",
+  log: "trace",
+  overview: "plan"
+};
+
+export function normalizeMainPaneId(value: string | undefined): MainPaneId | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  const direct = mainPaneOrder.find((pane) => pane === normalized);
+  return direct ?? mainPaneAliases[normalized];
+}
 
 export function nextMainPane(current: MainPaneId, direction: 1 | -1): MainPaneId {
   const index = mainPaneOrder.indexOf(current);

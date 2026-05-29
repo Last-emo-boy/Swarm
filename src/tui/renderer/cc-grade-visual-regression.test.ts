@@ -25,12 +25,12 @@ test("cc-grade visual matrix preserves semantic transcript footer and search lay
 
   for (const { viewport, snapshot } of snapshots) {
     assert.deepEqual(assertFrameHasNoOverflow(snapshot), [], `${viewport.columns}x${viewport.rows} overflow`);
-    assert.match(snapshotText(snapshot), /❯ user\s+Find cache miss/);
+    assert.match(snapshotText(snapshot), /❯ You\s+Find cache miss/);
     assert.match(snapshotText(snapshot), /\[cache:HIT 74%\]/);
     assert.match(snapshotText(snapshot), /● tool\s+shell/);
     assert.match(snapshotText(snapshot), /✓ result\s+stdout/);
 
-    const userRow = snapshotRowWithText(snapshot, "❯ user");
+    const userRow = snapshotRowWithText(snapshot, "❯ You");
     assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
     assert.equal(cellStyleAtText(userRow, "Find")?.backgroundColor, resolveTuiColor("surface.selection"));
     assert.equal(cellStyleAtText(userRow, "cache")?.backgroundColor, resolveTuiColor("surface.searchMatch"));
@@ -54,14 +54,14 @@ test("cc-grade visual matrix preserves semantic transcript footer and search lay
   }
 
   const wideText = snapshotText(snapshots[2]!.snapshot);
-  assert.match(wideText, /Left\/Right footer \| \[\/\] message \| \/ search/);
+  assert.match(wideText, /PgUp\/PgDn scroll\s+\/ search\s+Ctrl\+O details/);
 });
 
 test("cc-grade visual matrix keeps NO_COLOR readable and truecolor SGR expressive", () => {
   withNoColor(() => {
     const snapshot = renderCcGradeSnapshot(100, 30);
     assert.deepEqual(assertFrameHasNoOverflow(snapshot), []);
-    assert.match(snapshotText(snapshot), /❯ user\s+Find cache miss/);
+    assert.match(snapshotText(snapshot), /❯ You\s+Find cache miss/);
     assert.match(snapshotText(snapshot), /\[cache:HIT 74%\]/);
     assert.equal(coloredCellCount(snapshot), 0);
   });
@@ -115,7 +115,7 @@ test("cc-grade visual artifact exposes profile diff and inspectable ANSI snapsho
   assert(dark);
   assert(contrast);
   assert(monochrome);
-  assert.match(dark.plainText, /❯ user\s+Find cache miss/);
+  assert.match(dark.plainText, /❯ You\s+Find cache miss/);
   assert.match(dark.ansiText, /\u001B\[[^m]*38;2;122;217;122m❯/);
   assert.match(dark.ansiText, /\u001B\[[^m]*48;2;38;79;120[^m]*m\[cache:HIT 74%\]/);
   assert.doesNotMatch(contrast.ansiText, /38;2|48;2/);

@@ -19,7 +19,7 @@ export function RunBoardSurface(props: {
   const view = props.view;
   return (
     <Box flexDirection="column" width="100%">
-      <RunBoardPanel title={view.title}>
+      <RunBoardPanel title={view.title === "Swarm Board" ? "Run Summary" : view.title}>
         {view.objective ? <HeaderObjectiveLine view={view} /> : <SwarmBoardMetaLine view={view} />}
         <Text color={visualTokenColor("text.muted")} wrap="truncate">Phase      {view.phase}</Text>
         {view.focus ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}

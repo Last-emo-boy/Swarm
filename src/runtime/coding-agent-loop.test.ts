@@ -88,6 +88,39 @@ test("coding loop treats repaired bare continue with final content as completed"
   assert.doesNotMatch(result.content, /Swarm could not repair/);
 });
 
+test("coding loop gives JSON repair enough output budget for large tool call payloads", async () => {
+  const requests: GenerateTextRequest[] = [];
+  const result = await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    if (request.usage?.purpose === "coding_loop_json_repair") {
+      return Promise.resolve(JSON.stringify({
+        status: "completed",
+        summary: "Recovered",
+        message: "Recovered the response without executing a truncated tool call.",
+        files_touched: [],
+        next_actions: [],
+        tool_calls: []
+      }));
+    }
+    return Promise.resolve(JSON.stringify({
+      status: "continue",
+      summary: "Needs repair",
+      message: "The next response should be repaired.",
+      files_touched: [],
+      next_actions: [],
+      tool_calls: []
+    }));
+  });
+
+  const mainRequest = requests.find((request) => request.usage?.purpose === "main_coding_loop");
+  const repairRequest = requests.find((request) => request.usage?.purpose === "coding_loop_json_repair");
+  assert(mainRequest, "expected main coding loop request");
+  assert(repairRequest, "expected repair request");
+  assert.equal(result.status, "completed");
+  assert.equal(repairRequest.maxOutputTokens, mainRequest.maxOutputTokens);
+  assert.equal(repairRequest.maxOutputTokens, 8_000);
+});
+
 test("coding loop permits read-workspace files_touched without write evidence", async () => {
   const events = new RuntimeEvents();
   const recorded: RuntimeEvent[] = [];
@@ -438,6 +471,82 @@ test("coding loop renders cacheable dynamic capability payload deterministically
   assert(first.indexOf("mcp__alpha__read") < first.indexOf("mcp__beta__read"));
 });
 
+test("ToolSearch discovers local tools design-only tools deferred MCP tools and skills", async () => {
+  const events = new RuntimeEvents();
+  const toolResults: Extract<RuntimeEvent, { type: "tool_result" }>[] = [];
+  events.onEvent((event) => {
+    if (event.type === "tool_result" && event.action === "ToolSearch") {
+      toolResults.push(event);
+    }
+  });
+  const responses = [
+    JSON.stringify({
+      status: "continue",
+      summary: "Search tool catalog",
+      message: "Looking up tools.",
+      files_touched: [],
+      next_actions: [],
+      tool_calls: [
+        { id: "local", action: "ToolSearch", inputs: { query: "PowerShell", limit: 4 } },
+        { id: "design", action: "ToolSearch", inputs: { query: "schedule automation", limit: 6 } },
+        { id: "mcp", action: "ToolSearch", inputs: { query: "github", limit: 4 } },
+        { id: "skill", action: "ToolSearch", inputs: { query: "quality review", kind: "skill", limit: 4 } }
+      ]
+    }),
+    JSON.stringify({
+      status: "completed",
+      summary: "Tool catalog searched",
+      message: "Tool catalog searched.",
+      files_touched: [],
+      next_actions: [],
+      tool_calls: []
+    })
+  ];
+  await runCodingLoopWithFakeProvider(() => Promise.resolve(responses.shift() ?? responses[responses.length - 1]), {
+    events,
+    maxToolCalls: 6,
+    listModelCapabilities: async () => [
+      localCapability({
+        id: "local_tool.PowerShell",
+        name: "PowerShell",
+        title: "PowerShell",
+        description: "Run Windows-native PowerShell commands.",
+        metadata: { action: "powershell.exec", aliases: ["PowerShell", "powershell.exec"] },
+        concurrencyClass: "verify_exclusive",
+        permissionName: "PowerShell"
+      }),
+      localCapability({
+        id: "local_tool.ScheduleCreate",
+        name: "ScheduleCreate",
+        title: "Create Schedule",
+        description: "Design-gated schedule creation surface.",
+        searchHint: "Automation lifecycle control, currently design-only without durable scheduler runtime.",
+        metadata: { action: "schedule.create", aliases: ["ScheduleCronTool", "schedule.create"] },
+        permissionName: "Schedule"
+      }),
+      testCapability("mcp__github__search_code", {
+        providerId: "mcp:github",
+        title: "GitHub code search",
+        description: "Search GitHub code.",
+        searchHint: "github search code",
+        alwaysLoad: false,
+        shouldDefer: true
+      }),
+      skillCapability("quality-review", "Quality Review", "Review code quality and risks.")
+    ]
+  });
+
+  assert.equal(toolResults.length, 4);
+  const combined = toolResults.map((result) => result.content ?? "").join("\n");
+  assert.match(combined, /powershell\.exec/);
+  assert.match(combined, /ScheduleCreate/);
+  assert.match(combined, /schedule\.create/);
+  assert.match(combined, /mcp__github__search_code \(load next turn\)/);
+  assert.match(combined, /activate with: skill\.activate \{ name: "quality-review" \}/);
+  const mcpResult = toolResults.find((result) => result.task_id === "mcp");
+  assert.match(mcpResult?.summary ?? "", /loaded 1 MCP tools/);
+});
+
 test("coding loop renders allowed tool order deterministically for cache keys", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "swarm-coding-loop-tool-order-"));
   try {
@@ -774,7 +883,53 @@ async function capturePromptCacheShape(options: { allowedTools: string[]; worksp
   return shape;
 }
 
-function testCapability(name: string): CapabilityDescriptor {
+function localCapability(overrides: Partial<CapabilityDescriptor> & Pick<CapabilityDescriptor, "id" | "name" | "description">): CapabilityDescriptor {
+  return {
+    id: overrides.id,
+    kind: "local_tool",
+    source: "builtin",
+    trust: "builtin",
+    providerId: "local-tools",
+    name: overrides.name,
+    title: overrides.title,
+    description: overrides.description,
+    inputSchema: overrides.inputSchema ?? { type: "object", properties: {} },
+    riskClass: overrides.riskClass ?? "r1",
+    permissionName: overrides.permissionName ?? overrides.name,
+    modelVisible: overrides.modelVisible ?? true,
+    userVisible: overrides.userVisible ?? true,
+    status: overrides.status ?? "available",
+    alwaysLoad: overrides.alwaysLoad,
+    shouldDefer: overrides.shouldDefer,
+    readOnly: overrides.readOnly,
+    concurrencyClass: overrides.concurrencyClass,
+    searchHint: overrides.searchHint,
+    metadata: overrides.metadata
+  };
+}
+
+function skillCapability(name: string, title: string, description: string): CapabilityDescriptor {
+  return {
+    id: `skill.${name}`,
+    kind: "skill",
+    source: "user",
+    trust: "trusted",
+    providerId: "skills",
+    name,
+    title,
+    description,
+    inputSchema: { type: "object", properties: { name: { type: "string" } } },
+    riskClass: "r1",
+    permissionName: `SkillInvoke(${name})`,
+    modelVisible: true,
+    userVisible: true,
+    status: "available",
+    readOnly: false,
+    concurrencyClass: "write_exclusive"
+  };
+}
+
+function testCapability(name: string, overrides: Partial<CapabilityDescriptor> = {}): CapabilityDescriptor {
   return {
     id: `mcp_tool.test.${name}`,
     kind: "mcp_tool",
@@ -782,6 +937,7 @@ function testCapability(name: string): CapabilityDescriptor {
     trust: "trusted",
     providerId: "mcp:test",
     name,
+    title: overrides.title,
     description: `${name} tool`,
     inputSchema: { type: "object", properties: { query: { type: "string" } } },
     riskClass: "r0",
@@ -791,7 +947,8 @@ function testCapability(name: string): CapabilityDescriptor {
     status: "available",
     alwaysLoad: true,
     readOnly: true,
-    concurrencyClass: "read_parallel"
+    concurrencyClass: "read_parallel",
+    ...overrides
   };
 }
 
@@ -823,6 +980,7 @@ async function runCodingLoopWithFakeProvider(
     agentMemoryContext?: (sessionId: string) => string | Promise<string>;
     listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
     allowedTools?: string[];
+    maxToolCalls?: number;
     workspace?: string;
     setupWorkspace?: (workspace: string) => void;
     workspaceIndex?: {
@@ -851,7 +1009,7 @@ async function runCodingLoopWithFakeProvider(
       role: options.role,
       workerId: options.workerId,
       maxTurns: 3,
-      maxToolCalls: 3,
+      maxToolCalls: options.maxToolCalls ?? 3,
       expectedSideEffects: "read_workspace",
       durableContext: options.durableContext,
       agentMemoryContext: options.agentMemoryContext,

@@ -176,7 +176,7 @@ function DecisionTrailSection(props: {
         section="trail"
         value={props.expanded
           ? `expanded ${sections.length} sections`
-          : `${sections.length} sections. Enter/click to expand`}
+          : `${sections.length} sections. Ctrl+O details`}
         onClick={props.onToggle}
       />
       {visible.map((entry) => (

@@ -24,7 +24,7 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   const stdout = new PassThrough() as PassThrough & NodeJS.WriteStream & { columns: number; rows: number; isTTY: false };
   const stdin = new PassThrough() as PassThrough & NodeJS.ReadStream;
   stdout.columns = 160;
-  stdout.rows = 24;
+  stdout.rows = 32;
   stdout.isTTY = false;
   let output = "";
   stdout.on("data", (chunk: Buffer | string) => {
@@ -42,9 +42,21 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   try {
     await waitFor(() => stripAnsi(output).includes("Ask Swarm"), "initial prompt render");
     await waitFor(
-      () => stripAnsi(output).includes("Left/Right footer | [/] message | / search"),
+      () => stripAnsi(output).includes("/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details"),
       "footer hint render"
     );
+    await waitFor(() => stripAnsi(output).includes("Run: Waiting"), "run summary render");
+    const initialScreen = stripAnsi(output);
+    assert.match(initialScreen, /Waiting for your first task\./);
+    assert.match(initialScreen, /Chat/);
+    assert.match(initialScreen, /Plan/);
+    assert.match(initialScreen, /Activity/);
+    assert.match(initialScreen, /Output/);
+    assert.match(initialScreen, /Sessions/);
+    assert.match(initialScreen, /Workers/);
+    assert.match(initialScreen, /Trace/);
+    assert.match(initialScreen, /Board/);
+    assert.doesNotMatch(initialScreen, /Overview|Blackboard|Attempts|run evidence|Current Mode|Active Tools|Model \/ Provider/);
     const secretPrompt = "secret phrase 123";
     stdin.emit("data", secretPrompt);
     await waitFor(() => stripAnsi(output).includes(secretPrompt), "prompt text update from stdin");

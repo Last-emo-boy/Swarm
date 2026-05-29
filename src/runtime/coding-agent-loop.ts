@@ -246,6 +246,11 @@ type CodingLoopOptions = {
   workspaceIndex?: WorkspaceIndex;
   invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
   agentControl?: LocalToolContext["agentControl"];
+  taskControl?: LocalToolContext["taskControl"];
+  worktreeControl?: LocalToolContext["worktreeControl"];
+  runtimeControl?: LocalToolContext["runtimeControl"];
+  externalContext?: LocalToolContext["externalContext"];
+  workspaceForSession?: (sessionId: string) => string;
   listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
   invokeCapability?: (
     capabilityId: string,
@@ -289,10 +294,10 @@ const TOOL_RESULT_FRESH_BUDGET_BYTES = 8_000;
 const MODEL_OUTPUT_TOKENS_MAIN_LOOP = 8_000;
 const MODEL_OUTPUT_TOKENS_WORKER_LOOP = 6_000;
 const MODEL_OUTPUT_TOKENS_CONTROL = 1_200;
-const MODEL_OUTPUT_TOKENS_REPAIR = 1_500;
+const MODEL_OUTPUT_TOKENS_REPAIR = MODEL_OUTPUT_TOKENS_MAIN_LOOP;
 const ACTIVITY_PREVIEW_LENGTH = 80;
 const TOOL_SEARCH_TOOL_NAME = "ToolSearch";
-const DEFAULT_TOOL_NAMES = [
+export const DEFAULT_TOOL_NAMES = [
   "Read",
   "Glob",
   "Grep",
@@ -311,6 +316,7 @@ const DEFAULT_TOOL_NAMES = [
   "file.delete",
   "NotebookEdit",
   "Bash",
+  "PowerShell",
   "code.test",
   "code.lint",
   "ProcessStart",
@@ -321,7 +327,18 @@ const DEFAULT_TOOL_NAMES = [
   "ProcessStop",
   "WebSearch",
   "WebFetch",
+  "Config",
+  "McpResources",
+  "McpRead",
+  "McpAuth",
+  "McpCall",
+  "SkillInvoke",
   "TodoWrite",
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "EnterWorktree",
+  "ExitWorktree",
   "BlackboardWrite",
   "BlackboardSearch",
   "BlackboardRead",
@@ -329,7 +346,23 @@ const DEFAULT_TOOL_NAMES = [
   "AgentList",
   "AgentStatus",
   "AgentStop",
-  "AgentContinue"
+  "AgentContinue",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "AgentMessage",
+  "RuntimeSleep",
+  "StructuredOutput",
+  "ReplMode",
+  "ScheduleCreate",
+  "ScheduleList",
+  "ScheduleDelete",
+  "RemoteTrigger",
+  "TeamCreate",
+  "TeamDelete"
 ] as const;
 
 export class CodingAgentLoop {
@@ -994,9 +1027,10 @@ export class CodingAgentLoop {
       if (this.options.disallowedTools && isToolDeniedByPolicy(action.type, this.options.disallowedTools)) {
         throw new Error(`Tool action denied by run tool policy: ${action.type}`);
       }
+      const workspace = this.workspaceForToolSession(sessionId);
       assertToolActionAllowedBySandbox(action, {
         writePolicy: this.options.writePolicy,
-        workspace: this.options.workspace,
+        workspace,
         fileScope: this.options.fileScope
       });
       this.emitActivity(sessionId, "running_tool", `Running ${describeToolAction(action)}`, { turn, tool: action.type, taskId: id });
@@ -1017,7 +1051,7 @@ export class CodingAgentLoop {
         );
         return { result: codingLoopResultFromTool(id, action.type, rawResult) };
       }
-      const permissionDecision = decideToolPermission(action, this.options.settings, { workspace: this.options.workspace });
+      const permissionDecision = decideToolPermission(action, this.options.settings, { workspace });
       if (permissionDecision.decision === "deny") {
         throw new Error(`Tool action denied by ~/.swarm/settings.json permissions: ${describeToolAction(action)}`);
       }
@@ -1055,7 +1089,7 @@ export class CodingAgentLoop {
       }
 
       const toolContext: LocalToolContext = {
-        workspace: this.options.workspace,
+        workspace,
         settings: this.options.settings,
         sessionId,
         taskId: id,
@@ -1064,6 +1098,10 @@ export class CodingAgentLoop {
         onWorkspaceChange: this.options.onWorkspaceChange,
         onFileLock: this.options.onFileLock,
         agentControl: this.options.agentControl,
+        taskControl: this.options.taskControl,
+        worktreeControl: this.options.worktreeControl,
+        runtimeControl: this.options.runtimeControl,
+        externalContext: this.options.externalContext,
         delegate: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0
           ? (action) => this.delegateWorker(action, sessionId, id)
           : undefined
@@ -1441,6 +1479,10 @@ export class CodingAgentLoop {
       throw error;
     }
   }
+
+  private workspaceForToolSession(sessionId: string): string {
+    return this.options.workspaceForSession?.(sessionId) ?? this.options.workspace;
+  }
 }
 
 function summarizeToolBatch(calls: CodingLoopToolCall[]): string {
@@ -1483,6 +1525,16 @@ function describeToolAction(action: ToolAction): string {
       return `json.edit ${previewActivityValue(action.path)} ${previewActivityValue(action.pointer)}`;
     case "todo.write":
       return `todo.write ${action.todos.length} item(s)`;
+    case "ask_user_question":
+      return `Ask user ${previewActivityValue(action.prompt)}`;
+    case "plan.enter":
+      return `Enter plan mode ${previewActivityValue(action.objective ?? "planning mode")}`;
+    case "plan.exit":
+      return `Request plan approval ${previewActivityValue(action.summary ?? "approval requested")}`;
+    case "worktree.enter":
+      return `worktree.enter ${previewActivityValue(action.name ?? "new worktree")}`;
+    case "worktree.exit":
+      return `worktree.exit ${action.mode}`;
     case "blackboard.write":
       return `BlackboardWrite ${previewActivityValue(action.key)}`;
     case "blackboard.read":
@@ -1493,6 +1545,8 @@ function describeToolAction(action: ToolAction): string {
       return `BlackboardList ${previewActivityValue(action.keyPrefix ?? action.tag ?? "entries")}`;
     case "shell.exec":
       return `shell.exec ${previewActivityValue(action.command)}`;
+    case "powershell.exec":
+      return `powershell.exec ${previewActivityValue(action.command)}`;
     case "exec":
       return `exec ${previewActivityValue(action.command)}`;
     case "process.start":
@@ -1511,6 +1565,20 @@ function describeToolAction(action: ToolAction): string {
       return `web.search ${previewActivityValue(action.query)}`;
     case "web.fetch":
       return `web.fetch ${previewActivityValue(action.url)}`;
+    case "config.get":
+      return `config.get ${previewActivityValue(action.setting ?? "safe settings")}`;
+    case "config.set":
+      return `config.set ${previewActivityValue(action.setting)}`;
+    case "mcp.resources":
+      return `mcp.resources ${previewActivityValue(action.server ?? "all servers")}`;
+    case "mcp.read":
+      return `mcp.read ${previewActivityValue(`${action.server}:${action.uri}`)}`;
+    case "mcp.auth":
+      return `mcp.auth ${previewActivityValue(action.server ?? "all servers")}`;
+    case "mcp.call":
+      return `mcp.call ${previewActivityValue(action.capabilityId ?? `${action.server ?? "server"}:${action.tool ?? "tool"}`)}`;
+    case "skill.invoke":
+      return `skill.invoke ${previewActivityValue(action.name)}`;
     case "notebook.edit":
       return `NotebookEdit ${previewActivityValue(action.notebookPath)}`;
     case "code.test":
@@ -1565,6 +1633,38 @@ function describeToolAction(action: ToolAction): string {
       return `agent.stop ${previewActivityValue(action.worker_id)}`;
     case "agent.continue":
       return `agent.continue ${previewActivityValue(action.worker_id)}: ${previewActivityValue(action.message)}`;
+    case "agent.message":
+      return `agent.message ${previewActivityValue(action.worker_id ?? action.agent_id ?? action.role ?? action.capability ?? "agent")}`;
+    case "runtime.sleep":
+      return `runtime.sleep ${Math.min(Math.max(0, Math.floor(action.duration_ms)), 30000)}ms`;
+    case "structured.output":
+      return `structured.output ${previewActivityValue(action.label ?? "schema output")}`;
+    case "repl.mode":
+      return `repl.mode ${previewActivityValue(action.mode ?? "interactive")}`;
+    case "schedule.create":
+      return `schedule.create ${previewActivityValue(action.cron)}`;
+    case "schedule.list":
+      return `schedule.list ${previewActivityValue(action.status ?? "schedules")}`;
+    case "schedule.delete":
+      return `schedule.delete ${previewActivityValue(action.schedule_id)}`;
+    case "remote.trigger":
+      return `remote.trigger ${previewActivityValue(action.endpoint ?? action.capability ?? "unconfigured")}`;
+    case "team.create":
+      return `team.create ${previewActivityValue(action.name ?? action.objective)}`;
+    case "team.delete":
+      return `team.delete ${previewActivityValue(action.team_id)}`;
+    case "task.create":
+      return `task.create ${previewActivityValue(action.title)}`;
+    case "task.update":
+      return `task.update ${previewActivityValue(action.task_id)}`;
+    case "task.get":
+      return `task.get ${previewActivityValue(action.task_id)}`;
+    case "task.list":
+      return `task.list ${previewActivityValue(action.session_id ?? action.status ?? "current session")}`;
+    case "task.output":
+      return `task.output ${previewActivityValue(action.output_ref ?? action.worker_id ?? action.task_id ?? "output")}`;
+    case "task.stop":
+      return `task.stop ${previewActivityValue(action.task_id)}`;
   }
 }
 
@@ -2459,6 +2559,7 @@ function localCapabilityIdForAction(action: ToolAction["type"]): string {
     "file.delete": "file.delete",
     "notebook.edit": "NotebookEdit",
     "shell.exec": "Bash",
+    "powershell.exec": "PowerShell",
     "process.start": "ProcessStart",
     "process.status": "ProcessStatus",
     "process.list": "ProcessList",
@@ -2467,7 +2568,19 @@ function localCapabilityIdForAction(action: ToolAction["type"]): string {
     "process.stop": "ProcessStop",
     "web.search": "WebSearch",
     "web.fetch": "WebFetch",
+    "config.get": "Config",
+    "config.set": "Config",
+    "mcp.resources": "McpResources",
+    "mcp.read": "McpRead",
+    "mcp.auth": "McpAuth",
+    "mcp.call": "McpCall",
+    "skill.invoke": "SkillInvoke",
     "todo.write": "TodoWrite",
+    "ask_user_question": "AskUserQuestion",
+    "plan.enter": "EnterPlanMode",
+    "plan.exit": "ExitPlanMode",
+    "worktree.enter": "EnterWorktree",
+    "worktree.exit": "ExitWorktree",
     "blackboard.write": "BlackboardWrite",
     "blackboard.search": "BlackboardSearch",
     "blackboard.read": "BlackboardRead",
@@ -2476,6 +2589,22 @@ function localCapabilityIdForAction(action: ToolAction["type"]): string {
     "agent.status": "AgentStatus",
     "agent.stop": "AgentStop",
     "agent.continue": "AgentContinue",
+    "agent.message": "AgentMessage",
+    "runtime.sleep": "RuntimeSleep",
+    "structured.output": "StructuredOutput",
+    "repl.mode": "ReplMode",
+    "schedule.create": "ScheduleCreate",
+    "schedule.list": "ScheduleList",
+    "schedule.delete": "ScheduleDelete",
+    "remote.trigger": "RemoteTrigger",
+    "team.create": "TeamCreate",
+    "team.delete": "TeamDelete",
+    "task.create": "TaskCreate",
+    "task.update": "TaskUpdate",
+    "task.get": "TaskGet",
+    "task.list": "TaskList",
+    "task.output": "TaskOutput",
+    "task.stop": "TaskStop",
     "lsp.diagnostics": "lsp_diagnostics",
     "lsp.hover": "lsp_hover",
     "lsp.definition": "lsp_definition",
@@ -2634,7 +2763,7 @@ function searchDeferredCapabilities(
         return undefined;
       }
       return {
-        action: capability.kind === "skill" ? SKILL_ACTIVATE_TOOL_NAME : capability.name,
+        action: toolSearchActionForCapability(capability),
         capabilityId: capability.id,
         kind: capability.kind,
         name: capability.name,
@@ -2671,7 +2800,7 @@ function shouldIncludeInToolSearch(
   if (!isVisibleCapability(capability)) {
     return false;
   }
-  if (capability.kind === "local_tool" || capability.id === SKILL_ACTIVATE_CAPABILITY_ID) {
+  if (capability.id === SKILL_ACTIVATE_CAPABILITY_ID) {
     return false;
   }
   if (search.kind && capability.kind !== search.kind) {
@@ -2688,10 +2817,20 @@ function shouldIncludeInToolSearch(
   if (capability.kind === "mcp_tool" && discoveredDynamicToolNames.has(capability.name)) {
     return false;
   }
-  if (capability.kind !== "mcp_tool" && capability.kind !== "skill") {
+  if (capability.kind !== "local_tool" && capability.kind !== "lsp_tool" && capability.kind !== "mcp_tool" && capability.kind !== "skill") {
     return false;
   }
   return true;
+}
+
+function toolSearchActionForCapability(capability: CapabilityDescriptor): string {
+  if (capability.kind === "skill") {
+    return SKILL_ACTIVATE_TOOL_NAME;
+  }
+  const metadataAction = capability.metadata?.action;
+  return typeof metadataAction === "string" && metadataAction.trim().length > 0
+    ? metadataAction
+    : capability.name;
 }
 
 function scoreToolSearchCapability(capability: CapabilityDescriptor, query?: string): number | undefined {
@@ -2699,8 +2838,13 @@ function scoreToolSearchCapability(capability: CapabilityDescriptor, query?: str
     return 0;
   }
   const normalizedQuery = query.toLowerCase();
+  const aliases = Array.isArray(capability.metadata?.aliases)
+    ? capability.metadata.aliases.filter((alias): alias is string => typeof alias === "string")
+    : [];
   const fields = [
     capability.name,
+    toolSearchActionForCapability(capability),
+    ...aliases,
     capability.title ?? "",
     capability.permissionName,
     capability.description,
@@ -2716,6 +2860,13 @@ function scoreToolSearchCapability(capability: CapabilityDescriptor, query?: str
   }
   if (fields.some((field) => field.includes(normalizedQuery))) {
     return 2;
+  }
+  const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+  if (terms.length > 1) {
+    const joinedFields = fields.join(" ");
+    if (terms.every((term) => joinedFields.includes(term))) {
+      return 3;
+    }
   }
   return undefined;
 }
@@ -2744,6 +2895,9 @@ function renderToolSearchDetail(
   }
   for (const [index, match] of matches.entries()) {
     lines.push(`${index + 1}. ${match.action}${match.loadNextTurn ? " (load next turn)" : ""}`);
+    if (match.name !== match.action) {
+      lines.push(`   name: ${match.name}`);
+    }
     lines.push(`   kind: ${match.kind}`);
     lines.push(`   provider: ${match.providerId}`);
     lines.push(`   title: ${previewActivityValue(match.title ?? match.name)}`);
@@ -2998,7 +3152,7 @@ function claimsVerificationPassed(text: string): boolean {
 }
 
 function isVerificationToolAction(action: string): boolean {
-  return ["code.test", "code.lint", "code.build", "shell.exec", "exec"].includes(action);
+  return ["code.test", "code.lint", "code.build", "shell.exec", "powershell.exec", "exec"].includes(action);
 }
 
 type WorkspaceTransactionIssue = {
@@ -3517,10 +3671,21 @@ function classifyToolConcurrency(action: ToolAction): ToolConcurrencyClass {
     "blackboard.list",
     "agent.list",
     "agent.status",
+    "runtime.sleep",
+    "structured.output",
+    "repl.mode",
+    "schedule.list",
+    "task.get",
+    "task.list",
+    "task.output",
     "process.status",
     "process.list",
     "process.tail",
     "process.grep",
+    "config.get",
+    "mcp.resources",
+    "mcp.read",
+    "mcp.auth",
     "ToolSearch",
     "tool.search"
   ].includes(action.type)) {
@@ -3529,22 +3694,25 @@ function classifyToolConcurrency(action: ToolAction): ToolConcurrencyClass {
   if (action.type === "process.start") {
     return "background_process";
   }
-  if (action.type === "web.search" || action.type === "web.fetch") {
+  if (action.type === "web.search" || action.type === "web.fetch" || action.type === "mcp.call" || action.type === "skill.invoke" || action.type === "remote.trigger") {
     return "network_limited";
   }
-  if (action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "shell.exec" || action.type === "exec" || action.type === "package.install") {
+  if (action.type === "agent.message") {
+    return "write_exclusive";
+  }
+  if (action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "shell.exec" || action.type === "powershell.exec" || action.type === "exec" || action.type === "package.install") {
     return "verify_exclusive";
   }
   return "write_exclusive";
 }
 
 const TOOL_CONCURRENCY_POLICY: Record<ToolConcurrencyClass, string[]> = {
-  read_parallel: ["Read", "Glob", "Grep", "file.stat", "package.info", "project.detect", "git.status", "git.diff", "ToolSearch", "tool.search", "Agent with preferred_mode=parallel and a read_only agent spec"],
+  read_parallel: ["Read", "Glob", "Grep", "file.stat", "package.info", "project.detect", "git.status", "git.diff", "ToolSearch", "tool.search", "runtime.sleep", "structured.output", "repl.mode", "Agent with preferred_mode=parallel and a read_only agent spec"],
   delegate_parallel: ["Agent with preferred_mode=parallel and a scoped_write agent spec whose file_scope is concrete and non-overlapping with sibling delegates"],
-  write_exclusive: ["Write", "Edit", "NotebookEdit", "json.edit", "todo.write", "blackboard.write", "agent.delegate"],
-  verify_exclusive: ["Bash", "exec", "code.test", "code.lint", "code.build", "package.install"],
+  write_exclusive: ["Write", "Edit", "NotebookEdit", "json.edit", "todo.write", "blackboard.write", "agent.delegate", "agent.message"],
+  verify_exclusive: ["Bash", "PowerShell", "exec", "code.test", "code.lint", "code.build", "package.install"],
   background_process: ["ProcessStart"],
-  network_limited: ["WebSearch", "WebFetch", "mcp__*"]
+  network_limited: ["WebSearch", "WebFetch", "McpCall", "SkillInvoke", "mcp__*"]
 };
 
 async function prepareToolOutput(

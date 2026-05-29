@@ -10,6 +10,7 @@ export function ResultPreview(props: {
   onAction?: (action: RunBoardResultAction) => void;
 }): React.ReactElement {
   const preview = props.preview;
+  const status = previewStatusLabel(preview.status);
   const actions = preview.nextActions.slice(0, 3).map((command) => ({
     command,
     label: command,
@@ -18,10 +19,11 @@ export function ResultPreview(props: {
   return (
     <RunBoardPanel title="Result Preview">
       <SemanticTextLine wrap="truncate" spans={[
-        { text: preview.status, color: preview.status === "failed" ? "status.danger" : preview.status === "blocked" ? "status.warning" : "text.muted", bold: true },
+        { text: status, color: preview.status === "failed" ? "status.danger" : preview.status === "blocked" ? "status.warning" : "text.muted", bold: true },
         { text: " ", color: "text.muted" },
         { text: preview.summary, color: "text.primary" }
       ]} />
+      {preview.status === "empty" ? <PreviewLine label="Activity" value="No activity yet." /> : null}
       {preview.hypothesis ? <PreviewLine label="Hypothesis" value={preview.hypothesis} /> : null}
       {preview.changedFiles.length ? <PreviewLine label="Changed" value={preview.changedFiles.slice(0, 3).join(", ")} /> : null}
       {preview.checks.length ? (
@@ -42,6 +44,16 @@ export function ResultPreview(props: {
       {actions.length ? <ResultActions actions={actions} onAction={props.onAction} /> : null}
     </RunBoardPanel>
   );
+}
+
+function previewStatusLabel(status: ResultPreviewData["status"]): string {
+  switch (status) {
+    case "empty": return "waiting";
+    case "pending": return "working";
+    case "ready": return "ready";
+    case "blocked": return "blocked";
+    case "failed": return "failed";
+  }
 }
 
 function PreviewLine(props: { label: string; value: string }): React.ReactElement {

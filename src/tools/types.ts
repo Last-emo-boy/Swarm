@@ -13,7 +13,7 @@ import type {
   LspRenamePreviewAction,
   LspWorkspaceSymbolsAction
 } from "../lsp/types.js";
-import type { AgentAddress, BlackboardEntry, RiskClass } from "../protocol/types.js";
+import type { AgentAddress, BlackboardEntry, RiskClass, SwarmTask } from "../protocol/types.js";
 
 export type FileReadAction = {
   type: "file.read";
@@ -46,8 +46,16 @@ export type FileGrepAction = {
   root: string;
   pattern: string;
   include?: string;
+  outputMode?: "content" | "files_with_matches" | "count";
   maxMatches?: number;
+  headLimit?: number;
+  offset?: number;
   contextLines?: number;
+  beforeContext?: number;
+  afterContext?: number;
+  caseInsensitive?: boolean;
+  multiline?: boolean;
+  fileType?: string;
 };
 
 export type FileStatAction = {
@@ -136,6 +144,47 @@ export type TodoWriteAction = {
   }>;
 };
 
+export type AskUserQuestionAction = {
+  type: "ask_user_question";
+  prompt: string;
+  questions?: Array<{
+    question: string;
+    header?: string;
+    options: Array<{
+      label: string;
+      description?: string;
+      preview?: string;
+    }>;
+    multiSelect?: boolean;
+  }>;
+  choices?: Array<{
+    label: string;
+    description?: string;
+    preview?: string;
+  }>;
+  defaultChoice?: string;
+  recommendedChoice?: string;
+  allowFreeform?: boolean;
+  reason?: string;
+};
+
+export type PlanEnterAction = {
+  type: "plan.enter";
+  objective?: string;
+  reason?: string;
+};
+
+export type PlanExitAction = {
+  type: "plan.exit";
+  plan: string;
+  summary?: string;
+  ready?: boolean;
+  allowedPrompts?: Array<{
+    tool: string;
+    prompt: string;
+  }>;
+};
+
 export type BlackboardWriteAction = {
   type: "blackboard.write";
   key: string;
@@ -180,6 +229,17 @@ export type BlackboardListAction = {
 
 export type ShellExecAction = {
   type: "shell.exec";
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  runInBackground?: boolean;
+  description?: string;
+  maxLogBytes?: number;
+};
+
+export type PowerShellExecAction = {
+  type: "powershell.exec";
   command: string;
   cwd?: string;
   timeoutMs?: number;
@@ -259,6 +319,50 @@ export type WebFetchAction = {
   prompt?: string;
   timeoutMs?: number;
   maxBytes?: number;
+};
+
+export type ConfigGetAction = {
+  type: "config.get";
+  setting?: string;
+};
+
+export type ConfigSetAction = {
+  type: "config.set";
+  setting: string;
+  value: string | number | boolean | null;
+};
+
+export type McpResourcesAction = {
+  type: "mcp.resources";
+  server?: string;
+  limit?: number;
+};
+
+export type McpReadAction = {
+  type: "mcp.read";
+  server: string;
+  uri: string;
+  maxBytes?: number;
+};
+
+export type McpAuthAction = {
+  type: "mcp.auth";
+  server?: string;
+};
+
+export type McpCallAction = {
+  type: "mcp.call";
+  server?: string;
+  tool?: string;
+  capabilityId?: string;
+  args?: Record<string, unknown>;
+  maxBytes?: number;
+};
+
+export type SkillInvokeAction = {
+  type: "skill.invoke";
+  name: string;
+  reason?: string;
 };
 
 export type NotebookEditAction = {
@@ -376,6 +480,175 @@ export type AgentContinueAction = {
   run_in_background?: boolean;
 };
 
+export type AgentMessageAction = {
+  type: "agent.message";
+  message: string;
+  worker_id?: string;
+  agent_id?: string;
+  role?: string;
+  capability?: string;
+  session_id?: string;
+  task_id?: string;
+  require_ack?: boolean;
+  ttl_ms?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type RuntimeSleepAction = {
+  type: "runtime.sleep";
+  duration_ms: number;
+  reason?: string;
+};
+
+export type StructuredOutputAction = {
+  type: "structured.output";
+  value: unknown;
+  schema?: Record<string, unknown>;
+  label?: string;
+  final?: boolean;
+  session_id?: string;
+  task_id?: string;
+};
+
+export type ReplModeAction = {
+  type: "repl.mode";
+  mode?: "interactive" | "headless" | "repl";
+  reason?: string;
+};
+
+export type ScheduleCreateAction = {
+  type: "schedule.create";
+  cron: string;
+  prompt: string;
+  recurring?: boolean;
+  durable?: boolean;
+  timezone?: string;
+  dry_run?: boolean;
+};
+
+export type ScheduleListAction = {
+  type: "schedule.list";
+  status?: "active" | "paused" | "expired";
+  limit?: number;
+};
+
+export type ScheduleDeleteAction = {
+  type: "schedule.delete";
+  schedule_id: string;
+  reason?: string;
+  dry_run?: boolean;
+};
+
+export type RemoteTriggerAction = {
+  type: "remote.trigger";
+  endpoint?: string;
+  capability?: string;
+  payload?: Record<string, unknown>;
+  dry_run?: boolean;
+};
+
+export type TeamCreateAction = {
+  type: "team.create";
+  name?: string;
+  objective: string;
+  roles?: string[];
+  task_ids?: string[];
+  dry_run?: boolean;
+};
+
+export type TeamDeleteAction = {
+  type: "team.delete";
+  team_id: string;
+  reason?: string;
+  dry_run?: boolean;
+};
+
+export type TaskCreateAction = {
+  type: "task.create";
+  session_id?: string;
+  task_id?: string;
+  title: string;
+  description?: string;
+  objective?: string;
+  taskType?: SwarmTask["type"];
+  status?: SwarmTask["status"];
+  required_capabilities?: string[];
+  capability?: string;
+  dependencies?: string[];
+  parent_task_id?: string;
+  assigned_to?: AgentAddress;
+  write_policy?: "read_only" | "scoped_write" | "workspace_write";
+  file_scope?: string[];
+};
+
+export type TaskUpdateAction = {
+  type: "task.update";
+  session_id?: string;
+  task_id: string;
+  title?: string;
+  status?: SwarmTask["status"];
+  summary?: string;
+  last_error?: string;
+  attempt?: number;
+  output?: string;
+  output_ref?: string;
+  progress?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type TaskGetAction = {
+  type: "task.get";
+  session_id?: string;
+  task_id: string;
+};
+
+export type TaskListAction = {
+  type: "task.list";
+  session_id?: string;
+  status?: SwarmTask["status"];
+  limit?: number;
+  offset?: number;
+};
+
+export type TaskOutputAction = {
+  type: "task.output";
+  session_id?: string;
+  task_id?: string;
+  worker_id?: string;
+  artifact_id?: string;
+  output_ref?: string;
+  max_bytes?: number;
+  offset?: number;
+};
+
+export type TaskStopAction = {
+  type: "task.stop";
+  session_id?: string;
+  task_id: string;
+  reason?: string;
+};
+
+export type WorktreeEnterAction = {
+  type: "worktree.enter";
+  session_id?: string;
+  path?: string;
+  scope?: string[];
+  branch?: string;
+  name?: string;
+  reason?: string;
+  dry_run?: boolean;
+};
+
+export type WorktreeExitAction = {
+  type: "worktree.exit";
+  session_id?: string;
+  lease_id?: string;
+  mode?: "keep" | "remove";
+  discardChanges?: boolean;
+  reason?: string;
+  dry_run?: boolean;
+};
+
 export type ToolAction =
   | FileReadAction
   | FileListAction
@@ -393,11 +666,17 @@ export type ToolAction =
   | JsonReadAction
   | JsonEditAction
   | TodoWriteAction
+  | AskUserQuestionAction
+  | PlanEnterAction
+  | PlanExitAction
+  | WorktreeEnterAction
+  | WorktreeExitAction
   | BlackboardWriteAction
   | BlackboardReadAction
   | BlackboardSearchAction
   | BlackboardListAction
   | ShellExecAction
+  | PowerShellExecAction
   | ExecAction
   | ProcessStartAction
   | ProcessStatusAction
@@ -407,6 +686,13 @@ export type ToolAction =
   | ProcessStopAction
   | WebSearchAction
   | WebFetchAction
+  | ConfigGetAction
+  | ConfigSetAction
+  | McpResourcesAction
+  | McpReadAction
+  | McpAuthAction
+  | McpCallAction
+  | SkillInvokeAction
   | NotebookEditAction
   | CodeTestAction
   | CodeLintAction
@@ -433,7 +719,25 @@ export type ToolAction =
   | AgentListAction
   | AgentStatusAction
   | AgentStopAction
-  | AgentContinueAction;
+  | AgentContinueAction
+  | AgentMessageAction
+  | RuntimeSleepAction
+  | StructuredOutputAction
+  | ReplModeAction
+  | ScheduleCreateAction
+  | ScheduleListAction
+  | ScheduleDeleteAction
+  | RemoteTriggerAction
+  | TeamCreateAction
+  | TeamDeleteAction
+  | TaskCreateAction
+  | TaskUpdateAction
+  | TaskGetAction
+  | TaskListAction
+  | TaskOutputAction
+  | TaskStopAction
+  | WorktreeEnterAction
+  | WorktreeExitAction;
 
 export type LocalToolContext = {
   workspace: string;
@@ -447,6 +751,53 @@ export type LocalToolContext = {
     status: (action: AgentStatusAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
     stop: (action: AgentStopAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
     continue: (action: AgentContinueAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
+  };
+  taskControl?: {
+    create: (action: TaskCreateAction, context: TaskControlToolContext) => Promise<ToolResult> | ToolResult;
+    update: (action: TaskUpdateAction, context: TaskControlToolContext) => Promise<ToolResult> | ToolResult;
+    get: (action: TaskGetAction, context: TaskControlToolContext) => Promise<ToolResult> | ToolResult;
+    list: (action: TaskListAction, context: TaskControlToolContext) => Promise<ToolResult> | ToolResult;
+    output: (action: TaskOutputAction, context: TaskControlToolContext) => Promise<ToolResult> | ToolResult;
+    stop: (action: TaskStopAction, context: TaskControlToolContext) => Promise<ToolResult> | ToolResult;
+  };
+  worktreeControl?: {
+    enter: (action: WorktreeEnterAction, context: WorktreeControlToolContext) => Promise<ToolResult> | ToolResult;
+    exit: (action: WorktreeExitAction, context: WorktreeControlToolContext) => Promise<ToolResult> | ToolResult;
+  };
+  runtimeControl?: {
+    structuredOutputEnabled?: boolean;
+    sendAgentMessage?: (action: AgentMessageAction, context: RuntimeControlToolContext) => Promise<ToolResult> | ToolResult;
+    recordStructuredOutput?: (action: StructuredOutputAction, context: RuntimeControlToolContext) => Promise<ToolResult> | ToolResult;
+    replMode?: (action: ReplModeAction, context: RuntimeControlToolContext) => Promise<ToolResult> | ToolResult;
+  };
+  externalContext?: {
+    listMcpServers: () => Array<{
+      id: string;
+      status: string;
+      transport?: string;
+      trust?: string;
+      exposeResources?: boolean;
+      exposeTools?: boolean;
+      toolCount?: number;
+      resourceCount?: number;
+      lastError?: string;
+    }>;
+    refreshMcpServer?: (serverId: string) => Promise<unknown> | unknown;
+    listMcpResources: (serverId: string) => unknown[];
+    readMcpResource: (input: { serverId: string; uri: string; sessionId?: string; taskId?: string; maxBytes?: number }) => Promise<ToolResult> | ToolResult;
+    callMcpTool: (input: { serverId?: string; tool?: string; capabilityId?: string; args?: Record<string, unknown>; sessionId?: string; taskId?: string; maxBytes?: number }) => Promise<ToolResult> | ToolResult;
+    listSkills: () => Array<{
+      name: string;
+      displayName?: string;
+      description?: string;
+      scope?: string;
+      trust?: string;
+      path?: string;
+      allowedTools?: string[];
+      resourcePaths?: string[];
+      shadowedBy?: string;
+    }>;
+    invokeSkill: (input: { name: string; reason?: string; sessionId?: string; taskId?: string }) => Promise<ToolResult> | ToolResult;
   };
   serverWebSearch?: (action: WebSearchAction) => Promise<ToolResult>;
   blackboard?: {
@@ -466,6 +817,16 @@ export type AgentControlToolContext = {
   taskId?: string;
   attempt?: number;
   agent?: AgentAddress;
+};
+
+export type TaskControlToolContext = AgentControlToolContext;
+
+export type WorktreeControlToolContext = AgentControlToolContext & {
+  workspace: string;
+};
+
+export type RuntimeControlToolContext = AgentControlToolContext & {
+  workspace: string;
 };
 
 export type BlackboardToolContext = {

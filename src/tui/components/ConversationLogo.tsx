@@ -17,7 +17,7 @@ export function ConversationLogo(props: {
         <Text color={visualTokenColor("brand.focus")} bold>
           {compact ? "Symphony Swarm" : "Symphony Swarm"}
         </Text>
-        {!compact && <Text color={visualTokenColor("role.swarm")}>Local Agent OS</Text>}
+        {!compact && <Text color={visualTokenColor("role.swarm")}>Local Swarm Runtime</Text>}
         <Text dimColor>
           {props.version ? `v${props.version} · ` : ""}{model}
         </Text>

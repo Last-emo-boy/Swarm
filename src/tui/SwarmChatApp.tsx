@@ -61,7 +61,7 @@ import { runSymphonyTick, type SymphonyTickResult } from "../symphony/scheduler.
 import { workItemLabel } from "../symphony/work-item.js";
 import { loadWorkflow, normalizeWorkflowConfig, type WorkflowLoadResult } from "../symphony/workflow.js";
 import { createWorkSourceFromConfig } from "../symphony/work-source.js";
-import { mainPaneLabels, mainPaneOrder, mainPaneShortLabels, type MainPaneId } from "./main-panes.js";
+import { mainPaneLabels, mainPaneOrder, mainPaneShortLabels, normalizeMainPaneId, type MainPaneId } from "./main-panes.js";
 import { applySandboxModeCommand, buildSandboxReport } from "./sandbox-control.js";
 import {
   commandOutputPreview,
@@ -75,6 +75,7 @@ import {
 import { buildResumeCommandResult, decideResumeExecution } from "./resume-control.js";
 import { ChatCommandCandidates, ChatInputArea, emptyChatCompletionState, type ChatCompletionState, type ChatInputTelemetryEvent } from "./ChatInputArea.js";
 import { createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
+import { displayWidth, fitToDisplayWidth, padToDisplayWidth } from "./display-width.js";
 import {
   emptyIdlePaneSnapshot,
   idlePaneSnapshotSignature,
@@ -88,16 +89,27 @@ import { messageToActionRow, renderActionRowDetail, runtimeEventToActionRow, typ
 import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiTaskState, type TuiWorkState } from "./work-state.js";
 import { ActionLog } from "./components/ActionLog.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
-import { ActivityTimeline } from "./components/ActivityTimeline.js";
+import { ActivityTimeline, activityTimelineLimit } from "./components/ActivityTimeline.js";
 import { ApprovalOverlay, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
 import { CurrentActionRow } from "./components/CurrentActionRow.js";
 import { InspectorPane } from "./components/InspectorPane.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
-import { StatusRail } from "./components/StatusRail.js";
+import {
+  SwarmWorkbenchLayout,
+  compactWorkbenchTitle,
+  swarmWorkbenchMetrics,
+  workbenchModeCard,
+  workbenchPolicyCard,
+  workbenchSandboxCard,
+  type SwarmWorkbenchNavigationItem,
+  type SwarmWorkbenchRenderInput,
+  type SwarmWorkbenchSessionItem,
+  type SwarmWorkbenchToolItem,
+  type SwarmWorkbenchWorkerItem
+} from "./components/SwarmWorkbenchLayout.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
 import { CollaborationOverlayPanel } from "./components/CollaborationOverlayPanel.js";
-import { TopologyStrip } from "./components/TopologyStrip.js";
 import {
   compactValue,
   policyBadge,
@@ -135,7 +147,6 @@ import {
   detailTitleForSource,
   detailOpenTargetForPane,
   fullscreenConversationRows,
-  inlineInspectorTargetForPane,
   resetConversationViewport,
   shouldOpenDetailFromInput,
   tuiFocusTransitionForInput,
@@ -1214,10 +1225,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setDetailOpen(true);
   }
 
-  function openCollaborationDetail(target: CollaborationOverlayTarget): void {
-    executeCollaborationAction(target);
-  }
-
   function executeCollaborationAction(target: CollaborationOverlayTarget | "reassign"): void {
     if (!isCollaborationUiEnabled()) {
       return;
@@ -1519,7 +1526,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleActionLogInput(character: string | undefined, key: { ctrl?: boolean; pageUp?: boolean; pageDown?: boolean; upArrow?: boolean; downArrow?: boolean; return?: boolean }): boolean {
-    if (mainPane !== "log") {
+    if (mainPane !== "trace") {
       return false;
     }
     const normalized = normalizeActionLogControlCharacter(character);
@@ -1560,7 +1567,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   function handleConversationScrollInput(
     character: string | undefined,
-    key: { ctrl?: boolean; pageUp?: boolean; pageDown?: boolean }
+    key: { ctrl?: boolean; home?: boolean; end?: boolean; pageUp?: boolean; pageDown?: boolean }
   ): boolean {
     if (mainPane !== "chat") {
       return false;
@@ -1571,14 +1578,21 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     const normalized = normalizeActionLogControlCharacter(character);
     const viewportLines = fullscreenConversationRows(terminalRows, conversationBottomRows());
     const pageRows = Math.max(4, viewportLines - 2);
-    if (key.ctrl && normalized === "e") {
+    const halfPageRows = Math.max(2, Math.floor(pageRows / 2));
+    if (key.end || (key.ctrl && normalized === "e") || character === "G") {
       setConversationViewport(resetConversationViewport());
       return true;
     }
-    const delta = key.pageUp || (key.ctrl && normalized === "b")
-      ? pageRows
-      : key.pageDown || (key.ctrl && normalized === "f")
-        ? -pageRows
+    const delta = key.home || character === "g"
+      ? Number.POSITIVE_INFINITY
+      : key.pageUp || (key.ctrl && normalized === "b")
+        ? pageRows
+        : key.pageDown || (key.ctrl && normalized === "f")
+          ? -pageRows
+          : key.ctrl && normalized === "u"
+            ? halfPageRows
+            : key.ctrl && normalized === "d"
+              ? -halfPageRows
         : undefined;
     if (delta === undefined) {
       return false;
@@ -1645,6 +1659,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (character === "/" && chatInputState.current.input.value.length === 0) {
         const index = buildTranscriptSearchIndex(messages);
         setTranscriptSearch(updateTranscriptSearch(createTranscriptSearchState(), index, ""));
+        return true;
+      }
+      if (chatInputState.current.input.value.length === 0 && !key.ctrl && (character === "n" || character === "N") && transcriptSearch.query.trim()) {
+        const nextSearch = stepTranscriptSearch(transcriptSearch, character === "n" ? 1 : -1);
+        const match = currentTranscriptSearchMatch(nextSearch);
+        setTranscriptSearch(nextSearch);
+        if (match) {
+          jumpToConversationMessage(match.messageIndex);
+          setMessageCursor((state) => messageCursorReducer(state, { type: "select", index: match.messageIndex }, messages));
+        }
         return true;
       }
       return false;
@@ -2185,13 +2209,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           detail: mainPaneOrder.map((pane) => `${pane}${pane === mainPane ? " (current)" : ""} - ${mainPaneLabels[pane]}`).join("\n")
         };
       }
-      const aliases: Record<string, MainPaneId> = {
-        trace: "log",
-        activity: "agents"
-      };
-      const pane = (aliases[target] ?? target) as MainPaneId;
-      if (!mainPaneOrder.includes(pane)) {
-        throw new Error("Usage: /view chat|trace|overview|output|sessions|attempts|agents|blackboard");
+      const pane = normalizeMainPaneId(target);
+      if (!pane) {
+        throw new Error("Usage: /view chat|plan|activity|output|sessions|workers|trace|board");
       }
       setMainPane(pane);
       if (pane === "chat") {
@@ -3746,7 +3766,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           ? "Awaiting approval for the plan."
           : displayedProductResultCard
             ? displayedProductResultCard.summary
-            : "Idle";
+            : "Waiting for your first task.";
   const currentPhase = displayedRunBoardPhase === "idle" && displayedProductResultCard
     ? displayedProductResultCard.status
     : displayedRunBoardPhase;
@@ -3770,27 +3790,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       : runBoardView.attention[0]
         ? runBoardView.attention[0].recommendation
         : "no";
-  const progress = `${progressBar(runBoardView.resultPreview.checks.filter((check) => check.status === "passed").length, runBoardView.resultPreview.checks.length || 0, 10)} workers ${runBoardView.workers.length} | files ${runBoardView.resultPreview.changedFiles.length}`;
+  const progress = isActiveRunBoardPhase(displayedRunBoardPhase)
+    ? `${progressBar(runBoardView.resultPreview.checks.filter((check) => check.status === "passed").length, runBoardView.resultPreview.checks.length || 0, 10)} workers ${runBoardView.workers.length} | files ${runBoardView.resultPreview.changedFiles.length}`
+    : undefined;
   const timelineItems = busy
     ? loopActivityTimeline.slice(-5).map(formatLoopActivityLine)
     : displayedProductResultCard
       ? compactResultCardLines(displayedProductResultCard)
       : messages.slice(-3).map((message) => `${message.role}: ${message.brief}`);
-  const bodyRows = Math.max(12, terminalRows - (showCurrentAction ? 8 : 6) - completionRows);
-  const timelineLimit = bodyRows >= 30 ? 5 : 3;
   const productResultCardView = selectProductResultCardView(runBoardState, {
     card: displayedProductResultCard,
     detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined,
     decisionTrailEnabled: collaborationUiEnabled
   });
   const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedProductResultCard);
-  const topologyStrip = collaborationCockpit.enabled ? (
-    <TopologyStrip
-      model={collaborationCockpit.topology}
-      columns={terminalColumns}
-      onOpen={openCollaborationDetail}
-    />
-  ) : null;
   const collaborationOverlayPanel = activeCollaborationOverlay ? (
     <CollaborationOverlayPanel
       overlay={activeCollaborationOverlay}
@@ -3804,8 +3817,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const overviewSurface = shouldRenderRunBoard
     ? (
       <Box flexDirection="column" width="100%">
-        {topologyStrip}
-        {collaborationOverlayPanel}
         <RunBoardSurface
           view={runBoardView}
           workerLimit={screenDensity === "compact" ? 4 : 6}
@@ -3821,13 +3832,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           toolResults={toolResults}
           density={screenDensity}
         />
-        <SwarmSurfacePanel surface={swarmSurface} limit={3} />
       </Box>
     )
     : displayedProductResultCard
       ? <Box flexDirection="column" width="100%">
-        {topologyStrip}
-        {collaborationOverlayPanel}
         <ProductResultCard
           view={productResultCardView}
           density={screenDensity}
@@ -3835,37 +3843,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           decisionTrailExpanded={decisionTrailExpanded}
           onDecisionTrailToggle={toggleDecisionTrail}
         />
-        <SwarmSurfacePanel surface={swarmSurface} limit={3} />
       </Box>
       : <Box flexDirection="column" width="100%">
-        {topologyStrip}
-        {collaborationOverlayPanel}
         <ProductResultCard
           view={productResultCardView}
           density={screenDensity}
           decisionTrailExpanded={decisionTrailExpanded}
           onDecisionTrailToggle={toggleDecisionTrail}
         />
-        <SwarmSurfacePanel surface={swarmSurface} limit={4} />
       </Box>;
-  const wideWorkbench = screenMode.showInspector;
-  const primaryColumns = wideWorkbench ? Math.max(72, Math.floor((terminalColumns - 4) * 0.64)) : terminalColumns;
-  const inspectorColumns = Math.max(40, terminalColumns - primaryColumns - 3);
-  const selectedActionRow = actionLogRows[selectedActionIndex] ?? actionLogRows.at(-1);
+  const workbenchMetrics = swarmWorkbenchMetrics({
+    columns: terminalColumns,
+    rows: terminalRows,
+    centerBottomRows: conversationBottomRows()
+  });
   const activeSearchMatch = currentTranscriptSearchMatch(transcriptSearch);
   const activeSearchSummary = transcriptSearchSummary(transcriptSearch);
+  const chatFooterHint = "/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details";
   const bottomFooterHint = transcriptSearch.active
     ? transcriptSearchHint(activeSearchSummary)
-    : "Left/Right footer | [/] message | / search";
-  const inlineInspectorTarget = inlineInspectorTargetForPane({
-    pane: mainPane,
-    selectedAction: Boolean(selectedActionRow),
-    latestDetailSource,
-    latestDetail: Boolean(latestDetail)
-  });
-  const inlineInspectorContent = inlineInspectorTarget.enabled && latestDetailSource !== "none" && latestDetail
-    ? latestDetail
-    : renderActionRowDetail(selectedActionRow);
+    : chatFooterHint;
   const footerItems = buildFooterPills({
     taskCompleted,
     taskTotal,
@@ -3879,242 +3876,404 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     symphonyRetrying: 0,
     lspStatus: lspHealthStatus
   });
-  const selectedFooterItem = selectedFooterPill(footerNavigation, footerItems)?.id;
+  const activeWorkers = mergeWorkerRecords(workers, idlePaneSnapshot.workers, 6);
+  const workbenchNavigation: SwarmWorkbenchNavigationItem[] = mainPaneOrder.map((pane, index) => ({
+    id: pane,
+    label: mainPaneLabels[pane],
+    shortcut: index < 9 ? String(index + 1) : undefined,
+    active: pane === mainPane
+  }));
+  const workbenchSessions: SwarmWorkbenchSessionItem[] = idlePaneSnapshot.sessions.slice(0, 5).map((session) => ({
+    id: session.session_id,
+    title: compactWorkbenchTitle(session.objective, session.session_id),
+    age: shortAge(session.updated_at),
+    status: session.status,
+    active: session.session_id === lastSessionId
+  }));
+  const pendingApprovalCount = footerPendingApprovalCount(approval, idlePaneSnapshot.approvals);
+  const activeSymphonyDaemons = symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length;
+  const workbenchTools: SwarmWorkbenchToolItem[] = [
+    { name: "Approvals", status: `${pendingApprovalCount} pending`, tone: pendingApprovalCount > 0 ? "status.pending" : "text.muted", active: pendingApprovalCount > 0 },
+    { name: "MCP", status: mcpRuntimeSummary?.state === "connected" ? "On" : "Off", tone: mcpRuntimeSummary?.state === "connected" ? "status.success" : "text.muted", active: mcpRuntimeSummary?.state === "connected" },
+    { name: "Skills", status: skillRuntimeSummary?.state === "active" ? "On" : "Off", tone: skillRuntimeSummary?.state === "active" ? "status.success" : "text.muted", active: skillRuntimeSummary?.state === "active" },
+    { name: "LSP", status: lspHealthStatus === "ready" ? "Ready" : "Not connected", tone: lspHealthStatus === "ready" ? "status.success" : "text.muted", active: lspHealthStatus === "ready" },
+    { name: "Symphony", status: activeSymphonyDaemons > 0 ? "Running" : "Off", tone: activeSymphonyDaemons > 0 ? "role.swarm" : "text.muted", active: activeSymphonyDaemons > 0 }
+  ];
+  const workbenchWorkers: SwarmWorkbenchWorkerItem[] = activeWorkers.map((worker) => ({
+    id: worker.worker_id,
+    label: workerDisplayLabel(worker),
+    status: worker.status,
+    tone: workerStatusColor(worker.status)
+  }));
+  const workbenchFooterItems = workbenchCommandFooterItems();
+  const workbenchWorkspace = {
+    path: runtime?.workspaceRoot() ?? process.cwd(),
+    git: checkpointLabel ? `checkpoint ${checkpointLabel}` : undefined,
+    status: busy ? "running" : displayedProductResultCard?.status
+  };
+  const selectedModel = settingsSnapshot.models.worker || settingsSnapshot.models.planner || settingsSnapshot.models.defaultProvider || "unset";
+  const modelParts = selectedModel.split("/");
+  const providerName = modelParts.length > 1 ? modelParts[0] : undefined;
+  const workbenchModel = {
+    title: modelParts.length > 1 ? modelParts.slice(1).join("/") : selectedModel,
+    subtitle: providerName ? `Provider: ${providerName}` : "Provider: local",
+    badge: selectedModel === "unset" ? "SETUP" : "READY",
+    tone: selectedModel === "unset" ? "status.pending" : "role.gateway"
+  } satisfies React.ComponentProps<typeof SwarmWorkbenchLayout>["model"];
+  const workbenchFooterHint = chatFooterHint;
+  const workbenchSubtitle = workbenchStatusSubtitle({
+    executing: isActiveRunBoardPhase(displayedRunBoardPhase),
+    workerCount: activeWorkers.length,
+    fileCount: displayedProductResultCard?.changedFiles.length ?? latestSnapshot?.changed_files.length ?? 0,
+    approvalCount: pendingApprovalCount,
+    currentAction,
+    needYou,
+    progress
+  });
+  const workbenchHeaderDetail = busy
+    ? currentAction
+    : "Waiting for your first task.";
+  const workbenchCurrentAction = showCurrentAction ? (
+    <CurrentActionRow
+      message={currentAction}
+      phase={currentPhase}
+      status={loopActivity ? loopActivityStatus(loopActivity.phase) : statusForRunBoardPhase(displayedRunBoardPhase, displayedProductResultCard?.status)}
+      tone={loopActivity ? loopActivityTone(loopActivity.phase) : toneForRunBoardPhase(displayedRunBoardPhase, displayedProductResultCard?.status)}
+      progress={progress}
+      needYou={needYou === "no" ? undefined : needYou}
+      motionFrame={shouldAnimate ? motionTick : undefined}
+      density={screenDensity}
+    />
+  ) : undefined;
+  const renderWorkbenchBottom = ({ columns }: SwarmWorkbenchRenderInput): React.ReactNode => {
+    if (approval) {
+      return <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />;
+    }
+    if (pendingPlan) {
+      return <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />;
+    }
+    return (
+        <ChatInputArea
+          onSubmit={submitObjective}
+          onEmptyShortcut={handleConversationScrollInput}
+          onCompletionRowsChange={setCompletionRows}
+        onCompletionStateChange={setChatCompletion}
+        controllerStateRef={chatInputState}
+        extraCommands={extensionCommandCandidates}
+        promptLabel={routeBadge(routeLabel).toLowerCase()}
+        sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
+        footerHint={workbenchFooterHint}
+        footerActivityLabel={transcriptSearch.active ? "search" : undefined}
+        footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
+        footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
+        footerItems={[]}
+        onFooterItemClick={(id) => {
+          emitTuiFocusTransition(
+            focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
+            "other",
+            `footer:${id}`
+          );
+          void openFooterDetail(id);
+        }}
+        onInputTelemetry={logTuiInputTelemetry}
+        density={screenDensity}
+        columns={columns}
+      />
+    );
+  };
+  const renderWorkbenchOverlay = ({ rows, columns }: SwarmWorkbenchRenderInput): React.ReactNode => {
+    if (approval || pendingPlan || chatCompletion.candidates.length === 0) {
+      return undefined;
+    }
+    return (
+      <ChatCommandCandidates
+        candidates={chatCompletion.candidates}
+        selectedIndex={chatCompletion.selectedIndex}
+        maxRows={workbenchCompletionOverlayRows(rows)}
+        columns={columns}
+        overlay
+      />
+    );
+  };
+  const renderWorkbenchPrimary = ({ rows, columns }: SwarmWorkbenchRenderInput): React.ReactNode => {
+    const contentRows = Math.max(1, rows);
+    const contentColumns = Math.max(20, columns);
+    if (mainPane === "trace" || screenMode.primarySurface === "trace") {
+      return (
+        <Box flexDirection="column" width="100%" height={contentRows} overflow="hidden">
+          <Text color={mutedColor()}>Runtime and protocol events</Text>
+          <ActionLog
+            rows={actionLogRows}
+            height={Math.max(1, contentRows - 1)}
+            columns={contentColumns}
+            scrollOffset={actionLogScrollOffset}
+            onScrollOffsetChange={setActionLogScrollOffset}
+            motionFrame={shouldAnimate ? motionTick : undefined}
+            selectedIndex={selectedActionIndex}
+          />
+        </Box>
+      );
+    }
+    if (mainPane === "chat") {
+      const resultRows = displayedProductResultCard ? (screenDensity === "compact" ? 8 : 12) : 0;
+      const activityRows = busy && loopActivityTimeline.length ? 2 : 0;
+      const transcriptRows = Math.max(4, contentRows - resultRows - activityRows - (resultRows > 0 ? 1 : 0));
+      return (
+        <Box flexDirection="column" width="100%" height={contentRows} overflow="hidden">
+          {renderConversationPane({
+            rows: transcriptRows,
+            columns: contentColumns
+          })}
+          {activityRows > 0 ? (
+            <ActivityTimeline
+              title="Activity"
+              items={timelineItems}
+              emptyLabel="No activity yet."
+              limit={1}
+              density={screenDensity}
+            />
+          ) : null}
+          {displayedProductResultCard ? (
+            <Box flexDirection="column" width="100%" height={resultRows} marginTop={1} overflow="hidden">
+              <ProductResultCard
+                view={productResultCardView}
+                density={screenDensity}
+                onNextAction={handleRunBoardResultAction}
+                decisionTrailExpanded={decisionTrailExpanded}
+                onDecisionTrailToggle={toggleDecisionTrail}
+              />
+            </Box>
+          ) : messages.length === 0 ? (
+            <Text color={mutedColor()}>Waiting for your first task.</Text>
+          ) : null}
+        </Box>
+      );
+    }
+    if (mainPane === "plan" && shouldShowRunBoardSurface) {
+      return overviewSurface;
+    }
+    const boardOverlay = mainPane === "board" ? collaborationOverlayPanel : undefined;
+    return (
+      <Box flexDirection="column" width="100%" height={contentRows} overflow="hidden">
+        {boardOverlay}
+        <IdleKernelView
+          pane={mainPane}
+          rows={boardOverlay ? Math.max(1, contentRows - 5) : contentRows}
+          columns={contentColumns}
+          messages={messages.slice(-4)}
+          toolOutputs={toolResults.slice(-4)}
+          sessions={idlePaneSnapshot.sessions}
+          attempts={idlePaneSnapshot.attempts}
+          leases={idlePaneSnapshot.leases}
+          approvals={idlePaneSnapshot.approvals}
+          workers={activeWorkers}
+          blackboard={idlePaneSnapshot.blackboard}
+          swarmSurface={swarmSurface}
+          symphonyDaemons={symphonyDaemons.slice(0, 4)}
+          lastSessionId={lastSessionId}
+          lastRoute={lastRoute}
+          lastSnapshot={latestSnapshot}
+        />
+      </Box>
+    );
+  };
+  const renderConversationPane = ({ rows, columns }: SwarmWorkbenchRenderInput): React.ReactElement => (
+    <ConversationFirstPane
+      messages={messages}
+      rows={rows}
+      columns={columns}
+      scrollOffset={conversationViewport.scrollOffset}
+      newMessageCount={conversationViewport.newMessageCount}
+      unseenStartIndex={conversationViewport.unseenStartIndex}
+      expandedMessageKeys={messageCursor.expandedKeys}
+      selectedMessageIndex={messageCursor.selectedIndex}
+      searchMatchMessageIndex={activeSearchMatch?.messageIndex}
+      searchMatchQuery={transcriptSearch.query}
+      tailRows={conversationTailRows({ busy, hasResult: Boolean(displayedProductResultCard) })}
+      tail={conversationTail({
+        busy,
+        activity: loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined,
+        motionFrame: shouldAnimate ? motionTick : undefined,
+        resultCard: displayedProductResultCard,
+        detailAvailable: latestDetailSource !== "none"
+      })}
+    />
+  );
   if (screenMode.primarySurface === "conversation") {
     const bottomRows = conversationBottomRows();
     const conversationRows = fullscreenConversationRows(terminalRows, bottomRows);
     const inputCapacity = chatInputCapacity();
-    const bottom = approval ? (
-      <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
-    ) : pendingPlan ? (
-      <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
-    ) : (
-      <ConversationBottomChrome
-        busy={busy}
-        activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
-        motionFrame={shouldAnimate ? motionTick : undefined}
-        resultCard={displayedProductResultCard}
-        detailAvailable={latestDetailSource !== "none"}
-        input={
-          <ChatInputArea
-            onSubmit={submitObjective}
-            onCompletionRowsChange={setCompletionRows}
-            onCompletionStateChange={setChatCompletion}
-            controllerStateRef={chatInputState}
-            extraCommands={extensionCommandCandidates}
-            promptLabel={routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase()}
-            sandboxLabel={runSandboxMode === "workspace-write" ? undefined : sandboxBadge(runSandboxMode).toLowerCase()}
-            footerHint={bottomFooterHint}
-            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
-            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
-            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
-            footerItems={footerItems}
-            selectedFooterItem={selectedFooterItem}
-            footerModeLabel={routeBadge(routeLabel)}
-            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
-            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
-            footerSandboxLabel={sandboxBadge(runSandboxMode)}
-            footerSandboxTone={sandboxTone(runSandboxMode)}
-            onFooterItemClick={(id) => {
-              emitTuiFocusTransition(
-                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
-                "other",
-                `footer:${id}`
-              );
-              void openFooterDetail(id);
-            }}
-            onInputTelemetry={logTuiInputTelemetry}
-            completionPlacement="overlay"
-            density={screenDensity}
-            columns={terminalColumns}
-            maxRows={bottomRows}
-            maxInputRows={inputCapacity.maxInputRows}
-          />
-        }
-      />
-    );
-    const completionOverlay = !approval && !pendingPlan && chatCompletion.candidates.length > 0
-      ? (
+    const renderConversationBottom = ({ columns }: SwarmWorkbenchRenderInput): React.ReactNode => {
+      if (approval) {
+        return <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />;
+      }
+      if (pendingPlan) {
+        return <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />;
+      }
+      return (
+        <ConversationBottomChrome
+          busy={busy}
+          activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
+          motionFrame={shouldAnimate ? motionTick : undefined}
+          resultCard={displayedProductResultCard}
+          detailAvailable={latestDetailSource !== "none"}
+          input={
+            <ChatInputArea
+              onSubmit={submitObjective}
+              onEmptyShortcut={handleConversationScrollInput}
+              onCompletionRowsChange={setCompletionRows}
+              onCompletionStateChange={setChatCompletion}
+              controllerStateRef={chatInputState}
+              extraCommands={extensionCommandCandidates}
+              promptLabel={routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase()}
+              sandboxLabel={runSandboxMode === "workspace-write" ? undefined : sandboxBadge(runSandboxMode).toLowerCase()}
+              footerHint={workbenchMetrics.enabled ? workbenchFooterHint : bottomFooterHint}
+              footerActivityLabel={transcriptSearch.active ? "search" : undefined}
+              footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
+              footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
+              footerItems={workbenchMetrics.enabled ? [] : footerItems}
+              selectedFooterItem={workbenchMetrics.enabled ? undefined : selectedFooterPill(footerNavigation, footerItems)?.id}
+              footerModeLabel={workbenchMetrics.enabled ? undefined : routeBadge(routeLabel)}
+              footerPermissionLabel={workbenchMetrics.enabled ? undefined : policyBadge(settingsSnapshot.permissions.defaultMode)}
+              footerPermissionTone={workbenchMetrics.enabled ? undefined : policyTone(settingsSnapshot.permissions.defaultMode)}
+              footerSandboxLabel={workbenchMetrics.enabled ? undefined : sandboxBadge(runSandboxMode)}
+              footerSandboxTone={workbenchMetrics.enabled ? undefined : sandboxTone(runSandboxMode)}
+              onFooterItemClick={(id) => {
+                emitTuiFocusTransition(
+                  focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
+                  "other",
+                  `footer:${id}`
+                );
+                void openFooterDetail(id);
+              }}
+              onInputTelemetry={logTuiInputTelemetry}
+              completionPlacement="overlay"
+              density={screenDensity}
+              columns={columns}
+              maxRows={bottomRows}
+              maxInputRows={inputCapacity.maxInputRows}
+            />
+          }
+        />
+      );
+    };
+    const renderConversationOverlay = ({ rows, columns }: SwarmWorkbenchRenderInput): React.ReactNode => {
+      if (approval || pendingPlan || chatCompletion.candidates.length === 0) {
+        return undefined;
+      }
+      return (
         <ChatCommandCandidates
           candidates={chatCompletion.candidates}
           selectedIndex={chatCompletion.selectedIndex}
-          maxRows={chatCompletionOverlayRows(terminalRows, bottomRows)}
-          columns={terminalColumns}
+          maxRows={workbenchMetrics.enabled ? workbenchCompletionOverlayRows(rows) : chatCompletionOverlayRows(terminalRows, bottomRows)}
+          columns={columns}
           overlay
         />
-      )
-      : undefined;
+      );
+    };
+    if (workbenchMetrics.enabled) {
+      return (
+        <SwarmWorkbenchLayout
+          columns={terminalColumns}
+          rows={terminalRows}
+          version="0.1.0"
+          title="Chat"
+          subtitle={workbenchSubtitle}
+          headerDetail={workbenchHeaderDetail}
+          workspace={workbenchWorkspace}
+          navigation={workbenchNavigation}
+          sessions={workbenchSessions}
+          mode={workbenchModeCard(routeLabel)}
+          permission={workbenchPolicyCard(settingsSnapshot.permissions.defaultMode)}
+          sandbox={workbenchSandboxCard(runSandboxMode)}
+          model={workbenchModel}
+          memory={{
+            title: taskTotal > 0 ? `${taskCompleted}/${taskTotal} tasks` : "Session not started",
+            subtitle: lastSessionId ? `Session ${shortId(lastSessionId)}` : "No saved context yet",
+            badge: taskTotal > 0 ? currentPhase : undefined,
+            tone: taskCompleted < taskTotal ? "status.running" : "text.muted"
+          }}
+          tools={workbenchTools}
+          workers={workbenchWorkers}
+          footer={workbenchFooterItems}
+          centerBottomRows={bottomRows}
+          renderCenterContent={({ rows, columns }) => (
+            <Box flexDirection="column" width="100%" height={rows} overflow="hidden" position="relative">
+              {workbenchCurrentAction}
+              <Box flexDirection="column" width="100%" flexGrow={1} flexShrink={1} overflow="hidden" marginTop={workbenchCurrentAction ? 1 : 0}>
+                {renderConversationPane({
+                  rows: centerContentRows(rows, Boolean(workbenchCurrentAction)),
+                  columns
+                })}
+              </Box>
+              {renderConversationOverlay({ rows, columns })}
+            </Box>
+          )}
+          renderCenterBottom={renderConversationBottom}
+          onNavigate={(id) => {
+            if (mainPaneOrder.includes(id as MainPaneId)) {
+              setMainPane(id as MainPaneId);
+            }
+          }}
+        />
+      );
+    }
     return (
       <ConversationFullscreenLayout
         columns={terminalColumns}
         rows={terminalRows}
         bottomRows={bottomRows}
-        completionOverlay={completionOverlay}
+        completionOverlay={renderConversationOverlay({ rows: terminalRows, columns: terminalColumns })}
         completionOverlayRows={chatCompletionOverlayRows(terminalRows, bottomRows)}
-        scrollable={
-          <ConversationFirstPane
-            messages={messages}
-            rows={conversationRows}
-            columns={conversationTextColumns()}
-            scrollOffset={conversationViewport.scrollOffset}
-            newMessageCount={conversationViewport.newMessageCount}
-            unseenStartIndex={conversationViewport.unseenStartIndex}
-            expandedMessageKeys={messageCursor.expandedKeys}
-            selectedMessageIndex={messageCursor.selectedIndex}
-            searchMatchMessageIndex={activeSearchMatch?.messageIndex}
-            searchMatchQuery={transcriptSearch.query}
-            tailRows={conversationTailRows({ busy, hasResult: Boolean(displayedProductResultCard) })}
-            tail={conversationTail({
-              busy,
-              activity: loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined,
-              motionFrame: shouldAnimate ? motionTick : undefined,
-              resultCard: displayedProductResultCard,
-              detailAvailable: latestDetailSource !== "none"
-            })}
-          />
-        }
-        bottom={bottom}
+        scrollable={renderConversationPane({ rows: conversationRows, columns: conversationTextColumns() })}
+        bottom={renderConversationBottom({ rows: bottomRows, columns: terminalColumns })}
       />
     );
   }
   return (
-    <Box width={terminalColumns} height={terminalRows} flexDirection="column" overflow="hidden" paddingX={1}>
-      <StatusRail
-        appName="Swarm"
-        state={approval ? "awaiting approval" : busy ? "running" : displayedProductResultCard ? "done" : "idle"}
-        route={routeLabel}
-        permissionMode={settingsSnapshot.permissions.defaultMode}
-        sandboxMode={runSandboxMode}
-        model={settingsSnapshot.models.worker || settingsSnapshot.models.planner || settingsSnapshot.models.defaultProvider || "unset"}
-        sessionId={lastSessionId}
-        cacheStatus={cacheStatus}
-        checkpoint={checkpointLabel}
-        view={mainPaneLabels[mainPane]}
-        compact={screenMode.compactStatus}
-        density={screenDensity}
-      />
-
-      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={1}>
-        {showCurrentAction && (
-          <CurrentActionRow
-            message={currentAction}
-            phase={currentPhase}
-            status={loopActivity ? loopActivityStatus(loopActivity.phase) : statusForRunBoardPhase(displayedRunBoardPhase, displayedProductResultCard?.status)}
-            tone={loopActivity ? loopActivityTone(loopActivity.phase) : toneForRunBoardPhase(displayedRunBoardPhase, displayedProductResultCard?.status)}
-            progress={progress}
-            needYou={needYou === "no" ? undefined : needYou}
-            motionFrame={shouldAnimate ? motionTick : undefined}
-            density={screenDensity}
-          />
-        )}
-
-        <Box flexDirection={wideWorkbench ? "row" : "column"} flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={showCurrentAction ? 1 : 0}>
-          <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width={wideWorkbench ? primaryColumns : "100%"}>
-            {screenMode.primarySurface === "trace" ? (
-              <ActionLog
-                rows={actionLogRows}
-                height={bodyRows}
-                columns={wideWorkbench ? primaryColumns : terminalColumns}
-                scrollOffset={actionLogScrollOffset}
-                onScrollOffsetChange={setActionLogScrollOffset}
-                motionFrame={shouldAnimate ? motionTick : undefined}
-                selectedIndex={selectedActionIndex}
-              />
-            ) : (
-              <>
-                {!shouldShowRunBoardSurface && (
-                  <ActivityTimeline
-                    title={busy ? "Progress" : displayedProductResultCard ? "Result" : "Recent"}
-                    items={timelineItems}
-                    emptyLabel="(none)"
-                    limit={timelineLimit}
-                    density={screenDensity}
-                  />
-                )}
-
-                <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={shouldShowRunBoardSurface ? 0 : 1}>
-                  {shouldShowRunBoardSurface || mainPane === "overview" ? (
-                    overviewSurface
-                  ) : (
-                    <IdleKernelView
-                      pane={mainPane}
-                      rows={bodyRows}
-                      columns={wideWorkbench ? primaryColumns : terminalColumns}
-                      messages={messages.slice(-4)}
-                      toolOutputs={toolResults.slice(-4)}
-                      sessions={idlePaneSnapshot.sessions}
-                      attempts={idlePaneSnapshot.attempts}
-                      leases={idlePaneSnapshot.leases}
-                      approvals={idlePaneSnapshot.approvals}
-                      workers={mergeWorkerRecords(workers, idlePaneSnapshot.workers, 6)}
-                      blackboard={idlePaneSnapshot.blackboard}
-                      swarmSurface={swarmSurface}
-                      symphonyDaemons={symphonyDaemons.slice(0, 4)}
-                      lastSessionId={lastSessionId}
-                      lastRoute={lastRoute}
-                      lastSnapshot={latestSnapshot}
-                    />
-                  )}
-                </Box>
-              </>
-            )}
+    <SwarmWorkbenchLayout
+      columns={terminalColumns}
+      rows={terminalRows}
+      version="0.1.0"
+      title={mainPaneLabels[mainPane]}
+      subtitle={workbenchSubtitle}
+      headerDetail={workbenchHeaderDetail}
+      workspace={workbenchWorkspace}
+      navigation={workbenchNavigation}
+      sessions={workbenchSessions}
+      mode={workbenchModeCard(routeLabel)}
+      permission={workbenchPolicyCard(settingsSnapshot.permissions.defaultMode)}
+      sandbox={workbenchSandboxCard(runSandboxMode)}
+      model={workbenchModel}
+      memory={{
+        title: taskTotal > 0 ? `${taskCompleted}/${taskTotal} tasks` : "Session not started",
+        subtitle: lastSessionId ? `Session ${shortId(lastSessionId)}` : "No saved context yet",
+        badge: taskTotal > 0 ? currentPhase : undefined,
+        tone: taskCompleted < taskTotal ? "status.running" : "text.muted"
+      }}
+      tools={workbenchTools}
+      workers={workbenchWorkers}
+      footer={workbenchFooterItems}
+      centerBottomRows={conversationBottomRows()}
+      renderCenterContent={({ rows, columns }) => (
+        <Box flexDirection="column" width="100%" height={rows} overflow="hidden" position="relative">
+          {workbenchCurrentAction}
+          <Box flexDirection="column" width="100%" flexGrow={1} flexShrink={1} overflow="hidden" marginTop={workbenchCurrentAction ? 1 : 0}>
+            {renderWorkbenchPrimary({
+              rows: centerContentRows(rows, Boolean(workbenchCurrentAction)),
+              columns
+            })}
           </Box>
-          {wideWorkbench && inlineInspectorTarget.enabled && (
-            <Box flexDirection="column" width={inspectorColumns} marginLeft={1} overflow="hidden">
-              <DetailView
-                content={inlineInspectorContent}
-                scroll={detailScroll}
-                height={bodyRows}
-                sessionId={lastSessionId}
-                route={lastRoute ? routeDisplayLabel(lastRoute.mode) : undefined}
-                source={inlineInspectorTarget.source}
-                title={inlineInspectorTarget.title}
-                density={screenDensity}
-              />
-            </Box>
-          )}
+          {renderWorkbenchOverlay({ rows, columns })}
         </Box>
-      </Box>
-
-      <Box flexShrink={0} width="100%" marginTop={1}>
-        {approval ? (
-          <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
-        ) : pendingPlan ? (
-          <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
-        ) : (
-          <ChatInputArea
-            onSubmit={submitObjective}
-            onCompletionRowsChange={setCompletionRows}
-            controllerStateRef={chatInputState}
-            extraCommands={extensionCommandCandidates}
-            promptLabel={routeBadge(routeLabel).toLowerCase()}
-            sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
-            footerHint={bottomFooterHint}
-            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
-            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
-            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
-            footerItems={footerItems}
-            selectedFooterItem={selectedFooterItem}
-            footerModeLabel={routeBadge(routeLabel)}
-            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
-            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
-            footerSandboxLabel={sandboxBadge(runSandboxMode)}
-            footerSandboxTone={sandboxTone(runSandboxMode)}
-            onFooterItemClick={(id) => {
-              emitTuiFocusTransition(
-                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
-                "other",
-                `footer:${id}`
-              );
-              void openFooterDetail(id);
-            }}
-            onInputTelemetry={logTuiInputTelemetry}
-            density={screenDensity}
-            columns={terminalColumns}
-          />
-        )}
-      </Box>
-    </Box>
+      )}
+      renderCenterBottom={renderWorkbenchBottom}
+      onNavigate={(id) => {
+        if (mainPaneOrder.includes(id as MainPaneId)) {
+          setMainPane(id as MainPaneId);
+        }
+      }}
+    />
   );
 }
 
@@ -4267,12 +4426,12 @@ function IdleKernelView(input: {
   return (
     <Box flexDirection="column" width="100%">
       <PaneHeader pane={input.pane} columns={input.columns} />
-      {input.pane === "overview" && <IdleOverviewPane input={input} rows={input.rows} activeDaemons={activeDaemons} lastSnapshot={input.lastSnapshot} />}
+      {input.pane === "plan" && <IdlePlanPane input={input} rows={input.rows} activeDaemons={activeDaemons} lastSnapshot={input.lastSnapshot} />}
+      {input.pane === "activity" && <IdleActivityPane rows={input.rows} workers={input.workers} approvals={input.approvals} daemons={activeDaemons} toolOutputs={input.toolOutputs} />}
       {input.pane === "output" && <IdleOutputPane rows={input.rows} outputs={input.toolOutputs} />}
-      {input.pane === "sessions" && <IdleSessionsPane rows={input.rows} sessions={input.sessions} leases={input.leases} lastSessionId={input.lastSessionId} />}
-      {input.pane === "attempts" && <IdleAttemptsPane rows={input.rows} attempts={input.attempts} />}
-      {input.pane === "agents" && <IdleActivityPane rows={input.rows} workers={input.workers} approvals={input.approvals} daemons={activeDaemons} swarmSurface={input.swarmSurface} />}
-      {input.pane === "blackboard" && <IdleBlackboardPane rows={input.rows} blackboard={input.blackboard} messages={input.messages} />}
+      {input.pane === "sessions" && <IdleSessionsPane rows={input.rows} columns={input.columns} sessions={input.sessions} leases={input.leases} lastSessionId={input.lastSessionId} />}
+      {input.pane === "workers" && <IdleWorkersPane rows={input.rows} workers={input.workers} attempts={input.attempts} swarmSurface={input.swarmSurface} />}
+      {input.pane === "board" && <IdleBoardPane rows={input.rows} swarmSurface={input.swarmSurface} blackboard={input.blackboard} messages={input.messages} />}
     </Box>
   );
 }
@@ -4287,21 +4446,21 @@ function PaneHeader({ pane, columns }: { pane: MainPaneId; columns: number }): R
         <Text color={paneAccentColor(pane)} bold>{sectionLabel(current)}</Text>
         <Text color={mutedColor()}>  {shortcut} · </Text>
       {mainPaneOrder.map((item, index) => (
-        <Text key={item} inverse={item === pane} color={item === pane ? selectedTextColor() : mutedColor()}>
-          {item === pane ? `[${compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}]` : compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}
+        <Text key={item} color={item === pane ? paneAccentColor(pane) : mutedColor()}>
+          {item === pane ? `> ${compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}` : compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}
           {index < mainPaneOrder.length - 1 ? " " : ""}
         </Text>
       ))}
       </Text>
-      <PaneDivider tone={paneAccentToken(pane)} />
+      <PaneDivider columns={columns} tone={paneAccentToken(pane)} />
     </Box>
   );
 }
 
-function PaneDivider({ tone = "surface.line" }: { tone?: TuiColorRef }): React.ReactElement {
+function PaneDivider({ columns = 96, tone = "surface.line" }: { columns?: number; tone?: TuiColorRef }): React.ReactElement {
   return (
     <Text color={resolveTuiColor(tone)} wrap="truncate">
-      {"─".repeat(160)}
+      {paneRule(columns)}
     </Text>
   );
 }
@@ -4321,23 +4480,33 @@ function PaneSection({
     <Box flexDirection="column" width="100%" marginTop={marginTop}>
       <Text wrap="truncate">
         <Text color={resolveTuiColor(tone)} bold>{sectionLabel(title)}</Text>
-        <Text color={mutedColor()}> {"─".repeat(96)}</Text>
+        <Text color={mutedColor()}>{paneSectionRule(title, 96)}</Text>
       </Text>
       {children}
     </Box>
   );
 }
 
+function paneRule(columns: number): string {
+  return "-".repeat(Math.max(1, Math.floor(columns)));
+}
+
+function paneSectionRule(title: string, columns: number): string {
+  const label = sectionLabel(title);
+  const width = Math.max(0, Math.floor(columns) - displayWidth(label) - 1);
+  return width > 0 ? ` ${"-".repeat(width)}` : "";
+}
+
 function paneAccentToken(pane: MainPaneId): TuiColorRef {
   switch (pane) {
     case "output": return "role.tool";
     case "sessions": return "role.gateway";
-    case "attempts": return "status.warning";
-    case "agents": return "role.swarm";
-    case "blackboard": return "role.swarm";
-    case "overview": return "brand.focus";
+    case "activity": return "role.swarm";
+    case "workers": return "role.worker";
+    case "board": return "role.swarm";
+    case "plan": return "brand.focus";
     case "chat": return "text.primary";
-    case "log": return "text.primary";
+    case "trace": return "text.primary";
   }
 }
 
@@ -4345,57 +4514,53 @@ function paneAccentColor(pane: MainPaneId): TuiResolvedColor {
   return resolveTuiColor(paneAccentToken(pane));
 }
 
-function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
+function IdlePlanPane({ input, rows, activeDaemons, lastSnapshot }: {
   input: Parameters<typeof IdleKernelView>[0];
   rows: number;
   activeDaemons: SymphonyDaemonRecord[];
   lastSnapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>;
 }): React.ReactElement {
+  const latestUserMessage = [...input.messages].reverse().find((message) => message.role === "user");
   const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
   return (
     <>
-      <PaneSection title="Status" tone="role.gateway">
-        <Text color={mutedColor()}>
-          {`sessions=${input.sessions.length} attempts=${input.attempts.length} outputs=${input.toolOutputs.length} approvals=${input.approvals.length} symphony=${activeDaemons.length} last=${shortId(input.lastSessionId ?? "-")}`}
+      <PaneSection title="Objective" tone="brand.focus">
+        <Text color={visualTokenColor("text.primary")} wrap="truncate">
+          {latestUserMessage?.brief ?? lastSnapshot?.session?.objective ?? "No active objective yet."}
         </Text>
-        {input.lastRoute && (
-          <Text color={visualTokenColor("role.gateway")} wrap="truncate">
-            route={input.lastRoute.mode}{typeof input.lastRoute.confidence === "number" ? ` ${Math.round(input.lastRoute.confidence * 100)}%` : ""} {firstLine(input.lastRoute.reason, 90)}
-          </Text>
-        )}
-        {input.swarmSurface && (
-          <Text color={input.swarmSurface.summary.conflicts ? pendingColor() : visualTokenColor("role.swarm")} wrap="truncate">
-            swarm {formatSwarmTopologySummary(input.swarmSurface)}
-          </Text>
-        )}
       </PaneSection>
 
-      {(input.approvals.length > 0 || activeDaemons.length > 0) && (
-        <PaneSection title="Attention" tone="status.pending">
-          {input.approvals.slice(0, 2).map((approval) => (
-            <Text key={approval.approval_id} wrap="truncate" color={pendingColor()}>
-              approval {approval.risk_class}/{approval.risk} {approval.action} {firstLine(approval.target, 60)}
-            </Text>
-          ))}
-          {activeDaemons.slice(0, 2).map((daemon) => (
-            <Text key={daemon.daemon_id} wrap="truncate" color={visualTokenColor("role.swarm")}>
-              daemon {shortId(daemon.daemon_id)} [{daemon.status}] ticks={daemon.tick_count}
-            </Text>
-          ))}
-        </PaneSection>
-      )}
+      <PaneSection title="Current Plan" tone="role.gateway">
+        {lastSnapshot
+          ? compactWorkSnapshotLines(lastSnapshot).slice(0, rows >= 40 ? 5 : 3).map((line) => (
+              <Text key={line} wrap="truncate" color={mutedColor()}>
+                {line}
+              </Text>
+            ))
+          : (
+            <>
+              <Text color={mutedColor()}>1. Ask Swarm to inspect, edit, test, or explain this workspace.</Text>
+              <Text color={mutedColor()}>2. Swarm will turn the request into a plan before editing.</Text>
+              <Text color={mutedColor()}>3. Results and checks will appear after work starts.</Text>
+            </>
+          )}
+      </PaneSection>
 
-      {input.lastSessionId && (
-        <PaneSection title="Latest Session" tone="brand.focus">
-          {lastSnapshot
-            ? compactWorkSnapshotLines(lastSnapshot).slice(0, 2).map((line) => (
-                <Text key={line} wrap="truncate" color={mutedColor()}>
-                  {line}
+      <PaneSection title="Next Action" tone="status.pending">
+        {input.approvals.length
+          ? input.approvals.slice(0, 2).map((approval) => (
+              <Text key={approval.approval_id} wrap="truncate" color={pendingColor()}>
+                Approve {approval.action} for {firstLine(approval.target, 68)}
+              </Text>
+            ))
+          : activeDaemons.length
+            ? activeDaemons.slice(0, 2).map((daemon) => (
+                <Text key={daemon.daemon_id} wrap="truncate" color={visualTokenColor("role.swarm")}>
+                  Background worker {shortId(daemon.daemon_id)} is {daemon.status}.
                 </Text>
               ))
-            : <Text color={mutedColor()}>No snapshot available.</Text>}
-        </PaneSection>
-      )}
+            : <Text color={mutedColor()}>Waiting for your first task.</Text>}
+      </PaneSection>
 
       <PaneSection title="Recent Messages" tone="text.primary">
         {input.messages.length ? input.messages.slice(-recentMessages).map((message, index) => (
@@ -4404,7 +4569,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
               {message.role}: {message.brief}
             </Text>
           </Box>
-        )) : <Text color={mutedColor()}>(none)</Text>}
+      )) : <Text color={mutedColor()}>No command output yet.</Text>}
       </PaneSection>
 
       {input.toolOutputs.length > 0 && (
@@ -4430,7 +4595,7 @@ function IdleOutputPane({ rows, outputs }: { rows: number; outputs: ToolResultSt
   const outputLimit = rows >= 48 ? 5 : rows >= 36 ? 3 : 2;
   const outputRows = orderCompactIdleRows(outputs.map((result, index) => compactIdleOutputRow(result, index))).slice(0, outputLimit);
   return (
-    <PaneSection title="Command Output" tone="role.tool">
+    <PaneSection title="Output" tone="role.tool">
       {outputRows.length ? outputRows.map(({ row, source }) => (
         <Box key={row.key} flexDirection="column">
           <CompactIdleRow row={row} />
@@ -4438,7 +4603,12 @@ function IdleOutputPane({ rows, outputs }: { rows: number; outputs: ToolResultSt
           {source.outputRef && <Text color={mutedColor()} wrap="truncate">{indentPreview(`full: ${shortPath(source.outputRef)}`, "  ")}</Text>}
           {compactPreview(source.content)}
         </Box>
-      )) : <Text color={mutedColor()}>(none)</Text>}
+      )) : (
+        <Box flexDirection="column" width="100%">
+          <Text color={mutedColor()}>No command output yet.</Text>
+          <Text color={mutedColor()}>Command output will appear here when Swarm runs shell commands, tests, build steps, or tools that produce stdout/stderr.</Text>
+        </Box>
+      )}
     </PaneSection>
   );
 }
@@ -4717,26 +4887,49 @@ function blackboardTypePriority(type: BlackboardEntry["type"]): number {
   }[type];
 }
 
-function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
+function IdleSessionsPane({ rows, columns, sessions, leases, lastSessionId }: {
   rows: number;
+  columns: number;
   sessions: RecentSessionRow[];
   leases: WorkspaceLease[];
   lastSessionId?: string;
 }): React.ReactElement {
-  const sessionLimit = rows >= 48 ? 8 : rows >= 36 ? 5 : 3;
-  const leaseLimit = rows >= 48 ? 3 : 1;
+  const sessionLimit = rows >= 48 ? 7 : rows >= 36 ? 4 : 2;
+  const leaseLimit = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
+  const currentSession = currentIdleSession(sessions, lastSessionId);
+  const currentLease = currentSession
+    ? leases.find((lease) => lease.lease_id === currentSession.workspace_lease_id || lease.session_id === currentSession.session_id)
+    : undefined;
   const sessionRows = orderCompactIdleRows(sessions.map((session, index) => compactIdleSessionRow(session, lastSessionId, index))).slice(0, sessionLimit);
   const leaseRows = orderCompactIdleRows(leases.map((lease, index) => compactIdleLeaseRow(lease, index))).slice(0, leaseLimit);
   return (
     <>
+      <PaneSection title="Current Session" tone="role.gateway">
+        {currentSession ? (
+          <Box flexDirection="column" width="100%">
+            <SessionDetailRow label="id" value={currentSession.session_id} columns={columns} tone={resolveTuiColor("role.gateway")} />
+            <SessionDetailRow label="status" value={currentSession.status} columns={columns} tone={toneColor(statusTone(currentSession.status))} />
+            <SessionDetailRow label="workspace" value={currentLease?.workspace_path ?? "(workspace unavailable)"} columns={columns} />
+            <SessionDetailRow label="mode" value={sessionSourceKind(currentSession.source_json) ?? "local"} columns={columns} />
+            <SessionDetailRow label="started" value={compactTimestamp(currentSession.created_at) ?? "-"} columns={columns} />
+            <SessionDetailRow label="updated" value={compactTimestamp(currentSession.updated_at) ?? "-"} columns={columns} />
+            <SessionDetailRow label="objective" value={currentSession.objective || "(untitled)"} columns={columns} />
+          </Box>
+        ) : (
+          <Box flexDirection="column" width="100%">
+            <Text color={mutedColor()}>No current session yet.</Text>
+            <Text color={mutedColor()}>Start a chat or resume a recent session.</Text>
+          </Box>
+        )}
+      </PaneSection>
+
       <PaneSection title="Recent Sessions" tone="role.gateway">
-        {lastSessionId && <Text color={mutedColor()}>last={shortId(lastSessionId)}</Text>}
         {sessionRows.length ? sessionRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Workspace Leases" tone="role.gateway">
+      <PaneSection title="Workspace Access" tone="role.gateway">
         {leaseRows.length ? leaseRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
@@ -4745,12 +4938,40 @@ function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
   );
 }
 
+function currentIdleSession(sessions: RecentSessionRow[], lastSessionId: string | undefined): RecentSessionRow | undefined {
+  if (lastSessionId) {
+    return sessions.find((session) => session.session_id === lastSessionId) ?? sessions[0];
+  }
+  return sessions[0];
+}
+
+function SessionDetailRow({
+  label,
+  value,
+  columns,
+  tone
+}: {
+  label: string;
+  value: string;
+  columns: number;
+  tone?: TuiResolvedColor;
+}): React.ReactElement {
+  const labelWidth = 10;
+  const valueWidth = Math.max(8, columns - labelWidth - 2);
+  return (
+    <Text wrap="truncate">
+      <Text color={mutedColor()}>{padToDisplayWidth(label, labelWidth)}</Text>
+      <Text color={tone ?? visualTokenColor("text.primary")}>{fitToDisplayWidth(firstLine(value, 240), valueWidth)}</Text>
+    </Text>
+  );
+}
+
 function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttempt[] }): React.ReactElement {
   const attemptLimit = rows >= 48 ? 8 : rows >= 36 ? 5 : 3;
   const attemptRows = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
   const attemptById = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]));
   return (
-    <PaneSection title="Recent Attempts" tone="status.warning">
+    <PaneSection title="Run Attempts" tone="status.warning">
       {attemptRows.length ? attemptRows.map((row) => {
         const attempt = attemptById.get(row.key);
         return (
@@ -4764,25 +4985,25 @@ function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttem
   );
 }
 
-function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
+function IdleActivityPane({ rows, workers, approvals, daemons, toolOutputs }: {
   rows: number;
   workers: WorkerRecord[];
   approvals: ApprovalStoreRecord[];
   daemons: SymphonyDaemonRecord[];
-  swarmSurface?: SwarmSurfaceProjection;
+  toolOutputs: ToolResultState[];
 }): React.ReactElement {
   const workerLimit = rows >= 48 ? 6 : 3;
   const approvalLimit = rows >= 48 ? 4 : rows >= 36 ? 3 : 2;
   const daemonLimit = rows >= 48 ? 4 : rows >= 36 ? 3 : 2;
+  const outputLimit = rows >= 48 ? 4 : rows >= 36 ? 3 : 2;
   const workerRows = orderCompactIdleRows(workers.map((worker, index) => compactIdleWorkerRow(worker, index))).slice(0, workerLimit);
   const workerById = new Map(workers.map((worker) => [worker.worker_id, worker]));
   const approvalRows = orderCompactIdleRows(approvals.map((approval, index) => compactIdleApprovalRow(approval, index))).slice(0, approvalLimit);
   const daemonRows = orderCompactIdleRows(daemons.map((daemon, index) => compactIdleDaemonRow(daemon, index))).slice(0, daemonLimit);
+  const outputRows = orderCompactIdleRows(toolOutputs.map((result, index) => compactIdleOutputRow(result, index))).slice(0, outputLimit);
   return (
     <>
-      <SwarmSurfacePanel surface={swarmSurface} limit={rows >= 48 ? 5 : 3} />
-
-      <PaneSection title="Active Work" tone="role.swarm">
+      <PaneSection title="Timeline" tone="role.swarm">
         {workerRows.length ? workerRows.map((row) => {
           const worker = workerById.get(row.key);
           return (
@@ -4792,19 +5013,25 @@ function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
               {worker?.blocked_reason && <Text wrap="truncate" color={pendingColor()}>{indentPreview(firstLine(worker.blocked_reason, 90), "  ")}</Text>}
             </Box>
           );
-        }) : <Text color={mutedColor()}>(none)</Text>}
+        }) : <Text color={mutedColor()}>No workers have started yet.</Text>}
       </PaneSection>
 
       <PaneSection title="Approvals" tone="status.pending">
         {approvalRows.length ? approvalRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
-        )) : <Text color={mutedColor()}>(none)</Text>}
+        )) : <Text color={mutedColor()}>No approvals pending.</Text>}
+      </PaneSection>
+
+      <PaneSection title="Tool Calls" tone="role.tool">
+        {outputRows.length ? outputRows.map(({ row }) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>No tool calls yet.</Text>}
       </PaneSection>
 
       <PaneSection title="Background Work" tone="role.swarm">
         {daemonRows.length ? daemonRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
-        )) : <Text color={mutedColor()}>(none)</Text>}
+        )) : <Text color={mutedColor()}>No background work running.</Text>}
       </PaneSection>
     </>
   );
@@ -4819,7 +5046,7 @@ function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProje
   const ownership = surface.ownership.slice(0, visibleLimit);
   const conflicts = surface.conflicts.slice(0, visibleLimit);
   return (
-    <PaneSection title="Swarm Surface" tone={tone}>
+    <PaneSection title="Shared Board" tone={tone}>
       <Text color={mutedColor()} wrap="truncate">
         {formatSwarmTopologySummary(surface)}
       </Text>
@@ -4830,16 +5057,118 @@ function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProje
       ))}
       {ownership.length > 0 && (
         <Text color={mutedColor()} wrap="truncate">
-          ownership {ownership.map((item) => `${item.kind}:${item.id}->${item.owner ?? "-"}`).join(" | ")}
+          Workspace Claims {ownership.map((item) => `${item.kind}:${item.id}->${item.owner ?? "-"}`).join(" | ")}
         </Text>
       )}
       {conflicts.map((item) => (
         <Text key={`${item.kind}:${item.id}`} color={item.severity === "error" ? dangerColor() : pendingColor()} wrap="truncate">
-          conflict {item.kind}:{item.id} {firstLine(item.summary, 72)}
+          warning {item.kind}:{item.id} {firstLine(productizeSwarmConflictSummary(item.summary), 72)}
         </Text>
       ))}
     </PaneSection>
   );
+}
+
+function productizeSwarmConflictSummary(summary: string): string {
+  return summary
+    .replace(/stale\s+heartbeat/giu, "worker heartbeat missed")
+    .replace(/offline\s+heartbeat/giu, "worker disconnected")
+    .replace(/heartbeat\s+conflict/giu, "worker heartbeat missed")
+    .replace(/\bstale\b/giu, "inactive")
+    .replace(/\bownership\b/giu, "Workspace Claims");
+}
+
+function IdleWorkersPane({ rows, workers, attempts, swarmSurface }: {
+  rows: number;
+  workers: WorkerRecord[];
+  attempts: RunAttempt[];
+  swarmSurface?: SwarmSurfaceProjection;
+}): React.ReactElement {
+  const workerLimit = rows >= 48 ? 8 : rows >= 36 ? 5 : 3;
+  const attemptLimit = rows >= 48 ? 4 : 2;
+  const workerRows = orderCompactIdleRows(workers.map((worker, index) => compactIdleWorkerRow(worker, index))).slice(0, workerLimit);
+  const recentAttempts = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
+  const handoffs = swarmSurface?.ownership.filter((item) => item.kind === "handoff").slice(0, workerLimit) ?? [];
+  return (
+    <>
+      <PaneSection title="Workers" tone="role.worker">
+        {workerRows.length ? workerRows.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>No workers have started yet.</Text>}
+      </PaneSection>
+
+      <PaneSection title="Handoffs" tone="role.swarm">
+        {handoffs.length ? handoffs.map((item) => (
+          <Text key={`${item.kind}:${item.id}`} color={item.severity === "error" ? dangerColor() : pendingColor()} wrap="truncate">
+            {item.id} {workerStatusProductLabel(item.status)} {item.owner ? `to ${item.owner}` : ""}
+          </Text>
+        )) : <Text color={mutedColor()}>None</Text>}
+      </PaneSection>
+
+      <PaneSection title="Recent Results" tone="status.warning">
+        {recentAttempts.length ? recentAttempts.map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>No worker results yet.</Text>}
+      </PaneSection>
+    </>
+  );
+}
+
+function IdleBoardPane({ rows, swarmSurface, blackboard, messages }: {
+  rows: number;
+  swarmSurface?: SwarmSurfaceProjection;
+  blackboard: BlackboardEntry[];
+  messages: ChatMessage[];
+}): React.ReactElement {
+  const limit = rows >= 48 ? 6 : rows >= 36 ? 4 : 3;
+  const boardRows = orderCompactIdleRows(blackboard.map((entry, index) => compactIdleBlackboardRow(entry, index))).slice(0, limit);
+  const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
+  return (
+    <>
+      <PaneSection title="Shared collaboration state" tone="role.swarm">
+        {swarmSurface ? (
+          <>
+            <Text color={mutedColor()} wrap="truncate">Participants active {swarmSurface.summary.active_participants} inactive {swarmSurface.summary.stale_participants} waiting {swarmSurface.summary.inbox_pending}</Text>
+            <Text color={mutedColor()} wrap="truncate">Workspace Claims {swarmSurface.summary.ownership_items}</Text>
+          </>
+        ) : (
+          <Text color={mutedColor()}>No shared board data yet.</Text>
+        )}
+      </PaneSection>
+
+      <PaneSection title="Workspace Claims" tone="role.swarm">
+        {swarmSurface?.ownership.length ? swarmSurface.ownership.slice(0, limit).map((item) => (
+          <Text key={`${item.kind}:${item.id}`} color={item.severity === "error" ? dangerColor() : mutedColor()} wrap="truncate">
+            {item.kind}:{item.id} claimed by {item.owner ?? "unassigned"} {workerStatusProductLabel(item.status)}
+          </Text>
+        )) : <Text color={mutedColor()}>No workspace claims yet.</Text>}
+      </PaneSection>
+
+      <PaneSection title="Decisions" tone="brand.focus">
+        {boardRows.filter((row) => row.id === "decision").length ? boardRows.filter((row) => row.id === "decision").map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : <Text color={mutedColor()}>No decisions yet.</Text>}
+      </PaneSection>
+
+      <PaneSection title="Proposals" tone="text.primary">
+        {boardRows.filter((row) => row.id !== "decision").length ? boardRows.filter((row) => row.id !== "decision").map((row) => (
+          <CompactIdleRow key={row.key} row={row} />
+        )) : messages.length ? messages.slice(-recentMessages).map((message, index) => (
+          <Text key={`${message.role}-${index}`} wrap="truncate" color={roleColor(message.role)}>
+            {message.role}: {message.brief}
+          </Text>
+        )) : <Text color={mutedColor()}>No proposals yet.</Text>}
+      </PaneSection>
+    </>
+  );
+}
+
+function workerStatusProductLabel(status: string): string {
+  if (status === "completed" || status === "complete" || status === "success") return "Done";
+  if (status === "running" || status === "active") return "Running";
+  if (status === "pending" || status === "queued" || status === "waiting") return "Planning";
+  if (status === "stale") return "inactive";
+  return status;
 }
 
 function ActiveWorkSummary(input: {
@@ -4941,33 +5270,6 @@ function WorkerLine({ worker, compact = false }: { worker: WorkerRecord; compact
       {!compact && <Text wrap="truncate">{worker.objective}</Text>}
       {result && <Text wrap="truncate" color={mutedColor()}>{result}</Text>}
     </Box>
-  );
-}
-
-function IdleBlackboardPane({ rows, blackboard, messages }: {
-  rows: number;
-  blackboard: BlackboardEntry[];
-  messages: ChatMessage[];
-}): React.ReactElement {
-  const blackboardLimit = rows >= 48 ? 6 : rows >= 36 ? 4 : 3;
-  const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
-  const blackboardRows = orderCompactIdleRows(blackboard.map((entry, index) => compactIdleBlackboardRow(entry, index))).slice(0, blackboardLimit);
-  return (
-    <>
-      <PaneSection title="Blackboard" tone="role.swarm">
-        {blackboardRows.length ? blackboardRows.map((row) => (
-          <CompactIdleRow key={row.key} row={row} />
-        )) : <Text color={mutedColor()}>(none)</Text>}
-      </PaneSection>
-
-      <PaneSection title="Recent Messages" tone="text.primary">
-        {messages.length ? messages.slice(-recentMessages).map((message, index) => (
-          <Text key={`${message.role}-${index}`} wrap="truncate" color={roleColor(message.role)}>
-            {message.role}: {message.brief}
-          </Text>
-        )) : <Text color={mutedColor()}>(none)</Text>}
-      </PaneSection>
-    </>
   );
 }
 
@@ -5302,7 +5604,7 @@ export function formatKernelStatusView(input: {
       ? workBoard.next_actions.slice(0, 5).map((action) => `next=${action.severity} ${action.source}:${action.id} ${action.action}`)
       : []),
     "",
-    "Swarm Surface",
+    "Shared Board",
     ...(swarmSurface
       ? [
         formatSwarmTopologySummary(swarmSurface),
@@ -5312,12 +5614,12 @@ export function formatKernelStatusView(input: {
       ]
       : ["(none)"]),
     "",
-    "Recent Attempts",
+    "Run Attempts",
     ...(attempts.length
       ? attempts.map(formatRunAttemptSummary)
       : ["(none)"]),
     "",
-    "Workspace Leases",
+    "Workspace Access",
     ...(leases.length
       ? leases.map(formatWorkspaceLeaseSummary)
       : ["(none)"]),
@@ -5360,7 +5662,7 @@ export function formatKernelStatusView(input: {
       lspStatus: lspHealthStatus
     }),
     "",
-    "Blackboard",
+    "Board",
     ...(recentBlackboard.length
       ? recentBlackboard.map((entry) => `${entry.created_at} ${entry.session_id} ${entry.key} [${entry.type}] tags=${(entry.tags ?? []).join(",")}`)
       : ["(none)"]),
@@ -6727,6 +7029,80 @@ function workerStatusColor(status: WorkerRecord["status"]): TuiColorRef {
     case "stopped": return "status.warning";
   }
   return "text.primary";
+}
+
+function footerPillToneRef(tone: FooterPill["tone"]): TuiColorRef {
+  if (tone === "running") return "status.running";
+  if (tone === "success") return "status.success";
+  if (tone === "pending") return "status.pending";
+  if (tone === "warning") return "status.warning";
+  if (tone === "danger") return "status.danger";
+  if (tone === "muted") return "text.muted";
+  return "text.primary";
+}
+
+function workbenchCommandFooterItems(): Array<{ key: string; label: string; tone?: TuiColorRef }> {
+  return [
+    { key: "help", label: "/help", tone: "brand.focus" },
+    { key: "continue", label: "/continue", tone: "brand.focus" },
+    { key: "memory", label: "/memory", tone: "brand.focus" },
+    { key: "scroll", label: "PgUp/PgDn scroll", tone: "text.muted" },
+    { key: "search", label: "/ search", tone: "text.muted" },
+    { key: "details", label: "Ctrl+O details", tone: "text.muted" }
+  ];
+}
+
+function workbenchStatusSubtitle(input: {
+  executing: boolean;
+  workerCount: number;
+  fileCount: number;
+  approvalCount: number;
+  currentAction?: string;
+  needYou: string;
+  progress?: string;
+}): string {
+  const status = input.executing ? "Executing" : "Waiting";
+  const base = `Run: ${status}  Workers: ${Math.max(0, input.workerCount)}  Files: ${Math.max(0, input.fileCount)}  Approvals: ${Math.max(0, input.approvalCount)}`;
+  if (!input.executing) {
+    return base;
+  }
+  return [
+    base,
+    input.needYou !== "no" ? `Needs you: ${input.needYou}` : undefined,
+    input.progress,
+    input.currentAction
+  ].filter((part): part is string => Boolean(part)).join("  ");
+}
+
+function centerContentRows(rows: number, hasCurrentAction: boolean): number {
+  return Math.max(1, Math.floor(rows) - (hasCurrentAction ? 3 : 0));
+}
+
+function workbenchCompletionOverlayRows(rows: number): number {
+  return Math.max(1, Math.min(5, Math.floor(rows) - 1));
+}
+
+function shortAge(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return compactTimestamp(value);
+  }
+  const elapsedMs = Date.now() - timestamp;
+  if (elapsedMs < 60_000) {
+    return "now";
+  }
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function shouldOfferAiDetail(detail: string): boolean {

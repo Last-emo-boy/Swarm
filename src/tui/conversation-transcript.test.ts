@@ -17,7 +17,7 @@ test("startup logo message carries compact welcome metadata", () => {
 
   assert.equal(message.kind, "logo");
   assert.match(message.brief, /Symphony Swarm/);
-  assert.match(message.brief, /Local Agent OS v0\.1\.0/);
+  assert.match(message.brief, /Local Swarm Runtime v0\.1\.0/);
   assert.match(message.brief, /openai\/gpt/);
 });
 
@@ -38,6 +38,25 @@ test("slash command and tool use become transcript messages", () => {
   assert.equal(tool.status, "running");
   assert.match(tool.brief, /Run shell command: npm test/);
   assert.match(tool.detail ?? "", /Command: npm test/);
+});
+
+test("structured question and plan tools render product-facing transcript text", () => {
+  const question = slashToolUseTranscriptMessage({
+    type: "ask_user_question",
+    prompt: "Choose the implementation scope",
+    choices: [{ label: "Minimal" }, { label: "Complete" }]
+  });
+  assert.equal(question.kind, "tool_use");
+  assert.match(question.brief, /Ask user Choose the implementation scope/);
+  assert.match(question.detail ?? "", /Question: Choose the implementation scope/);
+
+  const approval = slashToolUseTranscriptMessage({
+    type: "plan.exit",
+    plan: "1. Inspect\n2. Edit\n3. Verify",
+    summary: "Plan ready"
+  });
+  assert.match(approval.brief, /Request plan approval Plan ready/);
+  assert.match(approval.detail ?? "", /Plan: 1\. Inspect/);
 });
 
 test("runtime loop activity and tool results become visible transcript rows", () => {

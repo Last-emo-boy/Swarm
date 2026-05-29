@@ -1565,7 +1565,7 @@ function checkTuiInteractionReplayHarnessBehavior(): EvalCaseResult {
     && startup?.trace[0]?.transition?.reason === "empty-enter"
     && startup.trace[0]?.detailOpen === false
     && startup.finalState.focus === "input"
-    && debug?.trace.some((entry) => entry.event === "slash:/view trace" && entry.pane === "log")
+    && debug?.trace.some((entry) => entry.event === "slash:/view trace" && entry.pane === "trace")
     && debug.trace.some((entry) => entry.selectedActionRow === 2)
     && cache?.trace.some((entry) => entry.search?.includes("cache miss") && entry.currentSearchMessageIndex === 1)
     && lsp?.trace.some((entry) => entry.search?.includes("lsp fallback") && entry.currentSearchMessageIndex === 1)
@@ -11999,7 +11999,7 @@ function checkCacheLabReplayBehavior(): EvalCaseResult {
 
 function checkTuiCommandOutputDetailRegressionBehavior(): EvalCaseResult {
   const inline = inlineInspectorTargetForPane({
-    pane: "overview",
+    pane: "plan",
     selectedAction: false,
     latestDetailSource: "command",
     latestDetail: true
@@ -16465,11 +16465,11 @@ function checkTuiDeleteBehavior(): EvalCaseResult {
 }
 
 function checkTuiMainPaneCycleBehavior(): EvalCaseResult {
-  const forward = nextMainPane("overview", 1);
-  const backward = nextMainPane("overview", -1);
-  const wraps = nextMainPane("blackboard", 1);
-  const ok = forward === "output"
-    && backward === "log"
+  const forward = nextMainPane("plan", 1);
+  const backward = nextMainPane("plan", -1);
+  const wraps = nextMainPane("board", 1);
+  const ok = forward === "activity"
+    && backward === "chat"
     && wraps === "chat";
   return ok
     ? { name: "TUI main pane order behavior works", status: "pass", message: "explicit /view pane order wraps predictably without default Ctrl+N/P chrome" }

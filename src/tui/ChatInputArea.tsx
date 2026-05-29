@@ -26,6 +26,7 @@ const PROMPT_POINTER = "❯\u00A0";
 
 export function ChatInputArea({
   onSubmit,
+  onEmptyShortcut,
   onCompletionRowsChange,
   onCompletionStateChange,
   onInputTelemetry,
@@ -56,6 +57,7 @@ export function ChatInputArea({
   maxCompletionRows
 }: {
   onSubmit: (value: string) => void | Promise<void>;
+  onEmptyShortcut?: (character: string | undefined, key: ChatInputEmptyShortcutKey) => boolean;
   onCompletionRowsChange: (rows: number) => void;
   onCompletionStateChange?: (state: ChatCompletionState) => void;
   onInputTelemetry?: (event: ChatInputTelemetryEvent) => void;
@@ -116,11 +118,17 @@ export function ChatInputArea({
   const promptFocused = inputActive && (!domRendererActive || domFocused);
   const promptTone = promptFocused ? visualTokenColor("brand.focus") : visualTokenColor("surface.line");
 
-  function handlePromptInput(character: string | undefined, key: ChatInputKey): boolean {
-    if (!inputActive || !isChatInputPromptKey(character, key)) {
+  function handlePromptInput(character: string | undefined, key: ChatInputEmptyShortcutKey): boolean {
+    if (!inputActive) {
       return false;
     }
     const previousState = controllerState.current;
+    if (previousState.input.value.length === 0 && onEmptyShortcut?.(character, key)) {
+      return true;
+    }
+    if (!isChatInputPromptKey(character, key)) {
+      return false;
+    }
     const result = applyChatInputKey(previousState, character, key, completionOptions);
     controllerState.current = result.state;
     const changed = result.state !== previousState;
@@ -150,7 +158,7 @@ export function ChatInputArea({
       focusable: inputActive,
       onFocus: () => setDomFocused(true),
       onBlur: () => setDomFocused(false),
-      onKeydown: (event: { input?: string; key?: ChatInputKey; preventDefault: () => void }) => {
+      onKeydown: (event: { input?: string; key?: ChatInputEmptyShortcutKey; preventDefault: () => void }) => {
         if (handlePromptInput(event.input, event.key ?? {})) {
           event.preventDefault();
         }
@@ -329,6 +337,15 @@ type FooterDisplayPill = {
   value?: string;
   tone: TuiColorRef;
   selected?: boolean;
+};
+
+type ChatInputEmptyShortcutKey = ChatInputKey & {
+  home?: boolean;
+  end?: boolean;
+  pageUp?: boolean;
+  pageDown?: boolean;
+  shift?: boolean;
+  alt?: boolean;
 };
 
 type FooterLayout = {

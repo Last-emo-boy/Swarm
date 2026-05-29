@@ -15,7 +15,7 @@ test("TopologyStrip renders full, abbreviated, and token layouts", () => {
     sandboxMode: "workspace-write"
   });
   const full = plain(React.createElement(TopologyStrip, { model, columns: 140 }));
-  assert.match(full, /TOPOLOGY/);
+  assert.match(full, /BOARD/);
   assert.match(full, /SQ:0\(active\)/);
   assert.match(full, /OW:0\(blocked\)/);
   assert.match(full, /AP:2\(wait\)/);
@@ -26,7 +26,7 @@ test("TopologyStrip renders full, abbreviated, and token layouts", () => {
   assert.doesNotMatch(abbr, /POLICY/);
 
   const token = plain(React.createElement(TopologyStrip, { model, columns: 80 }));
-  assert.match(token, /TOPO/);
+  assert.match(token, /BD/);
   assert.match(token, /SQ0/);
   assert.match(token, /OW0/);
   assert.match(token, /AP2/);
@@ -38,7 +38,7 @@ test("TopologyStrip keeps monochrome status readable", () => {
     policyMode: "auto"
   });
   const output = withTuiThemeProfile("swarm-monochrome", () => plain(React.createElement(TopologyStrip, { model, columns: 80 })));
-  assert.match(output, /TOPO/);
+  assert.match(output, /BD/);
   assert.match(output, /AP1/);
   assert.match(output, /POL:AUTO/);
 });

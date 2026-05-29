@@ -480,7 +480,7 @@ export function runtimeEventToActionRow(event: RuntimeEvent, index: number): Tui
         index,
         "blackboard",
         "info",
-        `Blackboard ${event.entry.type}`,
+        `Board ${event.entry.type}`,
         event.entry.key,
         compactLines(
           `session=${event.entry.session_id}`,

@@ -62,7 +62,7 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
   },
   "Grep": {
     action: "Grep",
-    inputs: { pattern: "regex pattern", path: "optional file or directory path", glob: "optional glob", output_mode: "content | files_with_matches | count", context: "optional number", head_limit: "optional number", multiline: "optional boolean" },
+    inputs: { pattern: "regex pattern", path: "optional file or directory path", glob: "optional glob", output_mode: "content | files_with_matches | count", context: "optional number", "-A": "optional after context", "-B": "optional before context", head_limit: "optional number", offset: "optional number", "-i": "optional boolean", type: "optional file type such as ts/js/py", multiline: "optional boolean" },
     required: ["pattern"]
   },
   "Write": {
@@ -88,6 +88,12 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
     inputs: { command: "command string", timeout: "optional ms", description: "optional concise description", run_in_background: "boolean for persistent commands", cwd: "optional cwd", maxLogBytes: "optional background log cap" },
     required: ["command"],
     notes: "Use run_in_background=true or ProcessStart for servers, dev servers, watchers, and commands whose logs must be inspected later."
+  },
+  "PowerShell": {
+    action: "PowerShell",
+    inputs: { command: "PowerShell command string", timeout: "optional ms", description: "optional concise description", run_in_background: "boolean for persistent commands", cwd: "optional cwd", maxOutputBytes: "optional output cap", maxLogBytes: "optional background log cap" },
+    required: ["command"],
+    notes: "Use for Windows-native commands that require PowerShell syntax. Prefer Bash only for cross-platform shell commands."
   },
   "ProcessStart": {
     action: "ProcessStart",
@@ -134,9 +140,70 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
     inputs: { url: "http(s) URL", prompt: "what to extract from the page", timeoutMs: "optional ms", maxBytes: "optional bytes" },
     required: ["url"]
   },
+  "Config": {
+    action: "Config",
+    inputs: { setting: "safe setting key; omit value to read", value: "optional string | number | boolean | null to write the setting" },
+    required: ["setting"],
+    notes: "Reads or writes only Swarm's explicit safe settings allowlist. Secrets and API keys are never returned."
+  },
+  "McpResources": {
+    action: "McpResources",
+    inputs: { server: "optional MCP server id", limit: "optional result limit" },
+    notes: "Lists configured MCP resources with recoverable server/auth status messages."
+  },
+  "McpRead": {
+    action: "McpRead",
+    inputs: { server: "MCP server id", uri: "resource URI", maxBytes: "optional byte budget" },
+    required: ["server", "uri"],
+    notes: "Reads one MCP resource and truncates or persists large output when available."
+  },
+  "McpAuth": {
+    action: "McpAuth",
+    inputs: { server: "optional MCP server id" },
+    notes: "Reports MCP auth/connection state and recovery steps without exposing credentials."
+  },
+  "McpCall": {
+    action: "McpCall",
+    inputs: { server: "optional MCP server id", tool: "MCP tool name", capabilityId: "optional exact capability id", args: "optional JSON object", maxBytes: "optional byte budget" },
+    required_any: [["capabilityId"], ["server", "tool"]],
+    notes: "Calls a configured MCP tool through the capability broker; mutable MCP tools still follow permission policy."
+  },
+  "SkillInvoke": {
+    action: "SkillInvoke",
+    inputs: { name: "trusted skill name", reason: "optional activation reason" },
+    required: ["name"],
+    notes: "Activates one trusted skill and writes durable context through the existing runtime skill path."
+  },
   "TodoWrite": {
     action: "TodoWrite",
     inputs: { todos: "array of {content:string,activeForm?:string,status:'pending'|'in_progress'|'completed'}" }
+  },
+  "AskUserQuestion": {
+    action: "AskUserQuestion",
+    inputs: { prompt: "clear question text", questions: "optional array of structured questions", choices: "optional array of {label:string,description?:string}", defaultChoice: "optional default choice label", recommendedChoice: "optional recommended choice label", allowFreeform: "optional boolean", reason: "optional reason this question is blocking" },
+    required: ["prompt"],
+    notes: "Use only for genuinely blocking user choices. Returns a recoverable waiting result until the user answers."
+  },
+  "EnterPlanMode": {
+    action: "EnterPlanMode",
+    inputs: { objective: "optional task objective", reason: "optional reason planning mode is useful" },
+    notes: "Use before non-trivial implementation work that needs exploration and user-visible planning."
+  },
+  "ExitPlanMode": {
+    action: "ExitPlanMode",
+    inputs: { plan: "implementation plan to present for approval", summary: "optional short summary", ready: "optional boolean", allowedPrompts: "optional array of {tool:string,prompt:string}" },
+    required: ["plan"],
+    notes: "Use after writing the implementation plan. Returns a recoverable waiting result for approval."
+  },
+  "EnterWorktree": {
+    action: "EnterWorktree",
+    inputs: { name: "optional short worktree name", branch: "optional branch name; defaults to swarm/worktree/<name>" },
+    notes: "Creates an isolated git worktree for the current session and updates the session workspace lease. Use only when the user explicitly asks for worktree isolation."
+  },
+  "ExitWorktree": {
+    action: "ExitWorktree",
+    inputs: { mode: "keep | remove", discard_changes: "optional boolean; required to remove a dirty worktree" },
+    notes: "Leaves the active session worktree. keep preserves the directory and branch; remove deletes only a Swarm-created worktree after safety checks."
   },
   "BlackboardWrite": {
     action: "BlackboardWrite",
@@ -167,6 +234,80 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
     inputs: { description: "short task description", prompt: "task for the agent", subagent_type: "optional agent type", model: "optional model", run_in_background: "optional boolean; launch without blocking the main agent", capability: "compat capability", task: "compat task", file_scope: "optional string[]" },
     required_any: [["prompt", "task", "description", "objective"]]
   },
+  "AgentList": {
+    action: "AgentList",
+    inputs: { parent_session_id: "optional parent session id; defaults to current session when available", status: "optional pending | running | completed | failed | stopped", limit: "optional number" }
+  },
+  "AgentStatus": {
+    action: "AgentStatus",
+    inputs: { worker_id: "worker id returned by Agent or AgentList" },
+    required: ["worker_id"]
+  },
+  "AgentStop": {
+    action: "AgentStop",
+    inputs: { worker_id: "running or pending worker id" },
+    required: ["worker_id"]
+  },
+  "AgentContinue": {
+    action: "AgentContinue",
+    inputs: { worker_id: "completed/failed/stopped worker id to recall", message: "follow-up instruction for the recalled worker context", run_in_background: "optional boolean; launch the continuation without blocking" },
+    required: ["worker_id", "message"]
+  },
+  "AgentMessage": {
+    action: "AgentMessage",
+    inputs: { worker_id: "optional worker id", agent_id: "optional exact agent actor id", role: "optional target role", capability: "optional target capability", message: "message to deliver", require_ack: "optional boolean", ttl_ms: "optional ms" },
+    required: ["message"],
+    required_any: [["worker_id"], ["agent_id"], ["role"], ["capability"]],
+    notes: "Sends a peer message through the existing Swarm mailbox/envelope runtime. Use agent.list first to find worker ids."
+  },
+  "RuntimeSleep": {
+    action: "RuntimeSleep",
+    inputs: { duration_ms: "bounded wait duration in ms", reason: "optional wait reason" },
+    required: ["duration_ms"],
+    notes: "Use only for short cooldowns or polling gaps. The wait is bounded and does not create a background process."
+  },
+  "StructuredOutput": {
+    action: "StructuredOutput",
+    inputs: { value: "JSON value to validate/record", schema: "optional JSON schema object", label: "optional label", final: "optional boolean" },
+    required: ["value"],
+    notes: "Headless/schema-enabled output contract tool. Normal interactive chat should return final text instead."
+  },
+  "ReplMode": {
+    action: "ReplMode",
+    inputs: { mode: "optional interactive | headless | repl", reason: "optional reason" },
+    notes: "Reports Swarm's current REPL/headless tool visibility guidance without creating a second REPL state machine."
+  },
+  "TaskCreate": {
+    action: "TaskCreate",
+    inputs: { title: "task title", objective: "optional objective", description: "optional details", task_id: "optional stable id", session_id: "optional session id; defaults to current session", status: "optional pending | running | completed | failed | blocked | cancelled", capability: "optional capability", required_capabilities: "optional string[]", file_scope: "optional string[]" },
+    required: ["title"],
+    notes: "Creates a tracked task in the current Swarm session using existing task state stores."
+  },
+  "TaskUpdate": {
+    action: "TaskUpdate",
+    inputs: { task_id: "task id", session_id: "optional session id", status: "optional task status", summary: "optional progress/result summary", output: "optional output to persist", output_ref: "optional existing output ref", last_error: "optional error text", progress: "optional number" },
+    required: ["task_id"],
+    notes: "Updates progress/result state for an existing tracked task."
+  },
+  "TaskGet": {
+    action: "TaskGet",
+    inputs: { task_id: "task id", session_id: "optional session id" },
+    required: ["task_id"]
+  },
+  "TaskList": {
+    action: "TaskList",
+    inputs: { session_id: "optional session id; defaults to current session", status: "optional task status", limit: "optional number", offset: "optional number" }
+  },
+  "TaskOutput": {
+    action: "TaskOutput",
+    inputs: { task_id: "optional task id", worker_id: "optional worker id", session_id: "optional session id", output_ref: "optional persisted output path/ref", max_bytes: "optional byte budget", offset: "optional byte offset" },
+    required_any: [["task_id", "worker_id", "output_ref"]]
+  },
+  "TaskStop": {
+    action: "TaskStop",
+    inputs: { task_id: "task or worker id to stop", session_id: "optional session id", reason: "optional cancellation reason" },
+    required: ["task_id"]
+  },
   "file.read": {
     action: "file.read",
     inputs: {
@@ -191,7 +332,7 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
   },
   "file.grep": {
     action: "file.grep",
-    inputs: { action: "file.grep", root: "file or directory path", pattern: "regex pattern", include: "optional glob", maxMatches: "optional number", contextLines: "optional number" },
+    inputs: { action: "file.grep", root: "file or directory path", pattern: "regex pattern", include: "optional glob", outputMode: "content | files_with_matches | count", maxMatches: "compat optional number", headLimit: "optional number; 0 means unlimited", offset: "optional number", contextLines: "optional number", beforeContext: "optional number", afterContext: "optional number", caseInsensitive: "optional boolean", multiline: "optional boolean", fileType: "optional file type such as ts/js/py" },
     required: ["pattern"]
   },
   "file.stat": {
@@ -266,6 +407,12 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
     action: "shell.exec",
     inputs: { action: "shell.exec", command: "command string", cwd: "optional workspace-relative cwd", timeoutMs: "optional ms", maxOutputBytes: "optional bytes", run_in_background: "optional boolean", description: "optional label", maxLogBytes: "optional bytes" },
     required: ["command"]
+  },
+  "powershell.exec": {
+    action: "powershell.exec",
+    inputs: { action: "powershell.exec", command: "PowerShell command string", cwd: "optional workspace-relative cwd", timeoutMs: "optional ms", maxOutputBytes: "optional bytes", run_in_background: "optional boolean", description: "optional label", maxLogBytes: "optional bytes" },
+    required: ["command"],
+    notes: "Runs through powershell.exe -NoProfile -Command on Windows and pwsh/powershell fallback elsewhere when available."
   },
   "process.start": {
     action: "process.start",
@@ -396,8 +543,42 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
   },
   "web.fetch": {
     action: "web.fetch",
-    inputs: { action: "web.fetch", url: "http(s) URL", timeoutMs: "optional ms", maxBytes: "optional bytes" },
+    inputs: { action: "web.fetch", url: "http(s) URL", prompt: "optional extraction prompt", timeoutMs: "optional ms", maxBytes: "optional bytes" },
     required: ["url"]
+  },
+  "config.get": {
+    action: "config.get",
+    inputs: { action: "config.get", setting: "optional safe setting key; omit to list safe settings" },
+    notes: "Never returns plaintext API keys, tokens, headers, or credentials."
+  },
+  "config.set": {
+    action: "config.set",
+    inputs: { action: "config.set", setting: "safe setting key", value: "string | number | boolean | null" },
+    required: ["setting", "value"],
+    notes: "Writes only Swarm's explicit safe settings allowlist."
+  },
+  "mcp.resources": {
+    action: "mcp.resources",
+    inputs: { action: "mcp.resources", server: "optional MCP server id", limit: "optional result limit" }
+  },
+  "mcp.read": {
+    action: "mcp.read",
+    inputs: { action: "mcp.read", server: "MCP server id", uri: "resource URI", maxBytes: "optional byte budget" },
+    required: ["server", "uri"]
+  },
+  "mcp.auth": {
+    action: "mcp.auth",
+    inputs: { action: "mcp.auth", server: "optional MCP server id" }
+  },
+  "mcp.call": {
+    action: "mcp.call",
+    inputs: { action: "mcp.call", server: "optional MCP server id", tool: "MCP tool name", capabilityId: "optional exact capability id", args: "optional JSON object", maxBytes: "optional byte budget" },
+    required_any: [["capabilityId"], ["server", "tool"]]
+  },
+  "skill.invoke": {
+    action: "skill.invoke",
+    inputs: { action: "skill.invoke", name: "trusted skill name", reason: "optional activation reason" },
+    required: ["name"]
   },
   "todo.write": {
     action: "todo.write",
@@ -406,6 +587,42 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
       todos: "array of {content:string,status:'pending'|'in_progress'|'completed'}"
     },
     required: ["todos"]
+  },
+  "ask_user_question": {
+    action: "ask_user_question",
+    inputs: {
+      action: "ask_user_question",
+      prompt: "clear question text",
+      questions: "optional array of structured questions",
+      choices: "optional array of {label:string,description?:string}",
+      defaultChoice: "optional default choice label",
+      recommendedChoice: "optional recommended choice label",
+      allowFreeform: "optional boolean",
+      reason: "optional reason this question is blocking"
+    },
+    required: ["prompt"],
+    notes: "Use only for genuinely blocking user choices. Returns a recoverable waiting result until the user answers."
+  },
+  "plan.enter": {
+    action: "plan.enter",
+    inputs: { action: "plan.enter", objective: "optional task objective", reason: "optional reason planning mode is useful" },
+    notes: "Use before non-trivial implementation work that needs exploration and user-visible planning."
+  },
+  "plan.exit": {
+    action: "plan.exit",
+    inputs: { action: "plan.exit", plan: "implementation plan to present for approval", summary: "optional short summary", ready: "optional boolean", allowedPrompts: "optional array of {tool:string,prompt:string}" },
+    required: ["plan"],
+    notes: "Use after writing the implementation plan. Returns a recoverable waiting result for approval."
+  },
+  "worktree.enter": {
+    action: "worktree.enter",
+    inputs: { action: "worktree.enter", name: "optional short worktree name", branch: "optional branch name; defaults to swarm/worktree/<name>" },
+    notes: "Creates an isolated git worktree for the current session and updates the session workspace lease. Use only when the user explicitly asks for worktree isolation."
+  },
+  "worktree.exit": {
+    action: "worktree.exit",
+    inputs: { action: "worktree.exit", mode: "keep | remove", discardChanges: "optional boolean; required to remove a dirty worktree" },
+    notes: "Leaves the active session worktree. keep preserves the directory and branch; remove deletes only a Swarm-created worktree after safety checks."
   },
   "notebook.edit": {
     action: "notebook.edit",
@@ -462,6 +679,128 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
     action: "agent.continue",
     inputs: { action: "agent.continue", worker_id: "completed/failed/stopped worker id to recall", message: "follow-up instruction for the recalled worker context", run_in_background: "optional boolean; launch the continuation without blocking" },
     required: ["worker_id", "message"]
+  },
+  "agent.message": {
+    action: "agent.message",
+    inputs: { action: "agent.message", worker_id: "optional worker id", agent_id: "optional exact agent actor id", role: "optional target role", capability: "optional target capability", message: "message to deliver", require_ack: "optional boolean", ttl_ms: "optional ms" },
+    required: ["message"],
+    required_any: [["worker_id"], ["agent_id"], ["role"], ["capability"]],
+    notes: "Sends a peer message through the existing Swarm mailbox/envelope runtime. Use agent.list first to find worker ids."
+  },
+  "runtime.sleep": {
+    action: "runtime.sleep",
+    inputs: { action: "runtime.sleep", duration_ms: "bounded wait duration in ms", reason: "optional wait reason" },
+    required: ["duration_ms"],
+    notes: "Use only for short cooldowns or polling gaps. The wait is bounded and does not create a background process."
+  },
+  "structured.output": {
+    action: "structured.output",
+    inputs: { action: "structured.output", value: "JSON value to validate/record", schema: "optional JSON schema object", label: "optional label", final: "optional boolean" },
+    required: ["value"],
+    notes: "Headless/schema-enabled output contract tool. Normal interactive chat should return final text instead."
+  },
+  "repl.mode": {
+    action: "repl.mode",
+    inputs: { action: "repl.mode", mode: "optional interactive | headless | repl", reason: "optional reason" },
+    notes: "Reports Swarm's current REPL/headless tool visibility guidance without creating a second REPL state machine."
+  },
+  "ScheduleCreate": {
+    action: "ScheduleCreate",
+    inputs: { cron: "5-field cron expression", prompt: "prompt to run", recurring: "optional boolean", durable: "optional boolean", timezone: "optional timezone", dry_run: "optional boolean" },
+    required: ["cron", "prompt"],
+    notes: "Design-gated automation surface. Returns recoverable unavailable guidance until Swarm has a durable scheduler daemon/store."
+  },
+  "ScheduleList": {
+    action: "ScheduleList",
+    inputs: { status: "optional active | paused | expired", limit: "optional number" },
+    notes: "Design-gated schedule inventory surface. It does not invent schedule state when no durable scheduler exists."
+  },
+  "ScheduleDelete": {
+    action: "ScheduleDelete",
+    inputs: { schedule_id: "exact schedule id", reason: "optional reason", dry_run: "optional boolean" },
+    required: ["schedule_id"],
+    notes: "Design-gated exact-id schedule deletion surface. Must be permission-gated if durable schedules are implemented later."
+  },
+  "RemoteTrigger": {
+    action: "RemoteTrigger",
+    inputs: { endpoint: "optional configured endpoint id", capability: "optional remote capability", payload: "optional JSON payload", dry_run: "optional boolean" },
+    notes: "Design-gated remote integration boundary. Requires explicit configured endpoints and never uses implicit credentials."
+  },
+  "TeamCreate": {
+    action: "TeamCreate",
+    inputs: { name: "optional team name", objective: "team objective", roles: "optional role list", task_ids: "optional existing task ids", dry_run: "optional boolean" },
+    required: ["objective"],
+    notes: "Design-gated team lifecycle surface. Future implementation must compose existing agent/task primitives instead of a second team store."
+  },
+  "TeamDelete": {
+    action: "TeamDelete",
+    inputs: { team_id: "exact team id", reason: "optional reason", dry_run: "optional boolean" },
+    required: ["team_id"],
+    notes: "Design-gated exact-id team deletion surface. Future implementation must be audited and permission-gated."
+  },
+  "schedule.create": {
+    action: "schedule.create",
+    inputs: { action: "schedule.create", cron: "5-field cron expression", prompt: "prompt to run", recurring: "optional boolean", durable: "optional boolean", timezone: "optional timezone", dry_run: "optional boolean" },
+    required: ["cron", "prompt"],
+    notes: "Design-gated automation surface. Returns recoverable unavailable guidance until Swarm has a durable scheduler daemon/store."
+  },
+  "schedule.list": {
+    action: "schedule.list",
+    inputs: { action: "schedule.list", status: "optional active | paused | expired", limit: "optional number" },
+    notes: "Design-gated schedule inventory surface. It does not invent schedule state when no durable scheduler exists."
+  },
+  "schedule.delete": {
+    action: "schedule.delete",
+    inputs: { action: "schedule.delete", schedule_id: "exact schedule id", reason: "optional reason", dry_run: "optional boolean" },
+    required: ["schedule_id"],
+    notes: "Design-gated exact-id schedule deletion surface. Must be permission-gated if durable schedules are implemented later."
+  },
+  "remote.trigger": {
+    action: "remote.trigger",
+    inputs: { action: "remote.trigger", endpoint: "optional configured endpoint id", capability: "optional remote capability", payload: "optional JSON payload", dry_run: "optional boolean" },
+    notes: "Design-gated remote integration boundary. Requires explicit configured endpoints and never uses implicit credentials."
+  },
+  "team.create": {
+    action: "team.create",
+    inputs: { action: "team.create", name: "optional team name", objective: "team objective", roles: "optional role list", task_ids: "optional existing task ids", dry_run: "optional boolean" },
+    required: ["objective"],
+    notes: "Design-gated team lifecycle surface. Future implementation must compose existing agent/task primitives instead of a second team store."
+  },
+  "team.delete": {
+    action: "team.delete",
+    inputs: { action: "team.delete", team_id: "exact team id", reason: "optional reason", dry_run: "optional boolean" },
+    required: ["team_id"],
+    notes: "Design-gated exact-id team deletion surface. Future implementation must be audited and permission-gated."
+  },
+  "task.create": {
+    action: "task.create",
+    inputs: { action: "task.create", title: "task title", objective: "optional objective", description: "optional details", task_id: "optional stable id", session_id: "optional session id", status: "optional task status", capability: "optional capability", required_capabilities: "optional string[]", file_scope: "optional string[]" },
+    required: ["title"],
+    notes: "Creates a tracked task in the current Swarm session using existing task state stores."
+  },
+  "task.update": {
+    action: "task.update",
+    inputs: { action: "task.update", task_id: "task id", session_id: "optional session id", status: "optional task status", summary: "optional progress/result summary", output: "optional output to persist", output_ref: "optional output ref", last_error: "optional error text", progress: "optional number" },
+    required: ["task_id"]
+  },
+  "task.get": {
+    action: "task.get",
+    inputs: { action: "task.get", task_id: "task id", session_id: "optional session id" },
+    required: ["task_id"]
+  },
+  "task.list": {
+    action: "task.list",
+    inputs: { action: "task.list", session_id: "optional session id", status: "optional task status", limit: "optional number", offset: "optional number" }
+  },
+  "task.output": {
+    action: "task.output",
+    inputs: { action: "task.output", task_id: "optional task id", worker_id: "optional worker id", session_id: "optional session id", output_ref: "optional persisted output path/ref", max_bytes: "optional byte budget", offset: "optional byte offset" },
+    required_any: [["task_id", "worker_id", "output_ref"]]
+  },
+  "task.stop": {
+    action: "task.stop",
+    inputs: { action: "task.stop", task_id: "task or worker id to stop", session_id: "optional session id", reason: "optional cancellation reason" },
+    required: ["task_id"]
   },
   "agent.delegate": {
     action: "agent.delegate",

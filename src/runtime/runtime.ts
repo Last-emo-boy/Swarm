@@ -1,8 +1,8 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { execFile, fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type {
   AgentCard,
   BlackboardEntry,
@@ -40,7 +40,7 @@ import { WorkspaceLeaseStore } from "../storage/workspace-lease-store.js";
 import { SymphonyClaimStore } from "../storage/symphony-claim-store.js";
 import { SessionContextStore, type SessionContextBudget } from "../storage/session-context-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
-import { writeTaskOutput } from "../storage/task-output-store.js";
+import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js";
 import { OpenAIProvider, type ProviderUsageReport } from "../providers/openai-provider.js";
 import { ensureSwarmHome, formatModelReadinessProblems, getSwarmPaths, loadSwarmSettings, type SwarmSettings } from "../config/settings.js";
 import { builtinAgents } from "./builtin-agents.js";
@@ -69,7 +69,7 @@ import {
   type AgentSpec,
   type AgentTaskPacket
 } from "./agent-specs.js";
-import type { BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, FileLockEvent, LocalToolContext, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
+import type { AgentMessageAction, BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, FileLockEvent, LocalToolContext, ReplModeAction, RuntimeControlToolContext, StructuredOutputAction, TaskControlToolContext, TaskCreateAction, TaskGetAction, TaskListAction, TaskOutputAction, TaskStopAction, TaskUpdateAction, ToolResult, WorkspaceChangeMetadata, WorktreeControlToolContext, WorktreeEnterAction, WorktreeExitAction } from "../tools/types.js";
 import { riskClassForAction } from "../tools/permissions.js";
 import { normalizeToolAction } from "../tools/local-tools.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
@@ -127,6 +127,7 @@ const WORKER_SLOT_POLL_MS = 50;
 const HANDOFF_LEASE_TTL_MS = 5 * 60 * 1000;
 const NO_ACTIVE_LIVE_REPLY_MESSAGE = "No active work is available to receive a live reply. Start or resume a run first.";
 const NO_ACTIVE_INTERRUPT_MESSAGE = "No active work is available to interrupt. Start or resume a run first.";
+const WORKTREE_DIR = ".swarm/worktrees";
 
 export type RuntimeChildTransportMessageResult = {
   handled: boolean;
@@ -294,6 +295,9 @@ export class SwarmRuntime {
         spawn_reason: `capability broker delegate from ${taskId}`
       }),
       agentControl: this.createRuntimeAgentControlTools(),
+      taskControl: this.createRuntimeTaskControlTools(),
+      worktreeControl: this.createRuntimeWorktreeControlTools(),
+      runtimeControl: this.createRuntimeControlTools(),
       onWorkspaceChange: (sessionId, change) => this.recordWorkspaceChange(change.sessionId ?? sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event),
       blackboard: this.createRuntimeBlackboardTools(),
@@ -356,10 +360,12 @@ export class SwarmRuntime {
         } else if (event.type === "blackboard") {
           this.debug?.debug("blackboard", `${event.entry.type} ${event.entry.key}`);
         } else if (event.type === "final") {
-          this.debug?.info("final", `session=${event.session_id} changed=${event.outcome?.changed_files.length ?? 0} artifact=${event.artifact_path ?? "none"}`, {
+          const summary = event.outcome?.final_summary ?? firstLine(event.content);
+          this.debug?.info("final", `session=${event.session_id} status=${event.status ?? "completed"} changed=${event.outcome?.changed_files.length ?? 0} artifact=${event.artifact_path ?? "none"} summary="${summary}"`, {
             changedFiles: event.outcome?.changed_files,
             testsRun: event.outcome?.tests_run,
-            intermediateArtifacts: event.outcome?.intermediate_artifacts
+            intermediateArtifacts: event.outcome?.intermediate_artifacts,
+            summary
           });
         } else if (event.type === "error") {
           this.debug?.error("runtime", event.message);
@@ -672,6 +678,11 @@ export class SwarmRuntime {
       checkpoint: this.lastCheckpoint,
       invokeAgent: (request) => this.invokeAgent(request),
       agentControl: this.createRuntimeAgentControlTools(),
+      taskControl: this.createRuntimeTaskControlTools(),
+      worktreeControl: this.createRuntimeWorktreeControlTools(),
+      runtimeControl: this.createRuntimeControlTools(),
+      externalContext: this.createRuntimeExternalContextTools(),
+      workspaceForSession: (sessionId) => this.workspaceForSession(sessionId),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: () => this.renderDurableContextForSession(input.session_id),
@@ -926,6 +937,11 @@ export class SwarmRuntime {
       checkpoint: this.lastCheckpoint,
       invokeAgent: (request) => this.invokeAgent(request),
       agentControl: this.createRuntimeAgentControlTools(),
+      taskControl: this.createRuntimeTaskControlTools(),
+      worktreeControl: this.createRuntimeWorktreeControlTools(),
+      runtimeControl: this.createRuntimeControlTools(),
+      externalContext: this.createRuntimeExternalContextTools(),
+      workspaceForSession: (sessionId) => this.workspaceForSession(sessionId),
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: (sessionId) => this.renderDurableContextForSession(sessionId),
@@ -1740,12 +1756,319 @@ export class SwarmRuntime {
     };
   }
 
+  createRuntimeTaskControlTools(): NonNullable<LocalToolContext["taskControl"]> {
+    return {
+      create: (action, context) => this.createRuntimeTask(action, context),
+      update: (action, context) => this.updateRuntimeTask(action, context),
+      get: (action, context) => this.getRuntimeTask(action, context),
+      list: (action, context) => this.listRuntimeTasks(action, context),
+      output: (action, context) => this.readRuntimeTaskOutput(action, context),
+      stop: (action, context) => this.stopRuntimeTask(action, context)
+    };
+  }
+
+  createRuntimeWorktreeControlTools(): NonNullable<LocalToolContext["worktreeControl"]> {
+    return {
+      enter: (action, context) => this.enterWorktree(action, context),
+      exit: (action, context) => this.exitWorktree(action, context)
+    };
+  }
+
+  createRuntimeControlTools(): NonNullable<LocalToolContext["runtimeControl"]> {
+    return {
+      structuredOutputEnabled: false,
+      sendAgentMessage: (action, context) => this.sendRuntimeAgentMessage(action, context),
+      replMode: (action, context) => this.runtimeReplMode(action, context)
+    };
+  }
+
+  createRuntimeExternalContextTools(): NonNullable<LocalToolContext["externalContext"]> {
+    return {
+      listMcpServers: () => this.listMcpServers(),
+      refreshMcpServer: (serverId) => this.refreshMcpServer(serverId),
+      listMcpResources: (serverId) => this.listMcpResources(serverId),
+      readMcpResource: async (input) => {
+        try {
+          const result = await this.readMcpResource(input.serverId, input.uri, input.sessionId);
+          return {
+            action: "mcp.read",
+            status: "success",
+            summary: `MCP resource read: ${input.serverId}:${input.uri}`,
+            content: formatCompactJsonForTool(result, input.maxBytes ?? 32_000),
+            data: result,
+            outputRef: result._swarm_artifact?.path,
+            metadata: {
+              server_id: input.serverId,
+              uri: input.uri,
+              outputRef: result._swarm_artifact
+            }
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return {
+            action: "mcp.read",
+            status: "failed",
+            summary: `MCP resource read failed: ${message}`,
+            errors: [message],
+            errorCode: "MCP_RESOURCE_READ_FAILED",
+            recoverable: true,
+            retryable: true,
+            recoverySuggestion: "Call mcp.resources to confirm the URI and mcp.auth to inspect server state, then retry."
+          };
+        }
+      },
+      callMcpTool: async (input) => this.callRuntimeMcpTool(input),
+      listSkills: () => this.listSkills(),
+      invokeSkill: (input) => this.invokeRuntimeSkill(input)
+    };
+  }
+
+  private async sendRuntimeAgentMessage(action: AgentMessageAction, context: RuntimeControlToolContext): Promise<ToolResult> {
+    const sessionId = action.session_id ?? context.sessionId;
+    if (!sessionId) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: "agent.message requires an active session",
+        errorCode: "AGENT_MESSAGE_SESSION_REQUIRED",
+        recoverable: true,
+        recoverySuggestion: "Run agent.message inside an active Swarm session, or pass session_id from agent.list/task output."
+      };
+    }
+    const target = this.resolveAgentMessageTarget(action);
+    if (!target) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: "agent.message requires worker_id, agent_id, role, or capability",
+        errorCode: "AGENT_MESSAGE_TARGET_REQUIRED",
+        recoverable: true,
+        recoverySuggestion: "Call agent.list or agent.status to find a valid worker_id, then retry."
+      };
+    }
+    const taskId = action.task_id ?? context.taskId;
+    const swarmId = this.sessionStore.get(sessionId)?.swarm_id ?? `swarm_${sessionId}`;
+    const envelope = createEnvelope({
+      swarm_id: swarmId,
+      session_id: sessionId,
+      task_id: taskId,
+      from: context.agent ?? { agent_id: "main_swarm", role: "controller" },
+      to: target.address,
+      type: "blackboard.notification",
+      intent: "agent.message",
+      payload: {
+        message: action.message,
+        metadata: action.metadata ?? {},
+        worker_id: action.worker_id,
+        target_agent_id: target.address.agent_id,
+        target_role: target.address.role,
+        target_capability: target.address.capability,
+        source: "agent.message"
+      },
+      ttl_ms: action.ttl_ms,
+      routing: { mode: target.mode, require_ack: action.require_ack },
+      correlation_id: `${sessionId}:${taskId ?? "agent.message"}:${randomUUID()}`
+    });
+    try {
+      await this.router.dispatch(envelope);
+      const deliveries = this.envelopeDeliveryStore.list({ envelopeId: envelope.id });
+      return {
+        action: action.type,
+        status: deliveries.some((delivery) => delivery.status === "failed") ? "partial" : "success",
+        summary: `Message sent to ${target.label}`,
+        content: renderEnvelopeDeliveryRecords(deliveries),
+        data: { envelope, deliveries },
+        metadata: {
+          envelope_id: envelope.id,
+          target: target.label,
+          delivered: deliveries.filter((delivery) => delivery.status === "delivered" || delivery.status === "acked").length,
+          failed: deliveries.filter((delivery) => delivery.status === "failed").length
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        action: action.type,
+        status: "failed",
+        summary: `agent.message delivery failed: ${message}`,
+        errors: [message],
+        errorCode: "AGENT_MESSAGE_DELIVERY_FAILED",
+        recoverable: true,
+        recoverySuggestion: "Call agent.list or agent.status to confirm the target is active, then retry with a valid worker_id or agent_id."
+      };
+    }
+  }
+
+  private runtimeReplMode(action: ReplModeAction, _context: RuntimeControlToolContext): ToolResult {
+    const mode = action.mode ?? "interactive";
+    return {
+      action: action.type,
+      status: "success",
+      summary: `REPL mode guidance: ${mode}`,
+      content: [
+        `Mode: ${mode}`,
+        "Interactive Swarm runs use the normal chat/coding-loop tool surface.",
+        "Headless structured output is disabled unless the run explicitly provides a schema output contract.",
+        "Swarm does not create a second REPL state machine for this tool."
+      ].join("\n"),
+      data: {
+        mode,
+        structured_output_available: false,
+        primitive_tools_internal: true
+      },
+      metadata: { mode, structured_output_available: false }
+    };
+  }
+
+  private resolveAgentMessageTarget(action: AgentMessageAction): { address: { agent_id?: string; role?: string; capability?: string }; mode: "direct" | "role" | "capability"; label: string } | undefined {
+    if (action.worker_id) {
+      const worker = this.workerStateStore.get(action.worker_id);
+      const actorId = `worker:${action.worker_id}`;
+      if (!worker && !this.agentActorStore.get(actorId)) {
+        return undefined;
+      }
+      return { address: { agent_id: actorId, role: "worker", capability: worker?.capability }, mode: "direct", label: action.worker_id };
+    }
+    if (action.agent_id) {
+      return { address: { agent_id: action.agent_id }, mode: "direct", label: action.agent_id };
+    }
+    if (action.role) {
+      return { address: { role: action.role }, mode: "role", label: `role:${action.role}` };
+    }
+    if (action.capability) {
+      return { address: { capability: action.capability }, mode: "capability", label: `capability:${action.capability}` };
+    }
+    return undefined;
+  }
+
   listMcpResources(serverId: string) {
     return this.capabilityPlane.listMcpResources(serverId);
   }
 
   listMcpPrompts(serverId: string) {
     return this.capabilityPlane.listMcpPrompts(serverId);
+  }
+
+  private async callRuntimeMcpTool(input: {
+    serverId?: string;
+    tool?: string;
+    capabilityId?: string;
+    args?: Record<string, unknown>;
+    sessionId?: string;
+    taskId?: string;
+    maxBytes?: number;
+  }): Promise<ToolResult> {
+    try {
+      const capability = input.capabilityId
+        ? await this.getCapability(input.capabilityId)
+        : await this.findMcpToolCapability(input.serverId, input.tool);
+      if (!capability) {
+        return {
+          action: "mcp.call",
+          status: "failed",
+          summary: "MCP tool was not found",
+          errors: [`server=${input.serverId ?? ""} tool=${input.tool ?? ""} capabilityId=${input.capabilityId ?? ""}`],
+          errorCode: "MCP_TOOL_NOT_FOUND",
+          recoverable: true,
+          retryable: false,
+          recoverySuggestion: "Use ToolSearch or /mcp to find the exact MCP tool name, then retry with server and tool or capabilityId."
+        };
+      }
+      const result = await this.invokeCapability(capability.id, input.args ?? {}, input.sessionId, {
+        taskId: input.taskId ?? `mcp.tool.${sanitizeKey(capability.id).slice(0, 80)}`,
+        title: `Call MCP tool ${capability.title ?? capability.name}`,
+        source: "runtime"
+      });
+      return compactToolResultForMaxBytes(result, input.maxBytes ?? 32_000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        action: "mcp.call",
+        status: "failed",
+        summary: `MCP tool call failed: ${message}`,
+        errors: [message],
+        errorCode: "MCP_TOOL_CALL_FAILED",
+        recoverable: true,
+        retryable: true,
+        recoverySuggestion: "Inspect mcp.auth and ToolSearch results, then retry with a connected server and narrower arguments."
+      };
+    }
+  }
+
+  private async findMcpToolCapability(serverId?: string, tool?: string): Promise<CapabilityDescriptor | undefined> {
+    if (!serverId?.trim() || !tool?.trim()) {
+      return undefined;
+    }
+    const capabilities = await this.listCapabilities({
+      kind: "mcp_tool",
+      providerId: `mcp:${serverId.trim()}`,
+      includeDisabled: true
+    });
+    const normalizedTool = tool.trim().toLowerCase();
+    return capabilities.find((capability) =>
+      capability.kind === "mcp_tool" &&
+      (
+        capability.metadata?.tool_name === tool ||
+        capability.name.toLowerCase() === normalizedTool ||
+        capability.name.toLowerCase().endsWith(`__${normalizedTool.replace(/[^a-z0-9]+/g, "_")}`)
+      )
+    );
+  }
+
+  private invokeRuntimeSkill(input: {
+    name: string;
+    reason?: string;
+    sessionId?: string;
+    taskId?: string;
+  }): ToolResult {
+    try {
+      const skill = this.activateSkill(input.name, input.sessionId, input.reason);
+      return {
+        action: "skill.invoke",
+        status: "success",
+        summary: `Skill activated: ${skill.name}.`,
+        content: [
+          `Skill: ${skill.displayName} (${skill.name})`,
+          skill.description,
+          "",
+          skill.content
+        ].join("\n"),
+        data: {
+          name: skill.name,
+          title: skill.displayName,
+          description: skill.description,
+          path: skill.path,
+          directory: skill.directory,
+          allowed_tools: skill.allowedTools,
+          resource_paths: skill.resourcePaths,
+          activated_at: skill.activatedAt,
+          durable_context: Boolean(input.sessionId)
+        },
+        metadata: {
+          skill: skill.name,
+          scope: skill.scope,
+          trust: skill.trust,
+          durable_context: Boolean(input.sessionId)
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const available = this.listSkills()
+        .filter((skill) => !skill.shadowedBy && skill.trust !== "disabled" && skill.trust !== "untrusted")
+        .map((skill) => skill.name)
+        .slice(0, 50);
+      return {
+        action: "skill.invoke",
+        status: "failed",
+        summary: `Skill activation failed: ${message}`,
+        errors: [message],
+        errorCode: "SKILL_INVOKE_FAILED",
+        recoverable: true,
+        retryable: false,
+        recoverySuggestion: "Use ToolSearch or /skills to find an available trusted skill, then retry with that exact name.",
+        data: { available_skills: available }
+      };
+    }
   }
 
   async readMcpResource(serverId: string, uri: string, sessionId?: string): Promise<McpResourceReadResult> {
@@ -3039,6 +3362,11 @@ export class SwarmRuntime {
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       agentControl: this.createRuntimeAgentControlTools(),
+      taskControl: this.createRuntimeTaskControlTools(),
+      worktreeControl: this.createRuntimeWorktreeControlTools(),
+      runtimeControl: this.createRuntimeControlTools(),
+      externalContext: this.createRuntimeExternalContextTools(),
+      workspaceForSession: (sessionId) => this.workspaceForSession(sessionId),
       durableContext: () => this.renderAgentDurableContext(request.parent_session_id, request.prior_worker_session_id),
       agentMemoryContext: () => this.renderAgentMemoryForActor(ownership.worker_actor_id),
         agentInstructions: renderAgentRuntimeInstructions(spec, workerDecision, taskPacket),
@@ -3615,6 +3943,483 @@ export class SwarmRuntime {
       ? this.workspaceLeaseStore.get(row.workspace_lease_id)
       : this.workspaceLeaseStore.getBySession(sessionId);
     return lease?.workspace_path ?? this.workspace;
+  }
+
+  private createRuntimeTask(action: TaskCreateAction, context: TaskControlToolContext): ToolResult {
+    const sessionId = action.session_id ?? context.sessionId;
+    const session = sessionId ? this.sessionStore.get(sessionId) : undefined;
+    if (!sessionId || !session) {
+      return taskSessionRequiredResult(action.type, sessionId);
+    }
+    const taskId = action.task_id ?? `task_${randomUUID()}`;
+    const capability = action.capability ?? action.required_capabilities?.[0] ?? "manual.task";
+    const task = {
+      task_id: taskId,
+      parent_task_id: action.parent_task_id,
+      title: action.title,
+      description: action.description ?? action.objective ?? action.title,
+      objective: action.objective ?? action.description ?? action.title,
+      type: action.taskType ?? "planning",
+      status: action.status ?? "pending",
+      required_capabilities: action.required_capabilities?.length ? action.required_capabilities : [capability],
+      inputs: {
+        source: "task.create",
+        created_by: context.agent ?? { agent_id: "main_swarm" }
+      },
+      expected_output: { format: "text" as const },
+      dependencies: action.dependencies ?? [],
+      assigned_to: action.assigned_to
+    };
+    const snapshot = this.taskStateStore.upsert({
+      session_id: sessionId,
+      swarm_id: session.swarm_id,
+      task,
+      status: task.status,
+      assigned_to: action.assigned_to,
+      capability,
+      write_policy: action.write_policy,
+      file_scope: action.file_scope
+    });
+    const graph = this.taskGraphStore.get(sessionId);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `Created task ${taskId}`,
+      content: renderTaskSnapshots([snapshot]),
+      data: { task: snapshot, graph: { task_count: graph.tasks.length, edge_count: graph.edges.length } },
+      metadata: { session_id: sessionId, task_id: taskId }
+    };
+  }
+
+  private async updateRuntimeTask(action: TaskUpdateAction, context: TaskControlToolContext): Promise<ToolResult> {
+    const sessionId = action.session_id ?? context.sessionId;
+    const session = sessionId ? this.sessionStore.get(sessionId) : undefined;
+    if (!sessionId || !session) {
+      return taskSessionRequiredResult(action.type, sessionId);
+    }
+    const existing = this.taskGraphStore.get(sessionId).tasks.find((task) => task.task_id === action.task_id);
+    if (!existing) {
+      return taskNotFoundResult(action.type, action.task_id);
+    }
+    let outputRef = action.output_ref;
+    if (action.output !== undefined) {
+      const ref = await writeTaskOutput({
+        sessionId,
+        taskId: action.task_id,
+        attempt: action.attempt ?? existing.attempt ?? 0,
+        content: action.output
+      });
+      outputRef = ref.path;
+    }
+    const status = action.status ?? existing.status;
+    const snapshot = this.taskStateStore.upsert({
+      session_id: sessionId,
+      swarm_id: session.swarm_id,
+      task: {
+        task_id: existing.task_id,
+        parent_task_id: existing.parent_task_id,
+        title: action.title ?? existing.title,
+        description: action.summary ?? existing.title,
+        objective: action.summary ?? existing.title,
+        type: "tool_call",
+        status,
+        required_capabilities: existing.required_capabilities,
+        inputs: {
+          source: "task.update",
+          output_ref: outputRef,
+          progress: action.progress,
+          metadata: action.metadata
+        },
+        expected_output: { format: "text" },
+        dependencies: existing.dependencies,
+        assigned_to: existing.assigned_to
+      },
+      status,
+      attempt: action.attempt ?? existing.attempt,
+      assigned_to: existing.assigned_to,
+      capability: existing.capability,
+      write_policy: existing.write_policy,
+      file_scope: existing.file_scope,
+      last_error: action.last_error
+    });
+    return {
+      action: action.type,
+      status: "success",
+      summary: `Updated task ${action.task_id}`,
+      content: renderTaskSnapshots([snapshot]),
+      data: { task: snapshot, output_ref: outputRef },
+      metadata: { session_id: sessionId, task_id: action.task_id, output_ref: outputRef }
+    };
+  }
+
+  private getRuntimeTask(action: TaskGetAction, context: TaskControlToolContext): ToolResult {
+    const sessionId = action.session_id ?? context.sessionId;
+    if (!sessionId || !this.sessionStore.get(sessionId)) {
+      return taskSessionRequiredResult(action.type, sessionId);
+    }
+    const task = this.taskGraphStore.get(sessionId).tasks.find((candidate) => candidate.task_id === action.task_id);
+    const worker = this.workerStateStore.get(action.task_id);
+    if (!task && !worker) {
+      return taskNotFoundResult(action.type, action.task_id);
+    }
+    return {
+      action: action.type,
+      status: "success",
+      summary: `Found task ${action.task_id}`,
+      content: [
+        task ? renderTaskSnapshots([task]) : undefined,
+        worker ? renderWorkerDetailForTool(worker) : undefined
+      ].filter(Boolean).join("\n\n"),
+      data: { task, worker: worker ? compactWorkerRecord(worker) : undefined },
+      metadata: { session_id: sessionId, task_id: action.task_id }
+    };
+  }
+
+  private listRuntimeTasks(action: TaskListAction, context: TaskControlToolContext): ToolResult {
+    const sessionId = action.session_id ?? context.sessionId;
+    if (!sessionId || !this.sessionStore.get(sessionId)) {
+      return taskSessionRequiredResult(action.type, sessionId);
+    }
+    const offset = Math.max(0, action.offset ?? 0);
+    const limit = positiveLimit(action.limit, 30);
+    const tasks = this.taskGraphStore.get(sessionId).tasks
+      .filter((task) => !action.status || task.status === action.status)
+      .slice(offset, offset + limit);
+    return {
+      action: action.type,
+      status: "success",
+      summary: `task.list returned ${tasks.length} task${tasks.length === 1 ? "" : "s"}`,
+      content: renderTaskSnapshots(tasks),
+      data: { tasks, session_id: sessionId, offset, limit, status: action.status },
+      metadata: { session_id: sessionId, count: tasks.length }
+    };
+  }
+
+  private async readRuntimeTaskOutput(action: TaskOutputAction, context: TaskControlToolContext): Promise<ToolResult> {
+    const sessionId = action.session_id ?? context.sessionId;
+    const source = await this.resolveTaskOutputText(action, sessionId);
+    if (!source) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: "No task output found",
+        errorCode: "TASK_OUTPUT_NOT_FOUND",
+        recoverable: true,
+        recoverySuggestion: "Pass output_ref from a prior tool result, or use task.list/agent.list to find a task_id or worker_id with output."
+      };
+    }
+    const offset = Math.max(0, action.offset ?? 0);
+    const maxBytes = positiveLimit(action.max_bytes, 4000);
+    const sliced = source.content.slice(offset, offset + maxBytes);
+    const hasMore = offset + maxBytes < source.content.length;
+    return {
+      action: action.type,
+      status: "success",
+      summary: `Read task output from ${source.kind}`,
+      content: sliced,
+      data: { source: source.kind, ref: source.ref, bytes: source.content.length, offset, maxBytes, hasMore },
+      metadata: { source: source.kind, ref: source.ref, bytes: source.content.length, hasMore }
+    };
+  }
+
+  private stopRuntimeTask(action: TaskStopAction, context: TaskControlToolContext): ToolResult {
+    const sessionId = action.session_id ?? context.sessionId;
+    if (!sessionId || !this.sessionStore.get(sessionId)) {
+      return taskSessionRequiredResult(action.type, sessionId);
+    }
+    const worker = this.workerStateStore.get(action.task_id);
+    const task = this.taskGraphStore.get(sessionId).tasks.find((candidate) => candidate.task_id === action.task_id);
+    let stoppedWorker: WorkerRecord | undefined;
+    if (worker) {
+      this.stopWorker(action.task_id);
+      stoppedWorker = this.workerStateStore.get(action.task_id) ?? worker;
+    }
+    let stoppedTask = task;
+    if (task) {
+      const session = this.sessionStore.get(sessionId);
+      if (session) {
+        stoppedTask = this.taskStateStore.upsert({
+          session_id: sessionId,
+          swarm_id: session.swarm_id,
+          task: {
+            task_id: task.task_id,
+            parent_task_id: task.parent_task_id,
+            title: task.title,
+            description: action.reason ?? task.title,
+            objective: action.reason ?? task.title,
+            type: "tool_call",
+            status: "cancelled",
+            required_capabilities: task.required_capabilities,
+            inputs: { source: "task.stop", reason: action.reason },
+            expected_output: { format: "text" },
+            dependencies: task.dependencies,
+            assigned_to: task.assigned_to
+          },
+          status: "cancelled",
+          attempt: task.attempt,
+          assigned_to: task.assigned_to,
+          capability: task.capability,
+          write_policy: task.write_policy,
+          file_scope: task.file_scope,
+          last_error: action.reason
+        });
+      }
+    }
+    if (!stoppedWorker && !stoppedTask) {
+      return taskNotFoundResult(action.type, action.task_id);
+    }
+    return {
+      action: action.type,
+      status: "success",
+      summary: `Stop requested for task ${action.task_id}`,
+      content: [
+        stoppedTask ? renderTaskSnapshots([stoppedTask]) : undefined,
+        stoppedWorker ? renderWorkerDetailForTool(stoppedWorker) : undefined
+      ].filter(Boolean).join("\n\n"),
+      data: { task: stoppedTask, worker: stoppedWorker ? compactWorkerRecord(stoppedWorker) : undefined },
+      metadata: { session_id: sessionId, task_id: action.task_id, worker_stopped: Boolean(stoppedWorker) }
+    };
+  }
+
+  private async resolveTaskOutputText(action: TaskOutputAction, sessionId?: string): Promise<{ kind: string; ref?: string; content: string } | undefined> {
+    if (action.output_ref) {
+      return { kind: "output_ref", ref: action.output_ref, content: await readTaskOutput(action.output_ref) };
+    }
+    if (action.worker_id) {
+      const worker = this.workerStateStore.get(action.worker_id);
+      if (worker?.last_result) {
+        return { kind: "worker", ref: action.worker_id, content: worker.last_result };
+      }
+    }
+    if (action.task_id) {
+      const worker = this.workerStateStore.get(action.task_id);
+      if (worker?.last_result) {
+        return { kind: "worker", ref: action.task_id, content: worker.last_result };
+      }
+    }
+    if (sessionId && action.task_id) {
+      const detail = this.getTaskDetail(sessionId, action.task_id);
+      const latestResult = [...detail.blackboard].reverse().find((entry) => entry.type === "result" || entry.type === "artifact");
+      if (latestResult) {
+        return { kind: "blackboard", ref: latestResult.entry_id, content: JSON.stringify(latestResult.value, null, 2) };
+      }
+    }
+    if (sessionId) {
+      const session = this.sessionStore.get(sessionId);
+      if (session?.final_output) {
+        return { kind: "session", ref: sessionId, content: session.final_output };
+      }
+    }
+    return undefined;
+  }
+
+  private async enterWorktree(action: WorktreeEnterAction, context: WorktreeControlToolContext): Promise<ToolResult> {
+    const sessionId = action.session_id ?? context.sessionId;
+    if (!sessionId) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: "worktree.enter requires an active session",
+        errorCode: "WORKTREE_SESSION_REQUIRED",
+        recoverable: true,
+        recoverySuggestion: "Run worktree.enter from an active Swarm work session."
+      };
+    }
+    const currentLease = this.workspaceLeaseStore.getBySession(sessionId);
+    if (currentLease?.metadata?.kind === "swarm_worktree" && currentLease.workspace_path !== this.workspace) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: `Already in worktree: ${currentLease.workspace_path}`,
+        errorCode: "WORKTREE_ALREADY_ACTIVE",
+        recoverable: true,
+        recoverySuggestion: "Use worktree.exit before creating another session worktree.",
+        data: { lease: currentLease }
+      };
+    }
+
+    const requestedWorkspace = action.path ?? context.workspace;
+    const gitRoot = await resolveGitRoot(requestedWorkspace);
+    if (!gitRoot) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: "worktree.enter requires a git repository",
+        errorCode: "WORKTREE_GIT_REQUIRED",
+        recoverable: true,
+        recoverySuggestion: "Run from a git repository, or continue without worktree isolation."
+      };
+    }
+
+    const name = validateWorktreeName(action.name ?? `session-${sessionId.slice(0, 8)}-${Date.now().toString(36)}`);
+    const branch = validateWorktreeBranch(action.branch ?? `swarm/worktree/${name}`);
+    const worktreePath = action.path ? resolve(action.path) : resolve(gitRoot, WORKTREE_DIR, name);
+    if (action.dry_run) {
+      return {
+        action: action.type,
+        status: "success",
+        summary: `Preview worktree ${name}`,
+        content: [
+          `Worktree: ${worktreePath}`,
+          `Branch: ${branch}`,
+          "Dry run: no git worktree or workspace lease was created."
+        ].join("\n"),
+        data: { dryRun: true, worktreePath, branch, gitRoot, name },
+        metadata: { dryRun: true, workspace_path: worktreePath, branch }
+      };
+    }
+    await mkdir(resolve(gitRoot, WORKTREE_DIR), { recursive: true });
+
+    const head = (await runGit(["rev-parse", "HEAD"], gitRoot)).stdout.trim();
+    const existing = await gitWorktreeExists(worktreePath, gitRoot);
+    if (!existing) {
+      await runGit(["worktree", "add", "-b", branch, worktreePath, "HEAD"], gitRoot);
+    }
+
+    const lease = this.workspaceLeaseStore.create({
+      session_id: sessionId,
+      workspace_root: gitRoot,
+      workspace_path: worktreePath,
+      scope: [],
+      write_boundary: "workspace",
+      metadata: {
+        kind: "swarm_worktree",
+        original_workspace: context.workspace,
+        git_root: gitRoot,
+        branch,
+        head,
+        name,
+        existing,
+        reason: action.reason,
+        scope: action.scope ?? []
+      }
+    });
+    this.sessionStore.updateMetadata(sessionId, { workspace_lease_id: lease.lease_id });
+    this.sessionWorkspaceOverrides.set(sessionId, worktreePath);
+
+    return {
+      action: action.type,
+      status: "success",
+      summary: `Entered worktree ${name}`,
+      content: [
+        `Worktree: ${worktreePath}`,
+        `Branch: ${branch}`,
+        existing ? "Existing worktree reused." : "New worktree created.",
+        "Use worktree.exit with mode=keep to preserve it, or mode=remove to delete it after safety checks."
+      ].join("\n"),
+      data: { lease, worktreePath, branch, head, existing },
+      metadata: { workspace_path: worktreePath, branch, lease_id: lease.lease_id, existing }
+    };
+  }
+
+  private async exitWorktree(action: WorktreeExitAction, context: WorktreeControlToolContext): Promise<ToolResult> {
+    const sessionId = action.session_id ?? context.sessionId;
+    if (!sessionId) {
+      return {
+        action: action.type,
+        status: "failed",
+        summary: "worktree.exit requires an active session",
+        errorCode: "WORKTREE_SESSION_REQUIRED",
+        recoverable: true,
+        recoverySuggestion: "Run worktree.exit from the session that entered the worktree."
+      };
+    }
+    const currentLease = action.lease_id
+      ? this.workspaceLeaseStore.get(action.lease_id)
+      : this.workspaceLeaseStore.getBySession(sessionId);
+    if (!currentLease || currentLease.metadata?.kind !== "swarm_worktree") {
+      return {
+        action: action.type,
+        status: "success",
+        summary: "No active Swarm worktree session to exit",
+        content: "No filesystem changes were made.",
+        data: { exited: false }
+      };
+    }
+
+    const originalWorkspace = typeof currentLease.metadata.original_workspace === "string"
+      ? currentLease.metadata.original_workspace
+      : this.workspace;
+    const branch = typeof currentLease.metadata.branch === "string" ? currentLease.metadata.branch : undefined;
+    const head = typeof currentLease.metadata.head === "string" ? currentLease.metadata.head : undefined;
+    const changeSummary = await countWorktreeChanges(currentLease.workspace_path, head);
+    const mode = action.mode ?? "keep";
+
+    if (action.dry_run) {
+      return {
+        action: action.type,
+        status: "success",
+        summary: `Preview worktree exit (${mode})`,
+        content: [
+          `Original workspace: ${originalWorkspace}`,
+          `Worktree: ${currentLease.workspace_path}`,
+          branch ? `Branch: ${branch}` : undefined,
+          `Mode: ${mode}`,
+          `Changed files: ${changeSummary.changedFiles}`,
+          `Commits since entry: ${changeSummary.commits}`,
+          "Dry run: no workspace lease or git worktree was changed."
+        ].filter(Boolean).join("\n"),
+        data: { dryRun: true, lease: currentLease, mode, changeSummary },
+        metadata: { dryRun: true, workspace_path: originalWorkspace, previous_worktree_path: currentLease.workspace_path }
+      };
+    }
+
+    if (mode === "remove" && !action.discardChanges && (changeSummary.changedFiles > 0 || changeSummary.commits > 0 || changeSummary.unknown)) {
+      const detail = changeSummary.unknown
+        ? "could not verify worktree cleanliness"
+        : `${changeSummary.changedFiles} changed file(s), ${changeSummary.commits} commit(s) since worktree entry`;
+      return {
+        action: action.type,
+        status: "failed",
+        summary: `Refusing to remove worktree: ${detail}`,
+        content: `Worktree: ${currentLease.workspace_path}\n${changeSummary.statusOutput}`.trim(),
+        errorCode: "WORKTREE_DIRTY",
+        recoverable: true,
+        recoverySuggestion: "Use worktree.exit with mode=keep to preserve it, or rerun with discard_changes=true only after explicit confirmation.",
+        data: { lease: currentLease, changeSummary }
+      };
+    }
+
+    let removed = false;
+    if (mode === "remove") {
+      await runGit(["worktree", "remove", "--force", currentLease.workspace_path], currentLease.workspace_root);
+      if (branch) {
+        await runGit(["branch", "-D", branch], currentLease.workspace_root).catch(() => undefined);
+      }
+      removed = true;
+    }
+
+    const restoredLease = this.workspaceLeaseStore.create({
+      session_id: sessionId,
+      workspace_root: originalWorkspace,
+      workspace_path: originalWorkspace,
+      scope: [],
+      write_boundary: "workspace",
+      metadata: {
+        kind: "local_workspace",
+        previous_worktree_lease_id: currentLease.lease_id,
+        exited_worktree_path: currentLease.workspace_path,
+        exit_mode: mode,
+        removed,
+        reason: action.reason
+      }
+    });
+    this.sessionStore.updateMetadata(sessionId, { workspace_lease_id: restoredLease.lease_id });
+    this.sessionWorkspaceOverrides.set(sessionId, originalWorkspace);
+
+    return {
+      action: action.type,
+      status: "success",
+      summary: removed ? "Exited and removed worktree" : "Exited worktree and kept it on disk",
+      content: [
+        `Original workspace: ${originalWorkspace}`,
+        `Worktree: ${currentLease.workspace_path}`,
+        branch ? `Branch: ${branch}` : undefined,
+        removed ? "Removed: yes" : "Removed: no"
+      ].filter(Boolean).join("\n"),
+      data: { lease: restoredLease, previousLease: currentLease, removed, changeSummary },
+      metadata: { workspace_path: originalWorkspace, removed, previous_worktree_path: currentLease.workspace_path }
+    };
   }
 
   private async compactWorkerResultForParent(input: {
@@ -5343,6 +6148,30 @@ function sanitizeKey(value: string): string {
   return value.replace(/\\/g, "/").replace(/[^A-Za-z0-9._/-]+/g, "_").replace(/\//g, ".");
 }
 
+function formatCompactJsonForTool(value: unknown, maxBytes: number): string {
+  const text = JSON.stringify(value, null, 2);
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+    return text;
+  }
+  return `${Buffer.from(text, "utf8").subarray(0, maxBytes).toString("utf8")}\n\n[Output truncated to ${maxBytes} bytes.]`;
+}
+
+function compactToolResultForMaxBytes(result: ToolResult, maxBytes: number): ToolResult {
+  const content = result.content;
+  if (!content || Buffer.byteLength(content, "utf8") <= maxBytes) {
+    return result;
+  }
+  return {
+    ...result,
+    content: `${Buffer.from(content, "utf8").subarray(0, maxBytes).toString("utf8")}\n\n[Output truncated to ${maxBytes} bytes. Use the outputRef when available for the full result.]`,
+    metadata: {
+      ...(result.metadata ?? {}),
+      truncated: true,
+      originalBytes: Buffer.byteLength(content, "utf8")
+    }
+  };
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -5441,6 +6270,42 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function uniqueStrings(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && value.trim().length > 0))].sort();
+}
+
+function renderTaskSnapshots(tasks: Array<ReturnType<TaskGraphStore["get"]>["tasks"][number] | undefined>): string {
+  const present = tasks.filter((task): task is ReturnType<TaskGraphStore["get"]>["tasks"][number] => Boolean(task));
+  if (present.length === 0) {
+    return "(no tasks)";
+  }
+  return present.map((task) => [
+    `${task.task_id} [${task.status}] ${task.title}`,
+    `capability=${task.capability ?? task.required_capabilities[0] ?? "-"} attempt=${task.attempt}`,
+    task.file_scope?.length ? `scope=${task.file_scope.join(", ")}` : undefined,
+    task.last_error ? `error=${firstLine(task.last_error)}` : undefined,
+    `updated=${task.updated_at}`
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function taskSessionRequiredResult(action: string, sessionId?: string): ToolResult {
+  return {
+    action,
+    status: "failed",
+    summary: sessionId ? `Unknown session: ${sessionId}` : `${action} requires an active session`,
+    errorCode: "TASK_SESSION_REQUIRED",
+    recoverable: true,
+    recoverySuggestion: "Run this from an active Swarm session, or pass a valid session_id from the Sessions page or task.list."
+  };
+}
+
+function taskNotFoundResult(action: string, taskId: string): ToolResult {
+  return {
+    action,
+    status: "failed",
+    summary: `Unknown task: ${taskId}`,
+    errorCode: "TASK_NOT_FOUND",
+    recoverable: true,
+    recoverySuggestion: "Call task.list or agent.list to find current task and worker ids, then retry with a valid id."
+  };
 }
 
 function formatWorkspaceChangeForFreshness(value: unknown): string {
@@ -5677,6 +6542,15 @@ function renderWorkerDetailForTool(worker: WorkerRecord): string {
   ].filter(Boolean).join("\n");
 }
 
+function renderEnvelopeDeliveryRecords(deliveries: Array<{ recipient_key: string; status: string; error?: string }>): string {
+  if (deliveries.length === 0) {
+    return "No delivery records were created.";
+  }
+  return deliveries.map((delivery) =>
+    `${delivery.recipient_key} [${delivery.status}]${delivery.error ? ` ${delivery.error}` : ""}`
+  ).join("\n");
+}
+
 function slashCommandRunMode(args: Record<string, unknown>): RunOptions["mode"] {
   const value = args.mode ?? args.runMode ?? args.run_mode;
   return value === "chat" || value === "coding_loop" || value === "full_swarm" || value === "auto" ? value : "auto";
@@ -5710,4 +6584,81 @@ function governanceAuditDecision(status: "requested" | "granted" | "denied" | "e
     return "executed";
   }
   return status;
+}
+
+type GitCommandResult = {
+  stdout: string;
+  stderr: string;
+};
+
+type WorktreeChangeSummary = {
+  changedFiles: number;
+  commits: number;
+  statusOutput: string;
+  unknown?: boolean;
+};
+
+async function resolveGitRoot(workspace: string): Promise<string | undefined> {
+  const result = await runGit(["rev-parse", "--show-toplevel"], workspace).catch(() => undefined);
+  const root = result?.stdout.trim();
+  return root || undefined;
+}
+
+async function runGit(args: string[], cwd: string): Promise<GitCommandResult> {
+  return new Promise((resolvePromise, reject) => {
+    execFile("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        const message = [stderr, stdout, error.message].filter(Boolean).join("\n").trim();
+        reject(new Error(message || `git ${args.join(" ")} failed`));
+        return;
+      }
+      resolvePromise({ stdout: stdout ?? "", stderr: stderr ?? "" });
+    });
+  });
+}
+
+async function gitWorktreeExists(worktreePath: string, gitRoot: string): Promise<boolean> {
+  const result = await runGit(["worktree", "list", "--porcelain"], gitRoot);
+  return result.stdout
+    .split(/\r?\n/)
+    .some((line) => line.startsWith("worktree ") && resolve(line.slice("worktree ".length).trim()) === resolve(worktreePath));
+}
+
+async function countWorktreeChanges(worktreePath: string, head?: string): Promise<WorktreeChangeSummary> {
+  try {
+    const status = await runGit(["status", "--porcelain"], worktreePath);
+    const changedFiles = status.stdout.split(/\r?\n/).filter((line) => line.trim()).length;
+    const commits = head
+      ? Number((await runGit(["rev-list", "--count", `${head}..HEAD`], worktreePath)).stdout.trim() || "0")
+      : 0;
+    return {
+      changedFiles,
+      commits: Number.isFinite(commits) ? commits : 0,
+      statusOutput: status.stdout.trim()
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      changedFiles: 0,
+      commits: 0,
+      statusOutput: message,
+      unknown: true
+    };
+  }
+}
+
+function validateWorktreeName(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  if (!normalized) {
+    throw new Error("worktree.enter requires a non-empty worktree name");
+  }
+  return normalized;
+}
+
+function validateWorktreeBranch(value: string): string {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/[^a-zA-Z0-9._/-]+/g, "-").replace(/^\/+|\/+$/g, "");
+  if (!normalized || normalized.includes("..") || normalized.startsWith("-") || normalized.endsWith(".lock")) {
+    throw new Error("worktree.enter received an invalid branch name");
+  }
+  return normalized;
 }

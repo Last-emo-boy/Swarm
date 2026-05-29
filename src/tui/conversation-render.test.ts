@@ -20,7 +20,7 @@ test("default conversation surface renders without dashboard chrome", async () =
   const plain = terminalFrameText(output);
 
   assert.match(plain, /Swarm chat ready/);
-  assert.match(plain, /❯ user\s+Keep the default TUI simple/);
+  assert.match(plain, /❯ You\s+Keep the default TUI simple/);
   assert.match(plain, /Done/);
   assert.match(plain, /- Markdown stays multi-line/);
   assert.match(plain, /^\s*❯/m);
@@ -46,7 +46,7 @@ test("default conversation surface shows a cc-style startup logo on empty chats"
   const plain = terminalFrameText(output);
 
   assert.match(plain, /Symphony Swarm/);
-  assert.match(plain, /Local Agent OS|openai\/gpt/);
+  assert.match(plain, /Local Swarm Runtime|openai\/gpt/);
   assert.match(plain, /E:\\Playground\\Swarm/);
   assert.match(plain, /Ask Swarm/);
 });
@@ -151,7 +151,7 @@ test("transcript user rows use subtle background band while assistant body stays
     columns: 72
   }), { columns: 72, rows: 6 });
 
-  const userRow = frameRowWithText(frame, "❯ user");
+  const userRow = frameRowWithText(frame, "❯ You");
   const assistantRow = frameRowWithText(frame, "I will keep body text neutral.");
 
   assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
@@ -173,7 +173,7 @@ test("selected transcript rows use selection background without inverse swallowi
     columns: 72
   }), { columns: 72, rows: 6 });
 
-  const userRow = frameRowWithText(frame, "❯ user");
+  const userRow = frameRowWithText(frame, "❯ You");
 
   assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
   assert.equal(cellStyleAtText(userRow, "select")?.color, resolveTuiColor("text.primary"));
@@ -194,7 +194,7 @@ test("search match highlight uses local background without swallowing row semant
     columns: 90
   }), { columns: 90, rows: 6 });
 
-  const userRow = frameRowWithText(frame, "❯ user");
+  const userRow = frameRowWithText(frame, "❯ You");
 
   assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
   assert.equal(cellStyleAtText(userRow, "❯")?.backgroundColor, resolveTuiColor("surface.selection"));

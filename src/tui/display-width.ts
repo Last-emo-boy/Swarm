@@ -31,6 +31,45 @@ export function sliceByDisplayWidth(value: string, maxWidth: number): { head: st
   };
 }
 
+export function stripAnsi(value: string): string {
+  return value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
+}
+
+export function ansiDisplayWidth(value: string): number {
+  return displayWidth(stripAnsi(value));
+}
+
+export function fitToDisplayWidth(value: string, maxWidth: number, ellipsis = "..."): string {
+  const limit = Math.max(0, Math.floor(maxWidth));
+  if (limit === 0) {
+    return "";
+  }
+  if (ansiDisplayWidth(value) <= limit) {
+    return value;
+  }
+  const suffix = fitSuffix(ellipsis, limit);
+  const headWidth = Math.max(0, limit - displayWidth(suffix));
+  return `${sliceByDisplayWidth(stripAnsi(value), headWidth).head}${suffix}`;
+}
+
+export function padToDisplayWidth(value: string, width: number): string {
+  const target = Math.max(0, Math.floor(width));
+  const visibleWidth = ansiDisplayWidth(value);
+  if (visibleWidth >= target) {
+    return fitToDisplayWidth(value, target, "");
+  }
+  return `${value}${" ".repeat(target - visibleWidth)}`;
+}
+
+function fitSuffix(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) {
+    return value;
+  }
+  return sliceByDisplayWidth(value, maxWidth).head;
+}
+
 function isCombiningMark(char: string): boolean {
   const code = char.codePointAt(0) ?? 0;
   return (code >= 0x0300 && code <= 0x036f) ||

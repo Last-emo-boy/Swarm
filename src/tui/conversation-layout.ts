@@ -554,13 +554,13 @@ export function conversationViewportAfterScroll(input: {
 
 export function conversationRoleLabel(role: ConversationMessage["role"]): string {
   if (role === "user") {
-    return "user";
+    return "You";
   }
   if (role === "assistant") {
-    return "assistant";
+    return "Swarm";
   }
   if (role === "system") {
-    return "system";
+    return "System";
   }
   return "";
 }
@@ -875,7 +875,7 @@ function conversationRoleChrome(role: ConversationMessage["role"]): TranscriptRo
   if (role === "user") {
     return {
       marker: "❯",
-      label: "user",
+      label: conversationRoleLabel(role),
       markerColor: "role.user",
       labelColor: "role.user",
       bodyColor: "text.primary"
@@ -884,7 +884,7 @@ function conversationRoleChrome(role: ConversationMessage["role"]): TranscriptRo
   if (role === "assistant") {
     return {
       marker: "·",
-      label: "assistant",
+      label: conversationRoleLabel(role),
       markerColor: "text.muted",
       labelColor: "text.muted",
       bodyColor: "role.assistant"
@@ -892,7 +892,7 @@ function conversationRoleChrome(role: ConversationMessage["role"]): TranscriptRo
   }
   return {
     marker: "·",
-    label: "system",
+    label: conversationRoleLabel(role),
     markerColor: "text.muted",
     labelColor: "text.muted",
     bodyColor: "text.primary"
@@ -1493,7 +1493,7 @@ export function detailOpenTargetForPane(input: {
   actionCount: number;
   hasLatestDetail: boolean;
 }): DetailOpenTarget {
-  if (input.pane === "log" && input.actionCount > 0) {
+  if (input.pane === "trace" && input.actionCount > 0) {
     return "selected-action";
   }
   return input.hasLatestDetail ? "latest" : "none";
@@ -1602,7 +1602,7 @@ export function inlineInspectorTargetForPane(input: {
       title: detailTitleForSource(input.latestDetailSource, true)
     };
   }
-  if (input.pane === "log" && input.selectedAction) {
+  if (input.pane === "trace" && input.selectedAction) {
     return {
       enabled: true,
       source: "event",
@@ -1632,7 +1632,7 @@ export function tuiScreenMode(input: {
     columns: input.columns
   });
   const needsRunBoardSurface = input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasResult) || Boolean(input.hasRunBoard);
-  const primarySurface = input.pane === "log"
+  const primarySurface = input.pane === "trace"
     ? "trace"
     : input.pane === "chat" && !needsRunBoardSurface
       ? "conversation"

@@ -262,6 +262,80 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     inputSchema: objectSchema({ url: "string", prompt: "string", timeoutMs: "number", maxBytes: "number" })
   },
   {
+    name: "Config",
+    action: "config.get",
+    aliases: ["config.get", "config.set"],
+    title: "Safe Config",
+    description: "Read or update explicit safe Swarm settings without exposing provider credentials, API keys, headers, tokens, or env secrets.",
+    riskClass: "r1",
+    permissionName: "ConfigSet",
+    inputSchema: objectSchema({ setting: "safe setting key", value: "optional string | number | boolean | null" }),
+    shouldDefer: true
+  },
+  {
+    name: "McpResources",
+    action: "mcp.resources",
+    aliases: ["mcp.resources"],
+    title: "List MCP Resources",
+    description: "List resources exposed by configured MCP servers with recovery hints for disconnected or auth-required servers.",
+    riskClass: "r0",
+    permissionName: "McpRead",
+    inputSchema: objectSchema({ server: "optional MCP server id", limit: "number" }),
+    shouldDefer: true,
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "McpRead",
+    action: "mcp.read",
+    aliases: ["mcp.read"],
+    title: "Read MCP Resource",
+    description: "Read an exact MCP resource URI with truncation and artifact metadata.",
+    riskClass: "r0",
+    permissionName: "McpRead",
+    inputSchema: objectSchema({ server: "MCP server id", uri: "resource URI", maxBytes: "number" }),
+    shouldDefer: true,
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "McpAuth",
+    action: "mcp.auth",
+    aliases: ["mcp.auth"],
+    title: "MCP Auth Status",
+    description: "Inspect configured MCP server connection/auth state and recovery without exposing credentials.",
+    riskClass: "r0",
+    permissionName: "McpRead",
+    inputSchema: objectSchema({ server: "optional MCP server id" }),
+    shouldDefer: true,
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "McpCall",
+    action: "mcp.call",
+    aliases: ["mcp.call"],
+    title: "Call MCP Tool",
+    description: "Call a configured MCP tool through the capability broker with permission checks and output limits.",
+    riskClass: "r2",
+    permissionName: "McpCall",
+    inputSchema: objectSchema({ server: "optional MCP server id", tool: "MCP tool name", capabilityId: "optional exact capability id", args: "JSON object", maxBytes: "number" }),
+    shouldDefer: true,
+    concurrencyClass: "network_limited"
+  },
+  {
+    name: "SkillInvoke",
+    action: "skill.invoke",
+    aliases: ["skill.invoke"],
+    title: "Invoke Skill",
+    description: "Activate one trusted Agent Skill and write durable context through Swarm's existing skill runtime.",
+    riskClass: "r1",
+    permissionName: "SkillInvoke",
+    inputSchema: objectSchema({ name: "trusted skill name", reason: "optional activation reason" }),
+    shouldDefer: true,
+    concurrencyClass: "network_limited"
+  },
+  {
     name: "lsp_diagnostics",
     action: "lsp.diagnostics",
     aliases: ["lsp.diagnostics", "LspDiagnostics"],
@@ -489,6 +563,127 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     inputSchema: objectSchema({ worker_id: "worker id", message: "follow-up instruction", run_in_background: "boolean" })
   },
   {
+    name: "AgentMessage",
+    action: "agent.message",
+    aliases: ["agent.message", "SendMessageTool", "SendMessage", "send_message", "agent_message", "worker.message"],
+    title: "Message Agent",
+    description: "Send a short runtime mailbox message to an existing Swarm worker, actor, role, or capability.",
+    riskClass: "r1",
+    permissionName: "Agent",
+    inputSchema: objectSchema({ message: "message text", worker_id: "optional worker id", agent_id: "optional exact actor id", role: "optional role", capability: "optional capability", require_ack: "boolean", ttl_ms: "number" }),
+    concurrencyClass: "write_exclusive"
+  },
+  {
+    name: "RuntimeSleep",
+    action: "runtime.sleep",
+    aliases: ["runtime.sleep", "SleepTool", "sleep", "runtime_sleep"],
+    title: "Wait",
+    description: "Wait for a bounded duration without busy-looping or starting a background process.",
+    riskClass: "r0",
+    permissionName: "RuntimeSleep",
+    inputSchema: objectSchema({ duration_ms: "bounded wait duration in milliseconds", reason: "optional reason" }),
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "StructuredOutput",
+    action: "structured.output",
+    aliases: ["structured.output", "SyntheticOutputTool", "StructuredOutput", "structured_output", "synthetic.output"],
+    title: "Structured Output",
+    description: "Record schema-validated output only when a headless or schema-enabled runtime contract allows it.",
+    riskClass: "r0",
+    permissionName: "StructuredOutput",
+    inputSchema: objectSchema({ value: "JSON value", schema: "optional JSON schema object", label: "optional label", final: "boolean" }),
+    readOnly: true,
+    concurrencyClass: "read_parallel",
+    searchHint: "Available only in schema-enabled headless runs; use normal final responses in interactive chat."
+  },
+  {
+    name: "ReplMode",
+    action: "repl.mode",
+    aliases: ["repl.mode", "REPLTool", "ReplMode", "repl_mode"],
+    title: "REPL Mode Guidance",
+    description: "Explain current interactive/headless primitive tool visibility without creating a second REPL state machine.",
+    riskClass: "r0",
+    permissionName: "ReplMode",
+    inputSchema: objectSchema({ mode: "interactive | headless | repl", reason: "optional reason" }),
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "ScheduleCreate",
+    action: "schedule.create",
+    aliases: ["ScheduleCronTool", "CronCreate", "schedule.create", "cron.create"],
+    title: "Create Schedule",
+    description: "Design-gated schedule creation surface; returns unavailable guidance until Swarm has a durable scheduler.",
+    riskClass: "r1",
+    permissionName: "Schedule",
+    inputSchema: objectSchema({ cron: "5-field cron expression", prompt: "prompt to run", recurring: "boolean", durable: "boolean", timezone: "string", dry_run: "boolean" }),
+    concurrencyClass: "write_exclusive",
+    searchHint: "Automation lifecycle control, not a normal coding edit. Currently design-only without durable scheduler runtime."
+  },
+  {
+    name: "ScheduleList",
+    action: "schedule.list",
+    aliases: ["CronList", "schedule.list", "cron.list"],
+    title: "List Schedules",
+    description: "Design-gated schedule inventory surface; reports that no durable schedule inventory exists yet.",
+    riskClass: "r0",
+    permissionName: "Schedule",
+    inputSchema: objectSchema({ status: "active | paused | expired", limit: "number" }),
+    readOnly: true,
+    concurrencyClass: "read_parallel",
+    searchHint: "Inspect schedule support status without inventing schedule state."
+  },
+  {
+    name: "ScheduleDelete",
+    action: "schedule.delete",
+    aliases: ["CronDelete", "schedule.delete", "cron.delete"],
+    title: "Delete Schedule",
+    description: "Design-gated exact-id schedule deletion surface; unavailable until Swarm owns durable schedules.",
+    riskClass: "r1",
+    permissionName: "Schedule",
+    inputSchema: objectSchema({ schedule_id: "exact schedule id", reason: "optional reason", dry_run: "boolean" }),
+    concurrencyClass: "write_exclusive",
+    searchHint: "Automation lifecycle control that requires exact ids and future audit support."
+  },
+  {
+    name: "RemoteTrigger",
+    action: "remote.trigger",
+    aliases: ["RemoteTriggerTool", "remote.trigger", "remote_trigger"],
+    title: "Remote Trigger",
+    description: "Design-gated remote automation boundary; requires explicit endpoint configuration and no implicit credentials.",
+    riskClass: "r1",
+    permissionName: "RemoteTrigger",
+    inputSchema: objectSchema({ endpoint: "configured endpoint id", capability: "remote capability", payload: "JSON payload", dry_run: "boolean" }),
+    concurrencyClass: "network_limited",
+    searchHint: "Use MCP tools for configured integrations; remote.trigger is unavailable until explicit endpoints exist."
+  },
+  {
+    name: "TeamCreate",
+    action: "team.create",
+    aliases: ["TeamCreateTool", "team.create", "team_create"],
+    title: "Create Team",
+    description: "Design-gated team lifecycle surface; future implementation must compose existing tasks and agents.",
+    riskClass: "r1",
+    permissionName: "Team",
+    inputSchema: objectSchema({ name: "optional name", objective: "team objective", roles: "string[]", task_ids: "string[]", dry_run: "boolean" }),
+    concurrencyClass: "write_exclusive",
+    searchHint: "Use task.create and agent.delegate today; team.create is a lifecycle design surface."
+  },
+  {
+    name: "TeamDelete",
+    action: "team.delete",
+    aliases: ["TeamDeleteTool", "team.delete", "team_delete"],
+    title: "Delete Team",
+    description: "Design-gated exact-id team deletion surface; unavailable until Swarm has a team projection and audit trail.",
+    riskClass: "r1",
+    permissionName: "Team",
+    inputSchema: objectSchema({ team_id: "exact team id", reason: "optional reason", dry_run: "boolean" }),
+    concurrencyClass: "write_exclusive",
+    searchHint: "Use task.stop or agent.stop for current workers/tasks; team.delete needs future team ids."
+  },
+  {
     name: "Agent",
     action: "agent.delegate",
     aliases: ["Task", "agent.delegate"],
@@ -553,10 +748,17 @@ function builtinToolReadOnly(tool: BuiltinToolDescriptor): boolean {
     "file.stat",
     "AgentList",
     "AgentStatus",
+    "RuntimeSleep",
+    "StructuredOutput",
+    "ReplMode",
     "ProcessStatus",
     "ProcessList",
     "ProcessTail",
     "ProcessGrep",
+    "ScheduleList",
+    "McpResources",
+    "McpRead",
+    "McpAuth",
     "WebSearch",
     "WebFetch",
     "git.status",
@@ -581,6 +783,13 @@ function builtinToolConcurrencyClass(tool: BuiltinToolDescriptor): CapabilityDes
     "ProcessList",
     "ProcessTail",
     "ProcessGrep",
+    "ScheduleList",
+    "McpResources",
+    "McpRead",
+    "McpAuth",
+    "RuntimeSleep",
+    "StructuredOutput",
+    "ReplMode",
     "git.status",
     "git.diff",
     "git.log"
@@ -590,10 +799,10 @@ function builtinToolConcurrencyClass(tool: BuiltinToolDescriptor): CapabilityDes
   if (tool.name === "ProcessStart") {
     return "background_process";
   }
-  if (tool.name === "WebSearch" || tool.name === "WebFetch") {
+  if (tool.name === "WebSearch" || tool.name === "WebFetch" || tool.name === "McpCall" || tool.name === "SkillInvoke" || tool.name === "RemoteTrigger") {
     return "network_limited";
   }
-  if (tool.name === "Bash" || tool.name === "exec" || tool.name === "code.test" || tool.name === "code.lint" || tool.name === "package.install") {
+  if (tool.name === "Bash" || tool.name === "PowerShell" || tool.name === "exec" || tool.name === "code.test" || tool.name === "code.lint" || tool.name === "package.install") {
     return "verify_exclusive";
   }
   return "write_exclusive";

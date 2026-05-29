@@ -39,7 +39,7 @@ import {
   buildVirtualConversationLayout,
   createConversationRenderCache
 } from "./components/VirtualConversationList.js";
-import { mainPaneLabels, mainPaneOrder } from "./main-panes.js";
+import { mainPaneLabels, mainPaneOrder, normalizeMainPaneId } from "./main-panes.js";
 import { statusRailSummary } from "./components/StatusRail.js";
 
 test("conversation-first layout keeps transcript as the default surface", () => {
@@ -56,9 +56,9 @@ test("conversation-first layout keeps transcript as the default surface", () => 
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· system     Swarm chat ready.",
-    "❯ user       Simplify the TUI.",
-    "· assistant  I will make the default view quieter."
+    "· System     Swarm chat ready.",
+    "❯ You        Simplify the TUI.",
+    "· Swarm      I will make the default view quieter."
   ]);
   assert.deepEqual(layout.activity, []);
 });
@@ -174,7 +174,7 @@ test("conversation renderer contract keeps approval chrome below the overlay", (
     bottomRows,
     completionOverlayRows: 12,
     approval: true,
-    pane: "log"
+    pane: "trace"
   });
 
   assert.equal(contract.zones.bottomChrome.height, 9);
@@ -193,9 +193,9 @@ test("conversation renderer contract exposes stable pane and inspector debug tar
     rows: 30,
     columns: 160,
     bottomRows: conversationPromptRows(0),
-    pane: "log"
+    pane: "trace"
   });
-  assert.equal(trace.activePaneDebugName, "pane:log");
+  assert.equal(trace.activePaneDebugName, "pane:trace");
   assert.equal(trace.zones.inspector?.debugName, "zone:inspector");
   assertZoneContains(trace.zones.scrollRegion, trace.zones.inspector!);
 
@@ -213,7 +213,7 @@ test("conversation DOM contract keeps dense TUI nodes stable across viewports", 
   const fixtures = [
     { name: "small", rows: 24, columns: 80, pane: "chat", inspector: false },
     { name: "normal", rows: 30, columns: 120, pane: "chat", inspector: false },
-    { name: "wide-trace", rows: 45, columns: 160, pane: "log", inspector: true }
+    { name: "wide-trace", rows: 45, columns: 160, pane: "trace", inspector: true }
   ];
 
   for (const fixture of fixtures) {
@@ -248,7 +248,7 @@ test("conversation DOM contract does not let overlay or inspector cover the prom
     columns: 160,
     bottomRows: conversationPromptRows(4),
     completionOverlayRows: 99,
-    pane: "log"
+    pane: "trace"
   });
 
   assert.deepEqual(validateConversationDomLayout(contract), []);
@@ -299,7 +299,7 @@ test("conversation-first layout does not inline command details into the default
     hasResult: false
   });
 
-  assert.deepEqual(layout.transcript.map((line) => line.text), ["· system     3 recent tool outputs. Ctrl+O for details."]);
+  assert.deepEqual(layout.transcript.map((line) => line.text), ["· System     3 recent tool outputs. Ctrl+O for details."]);
   assert(!layout.transcript.some((line) => line.text.includes("tool output line")));
   assert.deepEqual(layout.activity, []);
 });
@@ -333,7 +333,7 @@ test("conversation-first layout renders assistant markdown and preserves newline
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· assistant  Done",
+    "· Swarm      Done",
     "             First line",
     "             Second line",
     "",
@@ -392,7 +392,7 @@ test("conversation-first markdown rendering keeps technical identifiers intact",
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· assistant  Use worker_loop_state and keep foo_bar_baz unchanged."
+    "· Swarm      Use worker_loop_state and keep foo_bar_baz unchanged."
   ]);
 });
 
@@ -417,7 +417,7 @@ test("conversation-first markdown rendering keeps tables and dividers readable",
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· assistant  Area  Status",
+    "· Swarm      Area  Status",
     "             ---  ---",
     "             TUI  Done",
     "",
@@ -622,8 +622,10 @@ test("conversation sticky prompt is hidden while the prompt row is visible", () 
 
 test("conversation scroll offsets clamp to available history", () => {
   assert.equal(normalizeConversationScrollOffset(20, 6, 999), 14);
+  assert.equal(normalizeConversationScrollOffset(20, 6, Number.POSITIVE_INFINITY), 14);
   assert.equal(normalizeConversationScrollOffset(20, 6, -2), 0);
   assert.equal(nextConversationScrollOffset({ totalLines: 20, viewportLines: 6, currentOffset: 0, delta: 8 }), 8);
+  assert.equal(nextConversationScrollOffset({ totalLines: 20, viewportLines: 6, currentOffset: 0, delta: Number.POSITIVE_INFINITY }), 14);
   assert.equal(nextConversationScrollOffset({ totalLines: 20, viewportLines: 6, currentOffset: 8, delta: -20 }), 0);
   assert.equal(conversationHiddenBelowCount({ totalLines: 20, viewportLines: 6, scrollOffset: 8 }), 8);
   assert.equal(conversationHiddenBelowCount({ totalLines: 20, viewportLines: 6, scrollOffset: 999 }), 14);
@@ -762,7 +764,7 @@ test("virtual conversation layout mounts only visible long-session messages", ()
     scrollOffset: 0,
     cache
   });
-  assert.equal(appended.transcript.at(-1)?.text, "· assistant  fresh tail");
+  assert.equal(appended.transcript.at(-1)?.text, "· Swarm      fresh tail");
   assert.equal(cache.stats().misses, 1);
   assert(cache.stats().hits >= 1000);
 });
@@ -828,16 +830,25 @@ test("virtual conversation layout separates compact and expanded fold cache entr
   assert.equal(cache.stats().hits, 1);
 });
 
-test("main pane order makes chat default and keeps trace available", () => {
+test("main pane order uses product navigation and keeps legacy aliases routable", () => {
+  assert.deepEqual(mainPaneOrder, ["chat", "plan", "activity", "output", "sessions", "workers", "trace", "board"]);
   assert.equal(mainPaneOrder[0], "chat");
   assert.equal(mainPaneLabels.chat, "Chat");
-  assert.equal(mainPaneLabels.log, "Trace");
-  assert(mainPaneOrder.includes("log"));
+  assert.equal(mainPaneLabels.plan, "Plan");
+  assert.equal(mainPaneLabels.activity, "Activity");
+  assert.equal(mainPaneLabels.output, "Output");
+  assert.equal(mainPaneLabels.sessions, "Sessions");
+  assert.equal(mainPaneLabels.workers, "Workers");
+  assert.equal(mainPaneLabels.trace, "Trace");
+  assert.equal(mainPaneLabels.board, "Board");
+  assert.equal(normalizeMainPaneId("overview"), "plan");
+  assert.equal(normalizeMainPaneId("attempts"), "trace");
+  assert.equal(normalizeMainPaneId("blackboard"), "board");
 });
 
 test("detail open target keeps chat and trace shortcuts separate", () => {
   assert.equal(detailOpenTargetForPane({ pane: "chat", actionCount: 10, hasLatestDetail: true }), "latest");
-  assert.equal(detailOpenTargetForPane({ pane: "log", actionCount: 10, hasLatestDetail: true }), "selected-action");
+  assert.equal(detailOpenTargetForPane({ pane: "trace", actionCount: 10, hasLatestDetail: true }), "selected-action");
   assert.equal(detailOpenTargetForPane({ pane: "chat", actionCount: 10, hasLatestDetail: false }), "none");
 });
 
@@ -897,7 +908,7 @@ test("TUI focus transition keeps explicit detail open and close paths separate",
 
 test("inline inspector avoids command-output chrome unless real command detail is selected", () => {
   assert.deepEqual(inlineInspectorTargetForPane({
-    pane: "overview",
+    pane: "plan",
     selectedAction: true,
     latestDetailSource: "none",
     latestDetail: false
@@ -908,7 +919,7 @@ test("inline inspector avoids command-output chrome unless real command detail i
   });
 
   assert.deepEqual(inlineInspectorTargetForPane({
-    pane: "log",
+    pane: "trace",
     selectedAction: true,
     latestDetailSource: "none",
     latestDetail: false
@@ -919,7 +930,7 @@ test("inline inspector avoids command-output chrome unless real command detail i
   });
 
   assert.deepEqual(inlineInspectorTargetForPane({
-    pane: "overview",
+    pane: "plan",
     selectedAction: false,
     latestDetailSource: "command",
     latestDetail: true
@@ -930,7 +941,7 @@ test("inline inspector avoids command-output chrome unless real command detail i
   });
 
   assert.deepEqual(inlineInspectorTargetForPane({
-    pane: "overview",
+    pane: "plan",
     selectedAction: false,
     latestDetailSource: "ai",
     latestDetail: true
@@ -986,10 +997,10 @@ test("chat status rail hides operator metadata unless it is actionable", () => {
 
 test("TUI density resolves from pane, width, and explicit overrides", () => {
   assert.equal(resolveTuiDensity({ density: "auto", pane: "chat", columns: 160 }), "compact");
-  assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 100 }), "compact");
-  assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 120 }), "default");
-  assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 160 }), "comfortable");
-  assert.equal(resolveTuiDensity({ density: "compact", pane: "log", columns: 160 }), "compact");
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "trace", columns: 100 }), "compact");
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "trace", columns: 120 }), "default");
+  assert.equal(resolveTuiDensity({ density: "auto", pane: "trace", columns: 160 }), "comfortable");
+  assert.equal(resolveTuiDensity({ density: "compact", pane: "trace", columns: 160 }), "compact");
 });
 
 test("chat status rail shows approval metadata when user action is needed", () => {
@@ -1112,7 +1123,7 @@ test("screen mode keeps the default TUI conversation-first", () => {
   });
 
   assert.deepEqual(tuiScreenMode({
-    pane: "log",
+    pane: "trace",
     columns: 160,
     busy: false,
     hasApproval: false,
@@ -1126,7 +1137,7 @@ test("screen mode keeps the default TUI conversation-first", () => {
   });
 
   assert.deepEqual(tuiScreenMode({
-    pane: "log",
+    pane: "trace",
     columns: 160,
     busy: false,
     hasApproval: false,

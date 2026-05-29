@@ -109,7 +109,7 @@ export function ccGradeVisualFixture(input: { columns: number; rows: number }): 
         { id: "symphony", label: "symphony", value: "2 run", tone: "running" }
       ],
       selectedFooterItem: "cache",
-      footerHint: "Left/Right footer | [/] message | / search",
+      footerHint: "/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details",
       columns: input.columns,
       maxRows: bottomRows
     })

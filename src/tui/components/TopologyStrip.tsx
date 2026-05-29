@@ -22,7 +22,7 @@ export function TopologyStrip(props: {
       paddingX={1}
       overflow="hidden"
     >
-      <Text color={visualTokenColor("role.swarm")} bold>{mode === "token" ? "TOPO " : "TOPOLOGY "}</Text>
+      <Text color={visualTokenColor("role.swarm")} bold>{mode === "token" ? "BD " : "BOARD "}</Text>
       {items.map((item, index) => (
         <Box
           key={item.id}

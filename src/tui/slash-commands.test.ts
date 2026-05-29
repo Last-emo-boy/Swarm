@@ -17,6 +17,8 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("doctor")?.group, "Core");
   assert.equal(commands.get("density")?.usage, "/density [auto|compact|default|comfortable]");
   assert.equal(commands.get("view")?.group, "Core");
+  assert.equal(commands.get("plan")?.usage, "/plan [objective]");
+  assert.equal(commands.get("approve")?.usage, "/approve [approval_id] [message]");
   assert.equal(commands.get("evals")?.usage, "/evals [--release-gate|--cache-lab|--tui-replay]");
   assert.equal(commands.get("swarm")?.group, "Agents");
   assert.equal(commands.get("swarm")?.usage, "/swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]");
@@ -43,7 +45,9 @@ test("default slash help stays on the main path unless advanced help is requeste
 
   assert.match(basicHelp, /\/help/);
   assert.match(basicHelp, /\/density \[auto\|compact\|default\|comfortable\]/);
-  assert.match(basicHelp, /\/view \[chat\|trace\|overview\|output\|sessions\|attempts\|agents\|blackboard\]/);
+  assert.match(basicHelp, /\/view \[chat\|plan\|activity\|output\|sessions\|workers\|trace\|board\]/);
+  assert.match(basicHelp, /\/plan \[objective\]/);
+  assert.match(basicHelp, /\/approve \[approval_id\] \[message\]/);
   assert.match(basicHelp, /\/swarm/);
   assert.match(basicHelp, /\/kernel \[workflow_path\]/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
@@ -57,6 +61,8 @@ test("slash command candidates include required commands and aliases", () => {
   assert.equal(commandCandidatesForInput("/sym", 4, { includeAdvanced: true })[0]?.name, "symphony");
   assert.equal(commandCandidatesForInput("/debug l", 8, { includeAdvanced: true })[0]?.name, "latest");
   assert.equal(commandCandidatesForInput("/debug t", 8, { includeAdvanced: true })[0]?.name, "timeline");
+  assert.equal(commandCandidatesForInput("/pla", 4)[0]?.name, "plan");
+  assert.equal(commandCandidatesForInput("/appr", 5).some((command) => command.name === "approve"), true);
   assert.equal(commandCandidatesForInput("/swa", 4)[0]?.name, "swarm");
   assert.equal(commandCandidatesForInput("/mail", 5, { includeAdvanced: true })[0]?.name, "mailbox");
 });

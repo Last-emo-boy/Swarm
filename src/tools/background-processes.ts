@@ -37,6 +37,7 @@ export type BackgroundProcessStartInput = {
   description?: string;
   timeoutMs?: number;
   maxLogBytes?: number;
+  shell?: "host" | "powershell";
 };
 
 export type BackgroundProcessTail = {
@@ -51,6 +52,7 @@ export type BackgroundProcessGrep = {
   process: BackgroundProcessRecord;
   matches: string[];
   totalMatches: number;
+  bytesTotal: number;
   truncated: boolean;
 };
 
@@ -72,10 +74,9 @@ export async function startBackgroundProcess(input: BackgroundProcessStartInput)
   await mkdir(dir, { recursive: true });
   const logPath = join(dir, `${processId}.log`);
   const metadataPath = join(dir, `${processId}.json`);
-  const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh";
-  const args = process.platform === "win32"
-    ? ["-NoProfile", "-Command", input.command]
-    : ["-lc", input.command];
+  const launcher = backgroundProcessLauncher(input.command, input.shell);
+  const shell = launcher.shell;
+  const args = launcher.args;
   const maxLogBytes = Math.max(1024 * 1024, input.maxLogBytes ?? DEFAULT_MAX_LOG_BYTES);
   const startedAt = new Date().toISOString();
 
@@ -155,6 +156,18 @@ export async function startBackgroundProcess(input: BackgroundProcessStartInput)
       lastError: error instanceof Error ? error.message : String(error)
     }, sessionId);
   }
+}
+
+function backgroundProcessLauncher(command: string, shellKind: BackgroundProcessStartInput["shell"]): { shell: string; args: string[] } {
+  if (shellKind === "powershell") {
+    return {
+      shell: process.platform === "win32" ? "powershell.exe" : "pwsh",
+      args: ["-NoProfile", "-Command", command]
+    };
+  }
+  return process.platform === "win32"
+    ? { shell: "powershell.exe", args: ["-NoProfile", "-Command", command] }
+    : { shell: process.env.SHELL || "/bin/sh", args: ["-lc", command] };
 }
 
 export async function getBackgroundProcess(processId: string, sessionId?: string): Promise<BackgroundProcessRecord> {
@@ -259,6 +272,7 @@ export async function grepBackgroundProcessLog(input: {
   contextLines?: number;
 }): Promise<BackgroundProcessGrep> {
   const processRecord = await getBackgroundProcess(input.processId, input.sessionId);
+  const info = await stat(processRecord.logPath).catch(() => ({ size: 0 }));
   const regex = compileSearchRegex(input.pattern);
   const maxMatches = Math.max(1, Math.min(input.maxMatches ?? 50, 500));
   const contextLines = Math.max(0, Math.min(input.contextLines ?? 0, 10));
@@ -304,6 +318,7 @@ export async function grepBackgroundProcessLog(input: {
     process: processRecord,
     matches,
     totalMatches,
+    bytesTotal: info.size,
     truncated: totalMatches > maxMatches
   };
 }

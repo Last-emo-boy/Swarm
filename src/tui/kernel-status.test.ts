@@ -63,14 +63,14 @@ test("kernel status formatter covers sessions, attempts, leases, approvals, hand
   assert.match(detail, /Work Board/);
   assert.match(detail, /sessions=1 active=1 workers=2 active_workers=1 resumable=1 tasks=1 claims=2 blocked=1 failed=0 checks=1 artifacts=1/);
   assert.match(detail, /next=warning claim:handoff:handoff-1/);
-  assert.match(detail, /Swarm Surface/);
-  assert.match(detail, /participants=1 active=1 stale=0 inbox_pending=0 outbox_pending=1 ownership=2 negotiations=0 squads=0 conflicts=0/);
+  assert.match(detail, /Shared Board/);
+  assert.match(detail, /participants=1 active=1 inactive=0 inbox=0 outbox=1 Workspace Claims=2 negotiations=0 squads=0 warnings=0/);
   assert.match(detail, /worker:kernel-1 \[worker\/busy\/fresh\].*task=task-1 worker=worker-1/);
   assert.match(detail, /owner=actor_task:task-1 \[busy\] agent=worker:kernel-1/);
   assert.match(detail, /owner=handoff:handoff-1 \[accepted\] agent=worker:worker-1 env=env_handoff_kernel/);
-  assert.match(detail, /Recent Attempts/);
+  assert.match(detail, /Run Attempts/);
   assert.match(detail, /tool_call task-1 \[completed\] #1/);
-  assert.match(detail, /Workspace Leases/);
+  assert.match(detail, /Workspace Access/);
   assert.match(detail, /lease-1 boundary=workspace/);
   assert.match(detail, /Workers/);
   assert.match(detail, /worker-1/);
@@ -84,7 +84,7 @@ test("kernel status formatter covers sessions, attempts, leases, approvals, hand
     assert.match(detail, /daemons=daemon-1:running:ticks=4/);
     assert.match(detail, /symphony-session \[running\] live=running\/info SYM-1/);
   assert.match(detail, /lsp=unknown value=NO PROVIDER tone=muted severity=info/);
-  assert.match(detail, /Blackboard/);
+  assert.match(detail, /Board/);
   assert.match(detail, /decision\/operator \[decision\] tags=p3,tui/);
   assert.match(detail, /Recent Events/);
   assert.match(detail, /approval: pending/);
@@ -121,7 +121,7 @@ test("work snapshot formatters expose operator kernel contract detail without In
   assert(compact.some((line) => line.includes("scope=src/allowed.txt, docs/PRD.md")));
 
   assert.match(detail, /Workspace/);
-  assert.match(detail, /Attempts: 1/);
+  assert.match(detail, /Run Attempts: 1/);
   assert.match(detail, /Tasks: 1/);
   assert.match(detail, /Task Contracts: total=1 pending=0 running=1 blocked=0 completed=0 failed=0 ro=0 scoped=1 workspace=0/);
   assert.match(detail, /Workers: 1/);

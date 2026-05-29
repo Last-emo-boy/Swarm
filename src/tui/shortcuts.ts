@@ -137,7 +137,7 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
   "collab.ownership": {
     id: "collab.ownership",
     keys: ["O"],
-    label: "O ownership",
+    label: "O claims",
     scope: "collaboration"
   },
   "collab.negotiation": {
@@ -149,7 +149,7 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
   "collab.blackboard": {
     id: "collab.blackboard",
     keys: ["B"],
-    label: "B blackboard",
+    label: "B board",
     scope: "collaboration"
   },
   "collab.reassign": {

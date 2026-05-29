@@ -19,7 +19,7 @@ export function createStartupLogoMessage(input: {
       "╭────────────────────────────╮",
       "│        Symphony Swarm       │",
       "╰────────────────────────────╯",
-      `Local Agent OS${input.version ? ` v${input.version}` : ""}`,
+      `Local Swarm Runtime${input.version ? ` v${input.version}` : ""}`,
       model,
       compactPath(cwd)
     ].join("\n")
@@ -206,14 +206,20 @@ function describeToolAction(action: ToolAction): string {
       return `Edit JSON ${previewValue(action.path)} ${previewValue(action.pointer)}`;
     case "todo.write":
       return `Update TODOs ${action.todos.length} item(s)`;
+    case "ask_user_question":
+      return `Ask user ${previewValue(action.prompt, 180)}`;
+    case "plan.enter":
+      return `Enter plan mode ${previewValue(action.objective ?? "planning mode", 180)}`;
+    case "plan.exit":
+      return `Request plan approval ${previewValue(action.summary ?? "approval requested", 180)}`;
     case "blackboard.write":
-      return `Blackboard write ${previewValue(action.key)}`;
+      return `Board write ${previewValue(action.key)}`;
     case "blackboard.read":
-      return `Blackboard read ${previewValue(action.entryId ?? action.key ?? "entry")}`;
+      return `Board read ${previewValue(action.entryId ?? action.key ?? "entry")}`;
     case "blackboard.search":
-      return `Blackboard search ${previewValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
+      return `Board search ${previewValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
     case "blackboard.list":
-      return `Blackboard list ${previewValue(action.keyPrefix ?? action.tag ?? "entries")}`;
+      return `Board list ${previewValue(action.keyPrefix ?? action.tag ?? "entries")}`;
     case "shell.exec":
       return `Run shell command: ${previewValue(action.command, 180)}`;
     case "exec":
@@ -284,6 +290,21 @@ function renderToolActionDetail(action: ToolAction): string {
   }
   if ("query" in action && typeof action.query === "string") {
     lines.push(`Query: ${action.query}`);
+  }
+  if (action.type === "ask_user_question") {
+    lines.push(`Question: ${action.prompt}`);
+    if (action.reason) {
+      lines.push(`Reason: ${action.reason}`);
+    }
+  }
+  if (action.type === "plan.enter" && action.objective) {
+    lines.push(`Objective: ${action.objective}`);
+  }
+  if (action.type === "plan.exit") {
+    if (action.summary) {
+      lines.push(`Summary: ${action.summary}`);
+    }
+    lines.push(`Plan: ${action.plan}`);
   }
   return lines.join("\n");
 }

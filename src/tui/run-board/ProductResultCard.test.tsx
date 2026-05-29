@@ -129,7 +129,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   const frame = root.getFrame();
   assert(frame);
   const text = frameText(frame);
-  assert.match(text, /Trail\s+5 sections\. Enter\/click to expand/);
+  assert.match(text, /Trail\s+5 sections\. Ctrl\+O details/);
   assert.match(text, /split\s+Objective adopted/);
   const target = findLastCell(frame, "Trail");
   assert(target, "expected trail row to render");

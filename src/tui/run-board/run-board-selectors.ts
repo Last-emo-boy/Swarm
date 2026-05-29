@@ -17,7 +17,7 @@ export function selectRunBoardSurface(state: RunBoardState, input: {
 } = {}): RunBoardSurfaceView {
   const resultRisk = state.finalResult?.risks?.[0]?.level;
   return {
-    title: "Swarm Board",
+    title: "Run Board",
     objective: state.objective,
     phase: selectRunBoardPhase(state, input),
     focus: selectRunBoardFocus(state, input),

@@ -23,7 +23,7 @@ export function AttentionPanel(props: {
           <SemanticTextLine wrap="truncate" spans={attentionTitleSpans(item)} />
           {item.evidence[0] ? (
             <SemanticTextLine wrap="truncate" spans={[
-              { text: "  evidence: ", color: "text.muted" },
+              { text: "  activity: ", color: "text.muted" },
               { text: item.evidence[0], color: "text.primary" }
             ]} />
           ) : null}

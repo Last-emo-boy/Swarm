@@ -231,7 +231,12 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
         "GitShow(*)",
         "PackageInstall(*)",
         "Exec(*)",
-        "Agent(*)"
+        "Agent(*)",
+        "Task(*)",
+        "Worktree(*)",
+        "ConfigSet(*)",
+        "McpCall(*)",
+        "SkillInvoke(*)"
       ],
       deny: [
         "Read(.env)",

@@ -36,7 +36,7 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
     "Workspace",
     snapshot.workspace ? `${snapshot.workspace.workspace_path} boundary=${snapshot.workspace.write_boundary}` : "(none)",
     "",
-    `Attempts: ${snapshot.attempts.length}`,
+    `Run Attempts: ${snapshot.attempts.length}`,
     ...(snapshot.attempts.length
       ? snapshot.attempts.map(formatRunAttemptSummary)
       : ["(none)"]),
@@ -106,7 +106,7 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
     "",
     `Review: ${snapshot.review ? `${snapshot.review.verdict} ${snapshot.review.score} - ${snapshot.review.summary}` : "(none)"}`,
     "",
-    "Blackboard",
+    "Board",
     JSON.stringify(snapshot.blackboard_counts, null, 2),
     "",
     "Usage",

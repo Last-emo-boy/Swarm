@@ -15,7 +15,7 @@ export function WorkerBoard(props: {
   const visible = props.rows.slice(0, limit);
   const hidden = Math.max(0, props.rows.length - visible.length);
   return (
-    <RunBoardPanel title="Worker Board">
+    <RunBoardPanel title="Workers">
       {visible.length
         ? visible.map((row) => (
             <WorkerRow

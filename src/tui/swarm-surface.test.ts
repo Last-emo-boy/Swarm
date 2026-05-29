@@ -97,7 +97,7 @@ test("swarm surface renders active topology and mailbox from durable actor state
     assert.match(detail, /compacted=2026-05-25T00:09:45.000Z/);
     assert.match(agent, /memory entries=1 health=active hash=amx:/);
     assert.match(detail, /task=task-surface-1/);
-    assert.match(detail, /actor_task:task-surface-1/);
+    assert.match(detail, /Task:task-surface-1/);
     assert.match(mailbox, /Mailbox worker:surface-1/);
     assert.match(mailbox, /inbox:task.assign \[acked\]/);
     assert.match(mailbox, /outbox:task.accept \[delivered\]/);
@@ -131,7 +131,7 @@ test("swarm surface marks stale worker heartbeat as a visible conflict", () => {
     assert.equal(surface.summary.stale_participants >= 1, true);
     assert.match(detail, /worker:stale-1 \[worker\/busy\/stale\]/);
     assert.match(detail, /\[WARN\] heartbeat:worker:stale-1/);
-    assert.match(detail, /stale heartbeat/);
+    assert.match(detail, /worker heartbeat missed/);
   } finally {
     fixture.close();
   }
@@ -193,11 +193,11 @@ test("swarm surface renders handoff ownership and blackboard claim conflict", ()
     const surface = buildSwarmSurfaceProjection({ runtime, now: NOW, limit: 30 });
     const detail = formatSwarmSurface(surface, { mode: "ownership", limit: 30 });
 
-    assert.match(detail, /handoff:handoff-surface-1 \[conflict\]/);
+    assert.match(detail, /Handoff:handoff-surface-1 \[conflict\]/);
     assert.match(detail, /owner=worker:worker-handoff-surface-1/);
     assert.match(detail, /env=env_handoff_conflict_surface/);
-    assert.match(detail, /blackboard_claim:task\/claim-surface \[claimed\]/);
-    assert.match(detail, /blackboard_claim:task\/claim-surface \[conflict\]/);
+    assert.match(detail, /Claim:task\/claim-surface \[claimed\]/);
+    assert.match(detail, /Claim:task\/claim-surface \[conflict\]/);
     assert.match(formatSwarmSurface(surface), /\[ERR\] handoff:handoff-surface-1/);
     assert.match(formatSwarmSurface(surface), /\[WARN\] blackboard:task\/claim-surface/);
   } finally {
@@ -453,21 +453,21 @@ test("swarm workbench renders protocol topology ownership mailbox decisions and 
     const mailbox = formatSwarmWorkbench(surface, { mode: "mailbox", actorId: "worker:workbench-1", columns: 120, rows: 40 });
     const ownership = formatSwarmWorkbench(surface, { mode: "ownership", columns: 120, rows: 50, limit: 30 });
 
-    assert.match(summary, /Swarm Workbench/);
+    assert.match(summary, /Shared Board/);
     assert.match(summary, /Topology/);
     assert.match(summary, /worker:workbench-1 \[worker\/busy\/fresh\]/);
     assert.match(summary, /Mailbox/);
-    assert.match(summary, /Ownership/);
-    assert.match(summary, /Blackboard/);
+    assert.match(summary, /Workspace Claims/);
+    assert.match(summary, /Board/);
     assert.match(summary, /proposal\/中文宽度\/decision/);
     assert.match(summary, /decision=accepted/);
     assert.match(summary, /policy=reviewer_approval/);
     assert.match(summary, /waiting=worker:workbench-reviewer/);
-    assert.match(summary, /Conflicts/);
+    assert.match(summary, /Warnings/);
     assert.match(mailbox, /inbox:task.assign \[acked\]/);
     assert.match(mailbox, /outbox:task.accept \[delivered\]/);
-    assert.match(ownership, /handoff:handoff-surface-1 \[conflict\]/);
-    assert.match(ownership, /blackboard_claim:task\/workbench-claim \[conflict\]/);
+    assert.match(ownership, /Handoff:handoff-surface-1 \[conflict\]/);
+    assert.match(ownership, /Claim:task\/workbench-claim \[conflict\]/);
     assert.match(ownership, /policy=reviewer_approval/);
     assert.match(ownership, /waiting=worker:workbench-reviewer/);
     assert.match(ownership, /env=env_handoff_conflict_surface/);
@@ -479,7 +479,7 @@ test("swarm workbench renders protocol topology ownership mailbox decisions and 
       assert.doesNotMatch(frame, /\u001B\[/);
       const rendered = renderTuiToFrame(React.createElement(Box, { width: columns, height: 60, flexDirection: "column", overflow: "hidden" },
         React.createElement(InspectorPane, {
-          title: "Swarm Workbench",
+          title: "Shared Board",
           sessionId: "session-surface-1",
           route: "swarm",
           selected: `${columns} columns`,
@@ -491,9 +491,9 @@ test("swarm workbench renders protocol topology ownership mailbox decisions and 
       const renderedText = renderedLines.join("\n");
       assert.equal(rendered.metadata.invalidLayout, false);
       assert(renderedLines.every((line) => displayWidth(line) <= columns), `rendered line exceeded ${columns} columns:\n${renderedText}`);
-      assert.match(renderedText, /SWARM WORKBENCH|Swarm Workbench/);
+      assert.match(renderedText, /SHARED BOARD|Shared Board/);
       assert.match(renderedText, /Topology/);
-      assert.match(renderedText, /Ownership/);
+      assert.match(renderedText, /Workspace Claims/);
       assert.doesNotMatch(renderedText, /\u001B\[/);
     }
   } finally {

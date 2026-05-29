@@ -1,20 +1,16 @@
 import { strict as assert } from "node:assert";
 import React from "react";
 import test from "node:test";
-import { Box } from "../ui.js";
+import { Box, Text } from "../ui.js";
 import type { ResultCard as ResultCardData } from "../../runtime/result-card.js";
-import type { ToolApprovalRequest } from "../../tools/types.js";
 import type { TuiActionRow } from "../action-log.js";
 import { ChatInputArea } from "../ChatInputArea.js";
 import { ActionLog } from "../components/ActionLog.js";
-import { ApprovalOverlay } from "../components/ApprovalOverlay.js";
-import { CollaborationOverlayPanel } from "../components/CollaborationOverlayPanel.js";
 import { InspectorPane } from "../components/InspectorPane.js";
 import { ResultCard } from "../components/ResultCard.js";
-import { StatusRail } from "../components/StatusRail.js";
-import { TopologyStrip } from "../components/TopologyStrip.js";
-import { buildTopologyStripModel, type CollaborationOverlayView } from "../collaboration-cockpit.js";
+import { SwarmWorkbenchLayout, swarmWorkbenchMetrics } from "../components/SwarmWorkbenchLayout.js";
 import { resolveTuiColor } from "../theme.js";
+import type { TuiColorRef } from "../theme.js";
 import { createFrameSnapshot, assertFrameHasNoOverflow, type TuiFrameSnapshot } from "./frame-snapshot.js";
 import { renderTuiToFrame } from "./testing.js";
 
@@ -36,29 +32,40 @@ test("workbench visual snapshot covers result approval inspector action log and 
     const text = snapshotText(snapshot);
     assert.match(text, /Swarm/);
     assert.match(text, /RESULT/);
-    assert.match(text, /TOPO/);
-    assert.match(text, /OWNERSHIP/);
-    assert.match(text, /TRAIL/);
-    assert.match(text, /APPROVAL|DECISION|Reassign/);
-    if (viewport.columns >= 100) {
-      assert.match(text, /COMMAND OUTPUT/);
+    if (viewport.columns >= 120) {
+      assert.match(text, /TRAIL/);
+    }
+    if (viewport.columns >= 120) {
+      assert.match(text, /approval|Approval|DECISION|Reassign/);
+    }
+    if (viewport.columns >= 132) {
+      assert.match(text, /Mode/);
+      assert.match(text, /Capabilities/);
+      assert.match(text, /Workers/);
       assert.match(text, /ACTION LOG/);
     }
     assert.match(text, /Ask Swarm/);
+    assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP/);
 
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm"), "Swarm")?.color, resolveTuiColor("brand.focus"));
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
+    if (text.includes("Swarm >_")) {
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm >_"), "Swarm")?.color, resolveTuiColor("brand.focus"));
+    } else {
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Plan"), "Plan")?.color, resolveTuiColor("brand.focus"));
+    }
+    if (text.includes("CHECKS")) {
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
+    }
     if (text.includes("TARGET")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "TARGET"), "TARGET")?.color, resolveTuiColor("role.gateway"));
     }
-    if (viewport.columns >= 100) {
-      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "COMMAND OUTPUT"), "COMMAND OUTPUT")?.color, resolveTuiColor("text.primary"));
+    if (viewport.columns >= 132) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "ACTION LOG"), "ACTION LOG")?.color, resolveTuiColor("text.primary"));
     }
   }
 
   const wideSnapshot = snapshots[3]!.snapshot;
-  assert.equal(cellStyleAtText(snapshotRowWithText(wideSnapshot, "[cache:HIT 81%]"), "[cache:HIT 81%]")?.backgroundColor, resolveTuiColor("surface.selection"));
+  assert.match(wideSnapshot.lines.join("\n"), /\/help\s+\/continue\s+\/memory/);
+  assert.doesNotMatch(wideSnapshot.lines.join("\n"), /\[cache:HIT 81%\]/);
   assert(colorCount(wideSnapshot) >= 6, "wide workbench should keep multiple semantic accents visible");
 });
 
@@ -71,29 +78,13 @@ function renderWorkbenchSnapshot(input: typeof WORKBENCH_VIEWPORTS[number]): Tui
 
 function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.ReactElement {
   const compact = input.density === "compact";
-  const bodyHeight = Math.max(8, input.rows - 5);
+  const metrics = swarmWorkbenchMetrics({ columns: input.columns, rows: input.rows, centerBottomRows: 4 });
+  const primaryColumns = metrics.centerInnerColumns;
   const resultCard = React.createElement(ResultCard, { card: resultCardFixture(), detailHint: "Ctrl+O details", density: input.density });
-  const topology = React.createElement(TopologyStrip, {
-    model: buildTopologyStripModel({
-      approvalsPending: 1,
-      policyMode: "approval",
-      sandboxMode: "workspace-write"
-    }),
-    columns: input.columns
-  });
-  const overlay = React.createElement(CollaborationOverlayPanel, {
-    overlay: collaborationOverlayFixture(),
-    selectedIndex: 0,
-    reassign: {
-      targetId: "worker-test",
-      source: "ownership",
-      reason: "Test Runner waiting on verification",
-      risk: "medium",
-      policy: "approval-required",
-      summary: "Reassign intent for Test Runner"
-    }
-  });
-  const approval = React.createElement(ApprovalOverlay, { request: approvalFixture() });
+  const currentAction = React.createElement(Box, { flexDirection: "column", width: "100%" },
+    React.createElement(Text, { color: resolveTuiColor("status.pending"), wrap: "truncate" }, "[ASK] approval needed: run focused TUI renderer tests"),
+    React.createElement(Text, { color: resolveTuiColor("text.muted"), wrap: "truncate" }, "Waiting for reviewer confirmation")
+  );
   const inspector = React.createElement(InspectorPane, {
     title: "Command Output",
     sessionId: "session-workbench-visual",
@@ -113,48 +104,78 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
   const actionLog = React.createElement(ActionLog, {
     rows: actionRowsFixture(),
     height: compact ? 4 : 8,
-    columns: compact ? input.columns - 2 : Math.floor(input.columns / 2) - 2,
+    columns: compact ? input.columns - 2 : primaryColumns - 2,
     scrollOffset: 0,
     onScrollOffsetChange: () => undefined,
     motionFrame: 1,
     selectedIndex: 1
   });
-  return React.createElement(Box, { width: input.columns, height: input.rows, flexDirection: "column", overflow: "hidden" },
-    React.createElement(StatusRail, {
-      appName: "Swarm",
-      state: "running",
-      route: "coding_loop",
-      permissionMode: "yolo",
-      sandboxMode: "workspace-write",
-      model: "openai/kimi-k2.6",
-      sessionId: "session-workbench-visual",
-      cacheStatus: "cache_hit",
-      checkpoint: "before-tui-polish",
-      view: "Workbench",
-      density: input.density
-    }),
-    compact
-      ? React.createElement(Box, { flexDirection: "column", width: "100%", height: bodyHeight, overflow: "hidden" },
-        React.createElement(Box, { height: 2, overflow: "hidden", flexDirection: "column" }, topology),
-        React.createElement(Box, { height: 5, overflow: "hidden", flexDirection: "column" }, overlay),
-        React.createElement(Box, { height: 10, overflow: "hidden", flexDirection: "column" }, resultCard),
-        React.createElement(Box, { height: 3, overflow: "hidden", flexDirection: "column" }, approval),
-        React.createElement(Box, { height: 3, overflow: "hidden", flexDirection: "column" }, inspector),
-        actionLog
-      )
-      : React.createElement(Box, { flexDirection: "row", width: "100%", height: bodyHeight, overflow: "hidden" },
-        React.createElement(Box, { flexDirection: "column", width: "50%", flexGrow: 1, overflow: "hidden" },
-          topology,
-          overlay,
-          resultCard,
-          approval
-        ),
-        React.createElement(Box, { flexDirection: "column", width: "50%", flexGrow: 1, overflow: "hidden" },
-          inspector,
-          actionLog
-        )
-      ),
-    React.createElement(ChatInputArea, {
+  const primary = React.createElement(Box, { flexDirection: "column", width: "100%", flexGrow: 1, flexShrink: 1, overflow: "hidden" },
+    resultCard,
+    compact ? inspector : actionLog
+  );
+  const footerItems = [
+    { id: "tasks" as const, label: "tasks", value: "2/5", tone: "running" as const },
+    { id: "approvals" as const, label: "approvals", value: "1", tone: "pending" as const },
+    { id: "cache" as const, label: "cache", value: "HIT 81%", tone: "success" as const },
+    { id: "lsp" as const, label: "lsp", value: "READY", tone: "success" as const },
+    { id: "gateway" as const, label: "gateway", value: "LOCAL", tone: "success" as const },
+    { id: "symphony" as const, label: "symphony", value: "2 run", tone: "running" as const }
+  ];
+  const commandFooterItems = [
+    { key: "help", label: "/help", tone: "brand.focus" as TuiColorRef },
+    { key: "continue", label: "/continue", tone: "brand.focus" as TuiColorRef },
+    { key: "memory", label: "/memory", tone: "brand.focus" as TuiColorRef },
+    { key: "scroll", label: "PgUp/PgDn scroll", tone: "text.muted" as TuiColorRef },
+    { key: "search", label: "/ search", tone: "text.muted" as TuiColorRef },
+    { key: "details", label: "Ctrl+O details", tone: "text.muted" as TuiColorRef }
+  ];
+  return React.createElement(SwarmWorkbenchLayout, {
+    columns: input.columns,
+    rows: input.rows,
+    version: "0.1.0",
+    title: "Plan",
+    subtitle: "Run: Executing  Workers: 2  Files: 2  Approvals: 1",
+    headerDetail: "Waiting for reviewer confirmation",
+    workspace: { path: "E:/Playground/Swarm", git: "checkpoint before-tui-polish", status: "running" },
+    navigation: [
+      { id: "chat", label: "Chat", shortcut: "1", active: false },
+      { id: "plan", label: "Plan", shortcut: "2", active: true },
+      { id: "activity", label: "Activity", shortcut: "3", active: false },
+      { id: "output", label: "Output", shortcut: "4", active: false },
+      { id: "sessions", label: "Sessions", shortcut: "5", active: false },
+      { id: "workers", label: "Workers", shortcut: "6", active: false },
+      { id: "trace", label: "Trace", shortcut: "7", active: false },
+      { id: "board", label: "Board", shortcut: "8", active: false }
+    ],
+    sessions: [
+      { id: "session-workbench-visual", title: "TUI workbench polish", age: "now", status: "running", active: true },
+      { id: "session-review", title: "Review visual gates", age: "8m", status: "completed" }
+    ],
+    mode: { title: "Plan & Execute", subtitle: "Plans first, then edits safely", badge: "ACTIVE", tone: "role.gateway" },
+    permission: { title: "YOLO", subtitle: "Edits can run without asking", badge: "RISK", tone: "status.danger" },
+    sandbox: { title: "Workspace Write", subtitle: "Can modify this workspace", badge: "RW", tone: "status.success" },
+    model: { title: "kimi-k2.6", subtitle: "Provider: openai", badge: "READY", tone: "role.gateway" },
+    memory: { title: "2/5 tasks", subtitle: "Session session-workbench-visual", badge: "Planning", tone: "status.running" },
+    tools: [
+      { name: "Approvals", status: "1 pending", tone: "status.pending", active: true },
+      { name: "MCP", status: "Off", tone: "text.muted", active: false },
+      { name: "Skills", status: "On", tone: "status.success", active: true },
+      { name: "LSP", status: "Ready", tone: "status.success", active: true },
+      { name: "Symphony", status: "Running", tone: "status.running", active: true }
+    ],
+    workers: [
+      { id: "worker-test", label: "Test Runner", status: "blocked", tone: "status.danger" },
+      { id: "worker-review", label: "Reviewer", status: "running", tone: "status.running" }
+    ],
+    footer: commandFooterItems,
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Box, { flexDirection: "column", width: "100%", height: "100%", overflow: "hidden" },
+      currentAction,
+      primary,
+      compact ? undefined : React.createElement(Box, { flexDirection: "column", width: "100%", overflow: "hidden" }, inspector, actionLog)
+    ),
+    renderCenterBottom: () => React.createElement(ChatInputArea, {
       onSubmit: () => undefined,
       onCompletionRowsChange: () => undefined,
       inputActive: false,
@@ -164,19 +185,12 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
       footerPermissionTone: "status.danger",
       footerSandboxLabel: "RW",
       footerSandboxTone: "status.success",
-      footerItems: [
-        { id: "tasks", label: "tasks", value: "2/5", tone: "running" },
-        { id: "cache", label: "cache", value: "HIT 81%", tone: "success" },
-        { id: "lsp", label: "lsp", value: "READY", tone: "success" },
-        { id: "gateway", label: "gateway", value: "LOCAL", tone: "success" },
-        { id: "symphony", label: "symphony", value: "2 run", tone: "running" }
-      ],
-      selectedFooterItem: "cache",
-      footerHint: "Left/Right footer | [/] message | / search",
+      footerItems: [],
+      footerHint: "/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details",
       columns: input.columns,
       maxRows: 4
     })
-  );
+  });
 }
 
 function resultCardFixture(): ResultCardData {
@@ -209,55 +223,6 @@ function resultCardFixture(): ResultCardData {
       writeRate: 0.08,
       changed: ["requestPrefixHash4096"]
     }
-  };
-}
-
-function collaborationOverlayFixture(): CollaborationOverlayView {
-  return {
-    target: "ownership",
-    title: "Ownership",
-    emptyLabel: "No blocked ownership.",
-    actions: ["Enter detail", "r reassign intent", "Esc close"],
-    rows: [
-      {
-        id: "worker-test",
-        label: "Test Runner",
-        status: "blocked",
-        tone: "blocked",
-        evidence: "waiting verification",
-        detail: ["Test Runner blocked by verification"],
-        priority: 0
-      },
-      {
-        id: "claim-session-row",
-        label: "Claim session-row.ts",
-        status: "claimed",
-        tone: "ok",
-        evidence: "owner Code Worker",
-        detail: ["Code Worker owns session-row.ts"],
-        priority: 5
-      }
-    ]
-  };
-}
-
-function approvalFixture(): ToolApprovalRequest {
-  return {
-    id: "approval-workbench",
-    action: "shell.exec",
-    summary: "Run focused TUI renderer tests.",
-    detail: "cwd=E:/Playground/Swarm\ncommand=node --import tsx --test src/tui/renderer/workbench-visual-snapshot.test.ts",
-    risk: "shell",
-    risk_class: "r4",
-    target: "node --import tsx --test src/tui/renderer/workbench-visual-snapshot.test.ts",
-    why_now: "The new visual fixture must be verified before global install.",
-    predicted_impact: "Runs local tests and writes no source files.",
-    rollback_plan: "No rollback needed; test command is read-only.",
-    permission_decision: "ask",
-    permission_reason: "Shell execution requires explicit confirmation.",
-    permission_name: "shell.exec",
-    permission_rule: "r4 shell",
-    summary_diff: "+ workbench snapshot coverage"
   };
 }
 
@@ -325,4 +290,13 @@ function colorCount(snapshot: TuiFrameSnapshot): number {
   return new Set(snapshot.cells.flatMap((row) =>
     row.map((cell) => cell.style.color).filter((color): color is string => typeof color === "string")
   )).size;
+}
+
+function footerTone(tone: "neutral" | "running" | "pending" | "success" | "warning" | "danger" | "muted"): TuiColorRef {
+  if (tone === "danger") return "status.danger";
+  if (tone === "warning") return "status.warning";
+  if (tone === "pending") return "status.pending";
+  if (tone === "running") return "status.running";
+  if (tone === "success") return "status.success";
+  return "text.muted";
 }

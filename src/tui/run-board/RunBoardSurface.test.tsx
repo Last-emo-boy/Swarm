@@ -77,12 +77,12 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   const frame = renderTuiToFrame(React.createElement(RunBoardSurface, { view }), { columns: 100, rows: 28 });
   const text = frameText(frame);
 
-  assert.match(text, /SWARM BOARD/);
+  assert.match(text, /RUN SUMMARY/);
   assert.match(text, /repo: Swarm/);
   assert.match(text, /mode: auto/);
   assert.match(text, /risk: workspace-write/);
   assert.match(text, /Focus\s+Test Runner/);
-  assert.match(text, /WORKER BOARD/);
+  assert.match(text, /WORKERS/);
   assert.match(text, /Test Runner/);
   assert.match(text, /ATTENTION/);
   assert.match(text, /recommend/);
@@ -100,8 +100,8 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     const lines = text.split("\n");
 
     assert(lines.every((line) => line.length <= columns), `${columns}: expected all rows to fit`);
-    assert.match(text, /SWARM BOARD/);
-    assert.match(text, /WORKER BOARD/);
+    assert.match(text, /RUN SUMMARY/);
+    assert.match(text, /WORKERS/);
     assert.match(text, /ATTENTION/);
     assert.match(text, /RESULT PREVIEW/);
     assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);

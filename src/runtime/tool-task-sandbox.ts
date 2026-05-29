@@ -131,6 +131,11 @@ function toolTaskTargetPaths(action: ToolAction): string[] {
       return [action.destination];
     case "notebook.edit":
       return [action.notebookPath];
+    case "worktree.enter":
+    case "worktree.exit":
+      return ["."];
+    case "agent.message":
+      return ["."];
     default:
       return [];
   }

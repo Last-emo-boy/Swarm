@@ -287,14 +287,14 @@ test("collaboration overlay filter keeps matching evidence and produces low-nois
   assert.equal(filterCollaborationOverlayView(blackboard, "small-patch")?.rows.length, 1);
   const empty = filterCollaborationOverlayView(blackboard, "missing");
   assert.equal(empty?.rows.length, 0);
-  assert.match(empty?.emptyLabel ?? "", /No blackboard timeline rows matched "missing"/);
+  assert.match(empty?.emptyLabel ?? "", /No board timeline rows matched "missing"/);
 });
 
 test("collaboration action intents preserve policy-bound action semantics", () => {
   const overlay = {
     target: "ownership" as const,
-    title: "Ownership",
-    emptyLabel: "No blocked ownership.",
+    title: "Workspace Claims",
+    emptyLabel: "No blocked workspace claims.",
     actions: ["Enter detail", "t take over intent", "r reassign intent", "Esc close"],
     rows: [{
       id: "worker:test",

@@ -18,6 +18,12 @@ import {
   resolveShellCwd,
   resolveWritablePath
 } from "./permissions.js";
+import { interpretCommandResult } from "./command-safety.js";
+import {
+  loadSwarmSettings,
+  saveSwarmSettings,
+  type SwarmSettings
+} from "../config/settings.js";
 import { ensureWorkspaceIndex } from "../runtime/workspace-index.js";
 import type { LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
 import {
@@ -28,6 +34,7 @@ import {
   type ShellCommandResult
 } from "./file-grep.js";
 import { runLspTool } from "../lsp/tools.js";
+import { writeTaskOutput } from "../storage/task-output-store.js";
 
 const AGENT_TOOL_DEFAULT_CAPABILITY = "code.research";
 
@@ -54,7 +61,7 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
   const rawAction = String(inputs.action ?? capability ?? "").trim();
   const action = isRunCommandAlias(rawAction)
     ? runCommandAliasTarget(inputs.command)
-    : normalizeActionName(rawAction);
+    : normalizeActionName(rawAction, inputs);
   const isVisibleAgentAction = rawAction === "Agent" || rawAction === "Task";
   if (action === "file.read") {
     return {
@@ -91,8 +98,16 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       root: stringInput(inputs.root || inputs.path || "."),
       pattern: stringInput(inputs.pattern || inputs.query),
       include: optionalStringInput(inputs.include ?? inputs.glob),
-      maxMatches: numberInput(inputs.maxMatches ?? inputs.max_matches ?? inputs.head_limit),
-      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines ?? inputs.context ?? inputs["-C"])
+      outputMode: grepOutputModeInput(inputs.outputMode ?? inputs.output_mode),
+      maxMatches: numberInput(inputs.maxMatches ?? inputs.max_matches),
+      headLimit: numberInput(inputs.headLimit ?? inputs.head_limit),
+      offset: numberInput(inputs.offset),
+      contextLines: numberInput(inputs.contextLines ?? inputs.context_lines ?? inputs.context ?? inputs["-C"]),
+      beforeContext: numberInput(inputs.beforeContext ?? inputs.before_context ?? inputs["-B"]),
+      afterContext: numberInput(inputs.afterContext ?? inputs.after_context ?? inputs["-A"]),
+      caseInsensitive: booleanInput(inputs.caseInsensitive ?? inputs.case_insensitive ?? inputs["-i"]),
+      multiline: booleanInput(inputs.multiline),
+      fileType: optionalStringInput(inputs.fileType ?? inputs.file_type ?? inputs.type)
     };
   }
   if (action === "file.stat") {
@@ -176,6 +191,57 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       todos: todoListInput(inputs.todos)
     };
   }
+  if (action === "ask_user_question") {
+    return {
+      type: "ask_user_question",
+      prompt: requiredStringInput(inputs.prompt ?? inputs.question ?? firstQuestionText(inputs.questions), "ask_user_question requires prompt"),
+      questions: structuredQuestionsInput(inputs.questions),
+      choices: questionChoicesInput(inputs.choices ?? inputs.options),
+      defaultChoice: optionalStringInput(inputs.defaultChoice ?? inputs.default_choice),
+      recommendedChoice: optionalStringInput(inputs.recommendedChoice ?? inputs.recommended_choice),
+      allowFreeform: booleanInput(inputs.allowFreeform ?? inputs.allow_freeform),
+      reason: optionalStringInput(inputs.reason)
+    };
+  }
+  if (action === "plan.enter") {
+    return {
+      type: "plan.enter",
+      objective: optionalStringInput(inputs.objective ?? inputs.task ?? inputs.prompt),
+      reason: optionalStringInput(inputs.reason)
+    };
+  }
+  if (action === "plan.exit") {
+    return {
+      type: "plan.exit",
+      plan: requiredStringInput(inputs.plan ?? inputs.content ?? inputs.summary, "plan.exit requires plan"),
+      summary: optionalStringInput(inputs.summary),
+      ready: booleanInput(inputs.ready),
+      allowedPrompts: allowedPromptsInput(inputs.allowedPrompts ?? inputs.allowed_prompts)
+    };
+  }
+  if (action === "worktree.enter") {
+    return {
+      type: "worktree.enter",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      path: optionalStringInput(inputs.path ?? inputs.worktree_path ?? inputs.worktreePath),
+      scope: stringArrayInput(inputs.scope ?? inputs.file_scope ?? inputs.fileScope ?? inputs.paths),
+      branch: optionalStringInput(inputs.branch ?? inputs.worktree_branch ?? inputs.worktreeBranch),
+      name: optionalStringInput(inputs.name ?? inputs.slug ?? inputs.worktree_name ?? inputs.worktreeName),
+      reason: optionalStringInput(inputs.reason ?? inputs.message),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun ?? inputs.preview)
+    };
+  }
+  if (action === "worktree.exit") {
+    return {
+      type: "worktree.exit",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      lease_id: optionalStringInput(inputs.lease_id ?? inputs.leaseId),
+      mode: worktreeExitModeInput(inputs.mode ?? inputs.exit_mode ?? inputs.exitMode ?? inputs.worktree_action ?? inputs.worktreeAction),
+      discardChanges: booleanInput(inputs.discardChanges ?? inputs.discard_changes),
+      reason: optionalStringInput(inputs.reason ?? inputs.message),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun ?? inputs.preview)
+    };
+  }
   if (action === "blackboard.write") {
     return {
       type: "blackboard.write",
@@ -230,6 +296,18 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
   if (action === "shell.exec") {
     return {
       type: "shell.exec",
+      command: stringInput(inputs.command),
+      cwd: optionalStringInput(inputs.cwd),
+      timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
+      maxOutputBytes: numberInput(inputs.maxOutputBytes ?? inputs.max_output_bytes),
+      runInBackground: booleanInput(inputs.runInBackground ?? inputs.run_in_background ?? inputs.background),
+      description: optionalStringInput(inputs.description),
+      maxLogBytes: numberInput(inputs.maxLogBytes ?? inputs.max_log_bytes)
+    };
+  }
+  if (action === "powershell.exec") {
+    return {
+      type: "powershell.exec",
       command: stringInput(inputs.command),
       cwd: optionalStringInput(inputs.cwd),
       timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms ?? inputs.timeout),
@@ -318,6 +396,151 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       prompt: optionalStringInput(inputs.prompt),
       timeoutMs: numberInput(inputs.timeoutMs ?? inputs.timeout_ms),
       maxBytes: numberInput(inputs.maxBytes ?? inputs.max_bytes)
+    };
+  }
+  if (action === "config.get") {
+    return {
+      type: "config.get",
+      setting: optionalStringInput(inputs.setting ?? inputs.key)
+    };
+  }
+  if (action === "config.set") {
+    return {
+      type: "config.set",
+      setting: requiredStringInput(inputs.setting ?? inputs.key, "config.set requires setting"),
+      value: configValueInput(inputs.value)
+    };
+  }
+  if (action === "mcp.resources") {
+    return {
+      type: "mcp.resources",
+      server: optionalStringInput(inputs.server ?? inputs.server_id ?? inputs.serverId),
+      limit: numberInput(inputs.limit ?? inputs.max_results ?? inputs.maxResults)
+    };
+  }
+  if (action === "mcp.read") {
+    return {
+      type: "mcp.read",
+      server: requiredStringInput(inputs.server ?? inputs.server_id ?? inputs.serverId, "mcp.read requires server"),
+      uri: requiredStringInput(inputs.uri, "mcp.read requires uri"),
+      maxBytes: numberInput(inputs.maxBytes ?? inputs.max_bytes ?? inputs.limit)
+    };
+  }
+  if (action === "mcp.auth") {
+    return {
+      type: "mcp.auth",
+      server: optionalStringInput(inputs.server ?? inputs.server_id ?? inputs.serverId)
+    };
+  }
+  if (action === "mcp.call") {
+    return {
+      type: "mcp.call",
+      server: optionalStringInput(inputs.server ?? inputs.server_id ?? inputs.serverId),
+      tool: optionalStringInput(inputs.tool ?? inputs.tool_name ?? inputs.toolName ?? inputs.name),
+      capabilityId: optionalStringInput(inputs.capabilityId ?? inputs.capability_id),
+      args: recordInput(inputs.args ?? inputs.arguments) ?? {},
+      maxBytes: numberInput(inputs.maxBytes ?? inputs.max_bytes ?? inputs.limit)
+    };
+  }
+  if (action === "skill.invoke") {
+    return {
+      type: "skill.invoke",
+      name: requiredStringInput(inputs.name ?? inputs.skill ?? inputs.skill_name ?? inputs.skillName, "skill.invoke requires name"),
+      reason: optionalStringInput(inputs.reason)
+    };
+  }
+  if (action === "agent.message") {
+    return {
+      type: "agent.message",
+      worker_id: optionalStringInput(inputs.worker_id ?? inputs.workerId),
+      agent_id: optionalStringInput(inputs.agent_id ?? inputs.agentId),
+      role: optionalStringInput(inputs.role),
+      capability: optionalStringInput(inputs.capability),
+      message: requiredStringInput(inputs.message ?? inputs.content ?? inputs.text, "agent.message requires message"),
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: optionalStringInput(inputs.task_id ?? inputs.taskId),
+      require_ack: booleanInput(inputs.require_ack ?? inputs.requireAck),
+      ttl_ms: numberInput(inputs.ttl_ms ?? inputs.ttlMs ?? inputs.timeoutMs),
+      metadata: recordInput(inputs.metadata)
+    };
+  }
+  if (action === "runtime.sleep") {
+    return {
+      type: "runtime.sleep",
+      duration_ms: requiredNumberInput(inputs.duration_ms ?? inputs.durationMs ?? inputs.ms ?? inputs.sleep_ms ?? inputs.sleepMs, "runtime.sleep requires duration_ms"),
+      reason: optionalStringInput(inputs.reason)
+    };
+  }
+  if (action === "structured.output") {
+    return {
+      type: "structured.output",
+      value: inputs.value ?? inputs.output ?? inputs.result,
+      schema: recordInput(inputs.schema ?? inputs.json_schema ?? inputs.jsonSchema),
+      label: optionalStringInput(inputs.label ?? inputs.name),
+      final: booleanInput(inputs.final),
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: optionalStringInput(inputs.task_id ?? inputs.taskId)
+    };
+  }
+  if (action === "repl.mode") {
+    const mode = optionalStringInput(inputs.mode);
+    return {
+      type: "repl.mode",
+      mode: mode === "interactive" || mode === "headless" || mode === "repl" ? mode : undefined,
+      reason: optionalStringInput(inputs.reason)
+    };
+  }
+  if (action === "schedule.create") {
+    return {
+      type: "schedule.create",
+      cron: requiredStringInput(inputs.cron ?? inputs.schedule, "schedule.create requires cron"),
+      prompt: requiredStringInput(inputs.prompt ?? inputs.task ?? inputs.message, "schedule.create requires prompt"),
+      recurring: booleanInput(inputs.recurring),
+      durable: booleanInput(inputs.durable),
+      timezone: optionalStringInput(inputs.timezone ?? inputs.time_zone),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun)
+    };
+  }
+  if (action === "schedule.list") {
+    return {
+      type: "schedule.list",
+      status: scheduleStatusInput(inputs.status),
+      limit: numberInput(inputs.limit)
+    };
+  }
+  if (action === "schedule.delete") {
+    return {
+      type: "schedule.delete",
+      schedule_id: requiredStringInput(inputs.schedule_id ?? inputs.scheduleId ?? inputs.id, "schedule.delete requires schedule_id"),
+      reason: optionalStringInput(inputs.reason),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun)
+    };
+  }
+  if (action === "remote.trigger") {
+    return {
+      type: "remote.trigger",
+      endpoint: optionalStringInput(inputs.endpoint ?? inputs.endpoint_id ?? inputs.endpointId ?? inputs.remote),
+      capability: optionalStringInput(inputs.capability ?? inputs.tool),
+      payload: recordInput(inputs.payload ?? inputs.args),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun)
+    };
+  }
+  if (action === "team.create") {
+    return {
+      type: "team.create",
+      name: optionalStringInput(inputs.name ?? inputs.team_name ?? inputs.teamName),
+      objective: requiredStringInput(inputs.objective ?? inputs.prompt ?? inputs.description, "team.create requires objective"),
+      roles: stringListInput(inputs.roles),
+      task_ids: stringArrayInput(inputs.task_ids ?? inputs.taskIds),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun)
+    };
+  }
+  if (action === "team.delete") {
+    return {
+      type: "team.delete",
+      team_id: requiredStringInput(inputs.team_id ?? inputs.teamId ?? inputs.id, "team.delete requires team_id"),
+      reason: optionalStringInput(inputs.reason),
+      dry_run: booleanInput(inputs.dry_run ?? inputs.dryRun)
     };
   }
   if (action === "notebook.edit") {
@@ -441,6 +664,77 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       run_in_background: booleanInput(inputs.runInBackground ?? inputs.run_in_background)
     };
   }
+  if (action === "task.create") {
+    return {
+      type: "task.create",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: optionalStringInput(inputs.task_id ?? inputs.taskId ?? inputs.id),
+      title: requiredStringInput(inputs.title ?? inputs.summary ?? inputs.description ?? inputs.objective, "task.create requires title"),
+      description: optionalStringInput(inputs.description),
+      objective: optionalStringInput(inputs.objective ?? inputs.prompt),
+      taskType: taskTypeInput(inputs.taskType ?? inputs.task_type ?? inputs.type),
+      status: swarmTaskStatusInput(inputs.status),
+      required_capabilities: stringArrayInput(inputs.required_capabilities ?? inputs.requiredCapabilities ?? inputs.capabilities),
+      capability: optionalStringInput(inputs.capability),
+      dependencies: stringArrayInput(inputs.dependencies ?? inputs.depends_on ?? inputs.dependsOn),
+      parent_task_id: optionalStringInput(inputs.parent_task_id ?? inputs.parentTaskId),
+      assigned_to: agentAddressInput(inputs.assigned_to ?? inputs.assignedTo ?? inputs.agent),
+      write_policy: writePolicyInput(inputs.write_policy ?? inputs.writePolicy),
+      file_scope: stringArrayInput(inputs.file_scope ?? inputs.fileScope ?? inputs.paths)
+    };
+  }
+  if (action === "task.update") {
+    return {
+      type: "task.update",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: requiredStringInput(inputs.task_id ?? inputs.taskId ?? inputs.id, "task.update requires task_id"),
+      title: optionalStringInput(inputs.title),
+      status: swarmTaskStatusInput(inputs.status),
+      summary: optionalStringInput(inputs.summary ?? inputs.message),
+      last_error: optionalStringInput(inputs.last_error ?? inputs.lastError ?? inputs.error),
+      attempt: numberInput(inputs.attempt),
+      output: optionalStringInput(inputs.output ?? inputs.content),
+      output_ref: optionalStringInput(inputs.output_ref ?? inputs.outputRef),
+      progress: numberInput(inputs.progress),
+      metadata: recordInput(inputs.metadata)
+    };
+  }
+  if (action === "task.get") {
+    return {
+      type: "task.get",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: requiredStringInput(inputs.task_id ?? inputs.taskId ?? inputs.id, "task.get requires task_id")
+    };
+  }
+  if (action === "task.list") {
+    return {
+      type: "task.list",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      status: swarmTaskStatusInput(inputs.status),
+      limit: numberInput(inputs.limit),
+      offset: numberInput(inputs.offset)
+    };
+  }
+  if (action === "task.output") {
+    return {
+      type: "task.output",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: optionalStringInput(inputs.task_id ?? inputs.taskId ?? inputs.id),
+      worker_id: optionalStringInput(inputs.worker_id ?? inputs.workerId ?? inputs.agent_id ?? inputs.agentId),
+      artifact_id: optionalStringInput(inputs.artifact_id ?? inputs.artifactId),
+      output_ref: optionalStringInput(inputs.output_ref ?? inputs.outputRef ?? inputs.ref ?? inputs.path),
+      max_bytes: numberInput(inputs.max_bytes ?? inputs.maxBytes ?? inputs.limit),
+      offset: numberInput(inputs.offset)
+    };
+  }
+  if (action === "task.stop") {
+    return {
+      type: "task.stop",
+      session_id: optionalStringInput(inputs.session_id ?? inputs.sessionId),
+      task_id: requiredStringInput(inputs.task_id ?? inputs.taskId ?? inputs.id, "task.stop requires task_id"),
+      reason: optionalStringInput(inputs.reason ?? inputs.message)
+    };
+  }
   if (action === "agent.delegate") {
     const runInBackground = booleanInput(inputs.runInBackground ?? inputs.run_in_background);
     const preferredMode = agentInvocationModeInput(inputs.preferred_mode ?? inputs.invocation_mode ?? inputs.mode);
@@ -533,6 +827,39 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
   if (action.type === "todo.write") {
     return writeTodos(action, context);
   }
+  if (action.type === "ask_user_question") {
+    return askUserQuestion(action, context);
+  }
+  if (action.type === "plan.enter") {
+    return enterPlanMode(action, context);
+  }
+  if (action.type === "plan.exit") {
+    return exitPlanMode(action, context);
+  }
+  if (action.type === "task.create") {
+    return runTaskCreate(action, context);
+  }
+  if (action.type === "task.update") {
+    return runTaskUpdate(action, context);
+  }
+  if (action.type === "task.get") {
+    return runTaskGet(action, context);
+  }
+  if (action.type === "task.list") {
+    return runTaskList(action, context);
+  }
+  if (action.type === "task.output") {
+    return runTaskOutput(action, context);
+  }
+  if (action.type === "task.stop") {
+    return runTaskStop(action, context);
+  }
+  if (action.type === "worktree.enter") {
+    return enterWorktree(action, context);
+  }
+  if (action.type === "worktree.exit") {
+    return exitWorktree(action, context);
+  }
   if (action.type === "blackboard.write") {
     return writeBlackboard(action, context);
   }
@@ -547,6 +874,9 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
   }
   if (action.type === "shell.exec") {
     return executeShell(action, context);
+  }
+  if (action.type === "powershell.exec") {
+    return executePowerShell(action, context);
   }
   if (action.type === "exec") {
     return executeExec(action, context);
@@ -579,7 +909,43 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
     if (!context.settings.tools.webSearch) {
       throw new Error("Web fetch is disabled by ~/.swarm/settings.json");
     }
-    return webFetch(action);
+    return webFetch(action, context);
+  }
+  if (action.type === "config.get") {
+    return configGet(action, context);
+  }
+  if (action.type === "config.set") {
+    return configSet(action, context);
+  }
+  if (action.type === "mcp.resources") {
+    return listMcpResources(action, context);
+  }
+  if (action.type === "mcp.read") {
+    return readMcpResource(action, context);
+  }
+  if (action.type === "mcp.auth") {
+    return mcpAuth(action, context);
+  }
+  if (action.type === "mcp.call") {
+    return callMcpTool(action, context);
+  }
+  if (action.type === "skill.invoke") {
+    return invokeSkill(action, context);
+  }
+  if (action.type === "agent.message") {
+    return sendAgentMessage(action, context);
+  }
+  if (action.type === "runtime.sleep") {
+    return runtimeSleep(action);
+  }
+  if (action.type === "structured.output") {
+    return structuredOutput(action, context);
+  }
+  if (action.type === "repl.mode") {
+    return replMode(action, context);
+  }
+  if (action.type === "schedule.create" || action.type === "schedule.list" || action.type === "schedule.delete" || action.type === "remote.trigger" || action.type === "team.create" || action.type === "team.delete") {
+    return designOnlyAutomationTool(action);
   }
   if (action.type === "notebook.edit") {
     if (!context.settings.tools.directWrite) {
@@ -746,6 +1112,10 @@ async function readSingleLocalFile(
   if (!targetInfo.isFile()) {
     return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
   }
+  const previousSnapshot = readSnapshots.get(snapshotKey(resolved, context));
+  if (previousSnapshot && previousSnapshot.mtimeMs === targetInfo.mtimeMs && readRequestMatchesSnapshot(action, previousSnapshot)) {
+    return unchangedReadResult(action, resolved, context, previousSnapshot);
+  }
   const rawBuffer = await readFile(resolved);
   if (rawBuffer.includes(0)) {
     const path = displayPath(resolved, context.workspace);
@@ -775,6 +1145,14 @@ async function readSingleLocalFile(
   const buffer = Buffer.from(selected, "utf8");
   const truncated = buffer.length > maxBytes;
   const content = truncated ? buffer.subarray(0, maxBytes).toString("utf8") : selected;
+  const currentHash = hashText(raw);
+  const unchangedAfterRead = previousSnapshot && currentHash === previousSnapshot.hash && readViewMatchesSnapshot({
+    startLine,
+    endLine,
+    totalLines,
+    truncated,
+    fullView: startLine === 1 && endLine === totalLines && !truncated
+  }, previousSnapshot);
   rememberReadSnapshot(resolved, raw, targetInfo.mtimeMs, context, {
     fullView: startLine === 1 && endLine === totalLines && !truncated,
     startLine,
@@ -783,6 +1161,12 @@ async function readSingleLocalFile(
     truncated
   });
   const path = displayPath(resolved, context.workspace);
+  if (unchangedAfterRead) {
+    return unchangedReadResult(action, resolved, context, {
+      ...previousSnapshot,
+      mtimeMs: targetInfo.mtimeMs
+    });
+  }
   return {
     action: action.type,
     status: "success",
@@ -870,26 +1254,39 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
       }
     };
   }
-  const regex = compileSearchRegex(action.pattern);
-  const maxMatches = Math.max(1, action.maxMatches ?? 100);
+  const outputMode = action.outputMode ?? "content";
+  const regex = compileSearchRegex(action.pattern, action.caseInsensitive, action.multiline);
+  const maxMatches = grepMaxMatches(action);
   const contextLines = Math.max(0, action.contextLines ?? 0);
+  const beforeContext = Math.max(0, action.beforeContext ?? contextLines);
+  const afterContext = Math.max(0, action.afterContext ?? contextLines);
   const rgResult = await grepLocalFilesWithRipgrep({
     root,
     action,
     context,
     maxMatches,
-    contextLines,
+    beforeContext,
+    afterContext,
     runCommand: runDirectCommand,
     displayPath,
     isPathDenied
   });
   if (rgResult) {
-    return rgResult;
+    const matches = Array.isArray(rgResult.data) ? rgResult.data as GrepMatch[] : [];
+    return formatGrepToolResult({
+      action,
+      matches,
+      root,
+      context,
+      engine: "ripgrep",
+      truncated: Boolean(rgResult.metadata?.truncated),
+      outputMode
+    });
   }
   const files = await collectFiles(root, context, {
     maxFiles: GREP_FALLBACK_MAX_FILES,
     maxDepth: GREP_FALLBACK_MAX_DEPTH,
-    filter: (file) => !action.include || matchesGlob(file.display, action.include) || matchesGlob(basename(file.display), action.include)
+    filter: (file) => matchesGrepFileFilter(file, action)
   });
   const matches: GrepMatch[] = [];
   for (const file of files) {
@@ -898,6 +1295,17 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
     }
     const text = await readTextIfPossible(file.path);
     if (text === undefined) {
+      continue;
+    }
+    if (action.multiline) {
+      matches.push(...grepMultilineFile({
+        file,
+        text,
+        regex,
+        limit: maxMatches - matches.length,
+        beforeContext,
+        afterContext
+      }));
       continue;
     }
     const lines = text.split(/\r?\n/);
@@ -910,27 +1318,84 @@ async function grepLocalFiles(action: Extract<ToolAction, { type: "file.grep" }>
         path: file.display,
         line: index + 1,
         text: lines[index],
-        before: contextLines ? lines.slice(Math.max(0, index - contextLines), index) : undefined,
-        after: contextLines ? lines.slice(index + 1, index + 1 + contextLines) : undefined
+        before: beforeContext ? lines.slice(Math.max(0, index - beforeContext), index) : undefined,
+        after: afterContext ? lines.slice(index + 1, index + 1 + afterContext) : undefined
       });
       if (matches.length >= maxMatches) {
         break;
       }
     }
   }
+  return formatGrepToolResult({
+    action,
+    matches,
+    root,
+    context,
+    engine: "js-fallback",
+    scannedFiles: files.length,
+    fileLimit: GREP_FALLBACK_MAX_FILES,
+    truncated: files.length >= GREP_FALLBACK_MAX_FILES,
+    outputMode
+  });
+}
+
+function formatGrepToolResult(input: {
+  action: Extract<ToolAction, { type: "file.grep" }>;
+  matches: GrepMatch[];
+  root: string;
+  context: LocalToolContext;
+  engine: string;
+  scannedFiles?: number;
+  fileLimit?: number;
+  truncated?: boolean;
+  outputMode?: NonNullable<Extract<ToolAction, { type: "file.grep" }>["outputMode"]>;
+}): ToolResult {
+  const outputMode = input.outputMode ?? input.action.outputMode ?? "content";
+  const { items, appliedLimit, appliedOffset, totalBeforePaging } = pageGrepItems(input.matches, input.action);
+  const matchFiles = uniqueGrepPaths(input.matches);
+  const metadata: Record<string, unknown> = {
+    root: displayPath(input.root, input.context.workspace),
+    requestedRoot: input.action.root || ".",
+    engine: input.engine,
+    outputMode,
+    matchCount: input.matches.length,
+    totalBeforePaging,
+    appliedLimit,
+    appliedOffset,
+    scannedFiles: input.scannedFiles,
+    fileLimit: input.fileLimit,
+    truncated: input.truncated || appliedLimit !== undefined
+  };
+  if (outputMode === "files_with_matches") {
+    const paths = uniqueGrepPaths(items);
+    return {
+      action: input.action.type,
+      status: "success",
+      summary: `found ${paths.length} files for ${input.action.pattern}${appliedLimit !== undefined ? ` (limited to ${appliedLimit})` : ""}`,
+      content: paths.join("\n"),
+      data: paths,
+      metadata: { ...metadata, fileCount: matchFiles.length }
+    };
+  }
+  if (outputMode === "count") {
+    const counts = countGrepMatchesByPath(items);
+    const total = counts.reduce((sum, item) => sum + item.count, 0);
+    return {
+      action: input.action.type,
+      status: "success",
+      summary: `found ${total} matches across ${counts.length} files for ${input.action.pattern}${appliedLimit !== undefined ? ` (limited to ${appliedLimit})` : ""}`,
+      content: counts.map((item) => `${item.path}:${item.count}`).join("\n"),
+      data: counts,
+      metadata: { ...metadata, fileCount: matchFiles.length }
+    };
+  }
   return {
-    action: action.type,
+    action: input.action.type,
     status: "success",
-    summary: `found ${matches.length} matches for ${action.pattern}`,
-    data: matches,
-    metadata: {
-      root: displayPath(root, context.workspace),
-      requestedRoot: action.root || ".",
-      engine: "js-fallback",
-      scannedFiles: files.length,
-      fileLimit: GREP_FALLBACK_MAX_FILES,
-      truncated: files.length >= GREP_FALLBACK_MAX_FILES
-    }
+    summary: `found ${items.length} matches for ${input.action.pattern}${appliedLimit !== undefined ? ` (limited to ${appliedLimit})` : ""}`,
+    content: renderGrepMatches(items),
+    data: items,
+    metadata: { ...metadata, fileCount: matchFiles.length }
   };
 }
 
@@ -1269,6 +1734,9 @@ async function patchLocalFile(action: Extract<ToolAction, { type: "file.patch" }
     if (!targetInfo.isFile()) {
       return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
     }
+    if (resolved.toLowerCase().endsWith(".ipynb")) {
+      return notebookRequiresNotebookEditResult(action.type, resolved, action.path, context);
+    }
     await assertWritePrecondition(resolved, context);
     const original = await readFile(resolved, "utf8");
     let next = original;
@@ -1348,6 +1816,9 @@ async function editJsonFile(action: Extract<ToolAction, { type: "json.edit" }>, 
     if (!targetInfo.isFile()) {
       return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
     }
+    if (resolved.toLowerCase().endsWith(".ipynb")) {
+      return notebookRequiresNotebookEditResult(action.type, resolved, action.path, context);
+    }
     await assertWritePrecondition(resolved, context);
     const original = await readFile(resolved, "utf8");
     const parsed = parseJsonWithContext(original, action.path);
@@ -1418,6 +1889,9 @@ async function editNotebook(action: Extract<ToolAction, { type: "notebook.edit" 
     let cellIndex = action.cellId ? cells.findIndex((cell) => isRecord(cell) && cell.id === action.cellId) : -1;
     if ((editMode === "replace" || editMode === "delete") && cellIndex < 0) {
       throw new Error(`${action.type} ${editMode} requires a matching cell_id`);
+    }
+    if ((editMode === "replace" || editMode === "insert") && action.newSource === undefined) {
+      throw new Error(`${action.type} ${editMode} requires new_source`);
     }
     if (editMode === "delete") {
       cells.splice(cellIndex, 1);
@@ -1495,6 +1969,9 @@ async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>,
     if (!targetInfo.isFile()) {
       return invalidFileTargetResult(action.type, resolved, action.path, context, fileTargetKind(targetInfo));
     }
+    if (resolved.toLowerCase().endsWith(".ipynb")) {
+      return notebookRequiresNotebookEditResult(action.type, resolved, action.path, context);
+    }
     await assertWritePrecondition(resolved, context);
     const original = await readFile(resolved, "utf8");
     let next: string;
@@ -1503,13 +1980,15 @@ async function editLocalFile(action: Extract<ToolAction, { type: "file.edit" }>,
       if (!insert) {
         throw new Error("file.edit insert requires content");
       }
-      const lines = original.split(/\r?\n/);
       if (action.line === undefined || action.line === -1) {
-        next = `${original}${original.endsWith("\n") ? "" : "\n"}${insert}`;
+        const newline = detectLineEnding(original);
+        next = `${original}${endsWithLineEnding(original) ? "" : newline}${insert}`;
       } else {
+        const newline = detectLineEnding(original);
+        const lines = original.split(/\r?\n/);
         const index = Math.max(0, Math.min(lines.length, action.line - 1));
         lines.splice(index, 0, insert);
-        next = lines.join("\n");
+        next = lines.join(newline);
       }
     } else {
       if (!action.oldText) {
@@ -1587,6 +2066,26 @@ function invalidFileTargetRecovery(action: ToolAction["type"]): string {
   return `Use file.stat or file.list to inspect the target, then retry ${action} with a full file path including a filename.`;
 }
 
+function notebookRequiresNotebookEditResult(
+  action: ToolAction["type"],
+  resolved: string,
+  requestedPath: string,
+  context: LocalToolContext
+): ToolResult {
+  const path = displayPath(resolved, context.workspace);
+  return {
+    action,
+    status: "failed",
+    summary: `${action} cannot edit notebook files: ${path}`,
+    errors: ["Use notebook.edit for .ipynb files."],
+    errorCode: "INVALID_INPUT",
+    retryable: false,
+    recoverable: true,
+    recoverySuggestion: "Use notebook.edit with notebookPath, editMode, cellId when replacing/deleting, and newSource when inserting/replacing.",
+    data: { path, requestedPath }
+  };
+}
+
 function fileTargetKind(info: Pick<Awaited<ReturnType<typeof stat>>, "isDirectory" | "isFile">): string {
   if (info.isDirectory()) {
     return "directory";
@@ -1595,6 +2094,52 @@ function fileTargetKind(info: Pick<Awaited<ReturnType<typeof stat>>, "isDirector
     return "file";
   }
   return "non-file";
+}
+
+function readRequestMatchesSnapshot(action: Extract<ToolAction, { type: "file.read" }>, snapshot: ReadSnapshot): boolean {
+  const startLine = Math.max(1, action.startLine ?? action.offset ?? 1);
+  const requestedEnd = action.limit !== undefined
+    ? startLine + Math.max(1, action.limit) - 1
+    : action.endLine === -1 || action.endLine === undefined
+      ? snapshot.totalLines
+      : action.endLine;
+  const endLine = Math.max(startLine - 1, Math.min(snapshot.totalLines, requestedEnd));
+  const fullView = startLine === 1 && endLine === snapshot.totalLines;
+  return readViewMatchesSnapshot({ startLine, endLine, totalLines: snapshot.totalLines, truncated: false, fullView }, snapshot);
+}
+
+function readViewMatchesSnapshot(
+  view: Pick<ReadSnapshot, "fullView" | "startLine" | "endLine" | "totalLines" | "truncated">,
+  snapshot: ReadSnapshot
+): boolean {
+  return view.fullView === snapshot.fullView &&
+    view.startLine === snapshot.startLine &&
+    view.endLine === snapshot.endLine &&
+    view.totalLines === snapshot.totalLines &&
+    view.truncated === snapshot.truncated;
+}
+
+function unchangedReadResult(
+  action: Extract<ToolAction, { type: "file.read" }>,
+  resolved: string,
+  context: LocalToolContext,
+  snapshot: ReadSnapshot
+): ToolResult {
+  const path = displayPath(resolved, context.workspace);
+  return {
+    action: action.type,
+    status: "success",
+    summary: `read skipped for unchanged ${path}`,
+    content: "",
+    metadata: {
+      path,
+      totalLines: snapshot.totalLines,
+      startLine: snapshot.startLine,
+      endLine: snapshot.endLine,
+      truncated: snapshot.truncated,
+      unchanged: true
+    }
+  };
 }
 
 async function assertWritePrecondition(path: string, context: LocalToolContext): Promise<void> {
@@ -1617,7 +2162,7 @@ async function assertWritePrecondition(path: string, context: LocalToolContext):
 
   const current = await readFile(path, "utf8");
   const currentHash = hashText(current);
-  if (currentInfo.mtimeMs !== snapshot.mtimeMs || currentHash !== snapshot.hash) {
+  if (currentHash !== snapshot.hash) {
     throw new Error(
       `Refusing to modify ${displayPath(path, context.workspace)} because it changed after the last read. Read it again first.`
     );
@@ -1719,6 +2264,174 @@ async function writeTodos(action: Extract<ToolAction, { type: "todo.write" }>, c
   };
 }
 
+async function askUserQuestion(action: Extract<ToolAction, { type: "ask_user_question" }>, context: LocalToolContext): Promise<ToolResult> {
+  const questions = action.questions?.length
+    ? action.questions
+    : [{
+        question: action.prompt,
+        options: action.choices ?? []
+      }];
+  const choiceLabels = uniqueStrings(questions.flatMap((question) => question.options.map((option) => option.label)));
+  const content = [
+    action.prompt,
+    action.reason ? `Reason: ${action.reason}` : undefined,
+    choiceLabels.length ? `Choices: ${choiceLabels.join(", ")}` : undefined,
+    action.allowFreeform ? "Free-form answer is allowed." : undefined
+  ].filter(Boolean).join("\n");
+
+  return {
+    action: action.type,
+    status: "partial",
+    summary: "Waiting for user answer",
+    content,
+    recoverable: true,
+    recoverySuggestion: "Wait for the user to answer, then continue with their selected choice.",
+    data: {
+      prompt: action.prompt,
+      questions,
+      defaultChoice: action.defaultChoice,
+      recommendedChoice: action.recommendedChoice,
+      allowFreeform: action.allowFreeform ?? true,
+      reason: action.reason,
+      sessionId: context.sessionId,
+      taskId: context.taskId
+    },
+    metadata: {
+      interaction: "question",
+      requiresUserInput: true,
+      prompt: action.prompt,
+      questionCount: questions.length,
+      choices: choiceLabels,
+      defaultChoice: action.defaultChoice,
+      recommendedChoice: action.recommendedChoice,
+      allowFreeform: action.allowFreeform ?? true,
+      reason: action.reason
+    }
+  };
+}
+
+async function enterPlanMode(action: Extract<ToolAction, { type: "plan.enter" }>, context: LocalToolContext): Promise<ToolResult> {
+  const content = [
+    "Planning mode is active.",
+    action.objective ? `Objective: ${action.objective}` : undefined,
+    action.reason ? `Reason: ${action.reason}` : undefined,
+    "Inspect the workspace and prepare a concrete plan before editing files."
+  ].filter(Boolean).join("\n");
+
+  return {
+    action: action.type,
+    status: "success",
+    summary: action.objective ? `Entered plan mode: ${action.objective}` : "Entered plan mode",
+    content,
+    data: {
+      planningMode: true,
+      objective: action.objective,
+      reason: action.reason,
+      sessionId: context.sessionId,
+      taskId: context.taskId
+    },
+    metadata: {
+      interaction: "plan_mode",
+      planningMode: true,
+      objective: action.objective,
+      reason: action.reason
+    }
+  };
+}
+
+async function exitPlanMode(action: Extract<ToolAction, { type: "plan.exit" }>, context: LocalToolContext): Promise<ToolResult> {
+  const content = [
+    action.summary ? `Summary: ${action.summary}` : undefined,
+    "Plan submitted for approval.",
+    "",
+    action.plan,
+    action.allowedPrompts?.length ? "" : undefined,
+    action.allowedPrompts?.length ? "Requested implementation permissions:" : undefined,
+    ...(action.allowedPrompts ?? []).map((prompt) => `- ${prompt.tool}: ${prompt.prompt}`)
+  ].filter((line): line is string => line !== undefined).join("\n");
+
+  return {
+    action: action.type,
+    status: "partial",
+    summary: action.summary ?? "Waiting for plan approval",
+    content,
+    recoverable: true,
+    recoverySuggestion: "Wait for the user to approve or revise the plan before making implementation edits.",
+    data: {
+      plan: action.plan,
+      summary: action.summary,
+      ready: action.ready ?? true,
+      allowedPrompts: action.allowedPrompts,
+      sessionId: context.sessionId,
+      taskId: context.taskId
+    },
+    metadata: {
+      interaction: "plan_approval",
+      requiresUserInput: true,
+      readyForApproval: action.ready ?? true,
+      summary: action.summary,
+      planBytes: Buffer.byteLength(action.plan, "utf8"),
+      allowedPrompts: action.allowedPrompts
+    }
+  };
+}
+
+async function runTaskCreate(action: Extract<ToolAction, { type: "task.create" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.taskControl) {
+    throw new Error("task.create is only available within a Swarm runtime session");
+  }
+  return context.taskControl.create(action, taskControlToolContext(context));
+}
+
+async function runTaskUpdate(action: Extract<ToolAction, { type: "task.update" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.taskControl) {
+    throw new Error("task.update is only available within a Swarm runtime session");
+  }
+  return context.taskControl.update(action, taskControlToolContext(context));
+}
+
+async function runTaskGet(action: Extract<ToolAction, { type: "task.get" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.taskControl) {
+    throw new Error("task.get is only available within a Swarm runtime session");
+  }
+  return context.taskControl.get(action, taskControlToolContext(context));
+}
+
+async function runTaskList(action: Extract<ToolAction, { type: "task.list" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.taskControl) {
+    throw new Error("task.list is only available within a Swarm runtime session");
+  }
+  return context.taskControl.list(action, taskControlToolContext(context));
+}
+
+async function runTaskOutput(action: Extract<ToolAction, { type: "task.output" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.taskControl) {
+    throw new Error("task.output is only available within a Swarm runtime session");
+  }
+  return context.taskControl.output(action, taskControlToolContext(context));
+}
+
+async function runTaskStop(action: Extract<ToolAction, { type: "task.stop" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.taskControl) {
+    throw new Error("task.stop is only available within a Swarm runtime session");
+  }
+  return context.taskControl.stop(action, taskControlToolContext(context));
+}
+
+async function enterWorktree(action: Extract<ToolAction, { type: "worktree.enter" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.worktreeControl) {
+    throw new Error("worktree.enter is only available within a Swarm runtime session");
+  }
+  return context.worktreeControl.enter(action, worktreeControlToolContext(context));
+}
+
+async function exitWorktree(action: Extract<ToolAction, { type: "worktree.exit" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.worktreeControl) {
+    throw new Error("worktree.exit is only available within a Swarm runtime session");
+  }
+  return context.worktreeControl.exit(action, worktreeControlToolContext(context));
+}
+
 async function writeBlackboard(action: Extract<ToolAction, { type: "blackboard.write" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!context.blackboard) {
     throw new Error("BlackboardWrite is only available inside a Swarm runtime session");
@@ -1803,6 +2516,245 @@ function agentControlToolContext(context: LocalToolContext): {
     attempt: context.attempt,
     agent: context.agent
   };
+}
+
+function taskControlToolContext(context: LocalToolContext): {
+  sessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: import("../protocol/types.js").AgentAddress;
+} {
+  return {
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    attempt: context.attempt,
+    agent: context.agent
+  };
+}
+
+function worktreeControlToolContext(context: LocalToolContext): {
+  workspace: string;
+  sessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: import("../protocol/types.js").AgentAddress;
+} {
+  return {
+    workspace: context.workspace,
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    attempt: context.attempt,
+    agent: context.agent
+  };
+}
+
+function runtimeControlToolContext(context: LocalToolContext): {
+  workspace: string;
+  sessionId?: string;
+  taskId?: string;
+  attempt?: number;
+  agent?: import("../protocol/types.js").AgentAddress;
+} {
+  return {
+    workspace: context.workspace,
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    attempt: context.attempt,
+    agent: context.agent
+  };
+}
+
+async function sendAgentMessage(action: Extract<ToolAction, { type: "agent.message" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.runtimeControl?.sendAgentMessage) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: "agent.message requires the Swarm runtime mailbox adapter",
+      errorCode: "RUNTIME_CONTROL_UNAVAILABLE",
+      recoverable: true,
+      recoverySuggestion: "Run agent.message from an active Swarm runtime session, or use agent.list/agent.continue when mailbox delivery is unavailable."
+    };
+  }
+  return context.runtimeControl.sendAgentMessage(action, runtimeControlToolContext(context));
+}
+
+async function runtimeSleep(action: Extract<ToolAction, { type: "runtime.sleep" }>): Promise<ToolResult> {
+  const durationMs = Math.floor(action.duration_ms);
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: "runtime.sleep requires a non-negative duration_ms",
+      errorCode: "SLEEP_DURATION_INVALID",
+      recoverable: true,
+      recoverySuggestion: "Retry with duration_ms between 0 and 30000."
+    };
+  }
+  const cappedMs = Math.min(durationMs, 30_000);
+  const startedAt = Date.now();
+  if (cappedMs > 0) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, cappedMs));
+  }
+  const elapsedMs = Date.now() - startedAt;
+  return {
+    action: action.type,
+    status: "success",
+    summary: `Waited ${elapsedMs} ms`,
+    content: [
+      `Waited: ${elapsedMs} ms`,
+      action.reason ? `Reason: ${action.reason}` : undefined,
+      durationMs !== cappedMs ? `Requested ${durationMs} ms was capped at ${cappedMs} ms.` : undefined
+    ].filter(Boolean).join("\n"),
+    data: { requested_ms: durationMs, waited_ms: elapsedMs, capped: durationMs !== cappedMs, reason: action.reason },
+    metadata: { requested_ms: durationMs, waited_ms: elapsedMs, capped: durationMs !== cappedMs }
+  };
+}
+
+async function structuredOutput(action: Extract<ToolAction, { type: "structured.output" }>, context: LocalToolContext): Promise<ToolResult> {
+  const validationError = validateStructuredOutputValue(action.value, action.schema);
+  if (validationError) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: `structured.output schema mismatch: ${validationError}`,
+      errorCode: "STRUCTURED_OUTPUT_SCHEMA_MISMATCH",
+      recoverable: true,
+      recoverySuggestion: "Return JSON matching the requested schema, or omit schema when no schema contract is active.",
+      data: { value: action.value, schema: action.schema, error: validationError }
+    };
+  }
+  if (context.runtimeControl?.recordStructuredOutput) {
+    return context.runtimeControl.recordStructuredOutput(action, runtimeControlToolContext(context));
+  }
+  if (!context.runtimeControl?.structuredOutputEnabled) {
+    return {
+      action: action.type,
+      status: "failed",
+      summary: "structured.output is only available in headless or schema-enabled runs",
+      errorCode: "STRUCTURED_OUTPUT_NOT_ENABLED",
+      recoverable: true,
+      recoverySuggestion: "Use a normal final response in interactive chat, or enable a headless/schema output contract for structured.output.",
+      data: { value: action.value, schema: action.schema }
+    };
+  }
+  return {
+    action: action.type,
+    status: "success",
+    summary: `Structured output accepted${action.label ? `: ${action.label}` : ""}`,
+    content: JSON.stringify(action.value, null, 2),
+    data: { value: action.value, schema: action.schema, label: action.label, final: action.final === true },
+    metadata: {
+      label: action.label,
+      final: action.final === true,
+      schema_validated: Boolean(action.schema)
+    }
+  };
+}
+
+async function replMode(action: Extract<ToolAction, { type: "repl.mode" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (context.runtimeControl?.replMode) {
+    return context.runtimeControl.replMode(action, runtimeControlToolContext(context));
+  }
+  const mode = action.mode ?? "interactive";
+  return {
+    action: action.type,
+    status: "success",
+    summary: `REPL mode guidance: ${mode}`,
+    content: [
+      `Mode: ${mode}`,
+      "Swarm does not create a second REPL state machine for this tool.",
+      "Interactive chat keeps normal tool visibility.",
+      "Headless/schema runs may expose structured.output when a runtime output contract enables it.",
+      "Use ToolSearch to inspect currently visible tools."
+    ].join("\n"),
+    data: {
+      mode,
+      structured_output_available: context.runtimeControl?.structuredOutputEnabled === true,
+      primitive_tools_internal: true,
+      guidance: "Use normal chat for interactive replies; use structured.output only in schema-enabled headless runs."
+    },
+    metadata: { mode, structured_output_available: context.runtimeControl?.structuredOutputEnabled === true }
+  };
+}
+
+function designOnlyAutomationTool(action: Extract<ToolAction, {
+  type: "schedule.create" | "schedule.list" | "schedule.delete" | "remote.trigger" | "team.create" | "team.delete";
+}>): ToolResult {
+  const design = automationDesignGuidance(action);
+  return {
+    action: action.type,
+    status: "failed",
+    summary: `${action.type} is design-only in this runtime`,
+    content: [
+      `${design.title}: not available in this Swarm runtime.`,
+      design.reason,
+      `Current alternative: ${design.alternative}`,
+      `Required runtime support: ${design.requiredSupport}`
+    ].join("\n"),
+    errorCode: "DESIGN_ONLY_TOOL",
+    retryable: false,
+    recoverable: true,
+    recoverySuggestion: design.alternative,
+    data: {
+      availability: "design_only",
+      action,
+      required_runtime_support: design.requiredSupport,
+      rationale: design.reason
+    },
+    metadata: {
+      availability: "design_only",
+      exact_id_required: action.type === "schedule.delete" || action.type === "team.delete"
+    }
+  };
+}
+
+function automationDesignGuidance(action: Extract<ToolAction, {
+  type: "schedule.create" | "schedule.list" | "schedule.delete" | "remote.trigger" | "team.create" | "team.delete";
+}>): { title: string; reason: string; alternative: string; requiredSupport: string } {
+  switch (action.type) {
+    case "schedule.create":
+      return {
+        title: "Scheduled task creation",
+        reason: "src/runtime/scheduler.ts schedules in-memory task dependencies; it is not a durable cron daemon or persisted schedule store.",
+        alternative: "Use task.create for tracked work now, or run the CLI from an external scheduler until Swarm has a durable schedule store.",
+        requiredSupport: "durable schedule storage, cron validation, wake loop, ownership, audit records, and deletion by exact id"
+      };
+    case "schedule.list":
+      return {
+        title: "Scheduled task listing",
+        reason: "There is no authoritative durable schedule inventory to list.",
+        alternative: "Use task.list for current session tasks and external scheduler tooling for actual cron inventory.",
+        requiredSupport: "durable schedule storage and an active schedule index"
+      };
+    case "schedule.delete":
+      return {
+        title: "Scheduled task deletion",
+        reason: "There is no Swarm-owned durable schedule store, so deleting an id would be misleading.",
+        alternative: "Delete the job in the external scheduler that owns it, or keep this as a dry-run design request.",
+        requiredSupport: "exact-id schedule records, audit log, ownership checks, and permission-gated deletion"
+      };
+    case "remote.trigger":
+      return {
+        title: "Remote trigger",
+        reason: "No explicit remote endpoint configuration or credential bridge is available to this local tool.",
+        alternative: "Use mcp.call for configured MCP integrations, or configure an explicit remote endpoint before retrying.",
+        requiredSupport: "explicit endpoint registry, auth recovery flow, secret-safe config, and audited remote execution"
+      };
+    case "team.create":
+      return {
+        title: "Team creation",
+        reason: "Swarm already has agent.delegate and task.create; adding a separate team store would duplicate runtime state.",
+        alternative: "Use task.create plus agent.delegate with roles/file_scope to compose a team from existing primitives.",
+        requiredSupport: "team projection over existing tasks/workers, not a second team database"
+      };
+    case "team.delete":
+      return {
+        title: "Team deletion",
+        reason: "No first-class team projection exists yet, and deletion must be exact-id scoped and auditable.",
+        alternative: "Use task.stop or agent.stop for current workers/tasks, and avoid deleting unrelated runtime state.",
+        requiredSupport: "team projection ids, audit log, exact-id deletion, and permission gating"
+      };
+  }
 }
 
 function renderBlackboardEntries(entries: import("../protocol/types.js").BlackboardEntry[]): string {
@@ -1980,8 +2932,293 @@ function notebookSourceLines(source: string): string[] {
   return lines.map((line, index) => index < lines.length - 1 ? `${line}\n` : line);
 }
 
+function detectLineEnding(content: string): "\r\n" | "\n" {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function endsWithLineEnding(content: string): boolean {
+  return content.endsWith("\n") || content.endsWith("\r");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type SafeConfigSetting = {
+  path: string[];
+  type: "boolean" | "number" | "string" | "string[]";
+  description: string;
+  options?: string[];
+  min?: number;
+  max?: number;
+};
+
+const SAFE_CONFIG_SETTINGS: Record<string, SafeConfigSetting> = {
+  "ui.theme": {
+    path: ["ui", "theme"],
+    type: "string",
+    description: "Terminal UI theme.",
+    options: ["default"]
+  },
+  "tools.webSearch": {
+    path: ["tools", "webSearch"],
+    type: "boolean",
+    description: "Enable web.search and web.fetch tools."
+  },
+  "tools.directWrite": {
+    path: ["tools", "directWrite"],
+    type: "boolean",
+    description: "Enable direct local file write/edit tools."
+  },
+  "permissions.defaultMode": {
+    path: ["permissions", "defaultMode"],
+    type: "string",
+    description: "Default tool permission mode.",
+    options: ["ask", "auto-edit", "full-auto", "yolo"]
+  },
+  "permissions.additionalDirectories": {
+    path: ["permissions", "additionalDirectories"],
+    type: "string[]",
+    description: "Additional read roots for local file inspection."
+  },
+  "runtime.maxAgents": {
+    path: ["runtime", "maxAgents"],
+    type: "number",
+    description: "Maximum local Swarm agents.",
+    min: 1,
+    max: 64
+  },
+  "runtime.maxParallelTasks": {
+    path: ["runtime", "maxParallelTasks"],
+    type: "number",
+    description: "Maximum parallel task count.",
+    min: 1,
+    max: 64
+  },
+  "runtime.taskTimeoutMs": {
+    path: ["runtime", "taskTimeoutMs"],
+    type: "number",
+    description: "Default task timeout in milliseconds.",
+    min: 1000,
+    max: 86_400_000
+  },
+  "extensions.skills.enabled": {
+    path: ["extensions", "skills", "enabled"],
+    type: "boolean",
+    description: "Enable Agent Skills."
+  },
+  "extensions.skills.loadProjectSkills": {
+    path: ["extensions", "skills", "loadProjectSkills"],
+    type: "string",
+    description: "Project skill loading policy.",
+    options: ["never", "trustedWorkspaces", "always"]
+  },
+  "extensions.skills.roots": {
+    path: ["extensions", "skills", "roots"],
+    type: "string[]",
+    description: "Additional trusted skill roots."
+  },
+  "extensions.skills.maxSkills": {
+    path: ["extensions", "skills", "maxSkills"],
+    type: "number",
+    description: "Maximum skills loaded into the capability catalog.",
+    min: 1,
+    max: 500
+  },
+  "extensions.commands.enabled": {
+    path: ["extensions", "commands", "enabled"],
+    type: "boolean",
+    description: "Enable custom slash commands."
+  },
+  "extensions.mcp.enabled": {
+    path: ["extensions", "mcp", "enabled"],
+    type: "boolean",
+    description: "Enable MCP client support."
+  },
+  "extensions.mcp.exposeGatewayServer": {
+    path: ["extensions", "mcp", "exposeGatewayServer"],
+    type: "boolean",
+    description: "Expose Swarm gateway MCP server."
+  },
+  "extensions.plugins.enabled": {
+    path: ["extensions", "plugins", "enabled"],
+    type: "boolean",
+    description: "Enable plugins."
+  }
+};
+
+function configValueInput(value: unknown): string | number | boolean | null {
+  if (value === undefined) {
+    throw new Error("config.set requires value");
+  }
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  throw new Error("config.set value must be string, number, boolean, or null");
+}
+
+function configGet(action: Extract<ToolAction, { type: "config.get" }>, context: LocalToolContext): ToolResult {
+  const setting = action.setting?.trim();
+  if (!setting) {
+    const rows = Object.entries(SAFE_CONFIG_SETTINGS).map(([key, config]) => ({
+      setting: key,
+      value: getNestedSetting(context.settings, config.path),
+      type: config.type,
+      description: config.description,
+      options: config.options
+    }));
+    return {
+      action: "config.get",
+      status: "success",
+      summary: `config.get listed ${rows.length} safe settings`,
+      content: rows.map((row) => `${row.setting} = ${formatConfigValue(row.value)} (${row.description})`).join("\n"),
+      data: {
+        settings: rows,
+        secret_safe: true,
+        omitted: ["providers", "providerApiKeys", "primaryApiKey", "headers", "env", "tokens", "credentials"]
+      }
+    };
+  }
+  const config = SAFE_CONFIG_SETTINGS[setting];
+  if (!config) {
+    return unknownConfigSetting(setting);
+  }
+  const value = getNestedSetting(context.settings, config.path);
+  return {
+    action: "config.get",
+    status: "success",
+    summary: `${setting} = ${formatConfigValue(value)}`,
+    content: `${setting} = ${formatConfigValue(value)}\n${config.description}`,
+    data: {
+      setting,
+      value,
+      type: config.type,
+      description: config.description,
+      options: config.options,
+      secret_safe: true
+    }
+  };
+}
+
+function configSet(action: Extract<ToolAction, { type: "config.set" }>, context: LocalToolContext): ToolResult {
+  const setting = action.setting.trim();
+  const config = SAFE_CONFIG_SETTINGS[setting];
+  if (!config) {
+    return unknownConfigSetting(setting);
+  }
+  const nextValue = coerceConfigValue(setting, action.value, config);
+  const currentSettings = loadSwarmSettings(context.workspace);
+  const previousValue = getNestedSetting(currentSettings, config.path);
+  const nextSettings = setNestedSetting(currentSettings, config.path, nextValue) as SwarmSettings;
+  saveSwarmSettings(nextSettings);
+  Object.assign(context.settings, nextSettings);
+  return {
+    action: "config.set",
+    status: "success",
+    summary: `config.set updated ${setting}`,
+    content: [
+      `Setting: ${setting}`,
+      `Previous: ${formatConfigValue(previousValue)}`,
+      `New: ${formatConfigValue(nextValue)}`
+    ].join("\n"),
+    data: {
+      setting,
+      previousValue,
+      newValue: nextValue,
+      secret_safe: true
+    }
+  };
+}
+
+function unknownConfigSetting(setting: string): ToolResult {
+  return {
+    action: "config.get",
+    status: "failed",
+    summary: `Unknown or unsafe config setting: ${setting}`,
+    errors: [`${setting} is not in the safe settings allowlist.`],
+    errorCode: "CONFIG_SETTING_UNSUPPORTED",
+    recoverable: true,
+    retryable: false,
+    recoverySuggestion: `Call config.get without a setting to list safe settings. Secrets, provider credentials, env, headers, and API keys are intentionally unavailable.`,
+    data: {
+      setting,
+      supported: Object.keys(SAFE_CONFIG_SETTINGS).sort(),
+      secret_safe: true
+    }
+  };
+}
+
+function getNestedSetting(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return current;
+}
+
+function setNestedSetting(value: unknown, path: string[], nextValue: unknown): unknown {
+  const root = isRecord(value) ? { ...value } : {};
+  let current: Record<string, unknown> = root;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const segment = path[index];
+    const child = current[segment];
+    current[segment] = isRecord(child) ? { ...child } : {};
+    current = current[segment] as Record<string, unknown>;
+  }
+  current[path[path.length - 1]] = nextValue;
+  return root;
+}
+
+function coerceConfigValue(setting: string, value: string | number | boolean | null, config: SafeConfigSetting): unknown {
+  if (value === null) {
+    throw new Error(`${setting} cannot be set to null`);
+  }
+  if (config.type === "boolean") {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+      if (["false", "0", "no", "off"].includes(normalized)) return false;
+    }
+    throw new Error(`${setting} requires true or false`);
+  }
+  if (config.type === "number") {
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`${setting} requires a number`);
+    }
+    const next = Math.floor(parsed);
+    if (config.min !== undefined && next < config.min) {
+      throw new Error(`${setting} must be >= ${config.min}`);
+    }
+    if (config.max !== undefined && next > config.max) {
+      throw new Error(`${setting} must be <= ${config.max}`);
+    }
+    return next;
+  }
+  if (config.type === "string[]") {
+    if (typeof value !== "string") {
+      throw new Error(`${setting} requires a comma-separated string`);
+    }
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  const text = String(value);
+  if (config.options?.length && !config.options.includes(text)) {
+    throw new Error(`${setting} must be one of: ${config.options.join(", ")}`);
+  }
+  return text;
+}
+
+function formatConfigValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(String).join(", ")}]`;
+  }
+  return JSON.stringify(value);
 }
 
 function hashText(content: string): string {
@@ -2041,6 +3278,10 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
         : "Rewrite the command for the configured host shell."
     };
   }
+  const backgroundSuggestion = foregroundBackgroundSuggestion(action.command);
+  if (backgroundSuggestion && !action.runInBackground && action.timeoutMs === undefined) {
+    return foregroundLongRunningCommandResult(action.type, action.command, backgroundSuggestion);
+  }
   const cwd = resolveShellCwd(action.cwd, context);
   const timeoutMs = Math.max(1000, action.timeoutMs ?? 120_000);
   const maxOutputBytes = Math.max(1024, action.maxOutputBytes ?? 200_000);
@@ -2056,8 +3297,55 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     });
     return backgroundProcessToolResult(action.type, processRecord, context);
   }
-  const result = await runShellCommand(action.command, { cwd, timeoutMs, maxOutputBytes });
+  const result = await runShellCommand(action.command, {
+    cwd,
+    timeoutMs,
+    maxOutputBytes,
+    outputPersistence: commandOutputPersistence(action, context)
+  });
+  return commandToolResult(action, context, cwd, timeoutMs, result);
+}
 
+async function executePowerShell(action: Extract<ToolAction, { type: "powershell.exec" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!action.command.trim()) {
+    throw new Error("powershell.exec requires command");
+  }
+  const backgroundSuggestion = foregroundBackgroundSuggestion(action.command);
+  if (backgroundSuggestion && !action.runInBackground && action.timeoutMs === undefined) {
+    return foregroundLongRunningCommandResult(action.type, action.command, backgroundSuggestion);
+  }
+  const cwd = resolveShellCwd(action.cwd, context);
+  const timeoutMs = Math.max(1000, action.timeoutMs ?? 120_000);
+  const maxOutputBytes = Math.max(1024, action.maxOutputBytes ?? 200_000);
+  if (action.runInBackground) {
+    const processRecord = await startBackgroundProcess({
+      command: action.command,
+      cwd,
+      sessionId: context.sessionId,
+      taskId: context.taskId,
+      description: action.description,
+      timeoutMs: action.timeoutMs,
+      maxLogBytes: action.maxLogBytes,
+      shell: "powershell"
+    });
+    return backgroundProcessToolResult(action.type, processRecord, context);
+  }
+  const result = await runPowerShellCommand(action.command, {
+    cwd,
+    timeoutMs,
+    maxOutputBytes,
+    outputPersistence: commandOutputPersistence(action, context)
+  });
+  return commandToolResult(action, context, cwd, timeoutMs, result);
+}
+
+function commandToolResult(
+  action: Extract<ToolAction, { type: "shell.exec" | "powershell.exec" }>,
+  context: LocalToolContext,
+  cwd: string,
+  timeoutMs: number,
+  result: ShellCommandResult
+): ToolResult {
   if (result.error) {
     const content = [`$ ${action.command}`, `ERROR: ${result.error}`].join("\n");
     return {
@@ -2068,8 +3356,13 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
       metadata: {
         cwd: displayPath(cwd, context.workspace),
         error: result.error,
-        timeoutMs
+        timeoutMs,
+        persistedOutputPath: result.persistedOutputPath,
+        persistedOutputSize: result.persistedOutputSize,
+        preview: result.preview,
+        hasMore: result.hasMore
       },
+      outputRef: result.persistedOutputPath,
       errorCode: classifyProcessError(result),
       retryable: isRetryableProcessError(result),
       recoverable: true,
@@ -2081,15 +3374,19 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     .filter(Boolean)
     .join("\n")
     .trim();
-  const succeeded = result.exitCode === 0 && !result.timedOut;
+  const semantic = typeof result.exitCode === "number" && !result.timedOut
+    ? interpretCommandResult(action.type === "powershell.exec" ? "powershell" : "shell", action.command, result.exitCode)
+    : undefined;
+  const succeeded = !result.timedOut && result.exitCode !== null && (semantic ? !semantic.isError : result.exitCode === 0);
   const errorCode = succeeded ? undefined : classifyProcessError(result);
   return {
     action: action.type,
     status: succeeded ? "success" : "failed",
     summary: result.timedOut
       ? `command timed out after ${timeoutMs}ms`
-      : `command exited ${result.exitCode ?? result.signal ?? "unknown"}`,
+      : semantic?.message ?? `command exited ${result.exitCode ?? result.signal ?? "unknown"}`,
     content,
+    outputRef: result.persistedOutputPath,
     errorCode,
     retryable: succeeded ? undefined : isRetryableProcessError(result),
     recoverable: succeeded ? undefined : true,
@@ -2100,8 +3397,43 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
       signal: result.signal,
       timedOut: result.timedOut,
       timeoutMs,
-      truncated: result.truncated
+      truncated: result.truncated,
+      persistedOutputPath: result.persistedOutputPath,
+      persistedOutputSize: result.persistedOutputSize,
+      preview: result.preview,
+      hasMore: result.hasMore,
+      commandSemantic: semantic?.message
     }
+  };
+}
+
+function foregroundBackgroundSuggestion(command: string): string | undefined {
+  const normalized = command.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (/\b(npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b/i.test(normalized)) {
+    return "This looks like a dev server or watcher. Run it with run_in_background=true or ProcessStart, then inspect logs with process.tail/process.grep.";
+  }
+  if (/\b(vite|next\s+dev|webpack(?:-dev-server)?|nodemon|tsc\s+-w|jest\s+--watch|tail\s+-f)\b/i.test(normalized)) {
+    return "This looks like a long-running foreground command. Use run_in_background=true or ProcessStart so the TUI can keep working.";
+  }
+  if (/\bwhile\s*\(\s*\$?true\s*\)|\bwhile\s+true\b/i.test(normalized)) {
+    return "This looks like a persistent loop. Use run_in_background=true or ProcessStart, then stop it with process.stop when done.";
+  }
+  return undefined;
+}
+
+function foregroundLongRunningCommandResult(action: ToolAction["type"], command: string, suggestion: string): ToolResult {
+  return {
+    action,
+    status: "failed",
+    summary: "command appears long-running; start it in the background",
+    content: [`$ ${command}`, `ERROR: ${suggestion}`].join("\n"),
+    errorCode: "INVALID_INPUT",
+    retryable: false,
+    recoverable: true,
+    recoverySuggestion: suggestion
   };
 }
 
@@ -2176,6 +3508,7 @@ async function executeProcessStatus(action: Extract<ToolAction, { type: "process
     status: record.status === "failed" ? "failed" : "success",
     summary: `process ${record.processId} is ${record.status}`,
     content: renderProcessRecord(record, context),
+    outputRef: record.logPath,
     data: { process: record },
     errorCode: record.status === "failed" ? "PROCESS_FAILED" : undefined,
     recoverable: record.status === "failed" ? true : undefined,
@@ -2214,11 +3547,15 @@ async function executeProcessTail(action: Extract<ToolAction, { type: "process.t
       "",
       result.content || "(no log output yet)"
     ].join("\n"),
+    outputRef: result.process.logPath,
     data: {
       process: result.process,
       bytesTotal: result.bytesTotal,
       bytesRead: result.bytesRead,
-      truncated: result.truncated
+      truncated: result.truncated,
+      persistedOutputPath: result.process.logPath,
+      persistedOutputSize: result.bytesTotal,
+      hasMore: result.truncated
     },
     errorCode: result.process.status === "failed" ? "PROCESS_FAILED" : undefined,
     recoverable: result.process.status === "failed" ? true : undefined
@@ -2242,11 +3579,15 @@ async function executeProcessGrep(action: Extract<ToolAction, { type: "process.g
       "",
       result.matches.length ? result.matches.join("\n") : "(no matches)"
     ].join("\n"),
+    outputRef: result.process.logPath,
     data: {
       process: result.process,
       matches: result.matches,
       totalMatches: result.totalMatches,
-      truncated: result.truncated
+      truncated: result.truncated,
+      persistedOutputPath: result.process.logPath,
+      persistedOutputSize: result.bytesTotal,
+      hasMore: result.truncated
     }
   };
 }
@@ -2711,7 +4052,7 @@ function recoverySuggestionForToolFailure(
     return "Retry once, then narrow the URL/domain/query or use a provider-native web search/fetch path if available.";
   }
   if (errorCode === "TIMEOUT" || process?.timedOut) {
-    return "Retry with a longer timeout or a narrower command that emits less output.";
+    return "Retry with a longer timeout, narrow the command, or use run_in_background=true / process.start for servers, watchers, and long-running polls.";
   }
   if (process?.truncated) {
     return "Use the saved full output or rerun with a narrower command before deciding the fix.";
@@ -2739,19 +4080,76 @@ export function webFetchHttpFailureMetadata(status: number, statusText: string):
   };
 }
 
-async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Promise<ToolResult> {
+async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!action.url.trim()) {
     throw new Error("web.fetch requires url");
   }
   const timeoutMs = Math.max(1000, action.timeoutMs ?? 30_000);
   const maxBytes = Math.max(1024, action.maxBytes ?? 500_000);
+  const originalUrl = normalizeFetchUrl(action.url);
+  if (!originalUrl) {
+    return {
+      action: "web.fetch",
+      status: "failed",
+      summary: `web.fetch failed: invalid URL ${action.url}`,
+      errors: [`Invalid URL: ${action.url}`],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: "Retry with a valid http(s) URL.",
+      metadata: { url: action.url }
+    };
+  }
+  if (originalUrl.username || originalUrl.password) {
+    return {
+      action: "web.fetch",
+      status: "failed",
+      summary: "web.fetch refused a URL with embedded credentials",
+      errors: ["URLs with username or password are not allowed."],
+      errorCode: "INVALID_INPUT",
+      retryable: false,
+      recoverable: true,
+      recoverySuggestion: "Remove credentials from the URL, use a public URL, or use an authenticated MCP integration instead.",
+      metadata: { url: redactUrlCredentials(originalUrl.href) }
+    };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   let response: Response;
   try {
-    response = await fetch(action.url, { signal: controller.signal, redirect: "follow" });
+    response = await fetch(originalUrl.href, { signal: controller.signal, redirect: "manual" });
+    const redirect = redirectUrlFromResponse(response, originalUrl);
+    if (redirect) {
+      clearTimeout(timer);
+      const permitted = isPermittedWebFetchRedirect(originalUrl, redirect);
+      if (!permitted) {
+        return {
+          action: "web.fetch",
+          status: "partial",
+          summary: `web.fetch found a cross-host redirect to ${redirect.hostname}`,
+          content: [
+            "Redirect detected. The redirected host needs a separate explicit fetch.",
+            `Original URL: ${redactUrlCredentials(originalUrl.href)}`,
+            `Redirect URL: ${redactUrlCredentials(redirect.href)}`,
+            `Status: ${response.status} ${response.statusText}`,
+            "",
+            "Retry web.fetch with the redirect URL if this destination is intended."
+          ].join("\n"),
+          recoverable: true,
+          retryable: true,
+          recoverySuggestion: "Retry web.fetch with the redirect URL if the new host is expected, or use web.search/MCP for authenticated content.",
+          metadata: {
+            url: redactUrlCredentials(originalUrl.href),
+            redirectUrl: redactUrlCredentials(redirect.href),
+            redirect_cross_host: true,
+            status: response.status
+          }
+        };
+      }
+      response = await fetch(redirect.href, { signal: controller.signal, redirect: "follow" });
+    }
   } catch (error) {
     clearTimeout(timer);
     const reason = error instanceof Error ? error.message : String(error);
@@ -2766,7 +4164,7 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
       recoverable: true,
       recoverySuggestion: recoverySuggestionForToolFailure(action.type, isTimeout ? "TIMEOUT" : "NETWORK_ERROR", reason),
       metadata: {
-        url: action.url,
+        url: redactUrlCredentials(originalUrl.href),
         error: reason,
         timedOut: isTimeout
       }
@@ -2784,13 +4182,15 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
     return {
       action: "web.fetch",
       status,
-      summary: `fetched ${action.url} — ${response.status} ${contentType} (${response.headers.get("content-length") ?? "?"} bytes, non-text, body not returned)`,
+      summary: `fetched ${redactUrlCredentials(originalUrl.href)} — ${response.status} ${contentType || "unknown content type"} (${response.headers.get("content-length") ?? "?"} bytes, non-text, body not returned)`,
       ...failure,
       data: {
-        url: action.url,
+        url: redactUrlCredentials(originalUrl.href),
+        finalUrl: response.url && response.url !== originalUrl.href ? redactUrlCredentials(response.url) : undefined,
         status: response.status,
         contentType,
-        contentLength: response.headers.get("content-length")
+        contentLength: response.headers.get("content-length"),
+        source: webFetchSourceMetadata(originalUrl.href, response)
       }
     };
   }
@@ -2798,23 +4198,107 @@ async function webFetch(action: Extract<ToolAction, { type: "web.fetch" }>): Pro
   const buffer = Buffer.from(await response.arrayBuffer());
   const truncated = buffer.length > maxBytes;
   const content = truncated ? buffer.subarray(0, maxBytes).toString("utf8") : buffer.toString("utf8");
+  const displayContent = action.prompt ? webFetchPromptedContent(content, action.prompt, originalUrl.href) : content;
+  const persisted = truncated && context.sessionId
+    ? await writeTaskOutput({
+        sessionId: context.sessionId,
+        taskId: context.taskId ?? `web.fetch.${safeTaskKey(originalUrl.hostname)}`,
+        attempt: context.attempt ?? 0,
+        content: buffer.toString("utf8")
+      })
+    : undefined;
 
   return {
     action: "web.fetch",
     status: response.ok ? "success" : "failed",
-    summary: `fetched ${action.url} — ${response.status} ${contentType}, ${buffer.length} bytes${truncated ? " (truncated)" : ""}`,
-    content: action.prompt ? webFetchPromptedContent(content, action.prompt, action.url) : content,
+    summary: `fetched ${redactUrlCredentials(originalUrl.href)} — ${response.status} ${contentType || "unknown content type"}, ${buffer.length} bytes${truncated ? " (truncated)" : ""}`,
+    content: persisted ? webFetchTruncatedContent(displayContent, persisted.path, buffer.length, maxBytes) : displayContent,
+    outputRef: persisted?.path,
     ...(response.ok ? undefined : webFetchHttpFailureMetadata(response.status, response.statusText)),
     data: {
-      url: action.url,
-      finalUrl: response.url !== action.url ? response.url : undefined,
+      url: redactUrlCredentials(originalUrl.href),
+      finalUrl: response.url && response.url !== originalUrl.href ? redactUrlCredentials(response.url) : undefined,
       status: response.status,
       contentType,
       bytes: buffer.length,
       prompt: action.prompt,
-      truncated
+      truncated,
+      outputRef: persisted,
+      source: webFetchSourceMetadata(originalUrl.href, response)
     }
   };
+}
+
+function normalizeFetchUrl(value: string): URL | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return undefined;
+    }
+    return url;
+  } catch {
+    return undefined;
+  }
+}
+
+function redirectUrlFromResponse(response: Response, originalUrl: URL): URL | undefined {
+  if (![301, 302, 303, 307, 308].includes(response.status)) {
+    return undefined;
+  }
+  const location = response.headers.get("location");
+  if (!location) {
+    return undefined;
+  }
+  try {
+    const redirect = new URL(location, originalUrl.href);
+    return redirect.protocol === "http:" || redirect.protocol === "https:" ? redirect : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPermittedWebFetchRedirect(originalUrl: URL, redirectUrl: URL): boolean {
+  const stripWww = (host: string) => host.toLowerCase().replace(/^www\./, "");
+  return originalUrl.protocol === redirectUrl.protocol
+    && originalUrl.port === redirectUrl.port
+    && !redirectUrl.username
+    && !redirectUrl.password
+    && stripWww(originalUrl.hostname) === stripWww(redirectUrl.hostname);
+}
+
+function redactUrlCredentials(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    return url.href;
+  } catch {
+    return value.replace(/\/\/[^/@]+@/g, "//[redacted]@");
+  }
+}
+
+function webFetchSourceMetadata(originalUrl: string, response: Response): Record<string, unknown> {
+  return {
+    original_url: redactUrlCredentials(originalUrl),
+    final_url: response.url ? redactUrlCredentials(response.url) : undefined,
+    status: response.status,
+    content_type: response.headers.get("content-type") ?? undefined,
+    etag: response.headers.get("etag") ?? undefined,
+    last_modified: response.headers.get("last-modified") ?? undefined,
+    fetched_at: new Date().toISOString()
+  };
+}
+
+function webFetchTruncatedContent(content: string, outputRef: string, totalBytes: number, maxBytes: number): string {
+  return [
+    content,
+    "",
+    `[web.fetch truncated to ${maxBytes} bytes from ${totalBytes} bytes. Full content saved to ${outputRef}]`
+  ].join("\n");
+}
+
+function safeTaskKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "output";
 }
 
 function webFetchPromptedContent(content: string, prompt: string, url: string): string {
@@ -2825,6 +4309,246 @@ function webFetchPromptedContent(content: string, prompt: string, url: string): 
     "Fetched content:",
     content
   ].join("\n");
+}
+
+type LocalMcpServer = ReturnType<NonNullable<LocalToolContext["externalContext"]>["listMcpServers"]>[number];
+
+type CompactMcpServer = {
+  id: string;
+  status: string;
+  transport?: string;
+  trust?: string;
+  exposeResources?: boolean;
+  exposeTools?: boolean;
+  toolCount?: number;
+  resourceCount?: number;
+  lastError?: string;
+};
+
+type CompactMcpResource = {
+  server?: string;
+  uri: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+  value?: string;
+};
+
+function listMcpResources(action: Extract<ToolAction, { type: "mcp.resources" }>, context: LocalToolContext): ToolResult {
+  if (!context.externalContext) {
+    return externalContextUnavailable(action.type);
+  }
+  const servers = context.externalContext.listMcpServers();
+  const server = resolveMcpServer(action.server, servers);
+  if (server.status === "failed") {
+    return server;
+  }
+  const selected = server.data.servers;
+  const resources = selected.flatMap((item) => {
+    if (item.status !== "connected") {
+      return [];
+    }
+    return context.externalContext?.listMcpResources(item.id).map((resource) => ({
+      ...compactMcpResource(resource),
+      server: item.id
+    })) ?? [];
+  });
+  const limit = Math.max(1, Math.min(action.limit ?? 50, 200));
+  const visible = resources.slice(0, limit);
+  const skippedServers = selected.filter((item) => item.status !== "connected");
+  return {
+    action: action.type,
+    status: skippedServers.length && visible.length === 0 ? "partial" : "success",
+    summary: visible.length
+      ? `mcp.resources returned ${visible.length}${resources.length > visible.length ? `/${resources.length}` : ""} resource(s)`
+      : skippedServers.length
+        ? "No MCP resources are available from connected servers"
+        : "No MCP resources exposed",
+    content: [
+      ...visible.map((resource) => `${resource.server}: ${resource.name ?? resource.uri}\n  ${resource.uri}${resource.mimeType ? `\n  ${resource.mimeType}` : ""}`),
+      ...skippedServers.map((item) => `${item.id}: ${mcpServerRecoveryText(item)}`)
+    ].join("\n\n"),
+    recoverable: skippedServers.length > 0 || undefined,
+    recoverySuggestion: skippedServers.length ? "Run mcp.auth to inspect server status, enable MCP, or fix the server command/auth before retrying." : undefined,
+    data: {
+      resources: visible,
+      total: resources.length,
+      truncated: resources.length > visible.length,
+      servers: selected.map(compactMcpServer)
+    }
+  };
+}
+
+async function readMcpResource(action: Extract<ToolAction, { type: "mcp.read" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.externalContext) {
+    return externalContextUnavailable(action.type);
+  }
+  const server = resolveMcpServer(action.server, context.externalContext.listMcpServers());
+  if (server.status === "failed") {
+    return server;
+  }
+  const selected = server.data.servers[0];
+  if (selected.status !== "connected") {
+    return mcpServerNotReady(action.type, selected);
+  }
+  return context.externalContext.readMcpResource({
+    serverId: selected.id,
+    uri: action.uri,
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    maxBytes: action.maxBytes
+  });
+}
+
+async function callMcpTool(action: Extract<ToolAction, { type: "mcp.call" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.externalContext) {
+    return externalContextUnavailable(action.type);
+  }
+  return context.externalContext.callMcpTool({
+    serverId: action.server,
+    tool: action.tool,
+    capabilityId: action.capabilityId,
+    args: action.args ?? {},
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    maxBytes: action.maxBytes
+  });
+}
+
+function mcpAuth(action: Extract<ToolAction, { type: "mcp.auth" }>, context: LocalToolContext): ToolResult {
+  if (!context.externalContext) {
+    return externalContextUnavailable(action.type);
+  }
+  const servers = context.externalContext.listMcpServers();
+  const resolved = resolveMcpServer(action.server, servers);
+  if (resolved.status === "failed") {
+    return resolved;
+  }
+  const rows: Array<CompactMcpServer & { recovery: string }> = resolved.data.servers.map((server) => ({
+    ...compactMcpServer(server),
+    recovery: mcpServerRecoveryText(server)
+  }));
+  return {
+    action: action.type,
+    status: rows.some((row) => row.status !== "connected") ? "partial" : "success",
+    summary: rows.length
+      ? `mcp.auth inspected ${rows.length} server(s)`
+      : "No MCP servers configured",
+    content: rows.length
+      ? rows.map((row) => `${row.id}: ${row.status}\n  ${row.recovery}`).join("\n\n")
+      : "No MCP servers are configured. Add servers under settings.extensions.mcp.servers or pass runtime MCP config.",
+    recoverable: true,
+    recoverySuggestion: "Use settings.extensions.mcp.enabled and configured servers, then refresh or retry the MCP tool.",
+    data: { servers: rows, secret_safe: true }
+  };
+}
+
+async function invokeSkill(action: Extract<ToolAction, { type: "skill.invoke" }>, context: LocalToolContext): Promise<ToolResult> {
+  if (!context.externalContext) {
+    return externalContextUnavailable(action.type);
+  }
+  return context.externalContext.invokeSkill({
+    name: action.name,
+    reason: action.reason,
+    sessionId: context.sessionId,
+    taskId: context.taskId
+  });
+}
+
+function externalContextUnavailable(action: string): ToolResult {
+  return {
+    action,
+    status: "failed",
+    summary: `${action} is available only inside the Swarm runtime`,
+    errors: ["Missing runtime externalContext adapter."],
+    errorCode: "RUNTIME_CONTEXT_UNAVAILABLE",
+    recoverable: true,
+    retryable: false,
+    recoverySuggestion: "Run this tool from a Swarm session so it can use configured MCP and Skill runtime state."
+  };
+}
+
+function resolveMcpServer(
+  selector: string | undefined,
+  servers: ReturnType<NonNullable<LocalToolContext["externalContext"]>["listMcpServers"]>
+): { status: "success"; data: { servers: typeof servers } } | ToolResult & { status: "failed"; data: { servers: typeof servers } } {
+  if (!selector?.trim()) {
+    return { status: "success", data: { servers } };
+  }
+  const query = selector.trim().toLowerCase();
+  const matches = servers.filter((server) => server.id.toLowerCase() === query || server.id.toLowerCase().includes(query));
+  if (matches.length === 1) {
+    return { status: "success", data: { servers: matches } };
+  }
+  return {
+    action: "mcp.resources",
+    status: "failed",
+    summary: matches.length > 1 ? `MCP server selector is ambiguous: ${selector}` : `Unknown MCP server: ${selector}`,
+    errors: [matches.length > 1 ? `Matches: ${matches.map((item) => item.id).join(", ")}` : `Available servers: ${servers.map((item) => item.id).join(", ") || "none"}`],
+    errorCode: matches.length > 1 ? "MCP_SERVER_AMBIGUOUS" : "MCP_SERVER_NOT_FOUND",
+    recoverable: true,
+    retryable: false,
+    recoverySuggestion: "Call mcp.auth or mcp.resources without a server to list configured server ids, then retry with an exact id.",
+    data: { servers }
+  };
+}
+
+function mcpServerNotReady(action: string, server: LocalMcpServer): ToolResult {
+  return {
+    action,
+    status: "failed",
+    summary: `MCP server is not connected: ${server.id}`,
+    errors: [server.lastError ?? `Server status: ${server.status}`],
+    errorCode: "MCP_SERVER_NOT_CONNECTED",
+    recoverable: true,
+    retryable: true,
+    recoverySuggestion: mcpServerRecoveryText(server),
+    data: { server: compactMcpServer(server) }
+  };
+}
+
+function mcpServerRecoveryText(server: LocalMcpServer): string {
+  if (server.status === "connected") {
+    return "Connected.";
+  }
+  if (server.status === "disabled") {
+    return "Enable MCP and this server in settings, then refresh capabilities.";
+  }
+  if (server.lastError) {
+    return `Fix server configuration or authentication, then refresh. Last error: ${server.lastError}`;
+  }
+  return "Refresh the server or check its command/auth configuration.";
+}
+
+function compactMcpServer(server: LocalMcpServer): CompactMcpServer {
+  return {
+    id: server.id,
+    status: server.status,
+    transport: server.transport,
+    trust: server.trust,
+    exposeResources: server.exposeResources,
+    exposeTools: server.exposeTools,
+    toolCount: server.toolCount,
+    resourceCount: server.resourceCount,
+    lastError: server.lastError
+  };
+}
+
+function compactMcpResource(resource: unknown): CompactMcpResource {
+  if (!isRecord(resource)) {
+    return { uri: "", value: String(resource) };
+  }
+  const uri = typeof resource.uri === "string" ? resource.uri : "";
+  return {
+    uri,
+    name: typeof resource.name === "string" ? resource.name : uri,
+    title: typeof resource.title === "string" ? resource.title : undefined,
+    description: typeof resource.description === "string" ? resource.description : undefined,
+    mimeType: typeof resource.mimeType === "string" ? resource.mimeType : undefined,
+    size: typeof resource.size === "number" ? resource.size : undefined
+  };
 }
 
 async function executeCodeTest(action: Extract<ToolAction, { type: "code.test" }>, context: LocalToolContext): Promise<ToolResult> {
@@ -3376,10 +5100,34 @@ async function detectProject(action: Extract<ToolAction, { type: "project.detect
   };
 }
 
+type CommandRunnerOptions = {
+  cwd: string;
+  timeoutMs: number;
+  maxOutputBytes: number;
+  outputPersistence?: {
+    sessionId?: string;
+    taskId?: string;
+    action: string;
+    command: string;
+  };
+};
+
+function commandOutputPersistence(
+  action: Extract<ToolAction, { type: "shell.exec" | "powershell.exec" }>,
+  context: LocalToolContext
+): CommandRunnerOptions["outputPersistence"] {
+  return {
+    sessionId: context.sessionId,
+    taskId: context.taskId ?? `${action.type}.command`,
+    action: action.type,
+    command: action.command
+  };
+}
+
 /** Shared shell runner used by tools that wrap shell commands. */
 async function runShellCommand(
   command: string,
-  options: { cwd: string; timeoutMs: number; maxOutputBytes: number }
+  options: CommandRunnerOptions
 ): Promise<ShellCommandResult> {
   const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh";
   const args = process.platform === "win32" ? ["-NoProfile", "-Command", command] : ["-lc", command];
@@ -3387,6 +5135,8 @@ async function runShellCommand(
   return new Promise((resolvePromise) => {
     let stdout = "";
     let stderr = "";
+    let stdoutFull = "";
+    let stderrFull = "";
     let truncated = false;
     let timedOut = false;
     let settled = false;
@@ -3394,7 +5144,16 @@ async function runShellCommand(
     const finish = (extra: { exitCode?: number | null; signal?: NodeJS.Signals | null; error?: string }) => {
       if (settled) return;
       settled = true;
-      resolvePromise({ exitCode: extra.exitCode ?? null, signal: extra.signal ?? null, stdout, stderr, timedOut, truncated, error: extra.error });
+      void finalizeCommandResult({
+        stdout,
+        stderr,
+        stdoutFull,
+        stderrFull,
+        timedOut,
+        truncated,
+        extra,
+        options
+      }).then(resolvePromise);
     };
 
     const child = spawn(shell, args, { cwd: options.cwd, env: process.env, windowsHide: true });
@@ -3405,8 +5164,12 @@ async function runShellCommand(
 
     const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
       const text = chunk.toString("utf8");
-      const current = stream === "stdout" ? stdout : stderr;
-      const next = current + text;
+      if (stream === "stdout") {
+        stdoutFull += text;
+      } else {
+        stderrFull += text;
+      }
+      const next = stream === "stdout" ? stdoutFull : stderrFull;
       const nextBytes = Buffer.byteLength(next, "utf8");
       if (nextBytes > options.maxOutputBytes) {
         truncated = true;
@@ -3433,14 +5196,40 @@ async function runShellCommand(
   });
 }
 
+async function runPowerShellCommand(
+  command: string,
+  options: CommandRunnerOptions
+): Promise<ShellCommandResult> {
+  const candidates = process.platform === "win32" ? ["pwsh.exe", "powershell.exe"] : ["pwsh", "powershell"];
+  let lastMissing = "PowerShell executable not found";
+  for (const shell of candidates) {
+    const result = await runDirectCommand(shell, ["-NoProfile", "-Command", command], options);
+    if (result) {
+      return result;
+    }
+    lastMissing = `${shell} not found`;
+  }
+  return {
+    exitCode: null,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+    error: lastMissing
+  };
+}
+
 async function runDirectCommand(
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs: number; maxOutputBytes: number }
+  options: CommandRunnerOptions
 ): Promise<ShellCommandResult | undefined> {
   return new Promise((resolvePromise) => {
     let stdout = "";
     let stderr = "";
+    let stdoutFull = "";
+    let stderrFull = "";
     let truncated = false;
     let timedOut = false;
     let settled = false;
@@ -3448,7 +5237,16 @@ async function runDirectCommand(
     const finish = (extra: { exitCode?: number | null; signal?: NodeJS.Signals | null; error?: string }) => {
       if (settled) return;
       settled = true;
-      resolvePromise({ exitCode: extra.exitCode ?? null, signal: extra.signal ?? null, stdout, stderr, timedOut, truncated, error: extra.error });
+      void finalizeCommandResult({
+        stdout,
+        stderr,
+        stdoutFull,
+        stderrFull,
+        timedOut,
+        truncated,
+        extra,
+        options
+      }).then(resolvePromise);
     };
 
     const child = spawn(command, args, { cwd: options.cwd, env: process.env, windowsHide: true });
@@ -3459,8 +5257,12 @@ async function runDirectCommand(
 
     const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
       const text = chunk.toString("utf8");
-      const current = stream === "stdout" ? stdout : stderr;
-      const next = current + text;
+      if (stream === "stdout") {
+        stdoutFull += text;
+      } else {
+        stderrFull += text;
+      }
+      const next = stream === "stdout" ? stdoutFull : stderrFull;
       const nextBytes = Buffer.byteLength(next, "utf8");
       if (nextBytes > options.maxOutputBytes) {
         truncated = true;
@@ -3485,6 +5287,61 @@ async function runDirectCommand(
       finish({ exitCode: code, signal });
     });
   });
+}
+
+async function finalizeCommandResult(input: {
+  stdout: string;
+  stderr: string;
+  stdoutFull: string;
+  stderrFull: string;
+  timedOut: boolean;
+  truncated: boolean;
+  extra: { exitCode?: number | null; signal?: NodeJS.Signals | null; error?: string };
+  options: CommandRunnerOptions;
+}): Promise<ShellCommandResult> {
+  const fullContent = commandOutputContent(input.options.outputPersistence?.command, input.stdoutFull, input.stderrFull);
+  const preview = commandOutputContent(input.options.outputPersistence?.command, input.stdout, input.stderr);
+  const persisted = input.truncated && input.options.outputPersistence
+    ? await persistCommandOutput(input.options.outputPersistence, fullContent)
+    : undefined;
+  return {
+    exitCode: input.extra.exitCode ?? null,
+    signal: input.extra.signal ?? null,
+    stdout: input.stdout,
+    stderr: input.stderr,
+    timedOut: input.timedOut,
+    truncated: input.truncated,
+    error: input.extra.error,
+    persistedOutputPath: persisted?.path,
+    persistedOutputSize: persisted?.bytes,
+    preview: input.truncated ? preview : undefined,
+    hasMore: input.truncated || undefined
+  };
+}
+
+async function persistCommandOutput(
+  persistence: NonNullable<CommandRunnerOptions["outputPersistence"]>,
+  content: string
+): Promise<{ path: string; bytes: number } | undefined> {
+  try {
+    const ref = await writeTaskOutput({
+      sessionId: persistence.sessionId ?? "global",
+      taskId: persistence.taskId ?? `${persistence.action}.command`,
+      attempt: 0,
+      content
+    });
+    return { path: ref.path, bytes: ref.bytes };
+  } catch {
+    return undefined;
+  }
+}
+
+function commandOutputContent(command: string | undefined, stdout: string, stderr: string): string {
+  return [
+    command ? `$ ${command}` : undefined,
+    stdout,
+    stderr ? `stderr:\n${stderr}` : undefined
+  ].filter(Boolean).join("\n").trim();
 }
 
 function validateShellCommandForHost(command: string): string | undefined {
@@ -3588,7 +5445,156 @@ async function readTextIfPossible(path: string): Promise<string | undefined> {
   }
 }
 
-function normalizeActionName(action: string): ToolAction["type"] {
+function grepMaxMatches(action: Extract<ToolAction, { type: "file.grep" }>): number {
+  const explicit = action.maxMatches;
+  if (explicit === 0) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Math.max(1, explicit ?? 1000);
+}
+
+function pageGrepItems(
+  matches: GrepMatch[],
+  action: Extract<ToolAction, { type: "file.grep" }>
+): { items: GrepMatch[]; appliedLimit?: number; appliedOffset?: number; totalBeforePaging: number } {
+  const offset = Math.max(0, action.offset ?? 0);
+  const limit = action.headLimit ?? action.maxMatches ?? 100;
+  const afterOffset = matches.slice(offset);
+  if (limit === 0) {
+    return {
+      items: afterOffset,
+      appliedOffset: offset || undefined,
+      totalBeforePaging: matches.length
+    };
+  }
+  const effectiveLimit = Math.max(1, limit);
+  return {
+    items: afterOffset.slice(0, effectiveLimit),
+    appliedLimit: afterOffset.length > effectiveLimit ? effectiveLimit : undefined,
+    appliedOffset: offset || undefined,
+    totalBeforePaging: matches.length
+  };
+}
+
+function uniqueGrepPaths(matches: GrepMatch[]): string[] {
+  return [...new Set(matches.map((match) => match.path))];
+}
+
+function countGrepMatchesByPath(matches: GrepMatch[]): Array<{ path: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const match of matches) {
+    counts.set(match.path, (counts.get(match.path) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([path, count]) => ({ path, count }));
+}
+
+function renderGrepMatches(matches: GrepMatch[]): string {
+  return matches.flatMap((match) => {
+    const lines: string[] = [];
+    for (const before of match.before ?? []) {
+      lines.push(`${match.path}-${before}`);
+    }
+    lines.push(`${match.path}:${match.line}:${match.text}`);
+    for (const after of match.after ?? []) {
+      lines.push(`${match.path}-${after}`);
+    }
+    return lines;
+  }).join("\n");
+}
+
+function grepMultilineFile(input: {
+  file: WalkedFile;
+  text: string;
+  regex: RegExp;
+  limit: number;
+  beforeContext: number;
+  afterContext: number;
+}): GrepMatch[] {
+  if (input.limit <= 0) {
+    return [];
+  }
+  const lines = input.text.split(/\r?\n/);
+  const lineStarts = lineStartOffsets(lines);
+  const matches: GrepMatch[] = [];
+  const regex = input.regex;
+  regex.lastIndex = 0;
+  for (let match = regex.exec(input.text); match && matches.length < input.limit; match = regex.exec(input.text)) {
+    const start = match.index;
+    const matchedText = match[0] || "";
+    const lineIndex = lineIndexForOffset(lineStarts, start);
+    const endLineIndex = lineIndexForOffset(lineStarts, start + Math.max(0, matchedText.length - 1));
+    matches.push({
+      path: input.file.display,
+      line: lineIndex + 1,
+      text: lines.slice(lineIndex, endLineIndex + 1).join("\\n"),
+      before: input.beforeContext ? lines.slice(Math.max(0, lineIndex - input.beforeContext), lineIndex) : undefined,
+      after: input.afterContext ? lines.slice(endLineIndex + 1, endLineIndex + 1 + input.afterContext) : undefined
+    });
+    if (matchedText.length === 0) {
+      regex.lastIndex += 1;
+    }
+  }
+  return matches;
+}
+
+function lineStartOffsets(lines: string[]): number[] {
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    offsets.push(offset);
+    offset += line.length + 1;
+  }
+  return offsets;
+}
+
+function lineIndexForOffset(lineStarts: number[], offset: number): number {
+  let low = 0;
+  let high = lineStarts.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const current = lineStarts[mid];
+    const next = lineStarts[mid + 1] ?? Number.POSITIVE_INFINITY;
+    if (offset < current) {
+      high = mid - 1;
+    } else if (offset >= next) {
+      low = mid + 1;
+    } else {
+      return mid;
+    }
+  }
+  return Math.max(0, Math.min(lineStarts.length - 1, low));
+}
+
+function matchesGrepFileFilter(file: WalkedFile, action: Extract<ToolAction, { type: "file.grep" }>): boolean {
+  const typeGlob = action.fileType ? globForFileType(action.fileType) : undefined;
+  const includeMatches = !action.include || matchesGlob(file.display, action.include) || matchesGlob(basename(file.display), action.include);
+  const typeMatches = !typeGlob || matchesGlob(file.display, typeGlob) || matchesGlob(basename(file.display), typeGlob);
+  return includeMatches && typeMatches;
+}
+
+function globForFileType(type: string): string | undefined {
+  const normalized = type.trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    js: "**/*.js",
+    jsx: "**/*.jsx",
+    ts: "**/*.ts",
+    tsx: "**/*.tsx",
+    py: "**/*.py",
+    python: "**/*.py",
+    rs: "**/*.rs",
+    rust: "**/*.rs",
+    go: "**/*.go",
+    java: "**/*.java",
+    json: "**/*.json",
+    md: "**/*.md",
+    markdown: "**/*.md",
+    yaml: "**/*.{yaml,yml}",
+    yml: "**/*.yml"
+  };
+  return aliases[normalized] ?? (normalized ? `**/*.${normalized.replace(/^\./, "")}` : undefined);
+}
+
+function normalizeActionName(action: string, inputs: Record<string, unknown> = {}): ToolAction["type"] {
   if (["Read", "read_file", "tool.file.read", "file.read"].includes(action)) {
     return "file.read";
   }
@@ -3616,6 +5622,21 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["TodoWrite", "todo", "todo_write", "todo.write", "tool.todo.write"].includes(action)) {
     return "todo.write";
   }
+  if (["AskUserQuestion", "ask_user_question", "ask.user_question", "ask.question", "question.ask"].includes(action)) {
+    return "ask_user_question";
+  }
+  if (["EnterPlanMode", "enter_plan_mode", "plan.enter", "plan_enter", "plan.mode.enter"].includes(action)) {
+    return "plan.enter";
+  }
+  if (["ExitPlanMode", "exit_plan_mode", "plan.exit", "plan_exit", "plan.mode.exit"].includes(action)) {
+    return "plan.exit";
+  }
+  if (["EnterWorktree", "enter_worktree", "worktree.enter", "worktree_enter"].includes(action)) {
+    return "worktree.enter";
+  }
+  if (["ExitWorktree", "exit_worktree", "worktree.exit", "worktree_exit"].includes(action)) {
+    return "worktree.exit";
+  }
   if (["BlackboardWrite", "blackboard_write", "blackboard.write"].includes(action)) {
     return "blackboard.write";
   }
@@ -3640,8 +5661,29 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["AgentContinue", "agent_continue", "agent.continue", "continue_agent", "worker.continue"].includes(action)) {
     return "agent.continue";
   }
+  if (["TaskCreate", "task_create", "task.create", "tasks.create"].includes(action)) {
+    return "task.create";
+  }
+  if (["TaskUpdate", "task_update", "task.update", "tasks.update"].includes(action)) {
+    return "task.update";
+  }
+  if (["TaskGet", "task_get", "task.get", "tasks.get"].includes(action)) {
+    return "task.get";
+  }
+  if (["TaskList", "task_list", "task.list", "tasks.list"].includes(action)) {
+    return "task.list";
+  }
+  if (["TaskOutput", "task_output", "task.output", "tasks.output"].includes(action)) {
+    return "task.output";
+  }
+  if (["TaskStop", "task_stop", "task.stop", "tasks.stop"].includes(action)) {
+    return "task.stop";
+  }
   if (["Bash", "bash", "shell", "Shell", "RunCommand", "run_command", "run.command", "command", "tool.shell.exec", "shell.exec"].includes(action)) {
     return "shell.exec";
+  }
+  if (["PowerShell", "Powershell", "powershell", "Pwsh", "pwsh", "powershell_exec", "tool.powershell.exec", "powershell.exec"].includes(action)) {
+    return "powershell.exec";
   }
   if (["ProcessStart", "process_start", "process.start", "background.start"].includes(action)) {
     return "process.start";
@@ -3658,7 +5700,7 @@ function normalizeActionName(action: string): ToolAction["type"] {
   if (["ProcessGrep", "process_grep", "process.grep", "background.grep"].includes(action)) {
     return "process.grep";
   }
-  if (["ProcessStop", "process_stop", "process.stop", "TaskStop", "KillShell", "background.stop"].includes(action)) {
+  if (["ProcessStop", "process_stop", "process.stop", "KillShell", "background.stop"].includes(action)) {
     return "process.stop";
   }
   if (["WebSearch", "web_search", "web.search"].includes(action)) {
@@ -3666,6 +5708,57 @@ function normalizeActionName(action: string): ToolAction["type"] {
   }
   if (["WebFetch", "web_fetch", "web.fetch", "fetch"].includes(action)) {
     return "web.fetch";
+  }
+  if (["Config", "config", "config.get", "config_get"].includes(action)) {
+    return inputs.value === undefined ? "config.get" : "config.set";
+  }
+  if (["ConfigSet", "config.set", "config_set"].includes(action)) {
+    return "config.set";
+  }
+  if (["McpResources", "ListMcpResources", "list_mcp_resources", "mcp.resources", "mcp_resources"].includes(action)) {
+    return "mcp.resources";
+  }
+  if (["McpRead", "ReadMcpResource", "read_mcp_resource", "mcp.read", "mcp_read"].includes(action)) {
+    return "mcp.read";
+  }
+  if (["McpAuth", "mcp.auth", "mcp_auth", "mcp.authenticate"].includes(action)) {
+    return "mcp.auth";
+  }
+  if (["McpCall", "MCPTool", "mcp.call", "mcp_call"].includes(action)) {
+    return "mcp.call";
+  }
+  if (["SkillInvoke", "SkillTool", "skill.invoke", "skill_invoke", "skill.activate"].includes(action)) {
+    return "skill.invoke";
+  }
+  if (["AgentMessage", "SendMessageTool", "SendMessage", "send_message", "agent.message", "agent_message", "worker.message"].includes(action)) {
+    return "agent.message";
+  }
+  if (["SleepTool", "RuntimeSleep", "sleep", "runtime.sleep", "runtime_sleep"].includes(action)) {
+    return "runtime.sleep";
+  }
+  if (["SyntheticOutputTool", "StructuredOutput", "structured.output", "structured_output", "synthetic.output"].includes(action)) {
+    return "structured.output";
+  }
+  if (["REPLTool", "ReplMode", "repl.mode", "repl_mode"].includes(action)) {
+    return "repl.mode";
+  }
+  if (["ScheduleCronTool", "ScheduleCreate", "CronCreate", "schedule.create", "schedule_create", "cron.create", "cron_create"].includes(action)) {
+    return "schedule.create";
+  }
+  if (["ScheduleList", "CronList", "schedule.list", "schedule_list", "cron.list", "cron_list"].includes(action)) {
+    return "schedule.list";
+  }
+  if (["ScheduleDelete", "CronDelete", "schedule.delete", "schedule_delete", "cron.delete", "cron_delete"].includes(action)) {
+    return "schedule.delete";
+  }
+  if (["RemoteTriggerTool", "RemoteTrigger", "remote.trigger", "remote_trigger"].includes(action)) {
+    return "remote.trigger";
+  }
+  if (["TeamCreateTool", "TeamCreate", "team.create", "team_create"].includes(action)) {
+    return "team.create";
+  }
+  if (["TeamDeleteTool", "TeamDelete", "team.delete", "team_delete"].includes(action)) {
+    return "team.delete";
   }
   if (["NotebookEdit", "notebook_edit", "notebook.edit"].includes(action)) {
     return "notebook.edit";
@@ -4022,6 +6115,56 @@ function agentWorkerStatusInput(value: unknown): "pending" | "running" | "comple
   return undefined;
 }
 
+function taskTypeInput(value: unknown): Extract<ToolAction, { type: "task.create" }>["taskType"] {
+  if (value === "research" || value === "coding" || value === "analysis" || value === "review" || value === "tool_call" || value === "planning" || value === "aggregation") {
+    return value;
+  }
+  return undefined;
+}
+
+function swarmTaskStatusInput(value: unknown): Extract<ToolAction, { type: "task.create" }>["status"] {
+  if (value === "created" || value === "pending" || value === "assigned" || value === "running" || value === "blocked" || value === "completed" || value === "failed" || value === "cancelled") {
+    return value;
+  }
+  return undefined;
+}
+
+function scheduleStatusInput(value: unknown): Extract<ToolAction, { type: "schedule.list" }>["status"] {
+  if (value === "active" || value === "paused" || value === "expired") {
+    return value;
+  }
+  return undefined;
+}
+
+function writePolicyInput(value: unknown): Extract<ToolAction, { type: "task.create" }>["write_policy"] {
+  if (value === "read_only" || value === "scoped_write" || value === "workspace_write") {
+    return value;
+  }
+  return undefined;
+}
+
+function recordInput(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function requiredNumberInput(value: unknown, message: string): number {
+  const number = numberInput(value);
+  if (number === undefined) {
+    throw new Error(message);
+  }
+  return number;
+}
+
+function agentAddressInput(value: unknown): Extract<ToolAction, { type: "task.create" }>["assigned_to"] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const agent_id = optionalStringInput(value.agent_id ?? value.agentId);
+  const role = optionalStringInput(value.role);
+  const capability = optionalStringInput(value.capability);
+  return agent_id || role || capability ? { agent_id, role, capability } : undefined;
+}
+
 function todoListInput(value: unknown): Array<{ content: string; activeForm?: string; status: "pending" | "in_progress" | "completed" }> {
   if (!Array.isArray(value)) {
     return [];
@@ -4041,12 +6184,162 @@ function todoListInput(value: unknown): Array<{ content: string; activeForm?: st
     .filter((todo) => todo.content);
 }
 
+function questionChoicesInput(value: unknown): Array<{ label: string; description?: string; preview?: string }> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const choices = value
+    .map((item) => {
+      if (typeof item === "string") {
+        return { label: item.trim() };
+      }
+      const record = isRecord(item) ? item : {};
+      return {
+        label: stringInput(record.label ?? record.value ?? record.title ?? record.name).trim(),
+        description: optionalStringInput(record.description ?? record.detail ?? record.help),
+        preview: optionalStringInput(record.preview ?? record.example)
+      };
+    })
+    .filter((choice) => choice.label);
+  return choices.length ? choices : undefined;
+}
+
+function structuredQuestionsInput(value: unknown): Extract<ToolAction, { type: "ask_user_question" }>["questions"] {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const questions = value
+    .map((item) => {
+      if (typeof item === "string") {
+        return { question: item.trim(), options: [] };
+      }
+      const record = isRecord(item) ? item : {};
+      return {
+        question: stringInput(record.question ?? record.prompt ?? record.text ?? record.title).trim(),
+        header: optionalStringInput(record.header ?? record.label),
+        options: questionChoicesInput(record.options ?? record.choices) ?? [],
+        multiSelect: booleanInput(record.multiSelect ?? record.multi_select)
+      };
+    })
+    .filter((question) => question.question || question.options.length);
+  return questions.length ? questions : undefined;
+}
+
+function allowedPromptsInput(value: unknown): Extract<ToolAction, { type: "plan.exit" }>["allowedPrompts"] {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const prompts = value
+    .map((item) => {
+      const record = isRecord(item) ? item : {};
+      return {
+        tool: stringInput(record.tool ?? record.action ?? record.name).trim(),
+        prompt: stringInput(record.prompt ?? record.text ?? record.description).trim()
+      };
+    })
+    .filter((prompt) => prompt.tool && prompt.prompt);
+  return prompts.length ? prompts : undefined;
+}
+
+function firstQuestionText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  for (const item of value) {
+    if (typeof item === "string" && item.trim()) {
+      return item.trim();
+    }
+    if (!isRecord(item)) {
+      continue;
+    }
+    const question = optionalStringInput(item.question ?? item.prompt ?? item.text ?? item.title)?.trim();
+    if (question) {
+      return question;
+    }
+  }
+  return undefined;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
 function numberInput(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "") {
     return undefined;
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function validateStructuredOutputValue(value: unknown, schema: Record<string, unknown> | undefined): string | undefined {
+  if (value === undefined) {
+    return "value is required";
+  }
+  if (!schema) {
+    return undefined;
+  }
+  const type = schema.type;
+  if (typeof type === "string" && !jsonValueMatchesSchemaType(value, type)) {
+    return `expected ${type}`;
+  }
+  const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
+  if (required.length && isRecord(value)) {
+    const missing = required.find((field) => value[field] === undefined);
+    if (missing) {
+      return `missing required field ${missing}`;
+    }
+  } else if (required.length) {
+    return "required fields need an object value";
+  }
+  const properties = isRecord(schema.properties) ? schema.properties : undefined;
+  if (properties && isRecord(value)) {
+    for (const [key, propertySchema] of Object.entries(properties)) {
+      if (value[key] === undefined || !isRecord(propertySchema)) {
+        continue;
+      }
+      const propertyType = propertySchema.type;
+      if (typeof propertyType === "string" && !jsonValueMatchesSchemaType(value[key], propertyType)) {
+        return `field ${key} expected ${propertyType}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+function jsonValueMatchesSchemaType(value: unknown, type: string): boolean {
+  if (type === "array") {
+    return Array.isArray(value);
+  }
+  if (type === "object") {
+    return isRecord(value);
+  }
+  if (type === "integer") {
+    return Number.isInteger(value);
+  }
+  if (type === "number") {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+  if (type === "string") {
+    return typeof value === "string";
+  }
+  if (type === "boolean") {
+    return typeof value === "boolean";
+  }
+  if (type === "null") {
+    return value === null;
+  }
+  return true;
 }
 
 function booleanInput(value: unknown): boolean | undefined {
@@ -4073,11 +6366,23 @@ function processStatusInput(value: unknown): Extract<ToolAction, { type: "proces
   return undefined;
 }
 
-function compileSearchRegex(pattern: string): RegExp {
+function grepOutputModeInput(value: unknown): Extract<ToolAction, { type: "file.grep" }>["outputMode"] {
+  if (value === "content" || value === "files_with_matches" || value === "count") {
+    return value;
+  }
+  return undefined;
+}
+
+function worktreeExitModeInput(value: unknown): Extract<ToolAction, { type: "worktree.exit" }>["mode"] {
+  return value === "remove" ? "remove" : "keep";
+}
+
+function compileSearchRegex(pattern: string, caseInsensitive = false, multiline = false): RegExp {
+  const flags = `${caseInsensitive ? "i" : ""}${multiline ? "gs" : ""}`;
   try {
-    return new RegExp(pattern);
+    return new RegExp(pattern, flags);
   } catch {
-    return new RegExp(escapeRegex(pattern));
+    return new RegExp(escapeRegex(pattern), flags);
   }
 }
 
