@@ -455,11 +455,12 @@ The current codebase now has the first concrete slice of this architecture:
   `work_contracts` summaries so API users see the same execution truth,
   delegated write policy, and file scope context as the TUI.
 - Gateway now also exposes a read-only Agent Workspace projection at
-  `GET /v1/agent-workspace` and section routes for teammates, attention,
-  activity, skills, capabilities, readiness, and Automations. The projection is
-  derived from `WorkBoard`, approvals, skills, capability providers, Symphony
-  status, and daemon records; it does not persist a separate teammate, task, or
-  automation truth.
+  `GET /v1/agent-workspace` and section routes for tasks, task detail,
+  teammates, teammate detail, attention, activity, skills, capabilities,
+  readiness, runtime status, Automations, and Automation status. The projection
+  is derived from `WorkBoard`, approvals, skills, capability providers,
+  Symphony status, and daemon records; it does not persist a separate task,
+  teammate, or automation truth.
 - The global Workbench is now case/session-family driven. `GET /v1/workbench`,
   `/v1/workbench/cases`, `/v1/workbench/cases/:id`, and `/v1/workbench/inbox`
   expose a read-only projection over existing `WorkSession`, `WorkspaceLease`,

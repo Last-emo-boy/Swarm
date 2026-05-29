@@ -9,7 +9,7 @@ import type { RuntimeEvent } from "../runtime/events.js";
 import type { SandboxWritePolicy } from "../runtime/sandbox-policy.js";
 import { buildWorkRecordFromRuntimeEvent, type WorkProtocolRecord } from "../runtime/work-protocol.js";
 import { buildSessionWorkBoard, buildWorkspaceWorkBoard } from "../runtime/work-board.js";
-import { buildAgentWorkspaceProjection } from "../runtime/agent-workspace.js";
+import { buildAgentWorkspaceProjection, findAgentWorkspaceTask } from "../runtime/agent-workspace.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
@@ -190,13 +190,18 @@ const PUBLIC_API_SURFACE = [
   "/v1/workbench/cases/:id",
   "/v1/workbench/inbox",
   "/v1/agent-workspace",
+  "/v1/agent-workspace/tasks",
+  "/v1/agent-workspace/tasks/:id",
   "/v1/agent-workspace/teammates",
+  "/v1/agent-workspace/teammates/:id",
   "/v1/agent-workspace/attention",
   "/v1/agent-workspace/activity",
   "/v1/agent-workspace/skills",
   "/v1/agent-workspace/capabilities",
   "/v1/agent-workspace/readiness",
+  "/v1/agent-workspace/runtime",
   "/v1/agent-workspace/automations",
+  "/v1/agent-workspace/automation-status",
   "/v1/events",
   "/v1/work-events",
   "/v1/sessions/:id/events",
@@ -536,7 +541,7 @@ export class SwarmGatewayServer {
     }
 
     if (resource === "agent-workspace" || resource === "agent_workspace") {
-      await this.handleAgentWorkspace(request, response, url, id);
+      await this.handleAgentWorkspace(request, response, url, id, child);
       return;
     }
 
@@ -700,7 +705,8 @@ export class SwarmGatewayServer {
     request: IncomingMessage,
     response: ServerResponse,
     url: URL,
-    section?: string
+    section?: string,
+    sectionId?: string
   ): Promise<void> {
     if (request.method !== "GET") {
       throw new HttpError(405, "Method not allowed.");
@@ -737,7 +743,38 @@ export class SwarmGatewayServer {
       case undefined:
         sendJson(response, 200, projection);
         return;
+      case "tasks":
+        if (sectionId) {
+          const task = findAgentWorkspaceTask(projection, sectionId);
+          if (!task) {
+            throw new HttpError(404, `Unknown task: ${sectionId}`);
+          }
+          sendJson(response, 200, {
+            schema_version: projection.schema_version,
+            generated_at: projection.generated_at,
+            task
+          });
+          return;
+        }
+        sendJson(response, 200, {
+          schema_version: projection.schema_version,
+          generated_at: projection.generated_at,
+          tasks: projection.tasks
+        });
+        return;
       case "teammates":
+        if (sectionId) {
+          const teammate = projection.teammates.find((item) => item.id === sectionId || item.worker_session_id === sectionId || item.session_id === sectionId);
+          if (!teammate) {
+            throw new HttpError(404, `Unknown teammate: ${sectionId}`);
+          }
+          sendJson(response, 200, {
+            schema_version: projection.schema_version,
+            generated_at: projection.generated_at,
+            teammate
+          });
+          return;
+        }
         sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, teammates: projection.teammates });
         return;
       case "attention":
@@ -755,8 +792,35 @@ export class SwarmGatewayServer {
       case "readiness":
         sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, readiness: projection.readiness });
         return;
+      case "runtime":
+        sendJson(response, 200, {
+          schema_version: projection.schema_version,
+          generated_at: projection.generated_at,
+          runtime: {
+            status: projection.summary.readiness,
+            readiness: projection.readiness,
+            skills: projection.summary.skills,
+            capabilities: projection.summary.capabilities,
+            teammates: projection.summary.teammates,
+            automations: projection.summary.automations,
+            attention: projection.summary.attention
+          }
+        });
+        return;
       case "automations":
         sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, automations: projection.automations });
+        return;
+      case "automation-status":
+        sendJson(response, 200, {
+          schema_version: projection.schema_version,
+          generated_at: projection.generated_at,
+          automation_status: projection.automations,
+          summary: {
+            automations: projection.summary.automations,
+            blocked: projection.automations.filter((item) => item.severity === "error").length,
+            attention: projection.automations.filter((item) => item.severity === "warning").length
+          }
+        });
         return;
       default:
         throw new HttpError(404, "Unknown agent workspace route.");

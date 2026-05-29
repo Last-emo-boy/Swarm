@@ -6,7 +6,7 @@ import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 import type { SymphonyStatus } from "../symphony/status.js";
 import type { WorkBoard, WorkBoardCheck, WorkBoardNextAction, WorkBoardWorker } from "./work-board.js";
-import { buildAgentWorkspaceProjection } from "./agent-workspace.js";
+import { buildAgentWorkspaceProjection, findAgentWorkspaceTask } from "./agent-workspace.js";
 
 const GENERATED_AT = "2026-05-29T00:00:00.000Z";
 
@@ -92,6 +92,98 @@ test("agent workspace exposes lifecycle controls through existing worker and han
   assert(handoff, "expected active handoff attention item");
   assert.equal(handoff.control_intent, "handoff.take_back");
   assert.equal(handoff.recommended_action, "Take back ownership before resuming this work.");
+});
+
+test("agent workspace projects task cards and task details from WorkBoard truth", () => {
+  const projection = buildAgentWorkspaceProjection({
+    board: board({
+      sessions: [{
+        session_id: "session-task-1",
+        status: "running",
+        objective: "Implement task-centric Agent Workspace projection.",
+        source: {
+          source: "user",
+          human_id: "T-200",
+          title: "Task-centric workspace",
+          labels: ["product"],
+          metadata: {}
+        },
+        updated_at: GENERATED_AT,
+        next_action: "Verify task detail projection."
+      }],
+      workers: [
+        worker({
+          worker_id: "worker-task-1",
+          display_name: "Task Builder",
+          session_id: "session-task-1",
+          objective: "Build task projection.",
+          trajectory: {
+            report: "Task projection implemented.",
+            changed_files: ["src/runtime/agent-workspace.ts"],
+            checks: ["npm run check"],
+            artifacts: []
+          }
+        })
+      ],
+      tasks: [{
+        task_id: "task-1",
+        title: "Consolidate task view model",
+        status: "running",
+        attempt: 1,
+        capability: "product.projection",
+        write_policy: "scoped_write",
+        file_scope: ["src/runtime/agent-workspace.ts"],
+        dependencies: [],
+        updated_at: GENERATED_AT,
+        session_id: "session-task-1"
+      }],
+      checks: [{ session_id: "session-task-1", value: "npm run check", status: "recorded" }],
+      artifacts: [{ session_id: "session-task-1", path: "artifacts/task.md", type: "summary", summary: "Task evidence", created_at: GENERATED_AT }],
+      next_actions: [{ source: "task", id: "task-1", severity: "info", action: "Continue task projection" }]
+    })
+  });
+
+  assert.equal(projection.summary.tasks, 1);
+  assert.equal(projection.tasks[0]?.id, "task-1");
+  assert.equal(projection.tasks[0]?.status, "running");
+  assert.equal(projection.tasks[0]?.source_session_id, "session-task-1");
+  assert.equal(projection.tasks[0]?.source_work_item_key, "T-200");
+  assert(projection.tasks[0]?.controls.some((control) => control.intent === "task.continue"));
+
+  const detail = findAgentWorkspaceTask(projection, "T-200");
+  assert(detail, "expected task detail by work item key");
+  assert.equal(detail.id, "task-1");
+  assert.match(detail.objective, /task-centric Agent Workspace/);
+  assert(detail.plan.some((line) => /Verify task detail/.test(line)));
+  assert(detail.timeline.some((item) => item.source_ref.id === "worker-task-1"));
+  assert(detail.result?.changed_files.includes("src/runtime/agent-workspace.ts"));
+  assert(detail.next_actions.includes("Continue task projection"));
+});
+
+test("agent workspace derives session and orphan worker as task details without duplicating explicit task IDs", () => {
+  const projection = buildAgentWorkspaceProjection({
+    board: board({
+      sessions: [{
+        session_id: "session-only",
+        status: "completed",
+        objective: "Explain current workspace.",
+        updated_at: GENERATED_AT
+      }],
+      workers: [
+        worker({
+          worker_id: "worker-orphan",
+          session_id: undefined,
+          status: "stopped",
+          objective: "Investigate orphan worker."
+        })
+      ]
+    })
+  });
+
+  assert(projection.tasks.some((task) => task.id === "session-only" && task.status === "done"));
+  assert(projection.tasks.some((task) => task.id === "worker-orphan" && task.status === "blocked"));
+  assert(findAgentWorkspaceTask(projection, "session-only"));
+  assert(findAgentWorkspaceTask(projection, "worker-orphan"));
 });
 
 test("agent workspace ranks pending approval before blocked worker attention", () => {

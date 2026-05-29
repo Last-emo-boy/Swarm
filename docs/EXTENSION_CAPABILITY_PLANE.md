@@ -600,3 +600,7 @@ filesystem-based and can reuse existing read/approval boundaries.
 - Users can disable any capability or provider without editing code.
 - Swarm can consume external MCP servers and optionally expose itself as a local
   MCP server.
+- The Agent Workspace runtime readiness projection includes capability provider,
+  skill, teammate, and Automation status so the TUI and Gateway can explain
+  whether the local workspace is ready to execute work without exposing raw
+  provider diagnostics on the default Board.

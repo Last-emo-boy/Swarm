@@ -37,25 +37,52 @@ test("Gateway exposes Agent Workspace projection and read-only sections", async 
     const started = await server.start();
     const health = await readJson<GatewayHealthPayload>(`${started.url}/health`);
     assert(health.routes.includes("/v1/agent-workspace"));
+    assert(health.routes.includes("/v1/agent-workspace/tasks"));
+    assert(health.routes.includes("/v1/agent-workspace/tasks/:id"));
     assert(health.routes.includes("/v1/agent-workspace/teammates"));
+    assert(health.routes.includes("/v1/agent-workspace/teammates/:id"));
     assert(health.routes.includes("/v1/agent-workspace/attention"));
+    assert(health.routes.includes("/v1/agent-workspace/runtime"));
     assert(health.routes.includes("/v1/agent-workspace/automations"));
+    assert(health.routes.includes("/v1/agent-workspace/automation-status"));
 
     const projection = await readJson<AgentWorkspaceProjection>(`${started.url}/v1/agent-workspace?workflow=${encodeURIComponent(fixture.workflowPath)}`);
     assert.equal(projection.schema_version, "swarm.agent_workspace.v1");
     assert.equal(projection.workspace_path, fixture.workspace);
     assert(projection.teammates.some((item) => item.id === "worker-agent-workspace-1"));
+    assert(projection.tasks.some((item) => item.id === "worker-agent-workspace-1"));
     assert(projection.attention.some((item) => item.kind === "blocked_worker"));
     assert(projection.readiness.some((item) => item.id === "gateway_projection"));
     assert(projection.automations.some((item) => item.product_label === "Automations" && item.route.startsWith("/v1/symphony")));
+
+    const tasks = await readJson<{ schema_version: string; tasks: AgentWorkspaceProjection["tasks"] }>(`${started.url}/v1/agent-workspace/tasks?workflow=${encodeURIComponent(fixture.workflowPath)}`);
+    assert.equal(tasks.schema_version, projection.schema_version);
+    assert(tasks.tasks.some((item) => item.id === "worker-agent-workspace-1"));
+
+    const taskDetail = await readJson<{ schema_version: string; task: AgentWorkspaceProjection["task_details"][number] }>(`${started.url}/v1/agent-workspace/tasks/worker-agent-workspace-1?workflow=${encodeURIComponent(fixture.workflowPath)}`);
+    assert.equal(taskDetail.task.id, "worker-agent-workspace-1");
+    assert.match(taskDetail.task.objective, /Agent Workspace projection/);
 
     const teammates = await readJson<{ schema_version: string; teammates: AgentWorkspaceProjection["teammates"] }>(`${started.url}/v1/agent-workspace/teammates?workflow=${encodeURIComponent(fixture.workflowPath)}`);
     assert.equal(teammates.schema_version, projection.schema_version);
     assert.deepEqual(teammates.teammates.map((item) => item.id), projection.teammates.map((item) => item.id));
 
+    const teammate = await readJson<{ schema_version: string; teammate: AgentWorkspaceProjection["teammates"][number] }>(`${started.url}/v1/agent-workspace/teammates/worker-agent-workspace-1?workflow=${encodeURIComponent(fixture.workflowPath)}`);
+    assert.equal(teammate.teammate.id, "worker-agent-workspace-1");
+    assert.equal(teammate.teammate.current_task, "Implement Agent Workspace projection.");
+
     const attention = await readJson<{ schema_version: string; attention: AgentWorkspaceProjection["attention"] }>(`${started.url}/v1/agent-workspace/attention?workflow=${encodeURIComponent(fixture.workflowPath)}`);
     assert.equal(attention.schema_version, projection.schema_version);
     assert(attention.attention.some((item) => item.kind === "blocked_worker"));
+
+    const runtime = await readJson<{ runtime: { status: string; readiness: unknown[]; teammates: number; automations: number } }>(`${started.url}/v1/agent-workspace/runtime?workflow=${encodeURIComponent(fixture.workflowPath)}`);
+    assert(runtime.runtime.readiness.length > 0);
+    assert.equal(runtime.runtime.teammates, projection.summary.teammates);
+    assert.equal(runtime.runtime.automations, projection.summary.automations);
+
+    const automationStatus = await readJson<{ automation_status: AgentWorkspaceProjection["automations"]; summary: { automations: number } }>(`${started.url}/v1/agent-workspace/automation-status?workflow=${encodeURIComponent(fixture.workflowPath)}`);
+    assert.equal(automationStatus.summary.automations, projection.summary.automations);
+    assert(automationStatus.automation_status.every((item) => item.product_label === "Automations"));
   } finally {
     await server.stop();
     fixture.close();

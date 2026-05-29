@@ -83,6 +83,10 @@ if (!command) {
   await runCheckpointsCommand(args);
 } else if (command === "sessions" || command === "ps") {
   await runSessionsCommand(args);
+} else if (command === "board") {
+  await runBoardCommand(args);
+} else if (command === "task" || command === "tasks") {
+  await runTaskCommand(args);
 } else if (command === "workers") {
   await runWorkersCommand(args);
 } else if (command === "handoffs") {
@@ -157,6 +161,8 @@ if (!command) {
   await new Promise<void>(() => undefined);
 } else if (command === "symphony") {
   await runSymphonyCommand(args);
+} else if (command === "automation" || command === "automations") {
+  await runAutomationCommand(args);
 } else if (command === "config") {
   const subcommand = args[0];
   const { ensureSwarmHome } = await import("./config/settings.js");
@@ -847,6 +853,135 @@ async function runSessionsCommand(values: string[]): Promise<void> {
   } finally {
     runtime.dispose();
   }
+}
+
+async function runBoardCommand(values: string[]): Promise<void> {
+  const options = parseOptions(values);
+  const jsonOutput = parseBooleanOption(options.json);
+  if (options.help === "true") {
+    console.log("Usage: swarm board [--workspace <path>] [--limit N] [--json]");
+    console.log("       Shows the Local Agent Workspace board from the read-only Agent Workspace projection.");
+    return;
+  }
+  const { SwarmRuntime } = await import("./runtime/runtime.js");
+  const { buildWorkspaceWorkBoard } = await import("./runtime/work-board.js");
+  const { buildAgentWorkspaceProjection } = await import("./runtime/agent-workspace.js");
+  const { getSymphonyStatus } = await import("./symphony/status.js");
+  const runtime = new SwarmRuntime({ workspace: options.workspace });
+  try {
+    const [capabilities, providers] = await Promise.all([
+      runtime.listCapabilities({ includeDisabled: true }),
+      runtime.listCapabilityProviders()
+    ]);
+    const board = buildWorkspaceWorkBoard(runtime, { limit: parsePositiveIntegerOption(options, "limit") });
+    const projection = buildAgentWorkspaceProjection({
+      board,
+      approvals: runtime.listRecentApprovalsForWorkspace(parsePositiveIntegerOption(options, "limit") ?? 25),
+      skills: runtime.listSkills(),
+      capabilities,
+      providers,
+      symphonyStatus: getSymphonyStatus({ runtime, workflowPath: options.workflow, limit: parsePositiveIntegerOption(options, "symphony-limit") }),
+      workspacePath: runtime.getWorkspacePath()
+    });
+    if (jsonOutput) {
+      console.log(JSON.stringify(projection, null, 2));
+      return;
+    }
+    console.log(formatAgentWorkspaceBoard(projection));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  } finally {
+    runtime.dispose();
+  }
+}
+
+async function runTaskCommand(values: string[]): Promise<void> {
+  const options = parseOptions(values);
+  const jsonOutput = parseBooleanOption(options.json);
+  if (options.help === "true") {
+    console.log("Usage: swarm task list [--workspace <path>] [--limit N] [--json]");
+    console.log("       swarm task show <task_id|source_session_id|work_item_key> [--workspace <path>] [--json]");
+    return;
+  }
+  const positionals = collectPositionalsWithValueFlags(values, new Set(["workspace", "limit", "workflow", "symphony-limit"]));
+  const subcommand = positionals[0] ?? "list";
+  const { SwarmRuntime } = await import("./runtime/runtime.js");
+  const { buildWorkspaceWorkBoard } = await import("./runtime/work-board.js");
+  const { buildAgentWorkspaceProjection, findAgentWorkspaceTask } = await import("./runtime/agent-workspace.js");
+  const { getSymphonyStatus } = await import("./symphony/status.js");
+  const runtime = new SwarmRuntime({ workspace: options.workspace });
+  try {
+    const [capabilities, providers] = await Promise.all([
+      runtime.listCapabilities({ includeDisabled: true }),
+      runtime.listCapabilityProviders()
+    ]);
+    const limit = parsePositiveIntegerOption(options, "limit");
+    const projection = buildAgentWorkspaceProjection({
+      board: buildWorkspaceWorkBoard(runtime, { limit }),
+      approvals: runtime.listRecentApprovalsForWorkspace(limit ?? 25),
+      skills: runtime.listSkills(),
+      capabilities,
+      providers,
+      symphonyStatus: getSymphonyStatus({ runtime, workflowPath: options.workflow, limit: parsePositiveIntegerOption(options, "symphony-limit") }),
+      workspacePath: runtime.getWorkspacePath()
+    });
+    if (subcommand === "list") {
+      if (jsonOutput) {
+        console.log(JSON.stringify({ schema_version: projection.schema_version, generated_at: projection.generated_at, tasks: projection.tasks }, null, 2));
+      } else {
+        console.log(formatAgentWorkspaceTasks(projection.tasks));
+      }
+      return;
+    }
+    if (subcommand === "show") {
+      const selector = positionals[1];
+      if (!selector) {
+        console.error("Usage: swarm task show <task_id|source_session_id|work_item_key> [--workspace <path>] [--json]");
+        process.exitCode = 1;
+        return;
+      }
+      const task = findAgentWorkspaceTask(projection, selector);
+      if (!task) {
+        console.error(`Unknown task: ${selector}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(jsonOutput ? JSON.stringify(task, null, 2) : formatAgentWorkspaceTaskDetail(task));
+      return;
+    }
+    console.error(`Unknown task command: ${subcommand}`);
+    process.exitCode = 1;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  } finally {
+    runtime.dispose();
+  }
+}
+
+async function runAutomationCommand(values: string[]): Promise<void> {
+  const subcommand = values[0] ?? "status";
+  if (subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+    console.log("Usage: swarm automation list|show|status|run|preview|tick|cleanup|daemon [symphony flags]");
+    console.log("       Product alias for Symphony-backed Automations.");
+    return;
+  }
+  if (subcommand === "list" || subcommand === "show") {
+    await runSymphonyCommand(["status", ...values.slice(1)]);
+    return;
+  }
+  if (subcommand === "run" || subcommand === "run-once") {
+    await runSymphonyCommand(["run-once", ...values.slice(1)]);
+    return;
+  }
+  if (subcommand === "status" || subcommand === "preview" || subcommand === "tick" || subcommand === "cleanup" || subcommand === "daemon") {
+    await runSymphonyCommand([subcommand, ...values.slice(1)]);
+    return;
+  }
+  console.error(`Unknown automation command: ${subcommand}`);
+  console.error("Usage: swarm automation list|show|status|run|preview|tick|cleanup|daemon [symphony flags]");
+  process.exitCode = 1;
 }
 
 async function runPluginsCommand(values: string[]): Promise<void> {
@@ -3347,6 +3482,9 @@ Usage:
   ${binary} sessions fork <session_id|latest> [message] [--gateway-url <url>] [--workspace <path>] [--json]
   ${binary} sessions reply <session_id|latest> <message> [--gateway-url <url>] [--request-id <id>] [--workspace <path>] [--json]
   ${binary} sessions interrupt|stop|kill <session_id|latest> [message] [--gateway-url <url>] [--request-id <id>] [--workspace <path>] [--json]
+  ${binary} board [--workspace <path>] [--limit N] [--json]
+  ${binary} task list [--workspace <path>] [--limit N] [--json]
+  ${binary} task show <task_id|source_session_id|work_item_key> [--workspace <path>] [--json]
   ${binary} workers [list] [--session <session_id|latest>] [--limit N] [--workspace <path>] [--json]
   ${binary} workers show <worker_id|latest> [--session <session_id|latest>] [--workspace <path>] [--json]
   ${binary} workers watch <worker_id|latest> [--session <session_id|latest>] [--gateway-url <url>] [--protocol runtime|work] [--workspace <path>] [--jsonl]
@@ -3406,6 +3544,8 @@ Usage:
   ${binary} symphony status [--workflow WORKFLOW.md] [--max-ticks 20]
   ${binary} symphony cleanup [--workflow WORKFLOW.md] [--execute]
   ${binary} symphony daemon [--workflow WORKFLOW.md] [--workspace <path>] [--execute] [--max-ticks 3]
+  ${binary} automation list|show|status [--workflow WORKFLOW.md] [--workspace <path>]
+  ${binary} automation run [--workflow WORKFLOW.md] [--workspace <path>] [--max-turns 12]
   ${binary} config path
   ${binary} auth set-key [provider] <api-key>
   ${binary} providers list
@@ -3427,6 +3567,8 @@ Commands:
   checkpoints
              List, create, and revert local workspace checkpoints
   sessions   List, inspect, resume, execute, and fork persisted WorkSessions
+  board      Show the Local Agent Workspace board projection
+  task       List and inspect task-centric Agent Workspace projections
   workers    Inspect, watch, stop, and continue persisted worker contracts
   handoffs   Inspect, watch, and take back persisted handoff contracts
   approvals  Inspect approval records and answer live Gateway approval requests
@@ -3449,6 +3591,7 @@ Commands:
   init       Create ~/.swarm with user-level settings and state folders
   serve      Start the local Swarm Gateway HTTP/event-stream server
   symphony   Preview, dispatch, run once, or poll local WorkItems into the shared Work Kernel
+  automation Product alias for Symphony-backed Automations
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List built-in model providers
@@ -3505,4 +3648,129 @@ Environment:
   if (args.length > 0) {
     console.log(`Ignored arguments: ${args.join(" ")}`);
   }
+}
+
+function formatAgentWorkspaceBoard(projection: {
+  workspace_path?: string;
+  summary: {
+    tasks: number;
+    teammates: number;
+    active_teammates: number;
+    attention: number;
+    readiness: string;
+    automations: number;
+  };
+  tasks: Array<{
+    id: string;
+    title: string;
+    status: string;
+    assignee?: string;
+    risk?: string;
+    updated_at: string;
+    summary?: string;
+  }>;
+  teammates: Array<{ id: string; display_name: string; state: string; current_task: string }>;
+  readiness: Array<{ id: string; label: string; status: string; summary: string; next_action?: string }>;
+  automations: Array<{ id: string; status: string; summary: string }>;
+}): string {
+  const lines = [
+    "Local Agent Workspace",
+    projection.workspace_path ? `Workspace: ${projection.workspace_path}` : undefined,
+    `Summary: tasks=${projection.summary.tasks} teammates=${projection.summary.teammates} active=${projection.summary.active_teammates} attention=${projection.summary.attention} readiness=${projection.summary.readiness} automations=${projection.summary.automations}`,
+    "",
+    "Tasks",
+    ...(projection.tasks.length
+      ? projection.tasks.slice(0, 20).map((task) => [
+          `${task.id} [${task.status}]`,
+          task.title,
+          task.assignee ? `assignee=${task.assignee}` : undefined,
+          task.risk ? `risk=${task.risk}` : undefined,
+          task.summary ? `summary=${task.summary}` : undefined
+        ].filter(Boolean).join(" "))
+      : ["(none)"]),
+    "",
+    "Workers",
+    ...(projection.teammates.length
+      ? projection.teammates.slice(0, 10).map((worker) => `${worker.id} [${worker.state}] ${worker.display_name} - ${worker.current_task}`)
+      : ["(none)"]),
+    "",
+    "Runtime",
+    ...(projection.readiness.length
+      ? projection.readiness.slice(0, 8).map((item) => `${item.label}: ${item.status} - ${item.summary}${item.next_action ? ` next=${item.next_action}` : ""}`)
+      : ["(none)"]),
+    "",
+    "Automations",
+    ...(projection.automations.length
+      ? projection.automations.slice(0, 8).map((item) => `${item.id} [${item.status}] ${item.summary}`)
+      : ["(none)"])
+  ].filter((line): line is string => line !== undefined);
+  return lines.join("\n");
+}
+
+function formatAgentWorkspaceTasks(tasks: Array<{
+  id: string;
+  title: string;
+  status: string;
+  assignee?: string;
+  risk?: string;
+  updated_at: string;
+  source_session_id?: string;
+  source_work_item_key?: string;
+  summary?: string;
+}>): string {
+  return [
+    "Tasks",
+    ...(tasks.length
+      ? tasks.slice(0, 50).map((task) => [
+          `${task.id} [${task.status}]`,
+          task.title,
+          task.assignee ? `assignee=${task.assignee}` : undefined,
+          task.risk ? `risk=${task.risk}` : undefined,
+          task.source_work_item_key ? `work_item=${task.source_work_item_key}` : undefined,
+          task.source_session_id ? `session=${task.source_session_id}` : undefined
+        ].filter(Boolean).join(" "))
+      : ["(none)"])
+  ].join("\n");
+}
+
+function formatAgentWorkspaceTaskDetail(task: {
+  id: string;
+  title: string;
+  status: string;
+  assignee?: string;
+  risk?: string;
+  objective: string;
+  plan: string[];
+  timeline: Array<{ title: string; detail?: string }>;
+  comments: string[];
+  result?: { summary: string; artifact_path?: string; checks: string[]; changed_files: string[] };
+  checks: string[];
+  changed_files: string[];
+  next_actions: string[];
+}): string {
+  return [
+    `${task.id} [${task.status}] ${task.title}`,
+    `Objective: ${task.objective}`,
+    task.assignee || task.risk ? `Owner: ${task.assignee ?? "-"}${task.risk ? ` risk=${task.risk}` : ""}` : undefined,
+    "",
+    "Plan",
+    ...(task.plan.length ? task.plan.slice(0, 8).map((line) => `  ${line}`) : ["  (none)"]),
+    "",
+    "Timeline",
+    ...(task.timeline.length ? task.timeline.slice(0, 8).map((item) => `  ${item.title}${item.detail ? ` - ${item.detail}` : ""}`) : ["  (none)"]),
+    "",
+    "Comments",
+    ...(task.comments.length ? task.comments.slice(0, 8).map((line) => `  ${line}`) : ["  (none)"]),
+    "",
+    "Result",
+    ...(task.result ? [
+      `  ${task.result.summary}`,
+      task.result.artifact_path ? `  artifact=${task.result.artifact_path}` : undefined,
+      ...task.result.checks.slice(0, 5).map((line) => `  check=${line}`),
+      ...task.result.changed_files.slice(0, 5).map((line) => `  changed=${line}`)
+    ].filter((line): line is string => Boolean(line)) : ["  (none)"]),
+    "",
+    "Next Actions",
+    ...(task.next_actions.length ? task.next_actions.slice(0, 8).map((line) => `  ${line}`) : ["  (none)"])
+  ].filter((line): line is string => line !== undefined).join("\n");
 }

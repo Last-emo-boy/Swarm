@@ -1,25 +1,25 @@
 # Swarm
 
-Swarm is a local coding agent runtime with one user-facing entrypoint: the CLI
-TUI. Users talk to the main Swarm; Swarm decides whether to answer directly, run
-the local coding loop, delegate work, review changes, resume memory, or use
-extensions.
+Swarm is a local agent workspace for coding work. The CLI TUI is the main
+product surface: create or select a Task, assign Workers, watch Activity,
+inspect Output, use Skills, run Automations, and keep Trace/debug details
+available when needed.
 
-The product bias is simple: finish useful workspace work, show the result first,
-and keep the internal Work Kernel, ASP protocol, workers, Gateway, and Symphony
-surfaces available only when they help.
+The product bias is simple: finish useful workspace work, show task progress and
+result evidence first, and keep the internal Work Kernel, ASP protocol, Gateway,
+and Symphony surfaces available without making them the default mental model.
 
 ## What It Does
 
 | Area | Current behavior |
 | --- | --- |
-| Main entry | `swarm` opens the interactive TUI by default. |
-| Result-first UX | Normal runs now finish with a result card before raw output. |
+| Main entry | `swarm` opens the Board-first Local Agent Workspace TUI by default. |
+| Task-centric UX | Board, task detail, activity, output, result evidence, and next actions are derived from the shared Work Kernel. |
 | Local coding | Reads, edits, runs shell/test/lint/build/git tools, and verifies results. |
 | Memory | Sessions keep compacted context and require freshness checks on resume. |
-| Delegation | The main Swarm owns worker spawning, continuation, stop, and handoff. |
+| Workers | The main Swarm owns worker spawning, continuation, stop, handoff, and teammate-style projections. |
 | Extensions | Built-in tools, MCP, skills, slash commands, agent specs, and plugins share one capability plane. |
-| Automation | Gateway and Symphony are local automation entrypoints, not separate product UIs. |
+| Automations | Symphony remains the internal automation engine; product surfaces call it Automations. |
 
 ## Current Product Status
 
@@ -30,9 +30,10 @@ audit in
 
 Current verified surface:
 
-- CLI/TUI first local coding product with result cards, resume/memory checks,
-  slash command operator surfaces, prompt-cache status, scoped-write/read-only
-  policy, local LSP semantic helpers, and local Work Kernel inspection.
+- CLI/TUI first Local Agent Workspace with Board, Tasks, Workers, Activity,
+  Output, Skills, Automations, Trace, result cards, resume/memory checks, slash
+  command operator surfaces, scoped-write/read-only policy, local LSP semantic
+  helpers, and local Work Kernel inspection.
 - Evidence-backed local Swarm v2 collaboration: actor identity, mailbox
   delivery, ownership leases, handoff transfer, blackboard claim/proposal/
   decision flow, Gateway/Symphony/LSP capability participants, protocol debug
@@ -108,11 +109,23 @@ swarm run "read this repo and summarize the main runtime"
 ## Golden Path
 
 1. Run `swarm` in a project directory.
-2. Type a natural-language objective.
-3. Approve risky tools when Swarm asks.
-4. Watch the current action and short activity timeline.
-5. Read the final result card: status, changed files, checks, review, and memory freshness.
-6. Continue later with `/continue`, `/resume`, or `/memory`.
+2. Swarm opens the local workspace Board.
+3. Create a Task from the prompt or select an existing Task.
+4. Assign work to main Swarm, a Worker, or a worker-style handoff when useful.
+5. Watch Activity, blockers, approvals, changed files, checks, and Output.
+6. Read the result evidence, then Continue, Verify, create a follow-up Task, or
+   archive the work.
+
+Useful product-path commands:
+
+```bash
+swarm board --json
+swarm task list
+swarm task show <task_id>
+swarm workers list
+swarm automation list
+swarm automation run --workflow WORKFLOW.md
+```
 
 Swarm is not a report generator by default. For coding and project work, the
 final product is real workspace changes. Long logs, worker drafts, trace
@@ -133,6 +146,8 @@ Commands:
   checkpoints
              List, create, and revert local workspace checkpoints
   sessions   List, inspect, resume, execute, and fork persisted WorkSessions
+  board      Show the Local Agent Workspace board projection
+  task       List and inspect task-centric Agent Workspace projections
   workers    Inspect, watch, stop, and continue persisted worker contracts
   handoffs   Inspect, watch, and take back persisted handoff contracts
   approvals  Inspect approval records and answer live Gateway approval requests
@@ -150,6 +165,7 @@ Commands:
   init       Create ~/.swarm with user-level settings and state folders
   serve      Start the local Swarm Gateway HTTP/event-stream server
   symphony   Run local work-source automation commands
+  automation Product alias for Symphony-backed Automations
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
@@ -681,17 +697,18 @@ Important endpoint groups:
 | Live control | `GET /v1/live`, `POST /v1/live/messages`, `POST /v1/live/interrupt`, `POST /v1/sessions/:id/messages`, `POST /v1/sessions/:id/interrupt`, `POST /v1/sessions/:id/execute`, `POST /v1/sessions/:id/fork` |
 | Kernel inspection | `GET /v1/sessions/:id/graph`, `/tasks/:task_id`, `/trace`, `/blackboard`, `/approvals`, `/audit`, `/usage` |
 | Collaboration | `GET /v1/workers`, `GET /v1/workers/:id`, `POST /v1/workers/:id/stop`, `POST /v1/workers/:id/continue`, `GET /v1/handoffs`, `GET /v1/handoffs/:id`, `POST /v1/handoffs/:id/take-back` |
-| Agent Workspace | `GET /v1/agent-workspace`, `/teammates`, `/attention`, `/activity`, `/skills`, `/capabilities`, `/readiness`, `/automations` |
+| Agent Workspace | `GET /v1/agent-workspace`, `/tasks`, `/tasks/:id`, `/teammates`, `/teammates/:id`, `/attention`, `/activity`, `/skills`, `/capabilities`, `/readiness`, `/runtime`, `/automations`, `/automation-status` |
 | Capabilities | `GET /v1/capabilities`, `POST /v1/capabilities/:id/invoke`, enable/disable/show/hide, refresh |
 | Extensions | `GET /v1/skills`, `POST /v1/skills/:name/activate`, `GET /v1/plugins`, plugin install/update/remove/enable/disable |
 | MCP | `GET /v1/mcp/servers`, server refresh, resource list/read, prompt list/get |
 | Symphony | `GET /v1/symphony/status`, preview, tick, run-once, cleanup, daemon start/stop |
 
 `GET /v1/agent-workspace` is a read-only projection over the Work Board,
-approval records, skills, capabilities, Symphony status, and daemon records. It
-is intended for IDE/Web integrations that need the same teammate, attention,
-activity, readiness, capability, and Automations surface as the local product
-without creating a second durable task or worker truth.
+approval records, skills, capabilities, Symphony status, and daemon records.
+Its section routes expose task cards/details, teammate profiles, activity,
+runtime readiness, capability state, and Automation status for the TUI and
+future IDE/Web integrations without creating a second durable task, worker, or
+automation truth.
 
 `/v1/events` keeps the runtime event stream for existing clients and includes a
 `work` field on each record. `/v1/work-events` streams the stable `swarm.work.v1`
