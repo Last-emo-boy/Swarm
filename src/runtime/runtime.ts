@@ -2,7 +2,7 @@ import { execFile, fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type {
   AgentCard,
   BlackboardEntry,
@@ -69,7 +69,7 @@ import {
   type AgentSpec,
   type AgentTaskPacket
 } from "./agent-specs.js";
-import type { AgentMessageAction, BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, FileLockEvent, LocalToolContext, ReplModeAction, RuntimeControlToolContext, StructuredOutputAction, TaskControlToolContext, TaskCreateAction, TaskGetAction, TaskListAction, TaskOutputAction, TaskStopAction, TaskUpdateAction, ToolResult, WorkspaceChangeMetadata, WorktreeControlToolContext, WorktreeEnterAction, WorktreeExitAction } from "../tools/types.js";
+import type { AgentMessageAction, BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, FileLockEvent, LocalToolContext, ReplModeAction, RuntimeControlToolContext, TaskControlToolContext, TaskCreateAction, TaskGetAction, TaskListAction, TaskOutputAction, TaskStopAction, TaskUpdateAction, ToolResult, WorkspaceChangeMetadata, WorktreeControlToolContext, WorktreeEnterAction, WorktreeExitAction } from "../tools/types.js";
 import { riskClassForAction } from "../tools/permissions.js";
 import { normalizeToolAction } from "../tools/local-tools.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";

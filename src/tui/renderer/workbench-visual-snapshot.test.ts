@@ -114,14 +114,6 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
     resultCard,
     compact ? inspector : actionLog
   );
-  const footerItems = [
-    { id: "tasks" as const, label: "tasks", value: "2/5", tone: "running" as const },
-    { id: "approvals" as const, label: "approvals", value: "1", tone: "pending" as const },
-    { id: "cache" as const, label: "cache", value: "HIT 81%", tone: "success" as const },
-    { id: "lsp" as const, label: "lsp", value: "READY", tone: "success" as const },
-    { id: "gateway" as const, label: "gateway", value: "LOCAL", tone: "success" as const },
-    { id: "symphony" as const, label: "symphony", value: "2 run", tone: "running" as const }
-  ];
   const commandFooterItems = [
     { key: "help", label: "/help", tone: "brand.focus" as TuiColorRef },
     { key: "continue", label: "/continue", tone: "brand.focus" as TuiColorRef },
@@ -294,13 +286,4 @@ function colorCount(snapshot: TuiFrameSnapshot): number {
   return new Set(snapshot.cells.flatMap((row) =>
     row.map((cell) => cell.style.color).filter((color): color is string => typeof color === "string")
   )).size;
-}
-
-function footerTone(tone: "neutral" | "running" | "pending" | "success" | "warning" | "danger" | "muted"): TuiColorRef {
-  if (tone === "danger") return "status.danger";
-  if (tone === "warning") return "status.warning";
-  if (tone === "pending") return "status.pending";
-  if (tone === "running") return "status.running";
-  if (tone === "success") return "status.success";
-  return "text.muted";
 }

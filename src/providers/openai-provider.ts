@@ -814,10 +814,6 @@ function anthropicCacheControl(options?: PromptCacheOptions): Record<string, unk
   };
 }
 
-function anthropicCacheTtl(options?: PromptCacheOptions): "5m" | "1h" {
-  return promptCachePolicy({ options }).anthropicTtl;
-}
-
 function rawAnthropicCacheTtl(): "5m" | "1h" {
   return process.env.SWARM_PROMPT_CACHE_TTL === "1h" ? "1h" : "5m";
 }
@@ -871,10 +867,6 @@ function isUnsupportedResponseFormatError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /response[_ ]format|response_format|json_object/i.test(message) &&
     /unsupported|unknown|invalid|not supported|unrecognized|extra fields not permitted/i.test(message);
-}
-
-function openAIPromptCacheRetention(options?: PromptCacheOptions): "in_memory" | "24h" {
-  return promptCachePolicy({ options }).retention;
 }
 
 function rawOpenAIPromptCacheRetention(): "in_memory" | "24h" {

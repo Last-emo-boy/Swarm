@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import {
   addPermissionAdditionalDirectory,
@@ -1056,8 +1056,8 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkBlackboardRouterBehavior(),
     checkSwarmProtocolRouterBehavior(root),
     checkToolResultBudgetReplayBehavior(),
-    checkResumeHealthPromptBehavior(root),
-    checkResumePreflightReportBehavior(root),
+    checkResumeHealthPromptBehavior(),
+    checkResumePreflightReportBehavior(),
     checkResumeLiveControlDirectiveBehavior(),
     checkFullSwarmSafeBoundaryStopBehavior(root),
     checkPlannedFullSwarmLiveControlBehavior(root),
@@ -13875,7 +13875,7 @@ function checkToolResultBudgetReplayBehavior(): EvalCaseResult {
   }
 }
 
-function checkResumeHealthPromptBehavior(root: string): EvalCaseResult {
+function checkResumeHealthPromptBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-resume-health-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
@@ -14006,7 +14006,7 @@ function checkResumeHealthPromptBehavior(root: string): EvalCaseResult {
   }
 }
 
-function checkResumePreflightReportBehavior(root: string): EvalCaseResult {
+function checkResumePreflightReportBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-resume-preflight-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });

@@ -258,32 +258,3 @@ function mouseButton(code: number): TuiMouseInput["button"] {
   if (button === 2) return "right";
   return "unknown";
 }
-
-function coalescePaste(events: TuiParsedInput[]): TuiParsedInput[] {
-  const result: TuiParsedInput[] = [];
-  for (let index = 0; index < events.length; index += 1) {
-    const event = events[index]!;
-    if (event.type === "key" && event.raw === `${CSI}200~`) {
-      let text = "";
-      let raw = event.raw;
-      index += 1;
-      while (index < events.length) {
-        const next = events[index]!;
-        raw += next.raw;
-        if (next.type === "key" && next.raw === `${CSI}201~`) {
-          break;
-        }
-        if (next.type === "key") {
-          text += next.input ?? "";
-        } else if (next.type === "paste") {
-          text += next.text;
-        }
-        index += 1;
-      }
-      result.push({ type: "paste", text, key: { paste: true }, raw });
-      continue;
-    }
-    result.push(event);
-  }
-  return result;
-}

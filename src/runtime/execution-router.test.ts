@@ -4,8 +4,7 @@ import type { OpenAIProvider } from "../providers/openai-provider.js";
 import {
   applyStructuredRoutingPolicy,
   fastRouteExecution,
-  routeExecution,
-  type ExecutionRoute
+  routeExecution
 } from "./execution-router.js";
 
 test("routeExecution honors forced modes without provider calls", async () => {

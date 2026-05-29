@@ -194,7 +194,6 @@ export function buildConversationFirstLayout(input: {
     unseenStartIndex: input.unseenStartIndex,
     newMessageCount: input.newMessageCount
   });
-  const requestedScrollOffset = normalizeConversationScrollOffset(rendered.length, baseTranscriptLimit, input.scrollOffset ?? 0);
   let transcriptLimit = Math.max(1, baseTranscriptLimit);
   let scrollOffset = normalizeConversationScrollOffset(rendered.length, transcriptLimit, input.scrollOffset ?? 0);
   let windowed = windowConversationLines(rendered, transcriptLimit, scrollOffset);
@@ -221,11 +220,11 @@ export function buildConversationFirstLayout(input: {
   };
 }
 
-export function conversationTranscriptLimit(rows: number, busy: boolean, hasResult: boolean): number {
+export function conversationTranscriptLimit(rows: number, _busy: boolean, _hasResult: boolean): number {
   return Math.max(4, Math.floor(rows));
 }
 
-export function conversationActivityLimit(rows: number, busy: boolean, hasResult: boolean): number {
+export function conversationActivityLimit(_rows: number, busy: boolean, _hasResult: boolean): number {
   return busy ? 1 : 0;
 }
 

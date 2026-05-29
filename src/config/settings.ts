@@ -827,12 +827,6 @@ export function hasUsableModelConfiguration(settings = loadSwarmSettings(), conf
   return getSelectedModelReadiness(settings, config).every((readiness) => readiness.configured);
 }
 
-function loadUserSwarmSettings(paths: SwarmPaths): SwarmSettings {
-  const defaults = defaultSwarmSettings(paths);
-  const userSettings = readJsonIfExists(paths.settingsPath);
-  return normalizeSwarmSettings(expandSettings(deepMerge(defaults, userSettings) as SwarmSettings));
-}
-
 function updateCapabilityListSetting(
   capabilityId: string,
   key: keyof SwarmSettings["extensions"]["capabilities"],

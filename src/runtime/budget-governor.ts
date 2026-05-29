@@ -88,7 +88,7 @@ export class SwarmBudgetGovernor {
 
   decide(input: BudgetDecisionInput): BudgetDecision {
     const limits = this.limitsFor(input);
-    const metrics = pressureMetrics(limits, this.policy);
+    const metrics = pressureMetrics(limits);
     const accepted = Boolean(input.task_id && (this.policy.accepted_task_ids ?? []).includes(input.task_id));
     const queuePressure = pressureFromQueue(limits.session, limits.actor);
     const concurrencyPressure = pressureFromConcurrency(limits.session, limits.actor);
@@ -251,8 +251,7 @@ export function formatBudgetPressure(report: BudgetGovernorReport): string[] {
 }
 
 function pressureMetrics(
-  limits: { session?: BudgetLimit; task?: BudgetLimit; actor?: BudgetLimit; provider?: BudgetLimit },
-  policy: BudgetGovernorPolicy
+  limits: { session?: BudgetLimit; task?: BudgetLimit; actor?: BudgetLimit; provider?: BudgetLimit }
 ): BudgetPressureMetrics {
   return {
     tokens_used: Math.max(limits.session?.used_tokens ?? 0, limits.task?.used_tokens ?? 0),

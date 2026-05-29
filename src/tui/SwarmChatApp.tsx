@@ -32,7 +32,7 @@ import type { CaseWorkbenchDetail, CaseWorkbenchItem } from "../runtime/case-wor
 import { buildLatestRunDiagnosis } from "../runtime/latest-diagnosis.js";
 import { buildProtocolDebugTimeline, formatProtocolDebugTimeline, type ProtocolTimelineCategory, type ProtocolTimelineFilter } from "../runtime/protocol-debug-timeline.js";
 import type { RunMode, RunSandboxMode } from "../runtime/execution-router.js";
-import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
+import type { PlannedSession } from "../runtime/orchestrator.js";
 import { buildResultCardFromSnapshot, type ResultCard as RuntimeResultCard } from "../runtime/result-card.js";
 import { formatPromptCacheBrief, formatPromptCacheDetailWithTrend } from "../runtime/prompt-cache-status.js";
 import type { PromptCacheRuntimeStatus } from "../runtime/prompt-cache-status.js";
@@ -49,7 +49,7 @@ import { createToolApprovalRequest, decideToolPermission } from "../tools/permis
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
 import type { PermissionMode } from "../config/settings.js";
 import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js";
-import type { BlackboardEntry, GeneratedPlan, RunAttempt, SwarmSession, WorkItem, WorkspaceLease } from "../protocol/types.js";
+import type { BlackboardEntry, GeneratedPlan, RunAttempt, WorkItem, WorkspaceLease } from "../protocol/types.js";
 import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import { buildOfflineParityReleaseGate, runCacheLabReport, runLocalEvals, runTuiReplayReport } from "../evals/local-evals.js";
@@ -90,7 +90,7 @@ import { messageToActionRow, renderActionRowDetail, runtimeEventToActionRow, typ
 import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiTaskState, type TuiWorkState } from "./work-state.js";
 import { ActionLog } from "./components/ActionLog.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
-import { ActivityTimeline, activityTimelineLimit } from "./components/ActivityTimeline.js";
+import { ActivityTimeline } from "./components/ActivityTimeline.js";
 import { ApprovalOverlay, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
 import { CurrentActionRow } from "./components/CurrentActionRow.js";
 import { InspectorPane } from "./components/InspectorPane.js";
@@ -176,7 +176,6 @@ import {
   footerNavigationReducer,
   selectedFooterPill,
   type FooterNavigationState,
-  type FooterPill,
   type FooterPillId
 } from "./footer-navigation.js";
 import { formatServiceStatusSection } from "./status-surface.js";
@@ -1488,20 +1487,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       risk: intent.risk,
       policy: intent.policy,
       result: intent.result
-    });
-  }
-
-  function recordCollaborationOverlayCopyId(): void {
-    const overlay = currentCollaborationOverlayView();
-    const row = overlay?.rows[collaborationOverlayIndex];
-    if (!row) {
-      return;
-    }
-    appendChatMessage({ role: "system", brief: `Copied collaboration id ${row.id}.` });
-    logCollaborationTelemetry("tui.collab.shortcut", {
-      action: "copy-id",
-      target: row.id,
-      result: "queued"
     });
   }
 
@@ -5104,25 +5089,6 @@ function SessionDetailRow({
   );
 }
 
-function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttempt[] }): React.ReactElement {
-  const attemptLimit = rows >= 48 ? 8 : rows >= 36 ? 5 : 3;
-  const attemptRows = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
-  const attemptById = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]));
-  return (
-    <PaneSection title="Run Attempts" tone="status.warning">
-      {attemptRows.length ? attemptRows.map((row) => {
-        const attempt = attemptById.get(row.key);
-        return (
-        <Box key={row.key} flexDirection="column">
-          <CompactIdleRow row={row} />
-          {attempt?.recovery_suggestion && <Text color={pendingColor()} wrap="truncate">  Recovery: {firstLine(attempt.recovery_suggestion, 92)}</Text>}
-        </Box>
-        );
-      }) : <Text color={mutedColor()}>(none)</Text>}
-    </PaneSection>
-  );
-}
-
 function IdleActivityPane({ rows, workers, approvals, daemons, toolOutputs }: {
   rows: number;
   workers: WorkerRecord[];
@@ -5258,47 +5224,6 @@ function IdleAutomationsPane({ rows, daemons }: { rows: number; daemons: Symphon
       )}
     </>
   );
-}
-
-function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProjection; limit?: number }): React.ReactElement | null {
-  if (!surface) {
-    return null;
-  }
-  const visibleLimit = Math.max(1, Math.min(limit, 6));
-  const tone: TuiColorRef = surface.summary.conflicts > 0 ? "status.warning" : "role.swarm";
-  const ownership = surface.ownership.slice(0, visibleLimit);
-  const conflicts = surface.conflicts.slice(0, visibleLimit);
-  return (
-    <PaneSection title="Shared Board" tone={tone}>
-      <Text color={mutedColor()} wrap="truncate">
-        {formatSwarmTopologySummary(surface)}
-      </Text>
-      {surface.actors.slice(0, visibleLimit).map((actor) => (
-        <Text key={actor.actor_id} color={actor.heartbeat_state === "fresh" ? visualTokenColor("role.swarm") : pendingColor()} wrap="truncate">
-          {actor.actor_id} [{actor.kind}/{actor.status}/{actor.heartbeat_state}] in={actor.mailbox.inbox_total}/{actor.mailbox.inbox_pending + actor.mailbox.inbox_failed} out={actor.mailbox.outbox_total}/{actor.mailbox.outbox_pending + actor.mailbox.outbox_failed}{actor.current_task_id ? ` task=${actor.current_task_id}` : ""}{actor.current_worker_id ? ` worker=${actor.current_worker_id}` : ""}
-        </Text>
-      ))}
-      {ownership.length > 0 && (
-        <Text color={mutedColor()} wrap="truncate">
-          Workspace Claims {ownership.map((item) => `${item.kind}:${item.id}->${item.owner ?? "-"}`).join(" | ")}
-        </Text>
-      )}
-      {conflicts.map((item) => (
-        <Text key={`${item.kind}:${item.id}`} color={item.severity === "error" ? dangerColor() : pendingColor()} wrap="truncate">
-          warning {item.kind}:{item.id} {firstLine(productizeSwarmConflictSummary(item.summary), 72)}
-        </Text>
-      ))}
-    </PaneSection>
-  );
-}
-
-function productizeSwarmConflictSummary(summary: string): string {
-  return summary
-    .replace(/stale\s+heartbeat/giu, "worker heartbeat missed")
-    .replace(/offline\s+heartbeat/giu, "worker disconnected")
-    .replace(/heartbeat\s+conflict/giu, "worker heartbeat missed")
-    .replace(/\bstale\b/giu, "inactive")
-    .replace(/\bownership\b/giu, "Workspace Claims");
 }
 
 function IdleWorkersPane({ rows, workers, attempts, swarmSurface }: {
@@ -5442,64 +5367,6 @@ function formatTaskStatePolicyHint(task: TaskState): string {
   return parts.length ? ` (${parts.join(" ")})` : "";
 }
 
-function ActivityPanel({ workers, agents }: {
-  workers: WorkerRecord[];
-  agents: Array<Extract<RuntimeEvent, { type: "agent" }>>;
-}): React.ReactElement {
-  if (workers.length) {
-    return (
-      <>
-        {workers.slice(0, 8).map((worker) => (
-          <WorkerLine key={worker.worker_id} worker={worker} compact />
-        ))}
-      </>
-    );
-  }
-  if (agents.length) {
-    return (
-      <>
-        {agents.map((event) => (
-          <Text key={`${event.card.agent_id}-${event.card.status}`} wrap="truncate">
-            {event.card.name || event.card.agent_id} [{event.card.status}] running={event.card.load.running_tasks}/{event.card.load.max_tasks}
-          </Text>
-        ))}
-      </>
-    );
-  }
-  return <Text color={mutedColor()}>No active background work.</Text>;
-}
-
-function WorkerLine({ worker, compact = false }: { worker: WorkerRecord; compact?: boolean }): React.ReactElement {
-  const agent = worker.agent_spec_id
-    ? `${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}`
-    : worker.capability;
-  const displayLabel = workerDisplayLabel(worker);
-  const result = worker.last_result ? ` - ${firstLine(worker.last_result, compact ? 44 : 90)}` : "";
-  if (compact) {
-    return (
-      <Text wrap="truncate" color={workerStatusColor(worker.status)}>
-        {statusIcon(worker.status)} {displayLabel} [{worker.status}]{result}
-      </Text>
-    );
-  }
-  return (
-    <Box flexDirection="column">
-      <Text wrap="truncate" color={workerStatusColor(worker.status)}>
-        {statusIcon(worker.status)} {displayLabel} [{worker.status}]
-      </Text>
-      <Text wrap="truncate" color={mutedColor()}>
-        {worker.worker_id} {agent}{worker.file_scope.length ? ` scope=${worker.file_scope.slice(0, 3).join(",")}` : ""}
-      </Text>
-      {!compact && <Text wrap="truncate">{worker.objective}</Text>}
-      {result && <Text wrap="truncate" color={mutedColor()}>{result}</Text>}
-    </Box>
-  );
-}
-
-function ApprovalView({ request }: { request: ToolApprovalRequest }): React.ReactElement {
-  return <ApprovalOverlay request={request} />;
-}
-
 function approvalSessionRuleKey(request: ToolApprovalRequest, runtime?: SwarmRuntime): string {
   const scope = request.session_id
     ? runtime?.sessionFamilyRootSessionId(request.session_id) ?? request.session_id
@@ -5560,20 +5427,6 @@ function renderConversationMessageDetail(index: number, message: ConversationMes
     message.preview ? ["", "Preview", message.preview].join("\n") : undefined,
     message.detail ? ["", "Detail", message.detail].join("\n") : undefined
   ].filter((line): line is string => typeof line === "string").join("\n");
-}
-
-function renderPlanSummary(planned: PlannedSession): string {
-  return [
-    `Plan for ${planned.session.session_id}`,
-    planned.plan.summary,
-    "",
-    ...planned.plan.tasks.map(
-      (task, index) =>
-        `${index + 1}. ${task.title} (${task.required_capabilities.join(", ")})${
-          task.dependencies?.length ? ` after ${task.dependencies.join(", ")}` : ""
-        }`
-    )
-  ].join("\n");
 }
 
 function formatLoopActivityLine(activity: LoopActivityState): string {
@@ -7270,16 +7123,6 @@ function workerStatusColor(status: WorkerRecord["status"]): TuiColorRef {
   return "text.primary";
 }
 
-function footerPillToneRef(tone: FooterPill["tone"]): TuiColorRef {
-  if (tone === "running") return "status.running";
-  if (tone === "success") return "status.success";
-  if (tone === "pending") return "status.pending";
-  if (tone === "warning") return "status.warning";
-  if (tone === "danger") return "status.danger";
-  if (tone === "muted") return "text.muted";
-  return "text.primary";
-}
-
 function workbenchCommandFooterItems(): Array<{ key: string; label: string; tone?: TuiColorRef }> {
   return [
     { key: "help", label: "/help", tone: "brand.focus" },
@@ -7464,10 +7307,6 @@ function successColor(): TuiResolvedColor {
 
 function dangerColor(): TuiResolvedColor {
   return visualTokenColor("status.danger");
-}
-
-function selectedTextColor(): TuiResolvedColor {
-  return resolveTuiColor("black");
 }
 
 function shortId(value: string): string {

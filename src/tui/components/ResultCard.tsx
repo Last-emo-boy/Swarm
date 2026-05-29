@@ -10,8 +10,6 @@ import {
   resultSectionToken,
   routeBadge,
   sectionLabel,
-  statusTone,
-  toneColor,
   visualTokenColor,
   type ResultSectionKind,
   type TuiTone

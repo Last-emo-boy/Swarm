@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile, rename } from "node:fs/promises";
-import { basename, dirname, relative, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
   getBackgroundProcess,
   grepBackgroundProcessLog,
@@ -5863,7 +5863,6 @@ function normalizeLspAction(action: Extract<ToolAction, { type: `lsp.${string}` 
     maxResults: numberInput(inputs.maxResults ?? inputs.max_results ?? inputs.maxItems ?? inputs.max_items ?? inputs.limit)
   };
   const fileInput = () => requiredStringInput(inputs.file ?? inputs.file_path ?? inputs.filePath ?? inputs.path, `${action} requires file`);
-  const optionalFileInput = () => optionalStringInput(inputs.file ?? inputs.file_path ?? inputs.filePath ?? inputs.path);
   const document = () => ({
     ...common,
     path: fileInput(),

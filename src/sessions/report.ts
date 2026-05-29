@@ -72,7 +72,6 @@ export function buildSessionDetailReport(runtime: SwarmRuntime, selector?: strin
     throw new Error(`Unknown session: ${sessionId}`);
   }
   const approvals = runtime.listApprovalsForSessionFamily(sessionId, 100);
-  const snapshot = runtime.getWorkSnapshot(sessionId);
   const data = {
     ...buildSessionSnapshot(runtime, sessionId),
     approvals

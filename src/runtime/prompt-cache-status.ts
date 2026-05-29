@@ -1415,10 +1415,6 @@ function trendTotalInputWithCacheTokens(trend: CacheRoiTrendLike): number {
   return trendRequiredNumber(trend, "totalInputWithCacheTokens", "total_input_with_cache_tokens");
 }
 
-function trendCacheCreationInputTokens(trend: CacheRoiTrendLike): number {
-  return trendRequiredNumber(trend, "cacheCreationInputTokens", "cache_creation_input_tokens");
-}
-
 function trendUncachedInputTokens(trend: CacheRoiTrendLike): number {
   const explicit = trendNumber(trend, "uncachedInputTokens", "uncached_input_tokens");
   if (typeof explicit === "number") {

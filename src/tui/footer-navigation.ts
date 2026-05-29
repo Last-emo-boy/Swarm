@@ -1,4 +1,3 @@
-import { compactValue } from "./theme.js";
 import { serviceClusterItem, type ServiceClusterItem } from "./status-surface.js";
 
 export type FooterPillId = "tasks" | "approvals" | "cache" | "gateway" | "mcp" | "skills" | "symphony" | "lsp";

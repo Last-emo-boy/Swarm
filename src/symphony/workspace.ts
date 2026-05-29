@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { WorkItem, WorkspaceLease } from "../protocol/types.js";
-import { workItemLabel, workItemSourceId } from "./work-item.js";
+import { workItemLabel } from "./work-item.js";
 
 export type PreparedWorkspace = {
   workspace_key: string;

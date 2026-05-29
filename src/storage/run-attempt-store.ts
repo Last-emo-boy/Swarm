@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { RunAttempt, RunAttemptKind, RunAttemptStatus } from "../protocol/types.js";
 import type { SwarmDatabase } from "./database.js";
 

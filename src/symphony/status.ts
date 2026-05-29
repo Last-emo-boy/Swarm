@@ -2,7 +2,7 @@ import type { RunAttempt, SwarmSession, WorkItem } from "../protocol/types.js";
 import { liveControlFromCounts, liveControlFromSessionStatus, type LiveControlProjection } from "../runtime/live-control-status.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import { buildWorkBoardFromSnapshots, type WorkBoard, type WorkBoardClaim } from "../runtime/work-board.js";
-import type { AgentActorRecord, AgentMailboxProjection } from "../storage/agent-actor-store.js";
+import type { AgentMailboxProjection } from "../storage/agent-actor-store.js";
 import type { SessionRow } from "../storage/session-store.js";
 import { latestSymphonyActionFact, type SymphonyActionFact } from "./action-lifecycle.js";
 import { loadWorkflow, normalizeWorkflowConfig, type WorkflowLoadResult } from "./workflow.js";

@@ -503,10 +503,6 @@ function isAutoEditBaselineBypassRule(action: ToolAction, rule: string): boolean
   return isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit";
 }
 
-function matchesPermissionRules(action: ToolAction, rules: string[], context?: PermissionMatchContext): boolean {
-  return Boolean(findMatchingPermissionRule(action, rules, context));
-}
-
 function findMatchingPermissionRule(action: ToolAction, rules: string[], context?: PermissionMatchContext): string | undefined {
   return findMatchingPermissionRules(action, rules, context)[0];
 }

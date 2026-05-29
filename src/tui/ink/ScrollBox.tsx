@@ -7,7 +7,6 @@ import {
   maxScrollTop,
   sanitizeRow,
   scrollSnapshot,
-  type ScrollClampBounds,
   type ScrollDomSnapshot,
   type ScrollDomState
 } from "./dom.js";

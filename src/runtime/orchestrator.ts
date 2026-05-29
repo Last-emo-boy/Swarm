@@ -44,7 +44,7 @@ export class Orchestrator {
     private readonly router: EnvelopeRouter,
     private readonly sessions: SessionStore,
     private readonly blackboard: BlackboardStore,
-    private readonly artifacts: ArtifactStore,
+    _artifacts: ArtifactStore,
     private readonly taskStates: TaskStateStore,
     private readonly planGenerator: PlanGenerator,
     private readonly events: RuntimeEvents,
@@ -1060,26 +1060,6 @@ function createSimpleDiffPreview(path: string, before: string, after: string): s
     lines.push("... diff preview truncated");
   }
   return lines.join("\n");
-}
-
-function isReadOnlyToolAction(action: ToolAction): boolean {
-  if (action.type === "git.branch") {
-    return !action.action || action.action === "list";
-  }
-  return [
-    "file.list",
-    "file.read",
-    "file.glob",
-    "file.grep",
-    "file.stat",
-    "web.search",
-    "web.fetch",
-    "code.test",
-    "code.lint",
-    "git.status",
-    "git.diff",
-    "git.log"
-  ].includes(action.type);
 }
 
 function collectPathsFromValue(value: unknown, changedFiles: Set<string>, intermediateArtifacts: Set<string>, testsRun: Set<string>): void {

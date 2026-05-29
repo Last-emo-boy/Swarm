@@ -4,7 +4,7 @@ import { extname, isAbsolute, relative, resolve } from "node:path";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import { LOCAL_TOOL_SCHEMAS, localToolSchemaForModel, validateLocalToolActionInputs } from "../tools/tool-contracts.js";
 import { createToolApprovalRequest, decideToolPermission } from "../tools/permissions.js";
-import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
+import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
 import { OpenAIProvider, type PromptBlock } from "../providers/openai-provider.js";

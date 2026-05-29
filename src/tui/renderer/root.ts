@@ -254,7 +254,7 @@ export function createTuiRoot(options: TuiRootOptions = {}): TuiRoot {
 class RootTerminalInput {
   private readonly controller: TuiTerminalInputController;
 
-  constructor(private readonly root: Pick<TuiRoot, "dispatchInput" | "dispatchMouse">) {
+  constructor(root: Pick<TuiRoot, "dispatchInput" | "dispatchMouse">) {
     this.controller = new TuiTerminalInputController(root);
   }
 

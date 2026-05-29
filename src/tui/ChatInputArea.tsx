@@ -90,7 +90,7 @@ export function ChatInputArea({
   const internalControllerState = useRef<ChatInputControllerState>(createChatInputControllerState());
   const controllerState = controllerStateRef ?? internalControllerState;
   const reportedCompletionSignature = useRef<string | undefined>();
-  const [renderVersion, setRenderVersion] = useState(0);
+  const [, setRenderVersion] = useState(0);
   const completionOptions = { extraCommands };
   const rowBudget = maxRows === undefined
     ? Number.POSITIVE_INFINITY
@@ -579,7 +579,7 @@ function footerControlSurfaceLayout(
   pills: FooterDisplayPill[],
   hint: string,
   columns: number | undefined,
-  density: TuiDensity
+  _density: TuiDensity
 ): FooterLayout {
   const knownColumns = columns !== undefined && Number.isFinite(columns);
   const contentColumns = knownColumns ? Math.max(1, Math.floor(columns) - 4) : 40;

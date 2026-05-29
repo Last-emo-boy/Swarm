@@ -42,7 +42,6 @@ export async function runInstallSmoke(input: { swarmHome?: string } = {}): Promi
   });
   const checks: InstallSmokeCheck[] = [];
   try {
-    const paths = getSwarmPaths();
     checks.push(check("bin-entry", process.argv[1]?.length ? existsSync(resolve(process.argv[1])) : true, `entry=${process.argv[1] ?? "programmatic"}`));
     checks.push(check("version", /^\d+\.\d+\.\d+/.test(loadSwarmVersion()), `version=${loadSwarmVersion()}`));
     checks.push(check("default-renderer", resolveTuiRendererMode("legacy") === "dom-renderer", "legacy/auto inputs resolve to dom-renderer."));

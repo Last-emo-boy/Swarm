@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "../ui.js";
+import { Text } from "../ui.js";
 import { visualTokenColor } from "../theme.js";
 import type { WorkerBoardRow as WorkerBoardRowData } from "./run-board-types.js";
 import { WorkerRow, WorkerRowEmpty } from "./WorkerRow.js";

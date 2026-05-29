@@ -5,7 +5,7 @@ import type { SkillRecord } from "../extensions/skills.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { SymphonyDaemonRecord } from "../symphony/daemon.js";
 import type { SymphonyStatus } from "../symphony/status.js";
-import type { WorkBoard, WorkBoardCheck, WorkBoardNextAction, WorkBoardWorker } from "./work-board.js";
+import type { WorkBoard, WorkBoardWorker } from "./work-board.js";
 import { buildAgentWorkspaceProjection, findAgentWorkspaceTask } from "./agent-workspace.js";
 
 const GENERATED_AT = "2026-05-29T00:00:00.000Z";

@@ -160,20 +160,3 @@ function statusRailCacheBadge(status: string): string {
   if (["failed", "error", "unavailable", "degraded"].includes(normalized)) return "DEGRADED";
   return compactValue(status.toUpperCase(), 18);
 }
-
-/*
- * Compatibility helpers are intentionally kept out of the render path now that
- * the rail uses product-style badges. They remain local so older evals that
- * grep for their names continue to describe the same semantic mapping.
- */
-function routeLabel(value: string): string {
-  return routeBadge(value).toLowerCase();
-}
-
-function permissionLabel(value: string): string {
-  return policyBadge(value).toLowerCase();
-}
-
-function sandboxLabel(value: string): string {
-  return sandboxBadge(value).toLowerCase();
-}

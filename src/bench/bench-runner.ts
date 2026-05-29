@@ -306,7 +306,7 @@ function deriveCacheHitRate(telemetry: HeadlessTelemetry): number | undefined {
   return cached / Math.max(1, inputTokens);
 }
 
-async function runTuiRenderBenchmark(workspace: string): Promise<TuiBenchMetrics> {
+async function runTuiRenderBenchmark(_workspace: string): Promise<TuiBenchMetrics> {
   const [{ ConversationFullscreenLayout }, { ConversationFirstPane }] = await Promise.all([
     import("../tui/components/ConversationFullscreenLayout.js"),
     import("../tui/components/ConversationFirstPane.js")

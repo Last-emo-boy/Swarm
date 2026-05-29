@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "../ui.js";
-import { defaultToneColor, resolveTuiColor, statusTone, visualTokenColor, type TuiColor, type TuiColorRef } from "../theme.js";
+import { defaultToneColor, visualTokenColor, type TuiColor, type TuiColorRef } from "../theme.js";
 import type { TuiDensity } from "../conversation-layout.js";
 import { StatusIcon } from "./StatusIcon.js";
 import { ToolUseLoader } from "./ToolUseLoader.js";
@@ -19,7 +19,6 @@ export function CurrentActionRow(props: {
   const secondary = [props.phase, props.progress].filter(Boolean).join(" · ");
   const density = props.density ?? "default";
   const status = props.status ?? statusFromColor(props.color);
-  const tone = props.tone ?? statusTone(status);
   return (
     <Box flexDirection="column" width="100%">
       <Text wrap="truncate">
