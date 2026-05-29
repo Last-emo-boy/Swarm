@@ -16,6 +16,10 @@ export type SwarmWorkbenchSessionItem = {
   title: string;
   age?: string;
   status?: string;
+  subtitle?: string;
+  badge?: string;
+  tone?: TuiColorRef;
+  attention?: number;
   active?: boolean;
 };
 
@@ -62,10 +66,12 @@ export type SwarmWorkbenchLayoutProps = {
   navigation: SwarmWorkbenchNavigationItem[];
   sessions: SwarmWorkbenchSessionItem[];
   mode: SwarmWorkbenchInfoCard;
+  runtime?: SwarmWorkbenchInfoCard;
   permission: SwarmWorkbenchInfoCard;
   sandbox: SwarmWorkbenchInfoCard;
   model: SwarmWorkbenchInfoCard;
   memory: SwarmWorkbenchInfoCard;
+  activity?: SwarmWorkbenchInfoCard;
   tools: SwarmWorkbenchToolItem[];
   workers: SwarmWorkbenchWorkerItem[];
   footer: Array<{ key: string; label: string; tone?: TuiColorRef }>;
@@ -73,6 +79,7 @@ export type SwarmWorkbenchLayoutProps = {
   renderCenterContent: (input: SwarmWorkbenchRenderInput) => React.ReactNode;
   renderCenterBottom: (input: SwarmWorkbenchRenderInput) => React.ReactNode;
   onNavigate?: (id: string) => void;
+  onSelectSession?: (id: string) => void;
 };
 
 export type SwarmWorkbenchMetrics = {
@@ -175,6 +182,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
           navigation={props.navigation}
           sessions={props.sessions}
           onNavigate={props.onNavigate}
+          onSelectSession={props.onSelectSession}
         />
         <Box width={metrics.centerColumns} height={metrics.bodyRows} marginLeft={1} marginRight={1} overflow="hidden">
           <ThemedBox
@@ -205,10 +213,12 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
           width={metrics.rightColumns}
           height={metrics.bodyRows}
           mode={props.mode}
+          runtime={props.runtime}
           permission={props.permission}
           sandbox={props.sandbox}
           model={props.model}
           memory={props.memory}
+          activity={props.activity}
           tools={props.tools}
           workers={props.workers}
         />
@@ -219,7 +229,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
 }
 
 function WorkbenchTitleBar({ version, columns }: { version: string; columns: number }): React.ReactElement {
-  const title = `Swarm ${version} • AI Coding Agent`;
+  const title = `Swarm ${version} • Local Agent Workspace`;
   const leftWidth = 10;
   const titleWidth = displayWidth(title);
   const leftPadding = Math.max(0, Math.floor((columns - titleWidth) / 2) - leftWidth);
@@ -239,7 +249,8 @@ function LeftSidebar({
   workspace,
   navigation,
   sessions,
-  onNavigate
+  onNavigate,
+  onSelectSession
 }: {
   width: number;
   height: number;
@@ -247,6 +258,7 @@ function LeftSidebar({
   navigation: SwarmWorkbenchNavigationItem[];
   sessions: SwarmWorkbenchSessionItem[];
   onNavigate?: (id: string) => void;
+  onSelectSession?: (id: string) => void;
 }): React.ReactElement {
   return (
     <ThemedBox
@@ -259,32 +271,28 @@ function LeftSidebar({
       overflow="hidden"
     >
       <Text color={visualTokenColor("brand.focus")} bold>Swarm &gt;_</Text>
-      <SidebarSection title="Workspace" width={width} marginTop={1}>
-        <Text wrap="truncate">
-          <Text color={visualTokenColor("role.gateway")}>@ </Text>
-          <Text color={visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
-          {workspace.status ? <Text color={visualTokenColor("status.success")}> *</Text> : null}
-        </Text>
-        <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          {workspace.git ?? "git: status unavailable"}
-        </Text>
-      </SidebarSection>
-
-      <SidebarSection title="Mode" width={width}>
+      <SidebarSection title="Inbox" width={width} marginTop={1}>
         {navigation.slice(0, 1).map((item) => (
           <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} primary />
         ))}
       </SidebarSection>
 
-      <SidebarSection title="Recent Sessions" width={width}>
-        {sessions.length ? sessions.slice(0, 5).map((session) => (
-          <Text key={session.id} wrap="truncate">
-            <Text color={session.active ? visualTokenColor("brand.focus") : visualTokenColor("text.muted")}>{session.active ? "> " : "  "}</Text>
-            <Text color={session.active ? visualTokenColor("brand.focus") : visualTokenColor("text.primary")}>{fitText(session.title || session.id, width - 13)}</Text>
-            {session.age ? <Text color={visualTokenColor("text.muted")}> {session.age}</Text> : null}
-          </Text>
+      <SidebarSection title="Cases" width={width}>
+        {sessions.length ? sessions.slice(0, 6).map((session) => (
+          <CaseRow key={session.id} session={session} width={width} onSelect={onSelectSession} />
         )) : <Text color={visualTokenColor("text.muted")}>(none)</Text>}
-        <Text color={visualTokenColor("text.muted")}>... View all sessions</Text>
+        <Text color={visualTokenColor("text.muted")}>... View all cases</Text>
+      </SidebarSection>
+
+      <SidebarSection title="Selected Lease" width={width}>
+        <Text wrap="truncate">
+          <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("role.gateway")}>@ </Text>
+          <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
+          {workspace.status ? <Text color={visualTokenColor(workspace.path === "no workspace" ? "status.warning" : "status.success")}> *</Text> : null}
+        </Text>
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
+          {workspace.git ?? "lease: pending"}
+        </Text>
       </SidebarSection>
 
       <SidebarSection title="Navigation" width={width}>
@@ -293,6 +301,32 @@ function LeftSidebar({
         ))}
       </SidebarSection>
     </ThemedBox>
+  );
+}
+
+function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionItem; width: number; onSelect?: (id: string) => void }): React.ReactElement {
+  const titleBudget = Math.max(8, width - 14);
+  const titleTone: TuiColorRef = session.active ? "brand.focus" : session.tone ?? "text.primary";
+  return (
+    <Box flexDirection="column" width="100%">
+      <Text
+        wrap="truncate"
+        focusable={Boolean(onSelect)}
+        onClick={onSelect ? (() => onSelect(session.id)) as never : undefined}
+      >
+        <Text color={session.active ? visualTokenColor("brand.focus") : visualTokenColor("text.muted")}>{session.active ? "> " : "  "}</Text>
+        <Text color={resolveTuiColor(titleTone)}>{fitText(session.title || session.id, titleBudget)}</Text>
+        {session.age ? <Text color={visualTokenColor("text.muted")}> {session.age}</Text> : null}
+      </Text>
+      {(session.subtitle || session.badge || session.attention) ? (
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
+          {"  "}
+          {session.badge ? <Text color={resolveTuiColor(session.tone ?? "role.gateway")}>{fitText(session.badge, 10)}</Text> : null}
+          {session.subtitle ? <Text> {fitText(session.subtitle, Math.max(8, width - 15))}</Text> : null}
+          {session.attention ? <Text color={visualTokenColor("status.warning")}> !{session.attention}</Text> : null}
+        </Text>
+      ) : null}
+    </Box>
   );
 }
 
@@ -348,20 +382,24 @@ function RightRail({
   width,
   height,
   mode,
+  runtime,
   permission,
   sandbox,
   model,
   memory,
+  activity,
   tools,
   workers
 }: {
   width: number;
   height: number;
   mode: SwarmWorkbenchInfoCard;
+  runtime?: SwarmWorkbenchInfoCard;
   permission: SwarmWorkbenchInfoCard;
   sandbox: SwarmWorkbenchInfoCard;
   model: SwarmWorkbenchInfoCard;
   memory: SwarmWorkbenchInfoCard;
+  activity?: SwarmWorkbenchInfoCard;
   tools: SwarmWorkbenchToolItem[];
   workers: SwarmWorkbenchWorkerItem[];
 }): React.ReactElement {
@@ -375,13 +413,14 @@ function RightRail({
       paddingX={1}
       overflow="hidden"
     >
-      <InfoSection title="Mode" card={mode} width={width} />
-      <InfoSection title="Permission" card={permission} width={width} />
-      <InfoSection title="Sandbox" card={sandbox} width={width} />
-      <ToolSection tools={tools} width={width} />
-      <InfoSection title="Model" card={model} width={width} />
-      <InfoSection title="Memory" card={memory} width={width} />
+      <InfoSection title="Runtime" card={runtime ?? { title: "Local runtime", subtitle: "Connected to this workspace", badge: "READY", tone: "role.gateway" }} width={width} compact={height < 36} />
+      <InfoSection title="Mode" card={mode} width={width} compact={height < 36} />
+      <InfoSection title="Permission" card={permission} width={width} compact={height < 36} />
+      <InfoSection title="Sandbox" card={sandbox} width={width} compact={height < 36} />
       <WorkerSection workers={workers} width={width} />
+      <InfoSection title="Model" card={model} width={width} compact={height < 36} />
+      <ToolSection tools={tools} width={width} compact={height < 36} />
+      <InfoSection title="Activity Summary" card={activity ?? memory} width={width} compact={height < 36} />
     </ThemedBox>
   );
 }
@@ -390,17 +429,19 @@ function InfoSection({
   title,
   card,
   width,
-  progress = false
+  progress = false,
+  compact = false
 }: {
   title: string;
   card: SwarmWorkbenchInfoCard;
   width: number;
   progress?: boolean;
+  compact?: boolean;
 }): React.ReactElement {
   const tag = card.badge ? fixedTag(card.badge) : "";
   const valueWidth = Math.max(8, width - STATUS_TAG_WIDTH - 8);
   return (
-    <SidebarSection title={title} width={width}>
+    <SidebarSection title={title} width={width} marginTop={compact ? 0 : 1}>
       <Text wrap="truncate">
         <Text color={resolveTuiColor(card.tone ?? "text.primary")} bold>{fitText(card.title, valueWidth)}</Text>
         {tag ? <Text color={resolveTuiColor(card.tone ?? "status.success")}>  {tag}</Text> : null}
@@ -415,10 +456,10 @@ function InfoSection({
   );
 }
 
-function ToolSection({ tools, width }: { tools: SwarmWorkbenchToolItem[]; width: number }): React.ReactElement {
+function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchToolItem[]; width: number; compact?: boolean }): React.ReactElement {
   return (
-    <SidebarSection title="Capabilities" width={width}>
-      {tools.slice(0, 6).map((tool) => (
+    <SidebarSection title="Skills & Automations" width={width} marginTop={compact ? 0 : 1}>
+      {tools.slice(0, compact ? 4 : 6).map((tool) => (
         <Text key={tool.name} wrap="truncate">
           <Text>{fitText(tool.name, Math.max(8, width - 20))}</Text>
           {tool.status ? <Text color={resolveTuiColor(tool.tone ?? (tool.active ? "status.success" : "text.muted"))}> {fitText(tool.status, 18)}</Text> : null}
@@ -430,15 +471,15 @@ function ToolSection({ tools, width }: { tools: SwarmWorkbenchToolItem[]; width:
 
 function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]; width: number }): React.ReactElement {
   return (
-    <SidebarSection title="Workers" width={width}>
-      {workers.length ? workers.slice(0, 5).map((worker) => (
+    <SidebarSection title="Workers" width={width} marginTop={0}>
+      {workers.length ? workers.slice(0, 3).map((worker) => (
         <Text key={worker.id} wrap="truncate">
           <Text color={resolveTuiColor(worker.tone ?? "role.worker")}># </Text>
           <Text>{fitText(worker.label, Math.max(8, width - 16))}</Text>
           <Text color={resolveTuiColor(worker.tone ?? "text.muted")}>  {workerStatusLabel(worker.status)}</Text>
         </Text>
       )) : <Text color={visualTokenColor("text.muted")}>No active workers</Text>}
-      <Text color={visualTokenColor("text.muted")}>No active handoffs</Text>
+      {workers.length === 0 ? <Text color={visualTokenColor("text.muted")}>Open Workers for profiles</Text> : null}
     </SidebarSection>
   );
 }

@@ -454,6 +454,20 @@ The current codebase now has the first concrete slice of this architecture:
 - Gateway session responses include `work_snapshot` plus stable
   `work_contracts` summaries so API users see the same execution truth,
   delegated write policy, and file scope context as the TUI.
+- Gateway now also exposes a read-only Agent Workspace projection at
+  `GET /v1/agent-workspace` and section routes for teammates, attention,
+  activity, skills, capabilities, readiness, and Automations. The projection is
+  derived from `WorkBoard`, approvals, skills, capability providers, Symphony
+  status, and daemon records; it does not persist a separate teammate, task, or
+  automation truth.
+- The global Workbench is now case/session-family driven. `GET /v1/workbench`,
+  `/v1/workbench/cases`, `/v1/workbench/cases/:id`, and `/v1/workbench/inbox`
+  expose a read-only projection over existing `WorkSession`, `WorkspaceLease`,
+  worker, handoff, approval, attempt, and artifact stores. A case without a
+  `WorkspaceLease` is still visible for planning and discussion, but it has no
+  `workspace_path` or `write_boundary`, carries a `no-workspace` badge, and its
+  next action/inbox entry requires attaching or choosing a workspace before
+  workspace-write actions.
 - Task state now persists capability, write policy, and delegated file scope so
   task graphs, task detail routes, and WorkSnapshot task contracts share one
   stable contract source instead of reconstructing that metadata from events.
@@ -666,6 +680,10 @@ For this repo, these map to three concrete rules:
    rather than bespoke runtime strings.
 4. Cache, worker, trace, and LSP diagnostics should stay behind result/detail
    surfaces unless they are the current action.
+5. Case/workbench projections must not treat the current cwd as implicit write
+   authority. A selected case without `WorkspaceLease` remains planning/read-only
+   until a lease is attached; the TUI should show `Selected Lease: no workspace`
+   and the Gateway projection should expose the same missing boundary.
 
 ## Next Iteration
 

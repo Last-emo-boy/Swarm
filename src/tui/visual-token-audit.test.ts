@@ -25,7 +25,8 @@ const UI_SURFACE_FILES = [
   "src/tui/components/ThemedText.tsx",
   "src/tui/components/TonePill.tsx",
   "src/tui/components/TranscriptRow.tsx",
-  "src/tui/components/VirtualConversationList.tsx"
+  "src/tui/components/VirtualConversationList.tsx",
+  "src/tui/work-board/WorkBoardSurface.tsx"
 ] as const;
 
 const BARE_COLOR_LITERAL = /(?<quote>["'])(?:cyan|gray|yellow|red|green|magenta|blue|white|brightCyan|brightGreen|brightYellow|brightRed|brightMagenta|brightBlue|brightWhite)\k<quote>/gu;

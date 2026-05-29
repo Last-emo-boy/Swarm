@@ -1,35 +1,45 @@
-export type MainPaneId = "chat" | "plan" | "activity" | "output" | "sessions" | "workers" | "trace" | "board";
+export type MainPaneId = "board" | "sessions" | "workers" | "activity" | "output" | "skills" | "automations" | "trace" | "chat" | "plan";
 
-export const mainPaneOrder: MainPaneId[] = ["chat", "plan", "activity", "output", "sessions", "workers", "trace", "board"];
+export const mainPaneOrder: MainPaneId[] = ["board", "sessions", "workers", "activity", "output", "skills", "automations", "trace", "chat", "plan"];
 
 export const mainPaneLabels: Record<MainPaneId, string> = {
-  chat: "Chat",
-  plan: "Plan",
+  board: "Board",
+  sessions: "Tasks",
+  workers: "Workers",
   activity: "Activity",
   output: "Output",
-  sessions: "Sessions",
-  workers: "Workers",
+  skills: "Skills",
+  automations: "Automations",
   trace: "Trace",
-  board: "Board"
+  chat: "Chat",
+  plan: "Run"
 };
 
 export const mainPaneShortLabels: Record<MainPaneId, string> = {
-  chat: "Chat",
-  plan: "Plan",
+  board: "Brd",
+  sessions: "Task",
+  workers: "Wrk",
   activity: "Act",
   output: "Out",
-  sessions: "Ses",
-  workers: "Wrk",
+  skills: "Skl",
+  automations: "Auto",
   trace: "Tr",
-  board: "Brd"
+  chat: "Chat",
+  plan: "Run"
 };
 
 export const mainPaneAliases: Record<string, MainPaneId> = {
-  agents: "activity",
+  agents: "workers",
   attempts: "trace",
+  automation: "automations",
   blackboard: "board",
+  run: "plan",
+  runs: "plan",
+  task: "sessions",
+  tasks: "sessions",
   log: "trace",
-  overview: "plan"
+  overview: "board",
+  symphony: "automations"
 };
 
 export function normalizeMainPaneId(value: string | undefined): MainPaneId | undefined {
@@ -44,5 +54,5 @@ export function normalizeMainPaneId(value: string | undefined): MainPaneId | und
 export function nextMainPane(current: MainPaneId, direction: 1 | -1): MainPaneId {
   const index = mainPaneOrder.indexOf(current);
   const next = (index + direction + mainPaneOrder.length) % mainPaneOrder.length;
-  return mainPaneOrder[next] ?? "chat";
+  return mainPaneOrder[next] ?? "board";
 }

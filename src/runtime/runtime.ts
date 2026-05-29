@@ -20,10 +20,10 @@ import type {
   WorkSnapshot
 } from "../protocol/types.js";
 import { createEnvelope } from "../protocol/envelope.js";
-import { ArtifactStore } from "../storage/artifact-store.js";
+import { ArtifactStore, type ArtifactRecord } from "../storage/artifact-store.js";
 import { BlackboardStore } from "../storage/blackboard-store.js";
 import { SwarmDatabase } from "../storage/database.js";
-import { SessionStore } from "../storage/session-store.js";
+import { SessionStore, type SessionRow } from "../storage/session-store.js";
 import { TaskStateStore } from "../storage/task-state-store.js";
 import { TraceStore } from "../storage/trace-store.js";
 import { EnvelopeDeliveryStore } from "../storage/envelope-delivery-store.js";
@@ -90,6 +90,7 @@ import { buildResultCard } from "./result-card.js";
 import { promptCacheStatusFromUsage, promptCacheTrendFromUsage, type PromptCacheRuntimeStatus, type PromptCacheTrend } from "./prompt-cache-status.js";
 import { createSourceUserMessageEnvelope, type SourceAdapterTrustLevel } from "./source-adapter.js";
 import { buildTaskContractSnapshot, buildWorkContractHandoff, buildWorkContractSnapshot, buildWorkContractWorker } from "./work-contracts.js";
+import { buildCaseWorkbenchDetail, buildCaseWorkbenchProjection, type CaseWorkbenchDetail, type CaseWorkbenchProjection } from "./case-workbench.js";
 import { formatProtocolTimelineEvent, protocolTimelineEventsFromRuntimeEvent } from "./protocol-debug-timeline.js";
 import { RuntimeSystemLoop } from "./system-loop.js";
 import { approvalEnvelopeForGovernance, approvalEnvelopeForRequest } from "./safety-governance.js";
@@ -1370,6 +1371,41 @@ export class SwarmRuntime {
     return this.workspace;
   }
 
+  buildGlobalCaseWorkbench(limit = 50): CaseWorkbenchProjection {
+    const sessions = this.sessionStore.listRecent(Math.max(limit * 6, limit));
+    return buildCaseWorkbenchProjection({
+      sessions,
+      leases: this.workspaceLeaseStore.listRecent(Math.max(limit * 8, limit)),
+      workers: this.workerStateStore.listRecent(Math.max(limit * 8, limit)),
+      handoffs: this.handoffStore.listRecent(Math.max(limit * 8, limit)),
+      approvals: this.approvalStore.list(undefined, Math.max(limit * 8, limit)),
+      attempts: this.runAttemptStore.listRecent(Math.max(limit * 12, limit)),
+      artifactsBySession: this.artifactsBySession(sessions.map((session) => session.session_id)),
+      limit
+    });
+  }
+
+  getCaseWorkbenchDetail(caseId: string, limit = 200): CaseWorkbenchDetail | undefined {
+    const sessionIds = this.listSessionFamilySessionIds(caseId, limit);
+    if (!sessionIds.length) {
+      return undefined;
+    }
+    const sessions = sessionIds
+      .map((sessionId) => this.sessionStore.get(sessionId))
+      .filter((session): session is SessionRow => Boolean(session));
+    return buildCaseWorkbenchDetail({
+      caseId: this.sessionFamilyRootSessionId(caseId),
+      sessions,
+      leases: this.workspaceLeaseStore.listRecent(Math.max(limit * 2, limit)),
+      workers: sessionIds.flatMap((sessionId) => this.workerStateStore.listByParent(sessionId)),
+      handoffs: sessionIds.flatMap((sessionId) => this.handoffStore.listByParent(sessionId)),
+      approvals: sessionIds.flatMap((sessionId) => this.approvalStore.list(sessionId, Math.max(limit, 20))),
+      attempts: sessionIds.flatMap((sessionId) => this.runAttemptStore.list(sessionId, Math.max(limit, 20))),
+      artifactsBySession: this.artifactsBySession(sessionIds),
+      limit
+    });
+  }
+
   listRecentSessionsForWorkspace(limit = 10, workspace = this.workspace): ReturnType<SessionStore["listRecent"]> {
     return this.sessionStore.listRecent(Math.max(limit * 4, limit))
       .filter((session) => this.workspaceForSession(session.session_id) === workspace)
@@ -1459,6 +1495,14 @@ export class SwarmRuntime {
       }
     }
     return deduped;
+  }
+
+  private artifactsBySession(sessionIds: string[]): Map<string, ArtifactRecord[]> {
+    const output = new Map<string, ArtifactRecord[]>();
+    for (const sessionId of sessionIds) {
+      output.set(sessionId, this.artifactStore.list(sessionId));
+    }
+    return output;
   }
 
   listRecentWorkersForWorkspace(limit = 20, workspace = this.workspace): WorkerRecord[] {

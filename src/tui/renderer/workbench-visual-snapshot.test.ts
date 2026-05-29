@@ -40,7 +40,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     }
     if (viewport.columns >= 132) {
       assert.match(text, /Mode/);
-      assert.match(text, /Capabilities/);
+      assert.match(text, /Skills & Automations/);
       assert.match(text, /Workers/);
       assert.match(text, /ACTION LOG/);
     }
@@ -50,7 +50,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     if (text.includes("Swarm >_")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm >_"), "Swarm")?.color, resolveTuiColor("brand.focus"));
     } else {
-      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Plan"), "Plan")?.color, resolveTuiColor("brand.focus"));
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Board"), "Board")?.color, resolveTuiColor("brand.focus"));
     }
     if (text.includes("CHECKS")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
@@ -134,35 +134,39 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
     columns: input.columns,
     rows: input.rows,
     version: "0.1.0",
-    title: "Plan",
+    title: "Board",
     subtitle: "Run: Executing  Workers: 2  Files: 2  Approvals: 1",
     headerDetail: "Waiting for reviewer confirmation",
     workspace: { path: "E:/Playground/Swarm", git: "checkpoint before-tui-polish", status: "running" },
     navigation: [
-      { id: "chat", label: "Chat", shortcut: "1", active: false },
-      { id: "plan", label: "Plan", shortcut: "2", active: true },
-      { id: "activity", label: "Activity", shortcut: "3", active: false },
-      { id: "output", label: "Output", shortcut: "4", active: false },
-      { id: "sessions", label: "Sessions", shortcut: "5", active: false },
-      { id: "workers", label: "Workers", shortcut: "6", active: false },
-      { id: "trace", label: "Trace", shortcut: "7", active: false },
-      { id: "board", label: "Board", shortcut: "8", active: false }
+      { id: "board", label: "Board", shortcut: "1", active: true },
+      { id: "sessions", label: "Tasks", shortcut: "2", active: false },
+      { id: "workers", label: "Workers", shortcut: "3", active: false },
+      { id: "activity", label: "Activity", shortcut: "4", active: false },
+      { id: "output", label: "Output", shortcut: "5", active: false },
+      { id: "skills", label: "Skills", shortcut: "6", active: false },
+      { id: "automations", label: "Automations", shortcut: "7", active: false },
+      { id: "trace", label: "Trace", shortcut: "8", active: false },
+      { id: "chat", label: "Chat", shortcut: "9", active: false },
+      { id: "plan", label: "Run", shortcut: "0", active: false }
     ],
     sessions: [
       { id: "session-workbench-visual", title: "TUI workbench polish", age: "now", status: "running", active: true },
       { id: "session-review", title: "Review visual gates", age: "8m", status: "completed" }
     ],
     mode: { title: "Plan & Execute", subtitle: "Plans first, then edits safely", badge: "ACTIVE", tone: "role.gateway" },
+    runtime: { title: "Local Runtime", subtitle: "Gateway connected", badge: "READY", tone: "role.gateway" },
     permission: { title: "YOLO", subtitle: "Edits can run without asking", badge: "RISK", tone: "status.danger" },
     sandbox: { title: "Workspace Write", subtitle: "Can modify this workspace", badge: "RW", tone: "status.success" },
     model: { title: "kimi-k2.6", subtitle: "Provider: openai", badge: "READY", tone: "role.gateway" },
     memory: { title: "2/5 tasks", subtitle: "Session session-workbench-visual", badge: "Planning", tone: "status.running" },
+    activity: { title: "2 active · 1 blocked", subtitle: "Reviewer is running", badge: "RISK", tone: "status.warning" },
     tools: [
+      { name: "Skills", status: "On", tone: "status.success", active: true },
+      { name: "Automations", status: "Running", tone: "status.running", active: true },
       { name: "Approvals", status: "1 pending", tone: "status.pending", active: true },
       { name: "MCP", status: "Off", tone: "text.muted", active: false },
-      { name: "Skills", status: "On", tone: "status.success", active: true },
-      { name: "LSP", status: "Ready", tone: "status.success", active: true },
-      { name: "Symphony", status: "Running", tone: "status.running", active: true }
+      { name: "LSP", status: "Ready", tone: "status.success", active: true }
     ],
     workers: [
       { id: "worker-test", label: "Test Runner", status: "blocked", tone: "status.danger" },

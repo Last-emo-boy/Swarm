@@ -25,17 +25,19 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
     columns: 160,
     rows: 32,
     version: "0.1.0",
-    title: "Chat",
-    subtitle: "Run: Executing  Workers: 1  Files: 2  Approvals: 0",
-    headerDetail: "Reading project files...",
-    workspace: { path: "E:/Playground/Swarm", git: "main clean", status: "ok" },
+    title: "Board",
+    subtitle: "1 active tasks · 1 workers · 0 approvals",
+    headerDetail: "Cases are the workbench source of truth.",
+    workspace: { path: "Swarm", git: "lease: workspace; E:/Playground/Swarm", status: "active" },
     navigation: navigationFixture(),
     sessions: sessionFixture(),
     mode: { title: "Plan & Execute", subtitle: "Plans first, then edits safely", badge: "ACTIVE", tone: "role.gateway" },
+    runtime: { title: "Local Runtime", subtitle: "Gateway connected", badge: "READY", tone: "role.gateway" },
     permission: { title: "Ask Before Edit", subtitle: "Swarm asks before risky changes", badge: "SAFE", tone: "status.success" },
     sandbox: { title: "Workspace Write", subtitle: "Can modify this workspace", badge: "RW", tone: "status.success" },
     model: { title: "model", subtitle: "Provider: local-test", badge: "READY", tone: "role.gateway" },
     memory: { title: "Session not started", subtitle: "No saved context yet", tone: "text.muted" },
+    activity: { title: "1 active · 0 blocked", subtitle: "No activity yet", badge: "READY", tone: "status.success" },
     tools: toolFixture(),
     workers: workerFixture(),
     footer: footerFixture(),
@@ -46,16 +48,22 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   const text = frameText(frame);
 
   assert.match(text, /Swarm >_/);
-  assert.match(text, /Workspace/);
-  assert.match(text, /Recent Sessions/);
+  assert.match(text, /Local Agent Workspace/);
+  assert.match(text, /Inbox/);
+  assert.match(text, /Cases/);
+  assert.match(text, /Selected Lease/);
   assert.match(text, /Navigation/);
-  assert.match(text, /> Chat \[1\]/);
-  assert.match(text, /# Chat/);
+  assert.match(text, /> Board \[1\]/);
+  assert.match(text, /Tasks \[2\]/);
+  assert.match(text, /# Board/);
   assert.match(text, /Transcript center/);
+  assert.match(text, /Runtime/);
   assert.match(text, /Mode/);
   assert.match(text, /\[ACTIVE\s+\]/);
   assert.match(text, /\[RW\s+\]/);
-  assert.match(text, /Capabilities/);
+  assert.match(text, /Skills & Automations/);
+  assert.match(text, /Automations/);
+  assert.match(text, /Activity Summary/);
   assert.match(text, /Ask Swarm prompt/);
   assert.match(text, /\/help/);
   assert.match(text, /PgUp\/PgDn scroll/);
@@ -67,7 +75,7 @@ test("SwarmWorkbenchLayout disables side rails on narrow terminals", () => {
     columns: 90,
     rows: 24,
     version: "0.1.0",
-    title: "Chat",
+    title: "Board",
     workspace: { path: "E:/Playground/Swarm" },
     navigation: navigationFixture(),
     sessions: [],
@@ -87,7 +95,7 @@ test("SwarmWorkbenchLayout disables side rails on narrow terminals", () => {
 
   assert.match(text, /Only primary surface/);
   assert.match(text, /Composer/);
-  assert.doesNotMatch(text, /Recent Sessions/);
+  assert.doesNotMatch(text, /Cases/);
 });
 
 test("SwarmWorkbenchLayout passes actual center dimensions to render props", () => {
@@ -97,7 +105,7 @@ test("SwarmWorkbenchLayout passes actual center dimensions to render props", () 
     columns: 160,
     rows: 32,
     version: "0.1.0",
-    title: "Chat",
+    title: "Board",
     workspace: { path: "E:/Playground/Swarm" },
     navigation: navigationFixture(),
     sessions: sessionFixture(),
@@ -135,7 +143,7 @@ test("SwarmWorkbenchLayout navigation rows are clickable", () => {
     columns: 160,
     rows: 32,
     version: "0.1.0",
-    title: "Chat",
+    title: "Board",
     workspace: { path: "E:/Playground/Swarm" },
     navigation: navigationFixture(),
     sessions: sessionFixture(),
@@ -163,28 +171,71 @@ test("SwarmWorkbenchLayout navigation rows are clickable", () => {
   root.unmount();
 });
 
+test("SwarmWorkbenchLayout case rows are clickable", () => {
+  const clicked: string[] = [];
+  const root = createTuiRoot({
+    columns: 160,
+    rows: 32,
+    terminalCapabilities: { mouse: true }
+  });
+  root.render(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Board",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: sessionFixture(),
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "No active tasks" },
+    tools: toolFixture(),
+    workers: workerFixture(),
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Transcript center"),
+    renderCenterBottom: () => React.createElement(Text, null, "Composer"),
+    onSelectSession: (id: string) => clicked.push(id)
+  }));
+
+  const frame = root.getFrame();
+  assert(frame);
+  const target = findCell(frame, "Review tests");
+  assert(target);
+  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
+
+  assert.deepEqual(clicked, ["case-2"]);
+  root.unmount();
+});
+
 function navigationFixture(): SwarmWorkbenchNavigationItem[] {
   return [
-    { id: "chat", label: "Chat", shortcut: "1", active: true },
-    { id: "plan", label: "Plan", shortcut: "2" },
-    { id: "activity", label: "Activity", shortcut: "3" },
-    { id: "output", label: "Output", shortcut: "4" },
-    { id: "sessions", label: "Sessions", shortcut: "5" },
-    { id: "workers", label: "Workers", shortcut: "6" },
-    { id: "trace", label: "Trace", shortcut: "7" },
-    { id: "board", label: "Board", shortcut: "8" }
+    { id: "board", label: "Board", shortcut: "1", active: true },
+    { id: "sessions", label: "Tasks", shortcut: "2" },
+    { id: "workers", label: "Workers", shortcut: "3" },
+    { id: "activity", label: "Activity", shortcut: "4" },
+    { id: "output", label: "Output", shortcut: "5" },
+    { id: "skills", label: "Skills", shortcut: "6" },
+    { id: "automations", label: "Automations", shortcut: "7" },
+    { id: "trace", label: "Trace", shortcut: "8" },
+    { id: "chat", label: "Chat", shortcut: "9" },
+    { id: "plan", label: "Run", shortcut: "0" }
   ];
 }
 
 function sessionFixture(): React.ComponentProps<typeof SwarmWorkbenchLayout>["sessions"] {
   return [
-    { id: "session-1", title: "Build workbench", age: "2m", active: true },
-    { id: "session-2", title: "Review tests", age: "8m" }
+    { id: "case-1", title: "Build workbench", age: "2m", badge: "active", subtitle: "Swarm", tone: "status.running", attention: 1, active: true },
+    { id: "case-2", title: "Review tests", age: "8m", badge: "review", subtitle: "no workspace", tone: "status.warning" }
   ];
 }
 
 function toolFixture(): React.ComponentProps<typeof SwarmWorkbenchLayout>["tools"] {
   return [
+    { name: "Skills", status: "3 ready", tone: "status.success", active: true },
+    { name: "Automations", status: "Idle", tone: "text.muted", active: false },
     { name: "Approvals", status: "1 pending", tone: "status.pending", active: true },
     { name: "LSP", status: "Ready", tone: "status.success", active: true }
   ];

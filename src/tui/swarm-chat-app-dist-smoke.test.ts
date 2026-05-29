@@ -55,7 +55,7 @@ test("built TUI accepts input and exits through the global dist entry path", asy
     });
 
     try {
-      await waitFor(() => stripAnsi(output).includes("Ask Swarm"), "dist initial prompt render");
+      await waitFor(() => initialPromptVisible(stripAnsi(output)), "dist initial prompt render");
       await waitFor(
         () => /\/help\s+\/continue\s+\/memory/u.test(stripAnsi(output)),
         "dist command footer render"
@@ -113,6 +113,15 @@ function stripAnsi(value: string): string {
   return value
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "");
+}
+
+function initialPromptVisible(output: string): boolean {
+  return output.includes("Ask Swarm") ||
+    output.includes("Reply to selected case") ||
+    output.includes("Reply to selected case or create the next case") ||
+    output.includes("Reply to selected task") ||
+    output.includes("Reply to selected task or create the next work item") ||
+    output.includes("❯");
 }
 
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {

@@ -121,7 +121,7 @@ export async function runTuiSmokeHarness(options: TuiSmokeHarnessOptions = {}): 
     });
 
     try {
-      await waitFor(() => terminalScreenText(ansiOutput).includes("Ask Swarm"), "initial prompt render");
+      await waitFor(() => initialPromptVisible(terminalScreenText(ansiOutput)), "initial prompt render");
       stdin.emit("data", "\r");
       await delay(50);
       stdin.emit("data", SMOKE_INPUT);
@@ -257,7 +257,7 @@ function smokeChecks(input: {
   return [
     check(
       "prompt-visible",
-      input.plainScreen.includes("Ask Swarm") || input.plainScreen.includes(SMOKE_INPUT) || input.plainScreen.includes("❯"),
+      initialPromptVisible(input.plainScreen) || input.plainScreen.includes(SMOKE_INPUT),
       "Prompt/input row is visible in reconstructed screen."
     ),
     check(
@@ -284,6 +284,15 @@ function smokeChecks(input: {
       "Ctrl+C exits and input/resize/SIGCONT handlers are cleaned up."
     )
   ];
+}
+
+function initialPromptVisible(screen: string): boolean {
+  return screen.includes("Ask Swarm") ||
+    screen.includes("Reply to selected case") ||
+    screen.includes("Reply to selected case or create the next case") ||
+    screen.includes("Reply to selected task") ||
+    screen.includes("Reply to selected task or create the next work item") ||
+    screen.includes("❯");
 }
 
 function check(id: string, passed: boolean, detail: string): TuiSmokeCheck {

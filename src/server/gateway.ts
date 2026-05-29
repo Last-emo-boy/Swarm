@@ -9,6 +9,7 @@ import type { RuntimeEvent } from "../runtime/events.js";
 import type { SandboxWritePolicy } from "../runtime/sandbox-policy.js";
 import { buildWorkRecordFromRuntimeEvent, type WorkProtocolRecord } from "../runtime/work-protocol.js";
 import { buildSessionWorkBoard, buildWorkspaceWorkBoard } from "../runtime/work-board.js";
+import { buildAgentWorkspaceProjection } from "../runtime/agent-workspace.js";
 import type { ExecutionResult, PlannedSession, ToolApprovalHandler } from "../runtime/orchestrator.js";
 import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
@@ -184,6 +185,18 @@ const PUBLIC_API_SURFACE = [
   "/v1/checkpoints",
   "/v1/checkpoints/:id/revert",
   "/v1/work-board",
+  "/v1/workbench",
+  "/v1/workbench/cases",
+  "/v1/workbench/cases/:id",
+  "/v1/workbench/inbox",
+  "/v1/agent-workspace",
+  "/v1/agent-workspace/teammates",
+  "/v1/agent-workspace/attention",
+  "/v1/agent-workspace/activity",
+  "/v1/agent-workspace/skills",
+  "/v1/agent-workspace/capabilities",
+  "/v1/agent-workspace/readiness",
+  "/v1/agent-workspace/automations",
   "/v1/events",
   "/v1/work-events",
   "/v1/sessions/:id/events",
@@ -517,6 +530,16 @@ export class SwarmGatewayServer {
       return;
     }
 
+    if (resource === "workbench") {
+      this.handleWorkbench(request, response, url, id, child);
+      return;
+    }
+
+    if (resource === "agent-workspace" || resource === "agent_workspace") {
+      await this.handleAgentWorkspace(request, response, url, id);
+      return;
+    }
+
     if (resource === "checkpoints") {
       await this.handleCheckpoints(request, response, url, id, child);
       return;
@@ -623,6 +646,121 @@ export class SwarmGatewayServer {
       ? buildSessionWorkBoard(this.runtime, targetSessionId)
       : buildWorkspaceWorkBoard(this.runtime, { limit });
     sendJson(response, 200, board);
+  }
+
+  private handleWorkbench(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    section?: string,
+    caseId?: string
+  ): void {
+    if (request.method !== "GET") {
+      throw new HttpError(405, "Method not allowed.");
+    }
+    const limit = integerParam(url, "limit", 50);
+    if (!section) {
+      sendJson(response, 200, this.runtime.buildGlobalCaseWorkbench(limit));
+      return;
+    }
+    if (section === "cases") {
+      if (caseId) {
+        const detail = this.runtime.getCaseWorkbenchDetail(caseId, limit);
+        if (!detail) {
+          throw new HttpError(404, `Unknown case: ${caseId}`);
+        }
+        sendJson(response, 200, detail);
+        return;
+      }
+      const projection = this.runtime.buildGlobalCaseWorkbench(limit);
+      sendJson(response, 200, {
+        schema_version: projection.schema_version,
+        generated_at: projection.generated_at,
+        scope: projection.scope,
+        summary: projection.summary,
+        cases: projection.cases
+      });
+      return;
+    }
+    if (section === "inbox") {
+      const projection = this.runtime.buildGlobalCaseWorkbench(limit);
+      sendJson(response, 200, {
+        schema_version: projection.schema_version,
+        generated_at: projection.generated_at,
+        scope: projection.scope,
+        summary: projection.summary,
+        inbox: projection.inbox
+      });
+      return;
+    }
+    throw new HttpError(404, "Unknown workbench route.");
+  }
+
+  private async handleAgentWorkspace(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    section?: string
+  ): Promise<void> {
+    if (request.method !== "GET") {
+      throw new HttpError(405, "Method not allowed.");
+    }
+    const targetSessionId = optionalString(url.searchParams.get("session_id") ?? url.searchParams.get("session"));
+    const limit = integerParam(url, "limit", 25);
+    const board = targetSessionId
+      ? buildSessionWorkBoard(this.runtime, targetSessionId)
+      : buildWorkspaceWorkBoard(this.runtime, { limit });
+    const [capabilities, providers] = await Promise.all([
+      this.runtime.listCapabilities({ includeDisabled: true }),
+      this.runtime.listCapabilityProviders()
+    ]);
+    const { getSymphonyStatus } = await import("../symphony/status.js");
+    const symphonyStatus = getSymphonyStatus({
+      runtime: this.runtime,
+      workflowPath: optionalString(url.searchParams.get("workflow_path") ?? url.searchParams.get("workflow")),
+      limit: integerParam(url, "symphony_limit", 100)
+    });
+    const projection = buildAgentWorkspaceProjection({
+      board,
+      approvals: targetSessionId
+        ? this.runtime.listApprovalsForSessionFamily(targetSessionId, limit)
+        : this.runtime.listRecentApprovalsForWorkspace(limit),
+      skills: this.runtime.listSkills(),
+      capabilities,
+      providers,
+      symphonyStatus,
+      daemons: this.symphonyDaemons.listRecords(),
+      workspacePath: this.runtime.getWorkspacePath()
+    });
+
+    switch (section) {
+      case undefined:
+        sendJson(response, 200, projection);
+        return;
+      case "teammates":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, teammates: projection.teammates });
+        return;
+      case "attention":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, attention: projection.attention });
+        return;
+      case "activity":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, activity: projection.activity });
+        return;
+      case "skills":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, skills: projection.skills });
+        return;
+      case "capabilities":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, capabilities: projection.capabilities });
+        return;
+      case "readiness":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, readiness: projection.readiness });
+        return;
+      case "automations":
+        sendJson(response, 200, { schema_version: projection.schema_version, generated_at: projection.generated_at, automations: projection.automations });
+        return;
+      default:
+        throw new HttpError(404, "Unknown agent workspace route.");
+    }
   }
 
   private async handleLsp(

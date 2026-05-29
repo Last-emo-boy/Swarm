@@ -366,6 +366,8 @@ Add read endpoints first:
 | `POST /v1/capabilities/refresh` | Refresh skills and MCP discovery |
 | `GET /v1/skills` | List skills, precedence, trust, diagnostics |
 | `POST /v1/skills/:name/activate` | Activate a skill for a session |
+| `GET /v1/agent-workspace/capabilities` | Read the Agent Workspace capability surface with provider, trust, hidden, diagnostics, and risk state |
+| `GET /v1/agent-workspace/skills` | Read the Agent Workspace skill surface with trusted, untrusted, disabled, and shadowed states |
 | `GET /v1/mcp/servers` | List configured MCP server connection states |
 | `POST /v1/mcp/servers/:id/refresh` | Reconnect and refresh one MCP server catalog |
 | `GET /mcp` / `POST /mcp` | Optional Swarm MCP server transport endpoint |

@@ -831,17 +831,23 @@ test("virtual conversation layout separates compact and expanded fold cache entr
 });
 
 test("main pane order uses product navigation and keeps legacy aliases routable", () => {
-  assert.deepEqual(mainPaneOrder, ["chat", "plan", "activity", "output", "sessions", "workers", "trace", "board"]);
-  assert.equal(mainPaneOrder[0], "chat");
-  assert.equal(mainPaneLabels.chat, "Chat");
-  assert.equal(mainPaneLabels.plan, "Plan");
+  assert.deepEqual(mainPaneOrder, ["board", "sessions", "workers", "activity", "output", "skills", "automations", "trace", "chat", "plan"]);
+  assert.equal(mainPaneOrder[0], "board");
+  assert.equal(mainPaneLabels.board, "Board");
+  assert.equal(mainPaneLabels.sessions, "Tasks");
+  assert.equal(mainPaneLabels.workers, "Workers");
   assert.equal(mainPaneLabels.activity, "Activity");
   assert.equal(mainPaneLabels.output, "Output");
-  assert.equal(mainPaneLabels.sessions, "Sessions");
-  assert.equal(mainPaneLabels.workers, "Workers");
+  assert.equal(mainPaneLabels.skills, "Skills");
+  assert.equal(mainPaneLabels.automations, "Automations");
   assert.equal(mainPaneLabels.trace, "Trace");
-  assert.equal(mainPaneLabels.board, "Board");
-  assert.equal(normalizeMainPaneId("overview"), "plan");
+  assert.equal(mainPaneLabels.chat, "Chat");
+  assert.equal(mainPaneLabels.plan, "Run");
+  assert.equal(normalizeMainPaneId("overview"), "board");
+  assert.equal(normalizeMainPaneId("tasks"), "sessions");
+  assert.equal(normalizeMainPaneId("agents"), "workers");
+  assert.equal(normalizeMainPaneId("symphony"), "automations");
+  assert.equal(normalizeMainPaneId("run"), "plan");
   assert.equal(normalizeMainPaneId("attempts"), "trace");
   assert.equal(normalizeMainPaneId("blackboard"), "board");
 });

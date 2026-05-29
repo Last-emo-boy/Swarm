@@ -681,10 +681,17 @@ Important endpoint groups:
 | Live control | `GET /v1/live`, `POST /v1/live/messages`, `POST /v1/live/interrupt`, `POST /v1/sessions/:id/messages`, `POST /v1/sessions/:id/interrupt`, `POST /v1/sessions/:id/execute`, `POST /v1/sessions/:id/fork` |
 | Kernel inspection | `GET /v1/sessions/:id/graph`, `/tasks/:task_id`, `/trace`, `/blackboard`, `/approvals`, `/audit`, `/usage` |
 | Collaboration | `GET /v1/workers`, `GET /v1/workers/:id`, `POST /v1/workers/:id/stop`, `POST /v1/workers/:id/continue`, `GET /v1/handoffs`, `GET /v1/handoffs/:id`, `POST /v1/handoffs/:id/take-back` |
+| Agent Workspace | `GET /v1/agent-workspace`, `/teammates`, `/attention`, `/activity`, `/skills`, `/capabilities`, `/readiness`, `/automations` |
 | Capabilities | `GET /v1/capabilities`, `POST /v1/capabilities/:id/invoke`, enable/disable/show/hide, refresh |
 | Extensions | `GET /v1/skills`, `POST /v1/skills/:name/activate`, `GET /v1/plugins`, plugin install/update/remove/enable/disable |
 | MCP | `GET /v1/mcp/servers`, server refresh, resource list/read, prompt list/get |
 | Symphony | `GET /v1/symphony/status`, preview, tick, run-once, cleanup, daemon start/stop |
+
+`GET /v1/agent-workspace` is a read-only projection over the Work Board,
+approval records, skills, capabilities, Symphony status, and daemon records. It
+is intended for IDE/Web integrations that need the same teammate, attention,
+activity, readiness, capability, and Automations surface as the local product
+without creating a second durable task or worker truth.
 
 `/v1/events` keeps the runtime event stream for existing clients and includes a
 `work` field on each record. `/v1/work-events` streams the stable `swarm.work.v1`

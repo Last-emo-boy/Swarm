@@ -15,8 +15,8 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   const previousDebug = process.env.SWARM_DEBUG;
   const previousDebugSessionId = process.env.SWARM_DEBUG_SESSION_ID;
   const home = mkdtempSync(join(tmpdir(), "swarm-tui-interaction-"));
-  createConfiguredSwarmHome(home);
   process.env.SWARM_HOME = home;
+  createConfiguredSwarmHome(home);
   process.env.SWARM_DEBUG = "true";
   process.env.SWARM_DEBUG_SESSION_ID = "swarm-tui-interaction-test";
   resetDebugLogger();
@@ -40,22 +40,22 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   });
 
   try {
-    await waitFor(() => stripAnsi(output).includes("Ask Swarm"), "initial prompt render");
-    await waitFor(
-      () => stripAnsi(output).includes("/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details"),
-      "footer hint render"
-    );
-    await waitFor(() => stripAnsi(output).includes("Run: Waiting"), "run summary render");
+    await waitFor(() => stripAnsi(output).includes("Reply to selected case or create the next case"), "initial prompt render");
+    await waitFor(() => stripAnsi(output).includes("[CASE]") || stripAnsi(output).includes("Reply to selected case"), "board case composer render");
+    await waitFor(() => stripAnsi(output).includes("Local Agent Workspace"), "workspace title render");
     const initialScreen = stripAnsi(output);
-    assert.match(initialScreen, /Waiting for your first task\./);
-    assert.match(initialScreen, /Chat/);
-    assert.match(initialScreen, /Plan/);
+    assert.match(initialScreen, /Cases are the workbench source of truth/);
+    assert.match(initialScreen, /WORK BOARD|No work items yet\./);
+    assert.match(initialScreen, /Board/);
+    assert.match(initialScreen, /Tasks/);
+    assert.match(initialScreen, /Workers/);
     assert.match(initialScreen, /Activity/);
     assert.match(initialScreen, /Output/);
-    assert.match(initialScreen, /Sessions/);
-    assert.match(initialScreen, /Workers/);
+    assert.match(initialScreen, /Skills/);
+    assert.match(initialScreen, /Automations/);
     assert.match(initialScreen, /Trace/);
-    assert.match(initialScreen, /Board/);
+    assert.match(initialScreen, /Chat/);
+    assert.match(initialScreen, /Run/);
     assert.doesNotMatch(initialScreen, /Overview|Blackboard|Attempts|run evidence|Current Mode|Active Tools|Model \/ Provider/);
     const secretPrompt = "secret phrase 123";
     stdin.emit("data", secretPrompt);
@@ -91,18 +91,20 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
     } else {
       process.env.SWARM_DEBUG_SESSION_ID = previousDebugSessionId;
     }
-    rmSync(home, { recursive: true, force: true });
+    await removeTree(home);
   }
 });
 
 function createConfiguredSwarmHome(home: string): void {
   mkdirSync(home, { recursive: true });
+  mkdirSync(join(home, "state"), { recursive: true });
   const settings = defaultSwarmSettings();
   settings.models.defaultProvider = "local-test";
   settings.models.planner = "local-test/model";
   settings.models.worker = "local-test/model";
   settings.models.aggregator = "local-test/model";
   settings.enabledProviders = ["local-test"];
+  settings.runtime.databasePath = join(home, "state", "swarm.db");
   settings.providers["local-test"] = {
     id: "local-test",
     name: "Local Test Provider",
@@ -165,4 +167,18 @@ async function waitForDebugLog(home: string): Promise<string> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Timed out waiting for TUI debug telemetry log.");
+}
+
+async function removeTree(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      return;
+    } catch (error) {
+      if (attempt === 9) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 }
