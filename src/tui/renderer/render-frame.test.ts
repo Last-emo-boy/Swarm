@@ -54,6 +54,29 @@ test("renderer layout supports percent width truncate wrap and wide cells", () =
   assert.equal(lines[2], "bc");
 });
 
+test("renderer paints truncate text only within its layout bounds", () => {
+  const frame = renderDomToFrame(
+    renderReactTreeToDom(React.createElement(Box, { flexDirection: "row", width: 20 },
+      React.createElement(Text, { width: 6, wrap: "truncate" }, "abcdefghijklmnop"),
+      React.createElement(Text, null, "RIGHT")
+    )),
+    { columns: 20, rows: 3 }
+  );
+
+  assert.equal(screenToLines(frame.screen, { trimRight: false })[0], "abcdefRIGHT         ");
+});
+
+test("renderer paints wrapped inline text inside explicit text width", () => {
+  const frame = renderDomToFrame(
+    renderReactTreeToDom(React.createElement(Box, { flexDirection: "column", width: 5 },
+      React.createElement(Text, { width: 5, wrap: "wrap" }, "abcdef")
+    )),
+    { columns: 8, rows: 3 }
+  );
+
+  assert.deepEqual(screenToLines(frame.screen).slice(0, 2), ["abcde", "f"]);
+});
+
 test("renderer layout applies min max dimensions and skips hidden nodes", () => {
   const dom = renderReactTreeToDom(React.createElement(
     Box,
@@ -287,6 +310,18 @@ test("renderer paints RawAnsi visible text and basic SGR styles", () => {
   assert.equal(lines[0], "plain red done");
   assert.deepEqual(frame.screen.cells[0]?.[6]?.style, { color: "red", bold: true });
   assert.deepEqual(frame.screen.cells[0]?.[10]?.style, {});
+});
+
+test("renderer bounds RawAnsi output to its layout width", () => {
+  const frame = renderDomToFrame(
+    renderReactTreeToDom(React.createElement(Box, { flexDirection: "row", width: 20 },
+      React.createElement(RawAnsi, { lines: ["0123456789abcdef"], width: 8, height: 1 }),
+      React.createElement(Text, null, "RIGHT")
+    )),
+    { columns: 20, rows: 3 }
+  );
+
+  assert.equal(screenToLines(frame.screen, { trimRight: false })[0], "01234567RIGHT       ");
 });
 
 test("renderer preserves Link hyperlink metadata in screen cells", () => {

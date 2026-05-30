@@ -78,11 +78,11 @@ function paintNode(
     nodeName: node.nodeName
   };
   if (node.nodeName === "swarm-text") {
-    paintInlineChildren(node, node.layout.x, node.layout.y, screen, style, metadata);
+    paintBoundedInlineChildren(node, node.layout.x, node.layout.y, screen, style, metadata);
     return;
   }
   if (node.nodeName === "swarm-raw-ansi") {
-    paintAnsiText(attributeString(node.attributes.rawText), node.layout.x, node.layout.y, screen, style, metadata);
+    paintBoundedAnsiText(node, screen, style, metadata);
     return;
   }
   if (node.nodeName === "swarm-progress") {
@@ -159,38 +159,71 @@ function paintBorder(
   }
 }
 
-function paintInlineChildren(
+type BoundedInlineCursor = {
+  y: number;
+  line: BoundedInlineCell[];
+  lineWidth: number;
+  skippingLine: boolean;
+  stopped: boolean;
+};
+
+type BoundedInlineCell = {
+  char: string;
+  width: number;
+  style: TuiStyle;
+  metadata: TuiScreenCellMetadata;
+};
+
+type BoundedInlinePaintBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  mode: "wrap" | "truncate";
+};
+
+function paintBoundedInlineChildren(
   node: TuiElement,
   x: number,
   y: number,
   screen: ReturnType<typeof createScreen>,
   style: TuiStyle,
   metadata: TuiScreenCellMetadata
-): { x: number; y: number } {
-  let cursor = { x, y };
+): void {
+  const bounds: BoundedInlinePaintBounds = {
+    x,
+    y,
+    width: Math.max(1, node.layout.width),
+    height: Math.max(1, node.layout.height),
+    mode: node.attributes.wrap === "truncate" ? "truncate" : "wrap"
+  };
+  const cursor: BoundedInlineCursor = { y, line: [], lineWidth: 0, skippingLine: false, stopped: false };
   for (const child of node.childNodes) {
-    cursor = paintInlineNode(child, cursor.x, cursor.y, x, screen, style, metadata);
+    paintBoundedInlineNode(child, cursor, bounds, screen, style, metadata);
+    if (cursor.stopped) {
+      return;
+    }
   }
-  return cursor;
+  flushBoundedLine(cursor, bounds, screen);
 }
 
-function paintInlineNode(
+function paintBoundedInlineNode(
   node: TuiNode,
-  x: number,
-  y: number,
-  lineStartX: number,
+  cursor: BoundedInlineCursor,
+  bounds: BoundedInlinePaintBounds,
   screen: ReturnType<typeof createScreen>,
   inheritedStyle: TuiStyle,
   inheritedMetadata: TuiScreenCellMetadata
-): { x: number; y: number } {
-  if (node.hidden) {
-    return { x, y };
+): void {
+  if (node.hidden || cursor.stopped) {
+    return;
   }
   const style = node.nodeName === "#text"
     ? { ...inheritedStyle, ...node.style }
     : { ...inheritedStyle, ...node.style };
   if (node.nodeName === "#text") {
-    return paintText(node.nodeValue, x, y, screen, style, inheritedMetadata, lineStartX);
+    paintBoundedText(node.nodeValue, cursor, bounds, screen, style, inheritedMetadata);
+    return;
   }
   const metadata: TuiScreenCellMetadata = {
     hyperlink: node.nodeName === "swarm-link" && typeof node.attributes.href === "string"
@@ -200,24 +233,196 @@ function paintInlineNode(
     ownerChain: node.debugOwnerChain.length ? node.debugOwnerChain : inheritedMetadata.ownerChain,
     nodeName: node.nodeName
   };
-  return paintInlineChildren(node, x, y, screen, style, metadata);
+  for (const child of node.childNodes) {
+    paintBoundedInlineNode(child, cursor, bounds, screen, style, metadata);
+    if (cursor.stopped) {
+      return;
+    }
+  }
 }
 
-function paintAnsiText(
+function paintBoundedText(
   value: string,
-  x: number,
-  y: number,
+  cursor: BoundedInlineCursor,
+  bounds: BoundedInlinePaintBounds,
   screen: ReturnType<typeof createScreen>,
   style: TuiStyle,
   metadata: TuiScreenCellMetadata
 ): void {
-  let cursorX = x;
-  let cursorY = y;
-  for (const span of parseAnsiSpans(value, style)) {
-    const painted = paintText(span.text, cursorX, cursorY, screen, span.style, metadata);
-    cursorX = painted.x;
-    cursorY = painted.y;
+  for (const char of value) {
+    if (cursor.stopped) {
+      return;
+    }
+    if (char === "\n") {
+      flushBoundedLine(cursor, bounds, screen);
+      advanceBoundedLine(cursor, bounds);
+      continue;
+    }
+    if (cursor.skippingLine) {
+      continue;
+    }
+
+    const charWidth = displayWidth(char);
+    if (charWidth === 0) {
+      if (cursor.line.length > 0) {
+        cursor.line[cursor.line.length - 1]!.char += char;
+      }
+      continue;
+    }
+    if (charWidth > bounds.width) {
+      if (bounds.mode === "truncate") {
+        cursor.skippingLine = true;
+      } else if (cursor.line.length > 0) {
+        flushBoundedLine(cursor, bounds, screen);
+        advanceBoundedLine(cursor, bounds);
+      }
+      continue;
+    }
+    if (cursor.lineWidth + charWidth > bounds.width) {
+      if (bounds.mode === "truncate") {
+        cursor.skippingLine = true;
+        continue;
+      }
+      wrapBoundedLine(cursor, bounds, screen, {
+        char,
+        width: charWidth,
+        style,
+        metadata
+      });
+      if (cursor.stopped) {
+        return;
+      }
+      continue;
+    }
+
+    appendBoundedCell(cursor, { char, width: charWidth, style, metadata });
   }
+}
+
+function appendBoundedCell(cursor: BoundedInlineCursor, cell: BoundedInlineCell): void {
+  cursor.line.push(cell);
+  cursor.lineWidth += cell.width;
+}
+
+function wrapBoundedLine(
+  cursor: BoundedInlineCursor,
+  bounds: BoundedInlinePaintBounds,
+  screen: ReturnType<typeof createScreen>,
+  overflowCell: BoundedInlineCell
+): void {
+  const candidate = [...cursor.line, overflowCell];
+  const breakPoint = findInlineBreakPoint(candidate);
+  if (breakPoint && breakPoint.head.length > 0) {
+    cursor.line = breakPoint.head;
+    cursor.lineWidth = lineCellsWidth(cursor.line);
+    flushBoundedLine(cursor, bounds, screen);
+    advanceBoundedLine(cursor, bounds);
+    if (cursor.stopped) {
+      return;
+    }
+    cursor.line = breakPoint.tail;
+    cursor.lineWidth = lineCellsWidth(cursor.line);
+    return;
+  }
+
+  flushBoundedLine(cursor, bounds, screen);
+  advanceBoundedLine(cursor, bounds);
+  if (!cursor.stopped) {
+    appendBoundedCell(cursor, overflowCell);
+  }
+}
+
+function flushBoundedLine(
+  cursor: BoundedInlineCursor,
+  bounds: BoundedInlinePaintBounds,
+  screen: ReturnType<typeof createScreen>
+): void {
+  let x = bounds.x;
+  for (const cell of cursor.line) {
+    if (x >= bounds.x + bounds.width) {
+      break;
+    }
+    setCell(screen, x, cursor.y, cell.char, cell.style, cell.metadata);
+    x += cell.width;
+  }
+}
+
+function advanceBoundedLine(cursor: BoundedInlineCursor, bounds: BoundedInlinePaintBounds): void {
+  cursor.y += 1;
+  cursor.line = [];
+  cursor.lineWidth = 0;
+  cursor.skippingLine = false;
+  cursor.stopped = cursor.y >= bounds.y + bounds.height;
+}
+
+function findInlineBreakPoint(cells: BoundedInlineCell[]): { head: BoundedInlineCell[]; tail: BoundedInlineCell[] } | undefined {
+  let breakAfter = -1;
+  let dropBreakCell = false;
+  for (let index = 0; index < cells.length - 1; index += 1) {
+    const char = cells[index]?.char ?? "";
+    if (/\s/u.test(char)) {
+      breakAfter = index;
+      dropBreakCell = true;
+      continue;
+    }
+    if (char === "/" || char === "\\") {
+      breakAfter = index;
+      dropBreakCell = false;
+    }
+  }
+  if (breakAfter < 0) {
+    return undefined;
+  }
+
+  const headEnd = dropBreakCell ? breakAfter : breakAfter + 1;
+  const tailStart = breakAfter + 1;
+  return {
+    head: trimTrailingWhitespaceCells(cells.slice(0, headEnd)),
+    tail: trimLeadingWhitespaceCells(cells.slice(tailStart))
+  };
+}
+
+function trimTrailingWhitespaceCells(cells: BoundedInlineCell[]): BoundedInlineCell[] {
+  let end = cells.length;
+  while (end > 0 && /^\s$/u.test(cells[end - 1]?.char ?? "")) {
+    end -= 1;
+  }
+  return cells.slice(0, end);
+}
+
+function trimLeadingWhitespaceCells(cells: BoundedInlineCell[]): BoundedInlineCell[] {
+  let start = 0;
+  while (start < cells.length && /^\s$/u.test(cells[start]?.char ?? "")) {
+    start += 1;
+  }
+  return cells.slice(start);
+}
+
+function lineCellsWidth(cells: BoundedInlineCell[]): number {
+  return cells.reduce((sum, cell) => sum + cell.width, 0);
+}
+
+function paintBoundedAnsiText(
+  node: TuiElement,
+  screen: ReturnType<typeof createScreen>,
+  inheritedStyle: TuiStyle,
+  metadata: TuiScreenCellMetadata
+): void {
+  const bounds: BoundedInlinePaintBounds = {
+    x: node.layout.x,
+    y: node.layout.y,
+    width: Math.max(1, node.layout.width),
+    height: Math.max(1, node.layout.height),
+    mode: "wrap"
+  };
+  const cursor: BoundedInlineCursor = { y: bounds.y, line: [], lineWidth: 0, skippingLine: false, stopped: false };
+  for (const span of parseAnsiSpans(attributeString(node.attributes.rawText), inheritedStyle)) {
+    paintBoundedText(span.text, cursor, bounds, screen, span.style, metadata);
+    if (cursor.stopped) {
+      return;
+    }
+  }
+  flushBoundedLine(cursor, bounds, screen);
 }
 
 function paintText(

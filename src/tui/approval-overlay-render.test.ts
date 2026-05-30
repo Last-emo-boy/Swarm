@@ -30,7 +30,8 @@ test("ApprovalOverlay puts decision controls before high-risk detail", async () 
   assert.doesNotMatch(plain, /[┌┐└┘]/);
   assert.match(plain, /^\s*─{20,}/m);
   assert.match(plain, /Destructive shell command detected/);
-  assert.match(plain, /GOVERNANCE actor=worker:safety scope=Remove-Item -Recurse build ttl=900000ms/);
+  assert.match(plain, /GOVERNANCE actor=worker:safety scope=Remove-Item -Recurse build/);
+  assert.match(plain, /ttl=900000ms expires=2026-05-26T00:15:00.000Z/);
   assert.match(plain, /PREVIEW/);
 });
 

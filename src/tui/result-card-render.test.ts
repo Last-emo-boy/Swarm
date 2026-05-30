@@ -198,7 +198,8 @@ test("InspectorPane wraps long recovery commands and artifact paths in narrow te
     ].join("\n")
   }))));
 
-  assert.match(plain, /node --import tsx/);
+  assert.match(plain, /node --import/);
+  assert.match(plain, /tsx --test/);
   assert.match(plain, /--test/);
   assert.match(plain, /action-log\.test\.ts/);
   assert.match(plain, /swarm-run-/);

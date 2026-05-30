@@ -267,16 +267,61 @@ export function splitRenderableText(value: string, width: number, mode: "wrap" |
     }
     let current = "";
     for (const char of raw) {
-      if (displayWidth(current + char) > safeWidth) {
+      const charWidth = displayWidth(char);
+      if (charWidth === 0) {
+        current += char;
+        continue;
+      }
+      if (charWidth > safeWidth) {
+        if (current) {
+          lines.push(current);
+          current = "";
+        }
+        continue;
+      }
+      if (displayWidth(current) + charWidth <= safeWidth) {
+        current += char;
+        continue;
+      }
+
+      const wrapped = splitAtPreferredBreak(`${current}${char}`);
+      if (wrapped && wrapped.head) {
+        lines.push(wrapped.head);
+        current = wrapped.tail;
+      } else {
         lines.push(current);
         current = char;
-      } else {
-        current += char;
       }
     }
     lines.push(current);
   }
   return lines.length ? lines : [""];
+}
+
+function splitAtPreferredBreak(value: string): { head: string; tail: string } | undefined {
+  let breakAfter = -1;
+  let dropBreakChar = false;
+  const chars = [...value];
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    const char = chars[index] ?? "";
+    if (/\s/u.test(char)) {
+      breakAfter = index;
+      dropBreakChar = true;
+      continue;
+    }
+    if (char === "/" || char === "\\") {
+      breakAfter = index;
+      dropBreakChar = false;
+    }
+  }
+  if (breakAfter < 0) {
+    return undefined;
+  }
+  const headEnd = dropBreakChar ? breakAfter : breakAfter + 1;
+  return {
+    head: chars.slice(0, headEnd).join("").trimEnd(),
+    tail: chars.slice(breakAfter + 1).join("").trimStart()
+  };
 }
 
 function dimensionAttribute(value: unknown, available: number): number | undefined {

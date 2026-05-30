@@ -1,4 +1,5 @@
 import type { TuiFrame } from "./frame.js";
+import { displayWidth } from "../display-width.js";
 import { screenToLines } from "./screen.js";
 
 export type TuiFrameSnapshotCell = {
@@ -66,7 +67,7 @@ export function diffFrameSnapshotCells(
 export function assertFrameHasNoOverflow(snapshot: TuiFrameSnapshot): string[] {
   const issues: string[] = [];
   snapshot.lines.forEach((line, index) => {
-    if (line.length > snapshot.width) {
+    if (displayWidth(line) > snapshot.width) {
       issues.push(`row ${index} overflows width ${snapshot.width}`);
     }
   });
