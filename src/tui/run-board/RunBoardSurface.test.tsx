@@ -164,7 +164,7 @@ test("RunBoardSurface dispatches worker row and result preview action clicks", (
   assert(workerTarget, "expected worker row to render");
   root.dispatchMouse({ x: workerTarget.x, y: workerTarget.y, button: "left", action: "press" });
 
-  const nextTarget = findCell(root.getFrame()!, "/diff");
+  const nextTarget = findCell(root.getFrame()!, "Review changes");
   assert(nextTarget, "expected result next action to render");
   root.dispatchMouse({ x: nextTarget.x, y: nextTarget.y, button: "left", action: "press" });
 
