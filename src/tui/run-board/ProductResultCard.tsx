@@ -150,7 +150,7 @@ function productStatusLabel(status: ProductResultCardView["status"]): string {
 
 function CheckpointLine(props: { view: ProductResultCardView }): React.ReactElement | null {
   const checkpoint = props.view.checkpoint;
-  if (!checkpoint) {
+  if (!checkpoint || checkpoint.revertAvailable) {
     return null;
   }
   return (

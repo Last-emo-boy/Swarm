@@ -407,7 +407,7 @@ test("ProductResultCard renders checkpoint rollback status in the result report"
   }), { columns: 160, rows: 20 });
   const availableText = frameText(available);
 
-  assert.match(availableText, /Undo\s+Workspace checkpoint available/);
+  assert.doesNotMatch(availableText, /Undo\s+Workspace checkpoint available/);
   assert.doesNotMatch(availableText, /\[git\]|revert available/);
   assert.match(availableText, /NEXT\s+Undo latest change/);
   assert.doesNotMatch(availableText, /NEXT\s+Undo latest change\s+Review changes/);
