@@ -134,6 +134,9 @@ function visibleReview(view: ProductResultCardView): ProductResultCardView["revi
   if (!review?.summary) {
     return undefined;
   }
+  if (view.reviewFindings?.length) {
+    return undefined;
+  }
   const summary = review.summary.trim().toLowerCase();
   return review.status === "passed" && ["passed", "review passed"].includes(summary) ? undefined : review;
 }

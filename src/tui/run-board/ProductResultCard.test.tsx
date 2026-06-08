@@ -325,7 +325,7 @@ test("ProductResultCard renders review findings as result-first report rows", ()
   assert.match(text, /Finding\s+High: src\/auth\/permissions\.ts:42 Permission check can be bypassed/);
   assert.match(text, /Fix: Validate inherited roles before granting access/);
   assert.match(text, /Medium: src\/auth\/audit\.ts Audit trail misses denied requests/);
-  assert.match(text, /Review\s+\[WARN\] 2 actionable findings\./);
+  assert.doesNotMatch(text, /Review\s+\[WARN\] 2 actionable findings\./);
   assert.doesNotMatch(text, /confidence=|fix=/);
   assert.doesNotMatch(text, /Changed\s+none/);
   assert.match(text, /NEXT\s+Review this workspace/);
