@@ -114,5 +114,5 @@ function runBoardFooterChips(view: RunBoardSurfaceView): string[] {
     counts.checks > 0 ? `[Checks ${counts.passedChecks}/${counts.checks}]` : undefined,
     counts.approvals > 0 ? `[Approvals ${counts.approvals}]` : undefined
   ].filter((chip): chip is string => Boolean(chip));
-  return chips.length ? [...chips, "[Details Enter]"] : [];
+  return chips;
 }

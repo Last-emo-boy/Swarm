@@ -97,7 +97,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.doesNotMatch(text, /\[Checks 0\/0\]/);
   assert.doesNotMatch(text, /\[Files 0\]/);
   assert.doesNotMatch(text, /\[Approvals 0\]/);
-  assert.match(text, /\[Details Enter\]/);
+  assert.doesNotMatch(text, /\[Details Enter\]/);
   assert.doesNotMatch(text, /Observatory Enter/);
   assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP/);
 });
