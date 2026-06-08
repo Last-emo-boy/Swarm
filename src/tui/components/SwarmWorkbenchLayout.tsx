@@ -442,7 +442,7 @@ function NavigationRow({
   onNavigate?: (id: string) => void;
   primary?: boolean;
 }): React.ReactElement {
-  const labelBudget = Math.max(8, width - (item.shortcut ? 12 : 6));
+  const labelBudget = Math.max(8, width - 6);
   const color = item.active
     ? visualTokenColor("brand.focus")
     : primary
@@ -457,7 +457,6 @@ function NavigationRow({
     >
       <Text color={item.active ? visualTokenColor("brand.focus") : visualTokenColor("role.gateway")}>{item.active ? "> " : "  "}</Text>
       {fitText(item.label, labelBudget)}
-      {item.shortcut ? <Text color={visualTokenColor("text.muted")}> [{item.shortcut}]</Text> : null}
     </Text>
   );
 }
