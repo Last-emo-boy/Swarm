@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "../ui.js";
 import type { ResultCard as ResultCardData } from "../../runtime/result-card.js";
-import { formatRecoveryAdviceInline } from "../../runtime/recovery.js";
+import type { RecoveryAdvice } from "../../runtime/recovery.js";
 import {
   checkStatusTone,
   compactValue,
@@ -75,7 +75,7 @@ export function ResultCard(props: {
         <SectionLine
           section="recovery"
           tone={visibleRecovery.some((advice) => advice.severity === "error") ? "danger" : "warning"}
-          value={visibleRecovery.map((advice) => compactValue(formatRecoveryAdviceInline(advice), 112)).join(" | ")}
+          value={visibleRecovery.map((advice) => compactValue(formatResultRecoveryAdvice(advice), 112)).join(" | ")}
         />
       )}
       {card.artifacts.length > 0 ? <SectionLine section="artifacts" value="saved" /> : null}
@@ -175,6 +175,29 @@ function resultCardReviewSummary(review: ResultCardData["review"]): string | und
     return undefined;
   }
   return `${statusIconText(review.status, "badge")} ${compactValue(summary || review.status, 96)}`;
+}
+
+function formatResultRecoveryAdvice(advice: RecoveryAdvice): string {
+  const commandHint = visibleRecoveryCommandHint(advice);
+  return [
+    advice.summary,
+    `Next: ${advice.nextAction}`,
+    commandHint ? `Try: ${commandHint}` : undefined
+  ].filter(Boolean).join(" ");
+}
+
+function visibleRecoveryCommandHint(advice: RecoveryAdvice): string | undefined {
+  const command = advice.commandHint?.trim();
+  if (!command) {
+    return undefined;
+  }
+  return normalizedRecoveryText(advice.nextAction).includes(normalizedRecoveryText(command))
+    ? undefined
+    : command;
+}
+
+function normalizedRecoveryText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function SectionLine(props: {

@@ -85,7 +85,9 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.doesNotMatch(plain, /result-card-render\.test\.tsx \[OK\]|npm run lint|npm run typecheck/);
   assert.match(plain, /REVIEW \[WARN\] Review found a narrow viewport risk\./);
   assert.match(plain, /RISKS high: One verification check failed\./);
-  assert.match(plain, /RECOVERY \[provider_rate_limit\/warning\/retry\]/);
+  assert.match(plain, /RECOVERY Model provider rate limit or quota was hit\./);
+  assert.match(plain, /Next: Wait and retry/);
+  assert.doesNotMatch(plain, /provider_rate_limit\/warning\/retry|Hint:/);
   assert.match(plain, /ARTIFACTS saved/);
   assert.doesNotMatch(plain, /⎿ artifact|\.swarm\/reports\/check\.report\.json/);
   assert.doesNotMatch(plain, /\+\d/);
