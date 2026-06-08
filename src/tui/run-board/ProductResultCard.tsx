@@ -191,7 +191,7 @@ function RecoveryLines(props: {
         />
       ))}
       {recovery.length > visible.length ? (
-        <ResultLine label="" value={`+${recovery.length - visible.length} more recovery steps`} tone="text.muted" />
+        <ResultLine label="" value={`+${recovery.length - visible.length} more steps`} tone="text.muted" />
       ) : null}
     </React.Fragment>
   );
@@ -199,10 +199,9 @@ function RecoveryLines(props: {
 
 function formatProductRecovery(advice: RecoveryAdvice): string {
   return [
-    `[${advice.category}/${advice.severity}${advice.retryable ? "/retry" : ""}]`,
     advice.summary,
     `Next: ${advice.nextAction}`,
-    advice.commandHint ? `Hint: ${advice.commandHint}` : undefined
+    advice.commandHint ? `Try: ${advice.commandHint}` : undefined
   ].filter(Boolean).join(" ");
 }
 

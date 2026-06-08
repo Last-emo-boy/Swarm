@@ -319,10 +319,11 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   }), { columns: 180, rows: 20 });
   const text = frameText(frame);
 
-  assert.match(text, /Recovery\s+\[tool\/warning\/retry\] Tool action file\.edit failed\./);
+  assert.match(text, /Recovery\s+Tool action file\.edit failed\./);
   assert.match(text, /Next: Run file\.grep for a unique oldText, then retry file\.edit\./);
-  assert.match(text, /Hint: file\.grep/);
-  assert.match(text, /\[cache\/info\/retry\] Prompt cache prefix changed\./);
+  assert.match(text, /Try: file\.grep/);
+  assert.match(text, /Prompt cache prefix changed\./);
+  assert.doesNotMatch(text, /\[tool\/warning\/retry\]|\[cache\/info\/retry\]|Hint:/);
 
   const compact = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -356,8 +357,8 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   }), { columns: 160, rows: 16 });
   const compactText = frameText(compact);
 
-  assert.match(compactText, /Recovery\s+\[tool\/warning\/retry\]/);
-  assert.match(compactText, /\+1 more recovery steps/);
+  assert.match(compactText, /Recovery\s+Tool action file\.edit failed\./);
+  assert.match(compactText, /\+1 more steps/);
   assert.doesNotMatch(compactText, /\[cache\/info\/retry\] Prompt cache prefix changed\./);
 });
 
