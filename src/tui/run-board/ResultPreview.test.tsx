@@ -25,8 +25,8 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
 
   assert.match(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT PREVIEW/);
-  assert.match(text, /Verified\s+npm test -- result-preview \[passed\]/);
-  assert.doesNotMatch(text, /Checks\s+npm test -- result-preview/);
+  assert.match(text, /Verified\s+\[OK\] npm test -- result-preview/);
+  assert.doesNotMatch(text, /Checks\s+npm test -- result-preview|npm test -- result-preview \[passed\]/);
   assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
   assert.doesNotMatch(text, /Hypothesis|Use focused checks before final review/);
   assert.doesNotMatch(text, /Artifacts|artifacts\/result-preview\.log/);

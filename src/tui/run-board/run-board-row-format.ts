@@ -31,10 +31,20 @@ export function formatResultPreview(preview: ResultPreview, columns = 100): stri
   const lines = [
     `Result: ${preview.summary}`,
     preview.changedFiles.length ? `Changed: ${preview.changedFiles.slice(0, 3).join(", ")}` : undefined,
-    preview.checks.length ? `Verified: ${preview.checks.map((check) => `${check.command} [${check.status}]`).slice(0, 3).join(", ")}` : undefined,
+    preview.checks.length ? `Verified: ${preview.checks.map((check) => `${checkStatusBadge(check.status)} ${check.command}`).slice(0, 3).join(", ")}` : undefined,
     preview.blockers.length ? `Blockers: ${preview.blockers.slice(0, 2).join(", ")}` : undefined
   ];
   return lines.filter((line): line is string => Boolean(line)).map((line) => clipDisplay(line, width));
+}
+
+function checkStatusBadge(status: ResultPreview["checks"][number]["status"]): string {
+  switch (status) {
+    case "passed": return "[OK]";
+    case "failed": return "[ERR]";
+    case "running": return "[RUN]";
+    case "skipped": return "[SKIP]";
+    case "unknown": return "[--]";
+  }
 }
 
 export function statusBadge(status: WorkerBoardRow["status"]): string {

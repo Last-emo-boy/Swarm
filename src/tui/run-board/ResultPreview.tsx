@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "../ui.js";
-import { visualTokenColor } from "../theme.js";
+import { statusBadge, visualTokenColor } from "../theme.js";
 import { SemanticTextLine } from "../components/SemanticTextLine.js";
 import type { ResultPreview as ResultPreviewData, RunBoardResultAction } from "./run-board-types.js";
 import { RunBoardPanel } from "./RunBoardSurface.js";
@@ -28,7 +28,7 @@ export function ResultPreview(props: {
       {preview.checks.length ? (
         <PreviewLine
           label="Verified"
-          value={preview.checks.slice(0, 3).map((check) => `${check.command} [${check.status}]`).join(", ")}
+          value={preview.checks.slice(0, 3).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ")}
         />
       ) : null}
       {preview.blockers.length ? <PreviewLine label="Blockers" value={preview.blockers.slice(0, 2).join(", ")} /> : null}
