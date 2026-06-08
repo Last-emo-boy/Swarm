@@ -90,10 +90,25 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /RESULT PREVIEW/);
   assert.match(text, /\[Team 2\]/);
   assert.match(text, /\[Stuck 1\]/);
-  assert.match(text, /\[Checks 0\/0\]/);
+  assert.doesNotMatch(text, /\[Checks 0\/0\]/);
+  assert.doesNotMatch(text, /\[Files 0\]/);
+  assert.doesNotMatch(text, /\[Approvals 0\]/);
   assert.match(text, /\[Details Enter\]/);
   assert.doesNotMatch(text, /Observatory Enter/);
   assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP/);
+});
+
+test("RunBoardSurface keeps the idle footer quiet", () => {
+  const frame = renderTuiToFrame(React.createElement(RunBoardSurface, { view: idleView() }), { columns: 100, rows: 16 });
+  const text = frameText(frame);
+
+  assert.match(text, /Waiting for your first task\./);
+  assert.doesNotMatch(text, /\[Team 0\]/);
+  assert.doesNotMatch(text, /\[Blocked 0\]/);
+  assert.doesNotMatch(text, /\[Files 0\]/);
+  assert.doesNotMatch(text, /\[Checks 0\/0\]/);
+  assert.doesNotMatch(text, /\[Approvals 0\]/);
+  assert.doesNotMatch(text, /\[Details Enter\]/);
 });
 
 test("RunBoardSurface stays bounded across rollout viewports", () => {
@@ -259,6 +274,27 @@ function fixtureView(): RunBoardSurfaceView {
       artifacts: [],
       blockers: [],
       confidence: "medium",
+      contributors: [],
+      risks: [],
+      nextActions: []
+    }
+  };
+}
+
+function idleView(): RunBoardSurfaceView {
+  return {
+    title: "Swarm Board",
+    phase: "idle",
+    workers: [],
+    attention: [],
+    resultPreview: {
+      status: "empty",
+      summary: "Waiting for your first task.",
+      changedFiles: [],
+      checks: [],
+      artifacts: [],
+      blockers: [],
+      confidence: "low",
       contributors: [],
       risks: [],
       nextActions: []

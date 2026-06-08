@@ -85,13 +85,27 @@ function headerMetaText(view: RunBoardSurfaceView): string {
 }
 
 function RunBoardFooter(props: { view: RunBoardSurfaceView }): React.ReactElement {
-  const counts = summarizeRunBoardViewCounts(props.view);
-  const blockedOrStuck = counts.stuck > 0 ? `[Stuck ${counts.stuck}]` : `[Blocked ${counts.blocked}]`;
+  const chips = runBoardFooterChips(props.view);
+  if (!chips.length) {
+    return <React.Fragment />;
+  }
   return (
     <Box flexDirection="row" width="100%" marginTop={0}>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {[`[Team ${counts.workers}]`, blockedOrStuck, `[Files ${counts.files}]`, `[Checks ${counts.passedChecks}/${counts.checks}]`, `[Approvals ${counts.approvals}]`, "[Details Enter]"].join(" ")}
+        {chips.join(" ")}
       </Text>
     </Box>
   );
+}
+
+function runBoardFooterChips(view: RunBoardSurfaceView): string[] {
+  const counts = summarizeRunBoardViewCounts(view);
+  const chips = [
+    counts.workers > 0 ? `[Team ${counts.workers}]` : undefined,
+    counts.stuck > 0 ? `[Stuck ${counts.stuck}]` : counts.blocked > 0 ? `[Blocked ${counts.blocked}]` : undefined,
+    counts.files > 0 ? `[Files ${counts.files}]` : undefined,
+    counts.checks > 0 ? `[Checks ${counts.passedChecks}/${counts.checks}]` : undefined,
+    counts.approvals > 0 ? `[Approvals ${counts.approvals}]` : undefined
+  ].filter((chip): chip is string => Boolean(chip));
+  return chips.length ? [...chips, "[Details Enter]"] : [];
 }
