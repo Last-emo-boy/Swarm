@@ -34,7 +34,6 @@ export function ResultPreview(props: {
       ) : null}
       {preview.blockers.length ? <PreviewLine label="Blockers" value={preview.blockers.slice(0, 2).join(", ")} /> : null}
       {preview.artifacts.length ? <PreviewLine label="Artifacts" value={preview.artifacts.slice(0, 2).join(", ")} /> : null}
-      {preview.status !== "empty" ? <PreviewLine label="Confidence" value={preview.confidence} /> : null}
       {preview.contributors.length ? (
         <PreviewLine
           label="Contributors"
