@@ -63,7 +63,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /REVIEW \[WARN\] Review found a narrow viewport risk\./);
   assert.match(plain, /RISKS high: One verification check failed\./);
   assert.match(plain, /RECOVERY \[provider_rate_limit\/warning\/retry\]/);
-  assert.match(plain, /ARTIFACTS 2 saved/);
+  assert.match(plain, /ARTIFACTS saved/);
   assert.match(plain, /⎿ artifact\s+E:\/Playground\/Swarm\/\.swarm\/reports\/check\.report\.json/);
   assert.match(plain, /NEXT rerun focused tests/);
   assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);

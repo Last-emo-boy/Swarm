@@ -95,7 +95,7 @@ export function ResultCard(props: {
         <React.Fragment>
           <SectionLine
             section="artifacts"
-            value={`${visibleArtifacts.length} saved`}
+            value="saved"
             meta={card.artifacts.length > visibleArtifacts.length ? `+${card.artifacts.length - visibleArtifacts.length}` : undefined}
           />
           {visibleArtifacts.map((artifact, index) => (
