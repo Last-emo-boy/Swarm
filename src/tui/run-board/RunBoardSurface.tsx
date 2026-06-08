@@ -19,7 +19,7 @@ export function RunBoardSurface(props: {
   const view = props.view;
   return (
     <Box flexDirection="column" width="100%">
-      <RunBoardPanel title={view.title === "Swarm Board" ? "Run Summary" : view.title}>
+      <RunBoardPanel title={view.title === "Swarm Board" ? "Work" : view.title}>
         {view.objective ? <HeaderObjectiveLine view={view} /> : <SwarmBoardMetaLine view={view} />}
         <Text color={visualTokenColor("text.muted")} wrap="truncate">Phase      {view.phase}</Text>
         {view.focus ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
@@ -90,7 +90,7 @@ function RunBoardFooter(props: { view: RunBoardSurfaceView }): React.ReactElemen
   return (
     <Box flexDirection="row" width="100%" marginTop={0}>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {[`[Workers ${counts.workers}]`, blockedOrStuck, `[Files ${counts.files}]`, `[Checks ${counts.passedChecks}/${counts.checks}]`, `[Approvals ${counts.approvals}]`, "[Detail Enter]"].join(" ")}
+        {[`[Workers ${counts.workers}]`, blockedOrStuck, `[Files ${counts.files}]`, `[Checks ${counts.passedChecks}/${counts.checks}]`, `[Approvals ${counts.approvals}]`, "[Details Enter]"].join(" ")}
       </Text>
     </Box>
   );
