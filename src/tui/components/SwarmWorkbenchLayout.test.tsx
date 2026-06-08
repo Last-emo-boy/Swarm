@@ -46,7 +46,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   }), { columns: 160, rows: 32 });
   const text = frameText(frame);
 
-  assert.match(text, /Swarm >_/);
+  assert.doesNotMatch(text, /Swarm >_/);
   assert.doesNotMatch(text, /Local Agent Workspace/);
   assert.doesNotMatch(text, /●/);
   assert.match(text, /Inbox/);

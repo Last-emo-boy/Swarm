@@ -270,8 +270,7 @@ function LeftSidebar({
       paddingX={1}
       overflow="hidden"
     >
-      <Text color={visualTokenColor("brand.focus")} bold>Swarm &gt;_</Text>
-      <SidebarSection title="Inbox" width={width} marginTop={1}>
+      <SidebarSection title="Inbox" width={width} marginTop={0}>
         {primaryNavigation.map((item) => (
           <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} primary />
         ))}

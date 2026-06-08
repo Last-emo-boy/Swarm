@@ -47,11 +47,8 @@ test("workbench visual snapshot covers result approval inspector action log and 
     assert.doesNotMatch(text, /checkpoint before-tui-polish/);
     assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP|Skills & Automations|Workers:|Automations/);
 
-    if (text.includes("Swarm >_")) {
-      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm >_"), "Swarm")?.color, resolveTuiColor("brand.focus"));
-    } else {
-      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Result"), "Result")?.color, resolveTuiColor("brand.focus"));
-    }
+    assert.doesNotMatch(text, /Swarm >_/);
+    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Result"), "Result")?.color, resolveTuiColor("brand.focus"));
     if (text.includes("CHECKS")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
     }
