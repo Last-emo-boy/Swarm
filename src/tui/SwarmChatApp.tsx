@@ -7138,7 +7138,12 @@ function workbenchStatusSubtitle(input: {
   progress?: string;
 }): string {
   const status = input.executing ? "Executing" : "Waiting";
-  const base = `Run: ${status}  Helpers: ${Math.max(0, input.workerCount)}  Files: ${Math.max(0, input.fileCount)}  Approvals: ${Math.max(0, input.approvalCount)}`;
+  const counts = [
+    input.workerCount > 0 ? `Helpers: ${input.workerCount}` : undefined,
+    input.fileCount > 0 ? `Files: ${input.fileCount}` : undefined,
+    input.approvalCount > 0 ? `Approvals: ${input.approvalCount}` : undefined
+  ].filter((part): part is string => Boolean(part));
+  const base = [`Run: ${status}`, ...counts].join("  ");
   if (!input.executing) {
     return base;
   }
