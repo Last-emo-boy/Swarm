@@ -45,6 +45,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
       assert.doesNotMatch(text, /Workspace Write|Provider: openai|kimi-k2\.6/);
     }
     assert.match(text, /Ask Swarm/);
+    assert.doesNotMatch(text, /checkpoint before-tui-polish/);
     assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP|Skills & Automations|Workers:/);
 
     if (text.includes("Swarm >_")) {

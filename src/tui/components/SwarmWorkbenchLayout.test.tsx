@@ -68,6 +68,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /\[RW\s+\]/);
   assert.doesNotMatch(text, /Workspace Write/);
   assert.doesNotMatch(text, /model\s+Provider: local-test/);
+  assert.doesNotMatch(text, /lease: workspace/);
   assert.doesNotMatch(text, /Runtime/);
   assert.doesNotMatch(text, /Selected Lease/);
   assert.doesNotMatch(text, /Tasks \[|Workers \[|Activity \[|Output \[|Skills \[|Automations \[/);
@@ -137,6 +138,52 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
   assert.match(text, /Workspace/);
   assert.match(text, /Navigation/);
   assert.doesNotMatch(text, /Cases|\(none\)|View all cases|No checkpoint yet/);
+});
+
+test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facing notes", () => {
+  const internal = frameText(renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm", git: "checkpoint before-polish", status: "active" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 }));
+  assert.doesNotMatch(internal, /checkpoint before-polish/);
+
+  const visible = frameText(renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm", git: "branch main clean", status: "active" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 }));
+  assert.match(visible, /branch main clean/);
 });
 
 test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible", () => {

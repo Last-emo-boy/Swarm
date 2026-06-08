@@ -260,6 +260,7 @@ function LeftSidebar({
   onNavigate?: (id: string) => void;
   onSelectSession?: (id: string) => void;
 }): React.ReactElement {
+  const workspaceMeta = visibleWorkspaceMeta(workspace.git);
   return (
     <ThemedBox
       width={width}
@@ -292,9 +293,9 @@ function LeftSidebar({
           <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
           {workspace.status ? <Text color={visualTokenColor(workspace.path === "no workspace" ? "status.warning" : "status.success")}> *</Text> : null}
         </Text>
-        {workspace.git ? (
+        {workspaceMeta ? (
           <Text color={visualTokenColor("text.muted")} wrap="truncate">
-            {workspace.git}
+            {workspaceMeta}
           </Text>
         ) : null}
       </SidebarSection>
@@ -306,6 +307,17 @@ function LeftSidebar({
       </SidebarSection>
     </ThemedBox>
   );
+}
+
+function visibleWorkspaceMeta(value: string | undefined): string | undefined {
+  const meta = value?.trim();
+  if (!meta) {
+    return undefined;
+  }
+  if (/^(checkpoint\b|lease:)/iu.test(meta)) {
+    return undefined;
+  }
+  return meta;
 }
 
 function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionItem; width: number; onSelect?: (id: string) => void }): React.ReactElement {
