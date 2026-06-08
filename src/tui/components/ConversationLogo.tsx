@@ -25,6 +25,12 @@ export function ConversationLogo(props: {
           {cwd}
         </Text>
       </Box>
+      <Box flexDirection="column" width="100%" marginTop={compact ? 0 : 1}>
+        <Text wrap="truncate">
+          {!compact && <Text color={visualTokenColor("text.muted")}>Start with </Text>}
+          <Text color={visualTokenColor("brand.focus")}>/review auth and permissions</Text>
+        </Text>
+      </Box>
     </Box>
   );
 }
