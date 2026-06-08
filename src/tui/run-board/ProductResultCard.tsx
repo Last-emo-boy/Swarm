@@ -89,7 +89,7 @@ function ProductResultBody(props: {
       <ResultLine label="Status" spans={[
         { text: statusBadge(view.status), color: view.status === "success" ? "status.success" : view.status === "failed" ? "status.danger" : "status.warning", bold: true },
         { text: " ", color: "text.muted" },
-        { text: view.runtimeStatus ?? view.status, color: "text.primary" }
+        { text: productStatusLabel(view.status), color: "text.primary" }
       ]} />
       <CheckpointLine view={view} />
       {shouldShowRiskLine(view) ? (
@@ -130,6 +130,16 @@ function ProductResultBody(props: {
 
 function shouldShowRiskLine(view: ProductResultCardView): boolean {
   return !(view.risk === "low" && view.riskSummary === "low");
+}
+
+function productStatusLabel(status: ProductResultCardView["status"]): string {
+  switch (status) {
+    case "success": return "Done";
+    case "partial": return "Needs review";
+    case "failed": return "Failed";
+    case "cancelled": return "Stopped";
+    case "preview": return "Working";
+  }
 }
 
 function CheckpointLine(props: { view: ProductResultCardView }): React.ReactElement | null {
