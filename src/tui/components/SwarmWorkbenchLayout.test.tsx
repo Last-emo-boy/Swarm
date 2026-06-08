@@ -54,6 +54,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /Navigation/);
   assert.doesNotMatch(text, /View all cases/);
   assert.match(text, /> Chat \[1\]/);
+  assert.equal(occurrences(text, "Chat [1]"), 1);
   assert.match(text, /Result \[2\]/);
   assert.match(text, /Build workbench 2m !1/);
   assert.doesNotMatch(text, /active Swarm/);
@@ -417,4 +418,8 @@ function findCell(frame: NonNullable<ReturnType<ReturnType<typeof createTuiRoot>
     }
   }
   return undefined;
+}
+
+function occurrences(value: string, needle: string): number {
+  return value.split(needle).length - 1;
 }

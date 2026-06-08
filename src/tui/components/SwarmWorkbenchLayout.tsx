@@ -261,6 +261,8 @@ function LeftSidebar({
   onSelectSession?: (id: string) => void;
 }): React.ReactElement {
   const workspaceMeta = visibleWorkspaceMeta(workspace.git);
+  const primaryNavigation = navigation.slice(0, 1);
+  const secondaryNavigation = navigation.slice(1);
   return (
     <ThemedBox
       width={width}
@@ -273,7 +275,7 @@ function LeftSidebar({
     >
       <Text color={visualTokenColor("brand.focus")} bold>Swarm &gt;_</Text>
       <SidebarSection title="Inbox" width={width} marginTop={1}>
-        {navigation.slice(0, 1).map((item) => (
+        {primaryNavigation.map((item) => (
           <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} primary />
         ))}
       </SidebarSection>
@@ -300,11 +302,13 @@ function LeftSidebar({
         ) : null}
       </SidebarSection>
 
-      <SidebarSection title="Navigation" width={width}>
-        {navigation.map((item) => (
-          <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} />
-        ))}
-      </SidebarSection>
+      {secondaryNavigation.length ? (
+        <SidebarSection title="Navigation" width={width}>
+          {secondaryNavigation.map((item) => (
+            <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} />
+          ))}
+        </SidebarSection>
+      ) : null}
     </ThemedBox>
   );
 }
