@@ -63,8 +63,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(text, /WORK/);
   assert.doesNotMatch(text, /Risk\s+low/);
   assert.doesNotMatch(text, /Changed\s+src\/runtime\/session-row\.ts/);
-  assert.match(text, /Verified\s+Passed/);
-  assert.doesNotMatch(text, /\[OK\] npm test -- session-row|npm test -- session-row/);
+  assert.doesNotMatch(text, /Verified\s+Passed|\[OK\] npm test -- session-row|npm test -- session-row/);
   assert.doesNotMatch(text, /Review\s+\[OK\] review passed/);
   assert.doesNotMatch(text, /Details\s+\d+ items\. Show details/);
   assert.doesNotMatch(text, /Evidence\s+4 items/);

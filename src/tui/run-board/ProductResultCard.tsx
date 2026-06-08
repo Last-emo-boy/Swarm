@@ -84,7 +84,7 @@ function ProductResultBody(props: {
   const view = props.view;
   const checkLimit = props.density === "compact" ? 2 : 4;
   const review = visibleReview(view);
-  const checkSummary = productCheckSummary(view.checks, checkLimit);
+  const checkSummary = productCheckSummary(view.checks, checkLimit, view.status);
   return (
     <Box flexDirection="column" width="100%">
       {view.status !== "success" ? (
@@ -136,7 +136,11 @@ function visibleReview(view: ProductResultCardView): ProductResultCardView["revi
   return review.status === "passed" && ["passed", "review passed"].includes(summary) ? undefined : review;
 }
 
-function productCheckSummary(checks: ProductResultCardView["checks"], limit: number): string | undefined {
+function productCheckSummary(
+  checks: ProductResultCardView["checks"],
+  limit: number,
+  status: ProductResultCardView["status"]
+): string | undefined {
   if (!checks.length) {
     return undefined;
   }
@@ -150,6 +154,9 @@ function productCheckSummary(checks: ProductResultCardView["checks"], limit: num
   }
   const passed = checks.some((check) => check.status === "passed");
   if (passed) {
+    if (status === "success" && !skipped.length) {
+      return undefined;
+    }
     return skipped.length ? "Passed; some skipped" : "Passed";
   }
   return checks.some((check) => check.status === "running") ? "Checking" : "Pending";
