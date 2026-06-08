@@ -3,6 +3,7 @@ import test from "node:test";
 import { displayWidth } from "../display-width.js";
 import { formatAttentionItem, formatResultPreview, formatWorkerRow } from "./run-board-row-format.js";
 import type { AttentionItemView, ResultPreview, WorkerBoardRow } from "./run-board-types.js";
+import { workerRowSpans } from "./WorkerRow.js";
 
 test("worker row formatter respects terminal width budgets", () => {
   const row: WorkerBoardRow = {
@@ -28,6 +29,29 @@ test("worker row formatter respects terminal width budgets", () => {
     assert(line.indexOf("running") < line.indexOf("01:12"), `${columns}: expected action before elapsed age`);
     assert.doesNotMatch(line, /\bactive\b/);
   }
+});
+
+test("worker row hides evidence that repeats the current action", () => {
+  const row: WorkerBoardRow = {
+    id: "worker:test",
+    label: "Test Runner",
+    role: "test",
+    status: "active",
+    currentAction: "running focused test",
+    lastEvidence: " running   focused test ",
+    elapsedMs: 12_000,
+    owns: [],
+    risk: "low",
+    canStop: true,
+    canRetry: false,
+    canTakeBack: false
+  };
+
+  const line = formatWorkerRow(row, 120);
+  const spanText = workerRowSpans(row).map((span) => span.text).join("");
+
+  assert.equal((line.match(/running focused test/g) ?? []).length, 1);
+  assert.equal((spanText.match(/running focused test/g) ?? []).length, 1);
 });
 
 test("attention and result preview formatters keep next step visible", () => {

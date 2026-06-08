@@ -29,7 +29,7 @@ export function WorkerRow(props: {
 
 export function workerRowSpans(row: WorkerBoardRowData, selected = false): SemanticTextSpan[] {
   const tone = statusToneForRow(row.status);
-  const evidence = row.lastEvidence ?? (row.waitingOn ? `waiting on ${row.waitingOn}` : undefined);
+  const evidence = visibleWorkerEvidence(row);
   const role = collaborationRoleDescriptor(collaborationRoleForWorker(row));
   return [
     { text: role.badge, color: role.color, bold: true },
@@ -47,6 +47,18 @@ export function workerRowSpans(row: WorkerBoardRowData, selected = false): Seman
       ]
       : [])
   ];
+}
+
+function visibleWorkerEvidence(row: WorkerBoardRowData): string | undefined {
+  const evidence = row.lastEvidence ?? (row.waitingOn ? `waiting on ${row.waitingOn}` : undefined);
+  if (!evidence) {
+    return undefined;
+  }
+  return normalizedEvidence(evidence) === normalizedEvidence(row.currentAction) ? undefined : evidence;
+}
+
+function normalizedEvidence(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function statusToneForRow(status: WorkerBoardRowData["status"]): SemanticTextSpan["color"] {

@@ -5,8 +5,9 @@ export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
   const width = Math.max(40, Math.floor(columns));
   const badge = statusBadge(row.status);
   const elapsed = formatElapsed(row.elapsedMs);
-  const suffix = row.lastEvidence ? ` · ${row.lastEvidence}` : row.waitingOn ? ` · waits on ${row.waitingOn}` : "";
-  const action = row.waitingOn && !row.lastEvidence ? `${row.currentAction} (waiting on ${row.waitingOn})` : row.currentAction;
+  const visibleEvidence = visibleWorkerEvidence(row);
+  const suffix = visibleEvidence ? ` · ${visibleEvidence}` : "";
+  const action = row.waitingOn && !visibleEvidence ? `${row.currentAction} (waiting on ${row.waitingOn})` : row.currentAction;
   if (width < 92) {
     return clipDisplay(`${badge} ${padRight(clipDisplay(row.label, 16), 16)} ${clipDisplay(action, 32)} ${elapsed}`, width);
   }
@@ -16,6 +17,18 @@ export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
   const actionBudget = Math.max(18, width - fixedWidth - evidenceBudget - 4);
   const evidence = suffix ? clipDisplay(suffix.replace(/^ · /, ""), evidenceBudget) : "";
   return clipDisplay(`${badge} ${label} ${clipDisplay(action, actionBudget)} ${elapsed}${evidence ? `  ${evidence}` : ""}`, width);
+}
+
+function visibleWorkerEvidence(row: WorkerBoardRow): string | undefined {
+  const evidence = row.lastEvidence ?? (row.waitingOn ? `waits on ${row.waitingOn}` : undefined);
+  if (!evidence) {
+    return undefined;
+  }
+  return normalizedEvidence(evidence) === normalizedEvidence(row.currentAction) ? undefined : evidence;
+}
+
+function normalizedEvidence(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 export function formatAttentionItem(item: AttentionItemView, columns = 100): string[] {
