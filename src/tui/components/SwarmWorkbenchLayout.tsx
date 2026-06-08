@@ -270,11 +270,7 @@ function LeftSidebar({
       paddingX={1}
       overflow="hidden"
     >
-      <SidebarSection title="Inbox" width={width} marginTop={0}>
-        {primaryNavigation.map((item) => (
-          <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} primary />
-        ))}
-      </SidebarSection>
+      <NavigationList items={primaryNavigation} width={width} onNavigate={onNavigate} primary marginTop={0} />
 
       {sessions.length ? (
         <SidebarSection title="Cases" width={width}>
@@ -379,16 +375,20 @@ function visibleCaseSubtitle(value: string | undefined): string | undefined {
 function NavigationList({
   items,
   width,
-  onNavigate
+  onNavigate,
+  primary = false,
+  marginTop = 1
 }: {
   items: SwarmWorkbenchNavigationItem[];
   width: number;
   onNavigate?: (id: string) => void;
+  primary?: boolean;
+  marginTop?: number;
 }): React.ReactElement {
   return (
-    <Box width="100%" flexDirection="column" marginTop={1} overflow="hidden">
+    <Box width="100%" flexDirection="column" marginTop={marginTop} overflow="hidden">
       {items.map((item) => (
-        <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} />
+        <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} primary={primary} />
       ))}
     </Box>
   );
