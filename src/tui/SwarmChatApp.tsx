@@ -4265,18 +4265,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           sandbox={workbenchSandboxCard(runSandboxMode)}
           model={workbenchModel}
           memory={{
-            title: taskTotal > 0 ? `${taskCompleted}/${taskTotal} tasks` : "Session not started",
-            subtitle: lastSessionId ? `Session ${shortId(lastSessionId)}` : "No saved context yet",
+            title: taskTotal > 0 ? `${taskCompleted}/${taskTotal} tasks` : "Ready",
+            subtitle: lastSessionId ? `Session ${shortId(lastSessionId)}` : undefined,
             badge: taskTotal > 0 ? currentPhase : undefined,
             tone: taskCompleted < taskTotal ? "status.running" : "text.muted"
           }}
           tools={workbenchTools}
           workers={workbenchWorkers}
           activity={{
-            title: `${workBoardSurface.summary.activeTasks} active · ${workBoardSurface.summary.blockers} blocked`,
-            subtitle: workBoardSurface.summary.activity[0] ?? "No activity yet",
-            badge: workBoardSurface.summary.blockers ? "RISK" : "READY",
-            tone: workBoardSurface.summary.blockers ? "status.warning" : "status.success"
+            title: workBoardSurface.summary.activeTasks || workBoardSurface.summary.blockers
+              ? `${workBoardSurface.summary.activeTasks} active · ${workBoardSurface.summary.blockers} blocked`
+              : "Ready",
+            subtitle: workBoardSurface.summary.activity[0],
+            badge: workBoardSurface.summary.blockers ? "RISK" : workBoardSurface.summary.activeTasks ? "ACTIVE" : undefined,
+            tone: workBoardSurface.summary.blockers ? "status.warning" : workBoardSurface.summary.activeTasks ? "status.running" : "text.muted"
           }}
           footer={workbenchFooterItems}
           centerBottomRows={bottomRows}
@@ -4333,18 +4335,20 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       sandbox={workbenchSandboxCard(runSandboxMode)}
       model={workbenchModel}
       memory={{
-        title: taskTotal > 0 ? `${taskCompleted}/${taskTotal} tasks` : "Session not started",
-        subtitle: lastSessionId ? `Session ${shortId(lastSessionId)}` : "No saved context yet",
+        title: taskTotal > 0 ? `${taskCompleted}/${taskTotal} tasks` : "Ready",
+        subtitle: lastSessionId ? `Session ${shortId(lastSessionId)}` : undefined,
         badge: taskTotal > 0 ? currentPhase : undefined,
         tone: taskCompleted < taskTotal ? "status.running" : "text.muted"
       }}
       tools={workbenchTools}
       workers={workbenchWorkers}
       activity={{
-        title: `${workBoardSurface.summary.activeTasks} active · ${workBoardSurface.summary.blockers} blocked`,
-        subtitle: workBoardSurface.summary.activity[0] ?? "No activity yet",
-        badge: workBoardSurface.summary.blockers ? "RISK" : "READY",
-        tone: workBoardSurface.summary.blockers ? "status.warning" : "status.success"
+        title: workBoardSurface.summary.activeTasks || workBoardSurface.summary.blockers
+          ? `${workBoardSurface.summary.activeTasks} active · ${workBoardSurface.summary.blockers} blocked`
+          : "Ready",
+        subtitle: workBoardSurface.summary.activity[0],
+        badge: workBoardSurface.summary.blockers ? "RISK" : workBoardSurface.summary.activeTasks ? "ACTIVE" : undefined,
+        tone: workBoardSurface.summary.blockers ? "status.warning" : workBoardSurface.summary.activeTasks ? "status.running" : "text.muted"
       }}
       footer={workbenchFooterItems}
       centerBottomRows={conversationBottomRows()}
