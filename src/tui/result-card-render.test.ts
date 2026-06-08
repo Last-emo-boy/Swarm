@@ -168,6 +168,7 @@ test("ResultCard decision trail hint dispatches mouse toggle", () => {
 
   const frame = root.getFrame();
   assert(frame);
+  assert.doesNotMatch(frameText(frame), /CHANGED\s+none/);
   const target = findCell(frame, "WHY");
   assert(target);
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });

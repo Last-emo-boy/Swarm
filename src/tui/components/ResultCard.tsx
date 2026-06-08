@@ -47,10 +47,12 @@ export function ResultCard(props: {
     <Box flexDirection="column" width="100%">
       <Text color={visualTokenColor("text.primary")} bold wrap="truncate">{sectionLabel("Result")}</Text>
       <SectionLine section="summary" value={density === "compact" ? compactValue(card.summary, 80) : card.summary} />
-      <SectionLine
-        section="changed"
-        value={card.changedFiles.length ? card.changedFiles.slice(0, density === "compact" ? 2 : 3).map((file) => compactValue(file, 44)).join(", ") : "none"}
-      />
+      {card.changedFiles.length > 0 ? (
+        <SectionLine
+          section="changed"
+          value={card.changedFiles.slice(0, density === "compact" ? 2 : 3).map((file) => compactValue(file, 44)).join(", ")}
+        />
+      ) : null}
       <SectionLine
         section="checks"
         tone={card.checks.some((check) => check.status === "failed") ? "danger" : card.checks.length ? "success" : "muted"}
