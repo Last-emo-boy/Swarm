@@ -12,9 +12,9 @@ test("ResultPreview keeps the empty state to one quiet line", () => {
 
   assert.match(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT PREVIEW/);
-  assert.match(text, /Waiting for your first task\./);
+  assert.match(text, /Ask Swarm to review, plan, or explain this workspace\./);
   assert.doesNotMatch(text, /Confidence\s+low/);
-  assert.doesNotMatch(text, /waiting\s+Waiting for your first task/i);
+  assert.doesNotMatch(text, /empty\s+Ask Swarm/i);
   assert.doesNotMatch(text, /No activity yet\./);
   assert.doesNotMatch(text, /Activity\s+No activity/);
 });
@@ -113,7 +113,7 @@ function previewFixture(): ResultPreviewData {
 function emptyPreview(): ResultPreviewData {
   return {
     status: "empty",
-    summary: "Waiting for your first task.",
+    summary: "Ask Swarm to review, plan, or explain this workspace.",
     changedFiles: [],
     checks: [],
     artifacts: [],

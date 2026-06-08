@@ -106,7 +106,7 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
   const frame = renderTuiToFrame(React.createElement(RunBoardSurface, { view: idleView() }), { columns: 100, rows: 16 });
   const text = frameText(frame);
 
-  assert.match(text, /Waiting for your first task\./);
+  assert.match(text, /Ask Swarm to review, plan, or explain this workspace\./);
   assert.doesNotMatch(text, /Phase\s+idle/);
   assert.doesNotMatch(text, /PROGRESS/);
   assert.doesNotMatch(text, /No workers yet/);
@@ -301,7 +301,7 @@ function idleView(): RunBoardSurfaceView {
     attention: [],
     resultPreview: {
       status: "empty",
-      summary: "Waiting for your first task.",
+      summary: "Ask Swarm to review, plan, or explain this workspace.",
       changedFiles: [],
       checks: [],
       artifacts: [],

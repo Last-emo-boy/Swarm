@@ -105,7 +105,7 @@ test("attention and result preview formatters keep next step visible", () => {
 test("result preview formatter keeps empty state quiet", () => {
   const preview: ResultPreview = {
     status: "empty",
-    summary: "Waiting for your first task.",
+    summary: "Ask Swarm to review, plan, or explain this workspace.",
     changedFiles: [],
     checks: [],
     artifacts: [],
@@ -117,6 +117,6 @@ test("result preview formatter keeps empty state quiet", () => {
   };
 
   const lines = formatResultPreview(preview, 80);
-  assert.deepEqual(lines, ["Result: Waiting for your first task."]);
+  assert.deepEqual(lines, ["Result: Ask Swarm to review, plan, or explain this workspace."]);
   assert(lines.every((line) => displayWidth(line) <= 80));
 });
