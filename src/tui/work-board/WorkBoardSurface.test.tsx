@@ -13,7 +13,8 @@ test("WorkBoardSurface renders board columns and selected task thread", () => {
   }), { rows: 24, columns: 120 });
   const text = frameText(frame);
 
-  assert.match(text, /OBSERVATORY/);
+  assert.match(text, /WORK/);
+  assert.doesNotMatch(text, /OBSERVATORY/);
   assert.match(text, /Running 1/);
   assert.match(text, /Blocked 1/);
   assert.match(text, /T-101/);
@@ -32,11 +33,12 @@ test("WorkBoardSurface stays bounded in compact viewports", () => {
     const lines = frameText(frame).split("\n");
 
     assert(lines.every((line) => line.length <= columns), `${columns}: expected rows to fit`);
-    assert.match(lines.join("\n"), /OBSERVATORY/);
+    assert.match(lines.join("\n"), /WORK/);
+    assert.doesNotMatch(lines.join("\n"), /OBSERVATORY/);
   }
 });
 
-test("WorkBoardSurface keeps the empty Observatory quiet", () => {
+test("WorkBoardSurface keeps the empty work view quiet", () => {
   const frame = renderTuiToFrame(React.createElement(WorkBoardSurface, {
     view: emptyFixtureView(),
     rows: 12,
@@ -44,7 +46,8 @@ test("WorkBoardSurface keeps the empty Observatory quiet", () => {
   }), { rows: 12, columns: 100 });
   const text = frameText(frame);
 
-  assert.match(text, /OBSERVATORY/);
+  assert.match(text, /WORK/);
+  assert.doesNotMatch(text, /OBSERVATORY/);
   assert.match(text, /Nothing to review yet\./);
   assert.match(text, /details appear here when work needs inspection/i);
   assert.doesNotMatch(text, /0 active tasks|0 workers|0 approvals|team activity|blockers|checks|delivery evidence|activity:/i);

@@ -53,7 +53,7 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
       <Text wrap="truncate">
-        <Text color={visualTokenColor("brand.focus")} bold>{fit("OBSERVATORY", 16)}</Text>
+        <Text color={visualTokenColor("brand.focus")} bold>{fit("WORK", 16)}</Text>
         <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? "Quiet until there is work to inspect." : view.subtitle), Math.max(10, columns - 18))}</Text>
       </Text>
       {view.summary.activity[0] ? (
