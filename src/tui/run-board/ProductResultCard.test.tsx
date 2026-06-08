@@ -51,7 +51,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(text, /Status\s+\[OK\] completed/);
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
   assert.match(text, /Evidence\s+4 items\. Show team's work/);
-  assert.match(text, /NEXT\s+\/diff\s+\/commit/);
+  assert.match(text, /NEXT\s+Review changes\s+Commit when ready/);
+  assert.doesNotMatch(text, /NEXT\s+\/diff\s+\/commit/);
   assert.doesNotMatch(text, /NEXT\s+Show team's work/);
   assert.doesNotMatch(text, /WORKER SUMMARY/);
   assert.doesNotMatch(text, /Code Worker implemented patch/);
@@ -113,7 +114,7 @@ test("ProductResultCard dispatches final next action clicks", () => {
 
   const frame = root.getFrame();
   assert(frame);
-  const target = findLastCell(frame, "/commit");
+  const target = findLastCell(frame, "Commit when ready");
   assert(target, "expected final next action to render");
 
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
@@ -309,7 +310,7 @@ test("ProductResultCard renders checkpoint rollback status in the result report"
   const availableText = frameText(available);
 
   assert.match(availableText, /Checkpoint\s+Workspace checkpoint \[git\] revert available/);
-  assert.match(availableText, /NEXT\s+Undo latest change\s+\/diff/);
+  assert.match(availableText, /NEXT\s+Undo latest change\s+Review changes/);
 
   const unavailable = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {

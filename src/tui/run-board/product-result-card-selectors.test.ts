@@ -83,7 +83,7 @@ test("product result selector projects final card worker summary and attention h
   assert.equal(view.checkpoint?.revertAvailable, true);
   assert.deepEqual(view.decisionTrail?.assign, ["Code Worker owns patch"]);
   assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["final:/revert last", "final:/diff", "final:/commit"]);
-  assert.equal(view.nextActions[0]?.label, "Undo latest change");
+  assert.deepEqual(view.nextActions.map((item) => item.label), ["Undo latest change", "Review changes", "Commit when ready"]);
 });
 
 test("product result selector can disable decision trail for collaboration rollback", () => {

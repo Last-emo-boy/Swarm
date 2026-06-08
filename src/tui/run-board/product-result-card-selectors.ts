@@ -171,9 +171,22 @@ function finalNextActions(card: ResultCard): RunBoardResultAction[] {
 }
 
 function labelForFinalAction(command: string): string {
-  return command.trim().toLowerCase() === "/revert last"
-    ? "Undo latest change"
-    : command;
+  switch (command.trim().toLowerCase()) {
+    case "/revert last":
+      return "Undo latest change";
+    case "/diff":
+      return "Review changes";
+    case "/commit":
+      return "Commit when ready";
+    case "/output":
+      return "Open output";
+    case "/continue":
+      return "Continue work";
+    case "/debug latest":
+      return "Inspect latest issue";
+    default:
+      return command;
+  }
 }
 
 function uniqueCommands(commands: string[]): string[] {
