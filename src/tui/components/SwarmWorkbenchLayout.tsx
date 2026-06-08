@@ -147,8 +147,10 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
     centerBottomRows: props.centerBottomRows
   });
   const centerBottomRows = Math.max(1, props.centerBottomRows);
+  const centerHeaderRows = visibleCenterHeaderRows(props.subtitle, props.headerDetail);
   if (!metrics.enabled) {
     const compactMainRows = Math.max(4, metrics.bodyRows - centerBottomRows);
+    const compactContentRows = Math.max(1, compactMainRows - centerHeaderRows);
     return (
       <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
         <WorkbenchTitleBar columns={metrics.columns} />
@@ -156,7 +158,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
           <CenterHeader title={props.title} subtitle={props.subtitle} detail={props.headerDetail} columns={Math.max(20, metrics.columns - 2)} />
           <Box width="100%" flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden">
             {props.renderCenterContent({
-              rows: Math.max(1, compactMainRows - CENTER_HEADER_ROWS),
+              rows: compactContentRows,
               columns: Math.max(20, metrics.columns - 2)
             })}
           </Box>
@@ -184,6 +186,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
   });
   const centerColumns = showRightRail ? metrics.centerColumns : metrics.centerColumns + metrics.rightColumns + 1;
   const centerInnerColumns = Math.max(20, centerColumns - CENTER_BORDER_COLUMNS - CENTER_PADDING_COLUMNS);
+  const centerMainRows = Math.max(4, metrics.centerMainRows + (CENTER_HEADER_ROWS - centerHeaderRows));
   return (
     <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
       <WorkbenchTitleBar columns={metrics.columns} />
@@ -208,9 +211,9 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
             overflow="hidden"
           >
             <CenterHeader title={props.title} subtitle={props.subtitle} detail={props.headerDetail} columns={centerInnerColumns} />
-            <Box width="100%" height={metrics.centerMainRows} flexDirection="column" overflow="hidden">
+            <Box width="100%" height={centerMainRows} flexDirection="column" overflow="hidden">
               {props.renderCenterContent({
-                rows: metrics.centerMainRows,
+                rows: centerMainRows,
                 columns: centerInnerColumns
               })}
             </Box>
@@ -470,18 +473,28 @@ function CenterHeader({ title, subtitle, detail, columns }: { title: string; sub
   const visibleSubtitle = subtitle === undefined ? undefined : visibleCenterHeaderSubtitle(subtitle);
   const visibleDetail = visibleCenterHeaderDetail(detail);
   return (
-    <Box width="100%" height={CENTER_HEADER_ROWS} flexDirection="column" overflow="hidden">
+    <Box width="100%" height={visibleCenterHeaderRows(subtitle, detail)} flexDirection="column" overflow="hidden">
       <Text wrap="truncate">
         <Text color={visualTokenColor("brand.focus")} bold>{fitText(title, Math.max(12, columns - 2))}</Text>
       </Text>
-      <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {visibleSubtitle ?? ""}
-      </Text>
-      <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {visibleDetail ?? ""}
-      </Text>
+      {visibleSubtitle ? (
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
+          {visibleSubtitle}
+        </Text>
+      ) : null}
+      {visibleDetail ? (
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
+          {visibleDetail}
+        </Text>
+      ) : null}
     </Box>
   );
+}
+
+function visibleCenterHeaderRows(subtitle: string | undefined, detail: string | undefined): number {
+  const visibleSubtitle = subtitle === undefined ? undefined : visibleCenterHeaderSubtitle(subtitle);
+  const visibleDetail = visibleCenterHeaderDetail(detail);
+  return 1 + (visibleSubtitle ? 1 : 0) + (visibleDetail ? 1 : 0);
 }
 
 function visibleCenterHeaderSubtitle(value: string): string | undefined {
