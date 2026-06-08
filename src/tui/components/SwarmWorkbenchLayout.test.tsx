@@ -442,6 +442,43 @@ test("SwarmWorkbenchLayout passes actual center dimensions to render props", () 
   assert.deepEqual(bottomInputs, [{ rows: 4, columns: 83 }]);
 });
 
+test("SwarmWorkbenchLayout gives empty right rail space back to the center", () => {
+  const contentInputs: Array<{ rows: number; columns: number }> = [];
+  const bottomInputs: Array<{ rows: number; columns: number }> = [];
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Board",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    activity: { title: "Ready", badge: "READY" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: (input) => {
+      contentInputs.push(input);
+      return React.createElement(Text, null, `${input.rows}x${input.columns}`);
+    },
+    renderCenterBottom: (input) => {
+      bottomInputs.push(input);
+      return React.createElement(Text, null, `${input.rows}x${input.columns}`);
+    }
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.deepEqual(contentInputs, [{ rows: 21, columns: 120 }]);
+  assert.deepEqual(bottomInputs, [{ rows: 4, columns: 120 }]);
+  assert.doesNotMatch(text, /Status|Access|Workspace Write|Agent/);
+});
+
 test("SwarmWorkbenchLayout navigation rows are clickable", () => {
   const clicked: string[] = [];
   const root = createTuiRoot({

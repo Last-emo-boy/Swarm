@@ -171,6 +171,19 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
       </Box>
     );
   }
+  const showRightRail = hasVisibleRightRailContent({
+    mode: props.mode,
+    runtime: props.runtime,
+    permission: props.permission,
+    sandbox: props.sandbox,
+    model: props.model,
+    memory: props.memory,
+    activity: props.activity,
+    tools: props.tools,
+    workers: props.workers
+  });
+  const centerColumns = showRightRail ? metrics.centerColumns : metrics.centerColumns + metrics.rightColumns + 1;
+  const centerInnerColumns = Math.max(20, centerColumns - CENTER_BORDER_COLUMNS - CENTER_PADDING_COLUMNS);
   return (
     <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
       <WorkbenchTitleBar version={props.version} columns={metrics.columns} />
@@ -184,7 +197,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
           onNavigate={props.onNavigate}
           onSelectSession={props.onSelectSession}
         />
-        <Box width={metrics.centerColumns} height={metrics.bodyRows} marginLeft={1} marginRight={1} overflow="hidden">
+        <Box width={centerColumns} height={metrics.bodyRows} marginLeft={1} marginRight={showRightRail ? 1 : 0} overflow="hidden">
           <ThemedBox
             width="100%"
             height="100%"
@@ -194,34 +207,36 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
             paddingX={1}
             overflow="hidden"
           >
-            <CenterHeader title={props.title} subtitle={props.subtitle} detail={props.headerDetail} columns={metrics.centerInnerColumns} />
+            <CenterHeader title={props.title} subtitle={props.subtitle} detail={props.headerDetail} columns={centerInnerColumns} />
             <Box width="100%" height={metrics.centerMainRows} flexDirection="column" overflow="hidden">
               {props.renderCenterContent({
                 rows: metrics.centerMainRows,
-                columns: metrics.centerInnerColumns
+                columns: centerInnerColumns
               })}
             </Box>
             <Box width="100%" height={centerBottomRows} flexDirection="column" overflow="hidden">
               {props.renderCenterBottom({
                 rows: centerBottomRows,
-                columns: metrics.centerInnerColumns
+                columns: centerInnerColumns
               })}
             </Box>
           </ThemedBox>
         </Box>
-        <RightRail
-          width={metrics.rightColumns}
-          height={metrics.bodyRows}
-          mode={props.mode}
-          runtime={props.runtime}
-          permission={props.permission}
-          sandbox={props.sandbox}
-          model={props.model}
-          memory={props.memory}
-          activity={props.activity}
-          tools={props.tools}
-          workers={props.workers}
-        />
+        {showRightRail ? (
+          <RightRail
+            width={metrics.rightColumns}
+            height={metrics.bodyRows}
+            mode={props.mode}
+            runtime={props.runtime}
+            permission={props.permission}
+            sandbox={props.sandbox}
+            model={props.model}
+            memory={props.memory}
+            activity={props.activity}
+            tools={props.tools}
+            workers={props.workers}
+          />
+        ) : null}
       </Box>
       <WorkbenchFooter items={props.footer} columns={metrics.columns} />
     </Box>
@@ -546,6 +561,37 @@ function RightRail({
       {visibleTools.length ? <ToolSection tools={visibleTools} width={width} compact={compact} /> : null}
     </ThemedBox>
   );
+}
+
+function hasVisibleRightRailContent({
+  mode,
+  runtime,
+  permission,
+  sandbox,
+  model,
+  memory,
+  activity,
+  tools,
+  workers
+}: {
+  mode: SwarmWorkbenchInfoCard;
+  runtime?: SwarmWorkbenchInfoCard;
+  permission: SwarmWorkbenchInfoCard;
+  sandbox: SwarmWorkbenchInfoCard;
+  model: SwarmWorkbenchInfoCard;
+  memory: SwarmWorkbenchInfoCard;
+  activity?: SwarmWorkbenchInfoCard;
+  tools: SwarmWorkbenchToolItem[];
+  workers: SwarmWorkbenchWorkerItem[];
+}): boolean {
+  const statusCard = activity ?? runtime ?? memory;
+  return isVisibleWorkbenchStatus(statusCard)
+    || isVisibleWorkbenchMode(mode)
+    || isVisibleWorkbenchAccess(permission)
+    || isVisibleWorkbenchSandbox(sandbox)
+    || workers.length > 0
+    || isVisibleWorkbenchAgent(model)
+    || tools.some(isVisibleWorkbenchTool);
 }
 
 function InfoSection({
