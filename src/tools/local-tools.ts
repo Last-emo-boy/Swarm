@@ -6038,7 +6038,7 @@ function notebookEditModeInput(value: unknown): "replace" | "insert" | "delete" 
 function blackboardEntryTypeInput(value: unknown): import("../protocol/types.js").BlackboardEntry["type"] {
   const normalized = optionalBlackboardEntryTypeInput(value);
   if (!normalized) {
-    throw new Error("Blackboard entry type must be one of plan, observation, evidence, result, critique, decision, artifact");
+    throw new Error("Shared fact type must be one of plan, observation, evidence, result, critique, decision, artifact");
   }
   return normalized;
 }

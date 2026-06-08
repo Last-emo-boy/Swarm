@@ -466,6 +466,10 @@ test("shared fact tools return product-facing validation errors", async () => {
       () => normalizeToolAction({ action: "BlackboardRead" }),
       /Reading a shared fact requires entry_id or key/
     );
+    assert.throws(
+      () => normalizeToolAction({ action: "BlackboardWrite", key: "decision/auth", type: "invalid", value: {} }),
+      /Shared fact type must be one of plan, observation, evidence, result, critique, decision, artifact/
+    );
 
     await assert.rejects(
       runLocalTool({
