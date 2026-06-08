@@ -18,7 +18,7 @@ export function ResultPreview(props: {
     source: "preview" as const
   }));
   return (
-    <RunBoardPanel title="Result Preview">
+    <RunBoardPanel title="Result">
       <SemanticTextLine wrap="truncate" spans={[
         { text: status, color: preview.status === "failed" ? "status.danger" : preview.status === "blocked" ? "status.warning" : "text.muted", bold: true },
         { text: " ", color: "text.muted" },

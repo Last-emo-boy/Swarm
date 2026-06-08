@@ -29,7 +29,7 @@ export function formatAttentionItem(item: AttentionItemView, columns = 100): str
 export function formatResultPreview(preview: ResultPreview, columns = 100): string[] {
   const width = Math.max(40, Math.floor(columns));
   const lines = [
-    `Result Preview: ${preview.summary}`,
+    `Result: ${preview.summary}`,
     preview.changedFiles.length ? `Changed: ${preview.changedFiles.slice(0, 3).join(", ")}` : undefined,
     preview.checks.length ? `Checks: ${preview.checks.map((check) => `${check.command} [${check.status}]`).slice(0, 3).join(", ")}` : undefined,
     preview.blockers.length ? `Blockers: ${preview.blockers.slice(0, 2).join(", ")}` : undefined,

@@ -10,6 +10,8 @@ test("ResultPreview keeps the empty state to one quiet line", () => {
   const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview: emptyPreview() }), { columns: 80, rows: 8 });
   const text = frameText(frame);
 
+  assert.match(text, /RESULT/);
+  assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.match(text, /Waiting for your first task\./);
   assert.doesNotMatch(text, /Confidence\s+low/);
   assert.doesNotMatch(text, /No activity yet\./);
@@ -21,6 +23,8 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview }), { columns: 100, rows: 12 });
   const text = frameText(frame);
 
+  assert.match(text, /RESULT/);
+  assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.match(text, /Next\s+Review changes\s+Commit when ready\s+Review this workspace/);
   assert.match(text, /Confidence\s+high/);
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);

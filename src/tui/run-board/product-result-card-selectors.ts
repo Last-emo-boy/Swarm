@@ -71,7 +71,7 @@ export function productResultCardViewFromParts(input: {
   if (!card) {
     return {
       status: "preview",
-      title: "Result Preview",
+      title: "Result",
       objective: input.objective,
       summary: input.preview.summary,
       changedFiles: input.preview.changedFiles,
