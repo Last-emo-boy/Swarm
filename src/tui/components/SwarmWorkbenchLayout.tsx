@@ -274,7 +274,7 @@ function LeftSidebar({
   const workspaceMeta = visibleWorkspaceMeta(workspace.git);
   const showWorkspace = isVisibleWorkspaceSection(workspace, workspaceMeta);
   const primaryNavigation = navigation.slice(0, 1);
-  const secondaryNavigation = navigation.slice(1);
+  const secondaryNavigation = navigation.slice(1).filter(isVisibleWorkbenchNavigationItem);
   return (
     <ThemedBox
       width={width}
@@ -429,6 +429,11 @@ function NavigationList({
       ))}
     </Box>
   );
+}
+
+function isVisibleWorkbenchNavigationItem(item: SwarmWorkbenchNavigationItem): boolean {
+  const label = item.label.trim().toLowerCase();
+  return item.active || label !== "logs";
 }
 
 function NavigationRow({
