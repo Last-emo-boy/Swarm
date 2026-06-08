@@ -399,7 +399,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [runMode, setRunMode] = useState<RunMode>("auto");
   const [runSandboxMode, setRunSandboxMode] = useState<RunSandboxMode>("workspace-write");
   const [tuiDensity, setTuiDensity] = useState<TuiDensityPreference>("auto");
-  const [mainPane, setMainPane] = useState<MainPaneId>("board");
+  const [mainPane, setMainPane] = useState<MainPaneId>("chat");
   const [conversationViewport, setConversationViewport] = useState<ConversationViewportState>(() => resetConversationViewport());
   const [actionLogScrollOffset, setActionLogScrollOffset] = useState(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState(0);
@@ -7144,7 +7144,7 @@ function workbenchStatusSubtitle(input: {
   progress?: string;
 }): string {
   const status = input.executing ? "Executing" : "Waiting";
-  const base = `Run: ${status}  Workers: ${Math.max(0, input.workerCount)}  Files: ${Math.max(0, input.fileCount)}  Approvals: ${Math.max(0, input.approvalCount)}`;
+  const base = `Run: ${status}  Helpers: ${Math.max(0, input.workerCount)}  Files: ${Math.max(0, input.fileCount)}  Approvals: ${Math.max(0, input.approvalCount)}`;
   if (!input.executing) {
     return base;
   }

@@ -65,10 +65,11 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /\[RW\s+\]/);
   assert.match(text, /Active helpers/);
   assert.match(text, /Tools/);
-  assert.match(text, /Skills/);
+  assert.match(text, /Approvals/);
   assert.doesNotMatch(text, /Runtime/);
   assert.doesNotMatch(text, /Selected Lease/);
-  assert.doesNotMatch(text, /Tasks \[|Workers \[|Activity \[|Output \[|Automations \[/);
+  assert.doesNotMatch(text, /Tasks \[|Workers \[|Activity \[|Output \[|Skills \[|Automations \[/);
+  assert.doesNotMatch(text, /Skills 3 ready|Automations|LSP/);
   assert.doesNotMatch(text, /Skills & Automations/);
   assert.doesNotMatch(text, /Activity Summary/);
   assert.match(text, /Ask Swarm prompt/);

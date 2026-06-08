@@ -40,22 +40,17 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   });
 
   try {
-    await waitFor(() => stripAnsi(output).includes("Reply to selected case or create the next case"), "initial prompt render");
-    await waitFor(() => stripAnsi(output).includes("[CASE]") || stripAnsi(output).includes("Reply to selected case"), "board case composer render");
-    await waitFor(() => stripAnsi(output).includes("Local Agent Workspace"), "workspace title render");
+    await waitFor(() => stripAnsi(output).includes("Ask Swarm"), "initial chat prompt render");
+    await waitFor(() => stripAnsi(output).includes("Chat"), "chat navigation render");
     const initialScreen = stripAnsi(output);
-    assert.match(initialScreen, /Cases are the workbench source of truth/);
-    assert.match(initialScreen, /WORK BOARD|No work items yet\./);
-    assert.match(initialScreen, /Board/);
-    assert.match(initialScreen, /Tasks/);
-    assert.match(initialScreen, /Workers/);
-    assert.match(initialScreen, /Activity/);
-    assert.match(initialScreen, /Output/);
-    assert.match(initialScreen, /Skills/);
-    assert.match(initialScreen, /Automations/);
-    assert.match(initialScreen, /Trace/);
+    assert.match(initialScreen, /Ask Swarm/);
     assert.match(initialScreen, /Chat/);
-    assert.match(initialScreen, /Run/);
+    assert.match(initialScreen, /Result/);
+    assert.match(initialScreen, /Observatory/);
+    assert.match(initialScreen, /Debug/);
+    assert.match(initialScreen, /Helpers: 0/);
+    assert.doesNotMatch(initialScreen, /Tasks \[|Team \[|Activity \[|Output \[|Skills \[|Automations \[/);
+    assert.doesNotMatch(initialScreen, /Workers:|Skills \d+ ready|Automations/);
     assert.doesNotMatch(initialScreen, /Overview|Blackboard|Attempts|run evidence|Current Mode|Active Tools|Model \/ Provider/);
     const secretPrompt = "secret phrase 123";
     stdin.emit("data", secretPrompt);

@@ -404,7 +404,7 @@ function RightRail({
   workers: SwarmWorkbenchWorkerItem[];
 }): React.ReactElement {
   const compact = height < 36;
-  const visibleTools = tools.filter((tool) => tool.active);
+  const visibleTools = tools.filter(isVisibleWorkbenchTool);
   return (
     <ThemedBox
       width={width}
@@ -468,6 +468,13 @@ function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchT
       ))}
     </SidebarSection>
   );
+}
+
+function isVisibleWorkbenchTool(tool: SwarmWorkbenchToolItem): boolean {
+  if (!tool.active) return false;
+  const status = tool.status?.trim().toLowerCase() ?? "";
+  if (!status) return true;
+  return status !== "on" && status !== "ready" && !status.endsWith(" ready");
 }
 
 function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]; width: number }): React.ReactElement {
