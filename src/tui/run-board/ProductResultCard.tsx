@@ -281,7 +281,7 @@ function DecisionTrailLines(props: {
   const itemLimit = props.density === "compact" ? 2 : 4;
   const value = props.expanded
     ? `showing ${sections.length} decisions`
-    : `${sections.length} decisions. Show details`;
+    : "Show decisions";
   return (
     <React.Fragment>
       <ResultLine label="Why" value={value} onClick={props.onToggle} />
@@ -323,7 +323,7 @@ function TeamReasoningLines(props: {
     : [];
   const value = props.expanded
     ? `showing ${items.length} details`
-    : `${items.length} items. Show details`;
+    : "Show details";
   return (
     <React.Fragment>
       <ResultLine

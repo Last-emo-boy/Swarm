@@ -85,7 +85,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const actionableText = frameText(actionable);
 
-  assert.match(actionableText, /Details\s+5 items\. Show details/);
+  assert.match(actionableText, /Details\s+Show details/);
 
   const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -217,7 +217,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   const frame = root.getFrame();
   assert(frame);
   const text = frameText(frame);
-  assert.match(text, /Why\s+5 decisions\. Show details/);
+  assert.match(text, /Why\s+Show decisions/);
   assert.doesNotMatch(text, /Objective adopted|Code Worker owns patch|focused test passed/);
   assert.doesNotMatch(text, /Ctrl\+O details|Trail\s+5 sections|split\s+Objective adopted/);
   const target = findLastCell(frame, "Why");
@@ -285,7 +285,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   }), { columns: 120, rows: 20 });
   const inertText = frameText(inert);
 
-  assert.doesNotMatch(inertText, /Why\s+5 decisions\. Show details/);
+  assert.doesNotMatch(inertText, /Why\s+Show decisions/);
 });
 
 test("ProductResultCard renders review findings as result-first report rows", () => {
