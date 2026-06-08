@@ -326,10 +326,9 @@ export function commandCandidatesForInput(
       .sort((a, b) => a.score - b.score || a.command.name.localeCompare(b.command.name))
       .map((item) => item.command);
   }
-  const visibleNamespaces = new Set<string>();
-  const baseCommands = options.includeAdvanced || query.length >= 2
+  const baseCommands = options.includeAdvanced
     ? slashCommands
-    : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name) || visibleNamespaces.has(command.name));
+    : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name));
   const commands = mergeSlashCommands(baseCommands, options.extraCommands ?? []);
   return commands
     .map((command) => ({ command, score: slashCommandScore(command, query) }))

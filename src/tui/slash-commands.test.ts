@@ -74,7 +74,7 @@ test("slash command candidates include required commands and aliases", () => {
   assert.equal(commandCandidatesForInput("/pla", 4)[0]?.name, "plan");
   assert.equal(commandCandidatesForInput("/rev", 4)[0]?.name, "review");
   assert.equal(commandCandidatesForInput("/appr", 5).some((command) => command.name === "approve"), true);
-  assert.equal(commandCandidatesForInput("/swa", 4)[0]?.name, "swarm");
+  assert.equal(commandCandidatesForInput("/swa", 4, { includeAdvanced: true })[0]?.name, "swarm");
   assert.equal(commandCandidatesForInput("/mail", 5, { includeAdvanced: true })[0]?.name, "mailbox");
 });
 
@@ -91,6 +91,17 @@ test("slash command candidates keep the empty menu on the main path", () => {
   assert(!names.includes("swarm"));
   assert(!names.includes("approval"));
   assert(!names.includes("density"));
+});
+
+test("slash command candidates keep advanced commands behind explicit detail", () => {
+  const defaultNames = commandCandidatesForInput("/sw", 3).map((command) => command.name);
+
+  assert(!defaultNames.includes("swarm"));
+  assert(!defaultNames.includes("symphony"));
+  assert(!defaultNames.includes("debug"));
+  assert(!defaultNames.includes("trace"));
+  assert.equal(commandCandidatesForInput("/sw", 3, { includeAdvanced: true }).some((command) => command.name === "swarm"), true);
+  assert.equal(commandCandidatesForInput("/symphony s", 11).some((command) => command.name === "status"), true);
 });
 
 test("slash command parser preserves raw args for operator commands", () => {
