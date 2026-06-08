@@ -734,11 +734,17 @@ function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]
       {workers.slice(0, 3).map((worker) => (
         <Text key={worker.id} wrap="truncate">
           <Text>{fitText(worker.label, Math.max(8, width - 16))}</Text>
-          <Text color={resolveTuiColor(worker.tone ?? "text.muted")}>  {workerStatusLabel(worker.status)}</Text>
+          {isVisibleWorkerStatus(worker.status) ? (
+            <Text color={resolveTuiColor(worker.tone ?? "text.muted")}>  {workerStatusLabel(worker.status)}</Text>
+          ) : null}
         </Text>
       ))}
     </Box>
   );
+}
+
+function isVisibleWorkerStatus(value: string): boolean {
+  return !["active", "running"].includes(value.trim().toLowerCase());
 }
 
 function SidebarSection({
