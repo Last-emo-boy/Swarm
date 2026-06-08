@@ -4,6 +4,7 @@ import { visualTokenColor } from "../theme.js";
 import { SemanticTextLine } from "../components/SemanticTextLine.js";
 import type { ResultPreview as ResultPreviewData, RunBoardResultAction } from "./run-board-types.js";
 import { RunBoardPanel } from "./RunBoardSurface.js";
+import { labelForRunBoardAction } from "./run-board-action-labels.js";
 
 export function ResultPreview(props: {
   preview: ResultPreviewData;
@@ -13,7 +14,7 @@ export function ResultPreview(props: {
   const status = previewStatusLabel(preview.status);
   const actions = preview.nextActions.slice(0, 3).map((command) => ({
     command,
-    label: command,
+    label: labelForRunBoardAction(command),
     source: "preview" as const
   }));
   return (

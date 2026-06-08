@@ -7,6 +7,7 @@ import type {
   RunBoardRisk
 } from "./run-board-types.js";
 import { selectAttentionHistory } from "./run-board-selectors.js";
+import { labelForRunBoardAction } from "./run-board-action-labels.js";
 
 export type ProductResultCardViewStatus = "success" | "partial" | "failed" | "cancelled" | "preview";
 
@@ -165,28 +166,9 @@ function finalNextActions(card: ResultCard): RunBoardResultAction[] {
   ]);
   return commands.map((command) => ({
     command,
-    label: labelForFinalAction(command),
+    label: labelForRunBoardAction(command),
     source: "final"
   }));
-}
-
-function labelForFinalAction(command: string): string {
-  switch (command.trim().toLowerCase()) {
-    case "/revert last":
-      return "Undo latest change";
-    case "/diff":
-      return "Review changes";
-    case "/commit":
-      return "Commit when ready";
-    case "/output":
-      return "Open output";
-    case "/continue":
-      return "Continue work";
-    case "/debug latest":
-      return "Inspect latest issue";
-    default:
-      return command;
-  }
 }
 
 function uniqueCommands(commands: string[]): string[] {
