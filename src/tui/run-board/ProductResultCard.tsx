@@ -230,25 +230,32 @@ function DecisionTrailLines(props: {
   if (!sections.length) {
     return null;
   }
-  const visibleSections = props.expanded
-    ? sections
-    : props.density === "compact" ? sections.slice(0, 2) : sections.slice(0, 3);
+  const visibleSections = props.expanded ? sections : [];
+  const itemLimit = props.density === "compact" ? 2 : 4;
   const value = props.expanded
-    ? `expanded ${sections.length} sections`
-    : `${sections.length} sections. Ctrl+O details`;
+    ? `showing ${sections.length} decisions`
+    : `${sections.length} decisions. Show details`;
   return (
     <React.Fragment>
-      <ResultLine label="Trail" value={value} onClick={props.onToggle} />
+      <ResultLine label="Why" value={value} onClick={props.onToggle} />
       {visibleSections.map((entry) => (
         <ResultLine
           key={`trail:${entry.section}`}
-          label={entry.section}
-          value={entry.items.slice(0, props.expanded ? 4 : 1).join(" | ")}
+          label={decisionTrailSectionLabel(entry.section)}
+          value={entry.items.slice(0, itemLimit).join(" | ")}
           onClick={props.onToggle}
         />
       ))}
     </React.Fragment>
   );
+}
+
+function decisionTrailSectionLabel(section: "split" | "assign" | "verify" | "decide" | "risk"): string {
+  if (section === "split") return "Plan";
+  if (section === "assign") return "Owner";
+  if (section === "verify") return "Check";
+  if (section === "decide") return "Decision";
+  return "Risk";
 }
 
 function TeamReasoningLines(props: {

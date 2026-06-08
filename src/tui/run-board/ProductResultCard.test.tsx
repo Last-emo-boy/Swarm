@@ -198,15 +198,48 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   const frame = root.getFrame();
   assert(frame);
   const text = frameText(frame);
-  assert.match(text, /Trail\s+5 sections\. Ctrl\+O details/);
-  assert.match(text, /split\s+Objective adopted/);
-  const target = findLastCell(frame, "Trail");
-  assert(target, "expected trail row to render");
+  assert.match(text, /Why\s+5 decisions\. Show details/);
+  assert.doesNotMatch(text, /Objective adopted|Code Worker owns patch|focused test passed/);
+  assert.doesNotMatch(text, /Ctrl\+O details|Trail\s+5 sections|split\s+Objective adopted/);
+  const target = findLastCell(frame, "Why");
+  assert(target, "expected why row to render");
 
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
 
   assert.deepEqual(clicked, ["trail"]);
   root.unmount();
+
+  const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
+    card: {
+      status: "completed",
+      sessionId: "sess-1",
+      route: "team",
+      summary: "Fixed session restore.",
+      changedFiles: ["src/runtime/session-row.ts"],
+      checks: [{ command: "npm test -- session-row", status: "passed" }],
+      review: { status: "passed", summary: "review passed" },
+      risks: [],
+      artifacts: [],
+      next: ["/diff"],
+      decisionTrail: {
+        split: ["Objective adopted"],
+        assign: ["Code Worker owns patch"],
+        verify: ["focused test passed"],
+        decide: ["Reviewer approved"],
+        risk: ["low: narrow change"]
+      }
+    },
+    preview: emptyPreview(),
+    attentionHistory: [],
+    decisionTrailExpanded: true
+  }), { columns: 120, rows: 20 });
+  const expandedText = frameText(expanded);
+
+  assert.match(expandedText, /Why\s+showing 5 decisions/);
+  assert.match(expandedText, /Plan\s+Objective adopted/);
+  assert.match(expandedText, /Owner\s+Code Worker owns patch/);
+  assert.match(expandedText, /Check\s+focused test passed/);
+  assert.doesNotMatch(expandedText, /split\s+Objective adopted|assign\s+Code Worker owns patch|verify\s+focused test passed/);
 });
 
 test("ProductResultCard renders review findings as result-first report rows", () => {
