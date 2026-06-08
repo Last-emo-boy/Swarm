@@ -3,7 +3,6 @@ import { Box, Text } from "../ui.js";
 import {
   checkStatusTone,
   compactValue,
-  routeBadge,
   sectionLabel,
   statusBadge,
   visualTokenColor
@@ -92,7 +91,7 @@ function ProductResultBody(props: {
         { text: " ", color: "text.muted" },
         { text: view.runtimeStatus ?? view.status, color: "text.primary" }
       ]} />
-      {view.sessionId && view.route ? <ResultLine label="Run" value={`${compactValue(view.sessionId, 18)}  ${routeBadge(view.route)}`} /> : null}
+      {view.sessionId ? <ResultLine label="Session" value={compactValue(view.sessionId, 18)} /> : null}
       <CheckpointLine view={view} />
       <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
       <ResultLine label="Summary" value={view.summary} />
