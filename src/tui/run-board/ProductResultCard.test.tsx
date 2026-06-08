@@ -64,9 +64,9 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(text, /NEXT\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /NEXT\s+\/diff\s+\/commit/);
   assert.doesNotMatch(text, /NEXT\s+Show details/);
-  assert.doesNotMatch(text, /TEAM SUMMARY/);
+  assert.doesNotMatch(text, /CONTRIBUTORS/);
   assert.doesNotMatch(text, /Code Worker implemented patch/);
-  assert.doesNotMatch(text, /REQUEST HISTORY/);
+  assert.doesNotMatch(text, /REQUESTS/);
   assert.doesNotMatch(text, /waited; command completed successfully/);
 
   const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
@@ -90,12 +90,12 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
 
   assert.match(expandedText, /Evidence\s+4 items\. Show details/);
   assert.match(expandedText, /Team\s+verification passed: npm test -- session-row/);
-  assert.match(expandedText, /TEAM SUMMARY/);
+  assert.match(expandedText, /CONTRIBUTORS/);
   assert.match(expandedText, /Code Worker implemented patch/);
   assert.match(expandedText, /Test Runner verified focused test/);
-  assert.match(expandedText, /REQUEST HISTORY/);
+  assert.match(expandedText, /REQUESTS/);
   assert.match(expandedText, /waited; command completed successfully/);
-  assert.doesNotMatch(expandedText, /WORKER SUMMARY|ATTENTION HISTORY/);
+  assert.doesNotMatch(expandedText, /TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
 });
 
 test("ProductResultCard uses product-facing overflow labels in expanded detail", () => {
@@ -121,7 +121,7 @@ test("ProductResultCard uses product-facing overflow labels in expanded detail",
   }), { columns: 120, rows: 28 });
   const text = frameText(frame);
 
-  assert.match(text, /\+1 more team activity/);
+  assert.match(text, /\+1 more contributions/);
   assert.match(text, /\+1 more requests/);
   assert.doesNotMatch(text, /more workers|more attention items/i);
 });
