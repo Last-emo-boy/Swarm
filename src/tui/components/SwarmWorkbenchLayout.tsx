@@ -229,7 +229,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
 }
 
 function WorkbenchTitleBar({ version, columns }: { version: string; columns: number }): React.ReactElement {
-  const title = `Swarm ${version} • Local Agent Workspace`;
+  const title = "Swarm";
   const leftWidth = 10;
   const titleWidth = displayWidth(title);
   const leftPadding = Math.max(0, Math.floor((columns - titleWidth) / 2) - leftWidth);

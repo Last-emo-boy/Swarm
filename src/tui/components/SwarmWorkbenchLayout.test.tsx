@@ -47,7 +47,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   const text = frameText(frame);
 
   assert.match(text, /Swarm >_/);
-  assert.match(text, /Local Agent Workspace/);
+  assert.doesNotMatch(text, /Local Agent Workspace/);
   assert.match(text, /Inbox/);
   assert.match(text, /Cases/);
   assert.match(text, /Workspace/);
