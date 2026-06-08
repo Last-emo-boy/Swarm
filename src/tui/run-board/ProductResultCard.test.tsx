@@ -64,7 +64,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(text, /WORK/);
   assert.doesNotMatch(text, /Risk\s+low/);
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
-  assert.match(text, /Details\s+4 items\. Show details/);
+  assert.doesNotMatch(text, /Details\s+4 items\. Show details/);
   assert.doesNotMatch(text, /Evidence\s+4 items/);
   assert.match(text, /NEXT\s+Review changes/);
   assert.doesNotMatch(text, /NEXT\s+Review changes\s+Commit when ready/);
@@ -74,6 +74,16 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(text, /Code Worker implemented patch/);
   assert.doesNotMatch(text, /REQUESTS/);
   assert.doesNotMatch(text, /waited; command completed successfully/);
+
+  const actionable = renderTuiToFrame(React.createElement(ProductResultCard, {
+    card: completedCardFixture(),
+    preview,
+    attentionHistory,
+    onTeamReasoningToggle: () => undefined
+  }), { columns: 120, rows: 26 });
+  const actionableText = frameText(actionable);
+
+  assert.match(actionableText, /Details\s+4 items\. Show details/);
 
   const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -94,7 +104,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Details\s+4 items\. Show details/);
+  assert.match(expandedText, /Details\s+showing 4 details/);
   assert.match(expandedText, /Detail\s+verification passed: npm test -- session-row/);
   assert.match(expandedText, /CONTRIBUTORS/);
   assert.match(expandedText, /Code Worker implemented patch/);

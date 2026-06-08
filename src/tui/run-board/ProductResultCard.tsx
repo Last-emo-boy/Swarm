@@ -288,14 +288,20 @@ function TeamReasoningLines(props: {
   if (!items.length) {
     return null;
   }
+  if (!props.expanded && !props.onToggle) {
+    return null;
+  }
   const visible = props.expanded
     ? items.slice(0, props.density === "compact" ? 4 : 7)
     : [];
+  const value = props.expanded
+    ? `showing ${items.length} details`
+    : `${items.length} items. Show details`;
   return (
     <React.Fragment>
       <ResultLine
         label="Details"
-        value={`${items.length} items. Show details`}
+        value={value}
         tone="text.muted"
         onClick={props.onToggle}
       />
