@@ -148,7 +148,7 @@ export function buildResultCard(input: ResultCardInput): ResultCard {
       ...(input.result.outcome?.intermediate_artifacts ?? []),
       ...(input.result.artifact_path ? [input.result.artifact_path] : [])
     ]),
-    next: buildNextActions(input.result, snapshot),
+    next: buildNextActions(input.result, snapshot, input.checkpoint),
     memory: snapshot?.context_summary
       ? {
           entries: snapshot.context_summary.entries,
@@ -470,8 +470,15 @@ function buildRisks(snapshot: WorkSnapshot | undefined, result: Pick<ExecutionRe
   return risks;
 }
 
-function buildNextActions(result: Pick<ExecutionResult, "content" | "outcome" | "artifact_path" | "status">, snapshot?: WorkSnapshot): string[] {
+function buildNextActions(
+  result: Pick<ExecutionResult, "content" | "outcome" | "artifact_path" | "status">,
+  snapshot?: WorkSnapshot,
+  checkpoint?: ResultCardInput["checkpoint"]
+): string[] {
   const next: string[] = [];
+  if (checkpoint?.revertAvailable) {
+    next.push("/revert last");
+  }
   if (result.status === "failed") {
     next.push("inspect the error and rerun the narrowest failing step");
   } else if (result.status === "stopped") {
@@ -482,7 +489,7 @@ function buildNextActions(result: Pick<ExecutionResult, "content" | "outcome" | 
   if (!snapshot?.checks.length && !result.outcome?.tests_run.length) {
     next.push("run a focused check or test before trusting the change");
   }
-  return next;
+  return uniqueStrings(next);
 }
 
 function buildRecoveryAdvice(

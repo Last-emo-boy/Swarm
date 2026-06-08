@@ -110,7 +110,7 @@ export function productResultCardViewFromParts(input: {
     attentionHistory: attentionHistoryView(input.attentionHistory),
     artifacts: card.artifacts,
     decisionTrail: card.decisionTrail,
-    nextActions: card.next.map((command) => ({ command, label: command, source: "final" })),
+    nextActions: finalNextActions(card),
     detailHint: input.detailHint,
     finished: true
   };
@@ -156,4 +156,40 @@ function attentionHistoryView(items: AttentionItemView[]): ProductResultCardView
     resolution: item.resolution,
     resolved: Boolean(item.resolvedAt)
   }));
+}
+
+function finalNextActions(card: ResultCard): RunBoardResultAction[] {
+  const commands = uniqueCommands([
+    ...(card.checkpoint?.revertAvailable ? ["/revert last"] : []),
+    ...card.next
+  ]);
+  return commands.map((command) => ({
+    command,
+    label: labelForFinalAction(command),
+    source: "final"
+  }));
+}
+
+function labelForFinalAction(command: string): string {
+  return command.trim().toLowerCase() === "/revert last"
+    ? "Undo latest change"
+    : command;
+}
+
+function uniqueCommands(commands: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const command of commands) {
+    const normalized = command.trim();
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
 }

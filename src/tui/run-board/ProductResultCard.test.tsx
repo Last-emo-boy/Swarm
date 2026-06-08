@@ -309,6 +309,7 @@ test("ProductResultCard renders checkpoint rollback status in the result report"
   const availableText = frameText(available);
 
   assert.match(availableText, /Checkpoint\s+Workspace checkpoint \[git\] revert available/);
+  assert.match(availableText, /NEXT\s+Undo latest change\s+\/diff/);
 
   const unavailable = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -335,6 +336,7 @@ test("ProductResultCard renders checkpoint rollback status in the result report"
   const unavailableText = frameText(unavailable);
 
   assert.match(unavailableText, /Checkpoint\s+Missing snapshot \[snapshot\] revert unavailable/);
+  assert.doesNotMatch(unavailableText, /Undo latest change/);
 });
 
 function emptyPreview(): ResultPreview {

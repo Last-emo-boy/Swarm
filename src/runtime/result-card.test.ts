@@ -129,6 +129,8 @@ test("Result cards render checkpoint rollback visibility in the summary text", (
 
   assert(formatResultCardText(completed).includes("Checkpoint: Workspace checkpoint [git] revert available"));
   assert(formatResultCardText(unavailable).includes("Checkpoint: Retired checkpoint [snapshot] revert unavailable"));
+  assert.equal(completed.next[0], "/revert last");
+  assert(!unavailable.next.includes("/revert last"));
 });
 
 test("Result cards render prompt cache status with shared cache formatting", () => {
