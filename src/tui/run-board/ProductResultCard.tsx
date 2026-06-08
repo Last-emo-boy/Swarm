@@ -87,11 +87,13 @@ function ProductResultBody(props: {
   const checkSummary = productCheckSummary(view.checks, checkLimit);
   return (
     <Box flexDirection="column" width="100%">
-      <ResultLine label="Status" spans={[
-        { text: statusBadge(view.status), color: view.status === "success" ? "status.success" : view.status === "failed" ? "status.danger" : "status.warning", bold: true },
-        { text: " ", color: "text.muted" },
-        { text: productStatusLabel(view.status), color: "text.primary" }
-      ]} />
+      {view.status !== "success" ? (
+        <ResultLine label="Status" spans={[
+          { text: statusBadge(view.status), color: view.status === "failed" ? "status.danger" : "status.warning", bold: true },
+          { text: " ", color: "text.muted" },
+          { text: productStatusLabel(view.status), color: "text.primary" }
+        ]} />
+      ) : null}
       <CheckpointLine view={view} />
       {shouldShowRiskLine(view) ? (
         <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />

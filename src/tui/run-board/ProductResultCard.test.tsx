@@ -57,8 +57,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
 
   assert.match(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT REPORT/);
-  assert.match(text, /Status\s+\[OK\] Done/);
-  assert.doesNotMatch(text, /Status\s+\[OK\] completed/);
+  assert.doesNotMatch(text, /Status\s+\[OK\] Done|Status\s+\[OK\] completed/);
   assert.doesNotMatch(text, /Session\s+sess-1/);
   assert.doesNotMatch(text, /route:/i);
   assert.doesNotMatch(text, /WORK/);
@@ -141,6 +140,7 @@ test("ProductResultCard keeps failed checks actionable without successful comman
   }), { columns: 140, rows: 20 });
   const text = frameText(frame);
 
+  assert.match(text, /Status\s+\[ERR\] Failed/);
   assert.match(text, /Verified\s+\[ERR\] npm run check/);
   assert.doesNotMatch(text, /\[OK\] npm test -- session-row|npm test -- session-row/);
 });
