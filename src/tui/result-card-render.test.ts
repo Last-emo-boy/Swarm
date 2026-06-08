@@ -24,10 +24,16 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
       changedFiles: ["src/tui/components/ResultCard.tsx", "src/tui/components/ApprovalOverlay.tsx", "src/tui/theme.ts", "src/tui/conversation-layout.ts"],
       checks: [
         { command: "npm run check failed", status: "failed" },
-        { command: "node --import tsx --test src/tui/result-card-render.test.tsx", status: "passed" }
+        { command: "node --import tsx --test src/tui/result-card-render.test.tsx", status: "passed" },
+        { command: "npm run lint", status: "passed" },
+        { command: "npm run typecheck", status: "passed" }
       ],
       review: { status: "warning", summary: "Review found a narrow viewport risk." },
-      risks: [{ level: "high", message: "One verification check failed." }],
+      risks: [
+        { level: "high", message: "One verification check failed." },
+        { level: "medium", message: "One viewport needs a follow-up pass." },
+        { level: "low", message: "Copy can be tightened later." }
+      ],
       recovery: [{
         category: "provider_rate_limit",
         severity: "warning",
@@ -35,10 +41,25 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
         summary: "Model provider rate limit or quota was hit.",
         nextAction: "Wait and retry, reduce concurrency, or switch to a less constrained model/provider.",
         commandHint: "swarm run --max-agents 1"
+      }, {
+        category: "provider_timeout",
+        severity: "warning",
+        retryable: true,
+        summary: "Network request failed.",
+        nextAction: "Retry the command.",
+        commandHint: "swarm run"
+      }, {
+        category: "unknown",
+        severity: "info",
+        retryable: false,
+        summary: "No action needed.",
+        nextAction: "Continue.",
+        commandHint: "swarm status"
       }],
       artifacts: [
         "E:/Playground/Swarm/.swarm/reports/check.report.json",
-        "E:/Playground/Swarm/.swarm/logs/trajectory.jsonl"
+        "E:/Playground/Swarm/.swarm/logs/trajectory.jsonl",
+        "E:/Playground/Swarm/.swarm/reports/extra.report.json"
       ],
       next: ["rerun focused tests", "inspect the failed check"],
       checkpoint: {
@@ -65,6 +86,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /RECOVERY \[provider_rate_limit\/warning\/retry\]/);
   assert.match(plain, /ARTIFACTS saved/);
   assert.match(plain, /⎿ artifact\s+E:\/Playground\/Swarm\/\.swarm\/reports\/check\.report\.json/);
+  assert.doesNotMatch(plain, /\+\d/);
   assert.match(plain, /NEXT rerun focused tests/);
   assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);
   assert.match(plain, /CACHE cache:cache_hit hit 64%, write 12%/);

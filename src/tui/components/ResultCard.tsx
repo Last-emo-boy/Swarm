@@ -62,13 +62,11 @@ export function ResultCard(props: {
       <SectionLine
         section="changed"
         value={card.changedFiles.length ? card.changedFiles.slice(0, density === "compact" ? 2 : 3).map((file) => compactValue(file, 44)).join(", ") : "none"}
-        meta={card.changedFiles.length > 3 ? `+${card.changedFiles.length - 3}` : undefined}
       />
       <SectionLine
         section="checks"
         tone={card.checks.some((check) => check.status === "failed") ? "danger" : card.checks.length ? "success" : "muted"}
         value={visibleChecks.length ? visibleChecks.slice(0, density === "compact" ? 2 : visibleChecks.length).map((check) => `${compactValue(check.command, 36)} ${statusIconText(check.status, "badge")}`).join(", ") : "none"}
-        meta={card.checks.length > visibleChecks.length ? `+${card.checks.length - visibleChecks.length}` : undefined}
       />
       <SectionLine
         section="review"
@@ -80,7 +78,6 @@ export function ResultCard(props: {
           section="risks"
           tone={visibleRisks.some((risk) => risk.level === "high") ? "danger" : "warning"}
           value={visibleRisks.map((risk) => `${risk.level}: ${compactValue(risk.message, 72)}`).join(" | ")}
-          meta={card.risks.length > visibleRisks.length ? `+${card.risks.length - visibleRisks.length}` : undefined}
         />
       )}
       {visibleRecovery.length > 0 && (
@@ -88,7 +85,6 @@ export function ResultCard(props: {
           section="recovery"
           tone={visibleRecovery.some((advice) => advice.severity === "error") ? "danger" : "warning"}
           value={visibleRecovery.map((advice) => compactValue(formatRecoveryAdviceInline(advice), 112)).join(" | ")}
-          meta={(card.recovery?.length ?? 0) > visibleRecovery.length ? `+${(card.recovery?.length ?? 0) - visibleRecovery.length}` : undefined}
         />
       )}
       {visibleArtifacts.length > 0 && (
@@ -96,7 +92,6 @@ export function ResultCard(props: {
           <SectionLine
             section="artifacts"
             value="saved"
-            meta={card.artifacts.length > visibleArtifacts.length ? `+${card.artifacts.length - visibleArtifacts.length}` : undefined}
           />
           {visibleArtifacts.map((artifact, index) => (
             <SemanticTextLine
