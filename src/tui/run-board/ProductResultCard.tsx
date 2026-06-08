@@ -93,7 +93,9 @@ function ProductResultBody(props: {
       ]} />
       {view.sessionId ? <ResultLine label="Session" value={compactValue(view.sessionId, 18)} /> : null}
       <CheckpointLine view={view} />
-      <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
+      {shouldShowRiskLine(view) ? (
+        <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
+      ) : null}
       <ResultLine label="Summary" value={view.summary} />
       <ResultList label="Changed" empty="none" values={view.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, view.changedFiles.length - changedLimit)} />
       <ResultList
@@ -121,6 +123,10 @@ function ProductResultBody(props: {
       {view.detailHint ? <Text color={visualTokenColor("text.muted")} wrap="truncate">{view.detailHint}</Text> : null}
     </Box>
   );
+}
+
+function shouldShowRiskLine(view: ProductResultCardView): boolean {
+  return !(view.risk === "low" && view.riskSummary === "low");
 }
 
 function CheckpointLine(props: { view: ProductResultCardView }): React.ReactElement | null {

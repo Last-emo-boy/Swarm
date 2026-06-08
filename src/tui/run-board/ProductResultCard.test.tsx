@@ -60,6 +60,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(text, /Session\s+sess-1/);
   assert.doesNotMatch(text, /route:/i);
   assert.doesNotMatch(text, /WORK/);
+  assert.doesNotMatch(text, /Risk\s+low/);
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
   assert.match(text, /Details\s+4 items\. Show details/);
   assert.doesNotMatch(text, /Evidence\s+4 items/);
@@ -320,6 +321,7 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   const text = frameText(frame);
 
   assert.match(text, /Recovery\s+Tool action file\.edit failed\./);
+  assert.match(text, /Risk\s+high: tool action failed/);
   assert.match(text, /Next: Run file\.grep for a unique oldText, then retry file\.edit\./);
   assert.match(text, /Try: file\.grep/);
   assert.match(text, /Prompt cache prefix changed\./);
