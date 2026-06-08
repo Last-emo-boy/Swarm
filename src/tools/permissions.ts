@@ -971,16 +971,16 @@ function approvalSummary(action: ToolAction): string {
     return `Exit worktree${action.lease_id ? `: ${action.lease_id}` : ""}`;
   }
   if (action.type === "blackboard.write") {
-    return `Write blackboard entry: ${action.key}`;
+    return `Save shared fact: ${action.key}`;
   }
   if (action.type === "blackboard.read") {
-    return `Read blackboard entry: ${action.entryId ?? action.key}`;
+    return `Read shared fact: ${action.entryId ?? action.key}`;
   }
   if (action.type === "blackboard.search") {
-    return `Search blackboard: ${action.query ?? action.keyPrefix ?? action.tag ?? "entries"}`;
+    return `Search shared facts: ${action.query ?? action.keyPrefix ?? action.tag ?? "entries"}`;
   }
   if (action.type === "blackboard.list") {
-    return "List blackboard entries";
+    return "List shared facts";
   }
   return `${action.type}: ${permissionRuleContentForAction(action) ?? ""}`.trim();
 }
@@ -1086,13 +1086,13 @@ function approvalTarget(action: ToolAction): string {
     return action.key;
   }
   if (action.type === "blackboard.read") {
-    return action.entryId ?? action.key ?? "blackboard";
+    return action.entryId ?? action.key ?? "shared facts";
   }
   if (action.type === "blackboard.search") {
-    return action.query ?? action.keyPrefix ?? action.tag ?? "blackboard";
+    return action.query ?? action.keyPrefix ?? action.tag ?? "shared facts";
   }
   if (action.type === "blackboard.list") {
-    return action.keyPrefix ?? action.tag ?? "blackboard";
+    return action.keyPrefix ?? action.tag ?? "shared facts";
   }
   return permissionRuleContentForAction(action) ?? action.type;
 }
@@ -1186,7 +1186,7 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
     return action.dry_run ? "Previews worktree exit without changing git state." : "Exits a workspace lease and may remove a Swarm-created git worktree when requested.";
   }
   if (action.type === "blackboard.write") {
-    return "Writes shared Swarm session state visible to other agents.";
+    return "Saves a shared fact visible to the team.";
   }
   return riskClass === "r0" ? "Read-only or low-risk operation." : "Changes local state or uses an external resource.";
 }

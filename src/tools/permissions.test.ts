@@ -320,6 +320,29 @@ test("structured interaction tools are r0 and produce approval metadata when exp
   assert.match(request.predicted_impact, /waits for user approval/);
 });
 
+test("shared fact approvals use product-facing language", () => {
+  const write: ToolAction = {
+    type: "blackboard.write",
+    key: "decision/auth",
+    value: { approved: true },
+    entryType: "decision"
+  };
+  const decision = decideToolPermission(write, settingsForMode("ask"), { workspace });
+  const request = createToolApprovalRequest(write, decision);
+
+  assert.equal(request.permission_name, "BlackboardWrite");
+  assert.equal(request.permission_decision, "ask");
+  assert.equal(request.summary, "Save shared fact: decision/auth");
+  assert.equal(request.target, "decision/auth");
+  assert.equal(request.predicted_impact, "Saves a shared fact visible to the team.");
+  assert.doesNotMatch(request.summary, /blackboard/i);
+
+  const list = createToolApprovalRequest({ type: "blackboard.list" }, decideToolPermission({ type: "blackboard.list" }, settingsForMode("ask"), { workspace }));
+  assert.equal(list.summary, "List shared facts");
+  assert.equal(list.target, "shared facts");
+  assert.doesNotMatch(list.summary, /blackboard/i);
+});
+
 test("automation team lifecycle tools have explicit risk and approval metadata", () => {
   const readOnly: ToolAction = { type: "schedule.list" };
   const lifecycle: ToolAction[] = [
