@@ -89,7 +89,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   const expandedText = frameText(expanded);
 
   assert.match(expandedText, /Evidence\s+4 items\. Show details/);
-  assert.match(expandedText, /Team\s+verification passed: npm test -- session-row/);
+  assert.match(expandedText, /Detail\s+verification passed: npm test -- session-row/);
   assert.match(expandedText, /CONTRIBUTORS/);
   assert.match(expandedText, /Code Worker implemented patch/);
   assert.match(expandedText, /Test Runner verified focused test/);
