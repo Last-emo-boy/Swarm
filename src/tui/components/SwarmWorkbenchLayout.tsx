@@ -151,7 +151,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
     const compactMainRows = Math.max(4, metrics.bodyRows - centerBottomRows);
     return (
       <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
-        <WorkbenchTitleBar version={props.version} columns={metrics.columns} />
+        <WorkbenchTitleBar columns={metrics.columns} />
         <Box width="100%" height={compactMainRows} flexDirection="column" overflow="hidden" paddingX={1}>
           <CenterHeader title={props.title} subtitle={props.subtitle} detail={props.headerDetail} columns={Math.max(20, metrics.columns - 2)} />
           <Box width="100%" flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden">
@@ -186,7 +186,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
   const centerInnerColumns = Math.max(20, centerColumns - CENTER_BORDER_COLUMNS - CENTER_PADDING_COLUMNS);
   return (
     <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
-      <WorkbenchTitleBar version={props.version} columns={metrics.columns} />
+      <WorkbenchTitleBar columns={metrics.columns} />
       <Box flexDirection="row" width="100%" height={metrics.bodyRows} overflow="hidden">
         <LeftSidebar
           width={metrics.leftColumns}
@@ -243,7 +243,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
   );
 }
 
-function WorkbenchTitleBar({ version, columns }: { version: string; columns: number }): React.ReactElement {
+function WorkbenchTitleBar({ columns }: { columns: number }): React.ReactElement {
   const title = "Swarm";
   const titleWidth = displayWidth(title);
   const leftPadding = Math.max(0, Math.floor((columns - titleWidth) / 2));
