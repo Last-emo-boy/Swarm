@@ -29,7 +29,7 @@ export function WorkerBoard(props: {
             />
           ))
         : null}
-      {hidden > 0 ? <Text color={visualTokenColor("text.muted")}>+{hidden} more updates</Text> : null}
+      {hidden > 0 ? <Text color={visualTokenColor("text.muted")}>More updates</Text> : null}
     </RunBoardPanel>
   );
 }
