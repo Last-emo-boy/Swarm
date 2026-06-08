@@ -44,7 +44,7 @@ export async function createSelfReview(input: { paths: SwarmPaths; sessions: Ses
   }
   if (artifacts.length > 20) {
     findings.push(`Artifact directory contains ${artifacts.length} files; long-output persistence is active.`);
-    recommendations.push("Add artifact refs to worker notifications and blackboard entries so details remain traceable.");
+    recommendations.push("Add artifact refs to team updates and shared facts so details remain traceable.");
   }
   if (input.sessions.some((session) => session.status === "failed")) {
     findings.push("Recent sessions include failed runs.");
