@@ -130,8 +130,8 @@ function CheckpointLine(props: { view: ProductResultCardView }): React.ReactElem
   }
   return (
     <ResultLine
-      label="Checkpoint"
-      value={`${compactValue(checkpoint.name, 36)} [${checkpoint.mode}] ${checkpoint.revertAvailable ? "revert available" : "revert unavailable"}`}
+      label="Undo"
+      value={`${compactValue(checkpoint.name, 36)} ${checkpoint.revertAvailable ? "available" : "unavailable"}`}
       tone={checkpoint.revertAvailable ? "status.success" : "status.warning"}
     />
   );
