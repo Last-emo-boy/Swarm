@@ -5,7 +5,7 @@ import { renderTuiToFrame, frameText } from "../renderer/testing.js";
 import { AttentionPanel } from "./AttentionPanel.js";
 import type { AttentionItemView } from "./run-board-types.js";
 
-test("AttentionPanel renders all exception taxonomy kinds with evidence and recommendations", () => {
+test("AttentionPanel renders all exception taxonomy kinds with concise user-facing next steps", () => {
   const items: AttentionItemView[] = [
     attention("slow", "Slow test", "Test command still running, no output for 72s."),
     attention("blocked", "Reviewer blocked", "Reviewer is waiting for Test Runner."),
@@ -23,7 +23,8 @@ test("AttentionPanel renders all exception taxonomy kinds with evidence and reco
     assert.match(text, new RegExp(item.summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(text, new RegExp(item.evidence[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.equal((text.match(/recommend:/g) ?? []).length, items.length);
+  assert.equal((text.match(/Next/g) ?? []).length, items.length);
+  assert.doesNotMatch(text, /recommend:|activity:/);
   assert.match(text, /\[ASK\] Approval needed/);
   assert.match(text, /\[ERR\] Command failed/);
   assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP/);

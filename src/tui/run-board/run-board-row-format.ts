@@ -21,8 +21,8 @@ export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
 export function formatAttentionItem(item: AttentionItemView, columns = 100): string[] {
   const width = Math.max(40, Math.floor(columns));
   const first = clipDisplay(`${attentionBadge(item.kind)} ${item.title}: ${item.summary}`, width);
-  const recommendation = clipDisplay(`  recommend: ${item.recommendation}`, width);
-  const evidence = item.evidence[0] ? clipDisplay(`  evidence: ${item.evidence[0]}`, width) : undefined;
+  const recommendation = clipDisplay(`  Next: ${item.recommendation}`, width);
+  const evidence = item.evidence[0] ? clipDisplay(`  Why: ${item.evidence[0]}`, width) : undefined;
   return [first, evidence, recommendation].filter((line): line is string => Boolean(line));
 }
 

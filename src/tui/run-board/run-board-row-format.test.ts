@@ -30,7 +30,7 @@ test("worker row formatter respects terminal width budgets", () => {
   }
 });
 
-test("attention and result preview formatters keep recommendation visible", () => {
+test("attention and result preview formatters keep next step visible", () => {
   const attention: AttentionItemView = {
     id: "att-1",
     kind: "blocked",
@@ -56,7 +56,9 @@ test("attention and result preview formatters keep recommendation visible", () =
     nextActions: []
   };
 
-  assert(formatAttentionItem(attention, 80).some((line) => /recommend/.test(line)));
+  assert(formatAttentionItem(attention, 80).some((line) => /Next:/.test(line)));
+  assert(formatAttentionItem(attention, 80).some((line) => /Why:/.test(line)));
+  assert(formatAttentionItem(attention, 80).every((line) => !/recommend:|evidence:/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => displayWidth(line) <= 80));
 });
 

@@ -88,7 +88,8 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /TEAM ACTIVITY/);
   assert.match(text, /Test Runner/);
   assert.match(text, /NEEDS YOU/);
-  assert.match(text, /recommend/);
+  assert.match(text, /Next\s+Wait briefly before stopping\./);
+  assert.doesNotMatch(text, /recommend:|activity:/);
   assert.match(text, /RESULT PREVIEW/);
   assert.match(text, /\[Team 2\]/);
   assert.match(text, /\[Stuck 1\]/);
