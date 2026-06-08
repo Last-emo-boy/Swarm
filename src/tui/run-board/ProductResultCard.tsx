@@ -84,6 +84,7 @@ function ProductResultBody(props: {
   const view = props.view;
   const checkLimit = props.density === "compact" ? 2 : 4;
   const review = visibleReview(view);
+  const checkSummary = productCheckSummary(view.checks, checkLimit);
   return (
     <Box flexDirection="column" width="100%">
       <ResultLine label="Status" spans={[
@@ -96,14 +97,7 @@ function ProductResultBody(props: {
         <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
       ) : null}
       <ResultLine label="Summary" value={view.summary} />
-      {view.checks.length ? (
-        <ResultList
-          label="Verified"
-          empty="none"
-          values={view.checks.slice(0, checkLimit).map((check) => `${statusBadge(check.status)} ${check.command}`)}
-          badgeAware
-        />
-      ) : null}
+      {checkSummary ? <ResultLine label="Verified" value={checkSummary} badgeAware /> : null}
       <ReviewFindingLines view={view} density={props.density} />
       {review ? <ResultLine label="Review" value={`${statusBadge(review.status)} ${review.summary}`} badgeAware tone={checkStatusTone(review.status)} /> : null}
       <RecoveryLines view={view} density={props.density} />
@@ -138,6 +132,25 @@ function visibleReview(view: ProductResultCardView): ProductResultCardView["revi
   }
   const summary = review.summary.trim().toLowerCase();
   return review.status === "passed" && ["passed", "review passed"].includes(summary) ? undefined : review;
+}
+
+function productCheckSummary(checks: ProductResultCardView["checks"], limit: number): string | undefined {
+  if (!checks.length) {
+    return undefined;
+  }
+  const failed = checks.filter((check) => check.status === "failed");
+  if (failed.length) {
+    return failed.slice(0, limit).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ");
+  }
+  const skipped = checks.filter((check) => check.status === "skipped");
+  if (skipped.length === checks.length) {
+    return "Skipped";
+  }
+  const passed = checks.some((check) => check.status === "passed");
+  if (passed) {
+    return skipped.length ? "Passed; some skipped" : "Passed";
+  }
+  return checks.some((check) => check.status === "running") ? "Checking" : "Pending";
 }
 
 function productStatusLabel(status: ProductResultCardView["status"]): string {
@@ -373,16 +386,6 @@ function ResultLine(props: {
       ]}
     />
   );
-}
-
-function ResultList(props: {
-  label: string;
-  values: string[];
-  empty: string;
-  badgeAware?: boolean;
-}): React.ReactElement {
-  const value = props.values.length ? props.values.join(", ") : props.empty;
-  return <ResultLine label={props.label} value={value} badgeAware={props.badgeAware} />;
 }
 
 function moreItemsLabel(kind: string): string {

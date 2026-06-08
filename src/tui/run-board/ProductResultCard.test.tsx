@@ -64,7 +64,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(text, /WORK/);
   assert.doesNotMatch(text, /Risk\s+low/);
   assert.doesNotMatch(text, /Changed\s+src\/runtime\/session-row\.ts/);
-  assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
+  assert.match(text, /Verified\s+Passed/);
+  assert.doesNotMatch(text, /\[OK\] npm test -- session-row|npm test -- session-row/);
   assert.doesNotMatch(text, /Review\s+\[OK\] review passed/);
   assert.doesNotMatch(text, /Details\s+\d+ items\. Show details/);
   assert.doesNotMatch(text, /Evidence\s+4 items/);
@@ -116,6 +117,32 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(expandedText, /waited; command completed successfully/);
   assert.doesNotMatch(expandedText, /\[OK\]\s+Code Worker|\[WARN\]\s+Test Runner/);
   assert.doesNotMatch(expandedText, /TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
+});
+
+test("ProductResultCard keeps failed checks actionable without successful command noise", () => {
+  const frame = renderTuiToFrame(React.createElement(ProductResultCard, {
+    card: {
+      status: "failed",
+      sessionId: "sess-check-failed",
+      route: "work",
+      summary: "Verification failed.",
+      changedFiles: [],
+      checks: [
+        { command: "npm test -- session-row", status: "passed" },
+        { command: "npm run check", status: "failed" }
+      ],
+      review: { status: "warning", summary: "review needs follow-up" },
+      risks: [],
+      artifacts: [],
+      next: ["/debug latest"]
+    },
+    preview: emptyPreview(),
+    attentionHistory: []
+  }), { columns: 140, rows: 20 });
+  const text = frameText(frame);
+
+  assert.match(text, /Verified\s+\[ERR\] npm run check/);
+  assert.doesNotMatch(text, /\[OK\] npm test -- session-row|npm test -- session-row/);
 });
 
 test("ProductResultCard uses product-facing overflow labels in expanded detail", () => {
