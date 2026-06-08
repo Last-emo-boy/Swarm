@@ -426,7 +426,7 @@ function NavigationRow({
 }
 
 function CenterHeader({ title, subtitle, detail, columns }: { title: string; subtitle?: string; detail?: string; columns: number }): React.ReactElement {
-  const visibleSubtitle = subtitle === undefined ? "Ready" : visibleCenterHeaderSubtitle(subtitle);
+  const visibleSubtitle = subtitle === undefined ? undefined : visibleCenterHeaderSubtitle(subtitle);
   const visibleDetail = visibleCenterHeaderDetail(detail);
   return (
     <Box width="100%" height={CENTER_HEADER_ROWS} flexDirection="column" overflow="hidden">
