@@ -1,11 +1,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import type { RunAttempt, WorkContractSnapshot, WorkContractWorker } from "../protocol/types.js";
+import type { RunAttempt, WorkContractSnapshot, WorkContractWorker, WorkSnapshot } from "../protocol/types.js";
 import {
   buildResumeHealth,
   formatResumeHealth,
   formatResumeWorkContracts,
-  formatResumeWorkerContract
+  formatResumeWorkerContract,
+  renderResumePreflight
 } from "./resume-report.js";
 import {
   delegatedToolStatus,
@@ -90,6 +91,64 @@ test("formatResumeWorkContracts includes active, resumable, and handoff counts",
   assert(formatResumeWorkerContract(activeWorker).includes("scope=src/runtime/runtime.ts"));
 });
 
+test("renderResumePreflight uses product-facing section titles", () => {
+  const report = renderResumePreflight({
+    sessionId: "session-1",
+    snapshot: {
+      session: {
+        session_id: "session-1",
+        swarm_id: "swarm-1",
+        objective: "Continue the cleanup",
+        status: "running",
+        created_at: "2026-05-11T00:00:00.000Z",
+        updated_at: "2026-05-11T00:00:00.000Z"
+      },
+      attempts: [],
+      workers: [],
+      graph: { tasks: [], edges: [] },
+      blackboard_counts: {},
+      changed_files: [],
+      checks: [],
+      usage_summary: {},
+      task_contracts: {
+        summary: {
+          total: 0,
+          pending: 0,
+          running: 0,
+          blocked: 0,
+          completed: 0,
+          failed: 0,
+          read_only: 0,
+          scoped_write: 0,
+          workspace_write: 0,
+          scoped_targets: []
+        },
+        tasks: []
+      },
+      work_contracts: emptyWorkContracts(),
+      context_summary: {
+        entries: 2,
+        compactions: 1,
+        health: "compacted",
+        latest_compaction: {
+          compaction_id: "compact-1",
+          pre_tokens: 1000,
+          post_tokens: 300,
+          strategy: "rolling",
+          created_at: "2026-05-11T00:00:00.000Z"
+        }
+      }
+    } satisfies WorkSnapshot,
+    hasStoredPlan: false,
+    freshness: "fresh",
+    liveControlDirectives: ["No pending live direction."]
+  });
+
+  assert.match(report, /\nResume Team\n/);
+  assert.match(report, /\nMemory\n/);
+  assert.doesNotMatch(report, /Resume Work Contracts|Context Memory/);
+});
+
 test("execution status helpers map local outcomes to Kernel records", () => {
   assert.equal(finalAttemptStatus("failed"), "failed");
   assert.equal(finalAttemptStatus("stopped"), "stopped");
@@ -161,5 +220,24 @@ function worker(input: {
     write_policy: input.fileScope.length ? "scoped_write" : undefined,
     file_scope: input.fileScope,
     updated_at: "2026-05-11T00:00:00.000Z"
+  };
+}
+
+function emptyWorkContracts(): WorkContractSnapshot {
+  return {
+    summary: {
+      active_workers: 0,
+      running_workers: 0,
+      pending_workers: 0,
+      resumable_workers: 0,
+      active_handoffs: 0,
+      read_only: 0,
+      scoped_write: 0,
+      workspace_write: 0,
+      scoped_targets: []
+    },
+    active_workers: [],
+    resumable_workers: [],
+    active_handoffs: []
   };
 }

@@ -77,10 +77,10 @@ export function renderResumePreflight(input: ResumePreflightInput): string {
     "Resume Health",
     ...formatResumeHealth(resumeHealth),
     "",
-    "Resume Work Contracts",
+    "Resume Team",
     ...formatResumeWorkContracts(input.snapshot.work_contracts),
     "",
-    "Context Memory",
+    "Memory",
     memorySummary
   ].join("\n");
 }
