@@ -672,7 +672,7 @@ function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchT
 function toolDisplayName(tool: SwarmWorkbenchToolItem): string {
   const status = tool.status?.trim().toLowerCase() ?? "";
   if (tool.name.trim().toLowerCase() === "approvals" && status === "1 pending") {
-    return "Approval";
+    return "Needs";
   }
   return tool.name;
 }
@@ -680,7 +680,7 @@ function toolDisplayName(tool: SwarmWorkbenchToolItem): string {
 function toolDisplayStatus(tool: SwarmWorkbenchToolItem): string {
   const status = tool.status?.trim() ?? "";
   if (tool.name.trim().toLowerCase() === "approvals" && status.toLowerCase() === "1 pending") {
-    return "pending";
+    return "approval";
   }
   return status;
 }

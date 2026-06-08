@@ -82,7 +82,8 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /Planner\s+Running/);
   assert.doesNotMatch(text, /# Planner/);
   assert.doesNotMatch(text, /Tools/);
-  assert.match(text, /Approval pending/);
+  assert.match(text, /Needs approval/);
+  assert.doesNotMatch(text, /Approval pending/);
   assert.doesNotMatch(text, /Approvals 1 pending/);
   assert.doesNotMatch(text, /Access/);
   assert.doesNotMatch(text, /Agent -/);
@@ -159,7 +160,8 @@ test("SwarmWorkbenchLayout hides routine tool activity but keeps pending work vi
   const text = frameText(frame);
 
   assert.doesNotMatch(text, /Tools/);
-  assert.match(text, /Approval pending/);
+  assert.match(text, /Needs approval/);
+  assert.doesNotMatch(text, /Approval pending/);
   assert.doesNotMatch(text, /Approvals 1 pending/);
   assert.doesNotMatch(text, /Automations/);
 });
