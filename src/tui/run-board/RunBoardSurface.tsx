@@ -75,13 +75,7 @@ function SwarmBoardMetaLine(props: { view: RunBoardSurfaceView }): React.ReactEl
 
 function headerMetaText(view: RunBoardSurfaceView): string {
   const meta = view.meta;
-  const parts = [
-    meta?.repo ? `repo: ${meta.repo}` : undefined,
-    meta?.mode ? `mode: ${meta.mode}` : undefined,
-    meta?.risk ? `risk: ${meta.risk}` : undefined,
-    meta?.session ? `session: ${meta.session}` : undefined
-  ].filter((part): part is string => Boolean(part));
-  return parts.join("  ");
+  return meta?.repo ? `workspace: ${meta.repo}` : "";
 }
 
 function RunBoardFooter(props: { view: RunBoardSurfaceView }): React.ReactElement {
