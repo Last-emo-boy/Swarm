@@ -66,7 +66,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
   assert.match(text, /Details\s+4 items\. Show details/);
   assert.doesNotMatch(text, /Evidence\s+4 items/);
-  assert.match(text, /NEXT\s+Review changes\s+Commit when ready/);
+  assert.match(text, /NEXT\s+Review changes/);
+  assert.doesNotMatch(text, /NEXT\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /NEXT\s+\/diff\s+\/commit/);
   assert.doesNotMatch(text, /NEXT\s+Show details/);
   assert.doesNotMatch(text, /CONTRIBUTORS/);
@@ -158,12 +159,12 @@ test("ProductResultCard dispatches final next action clicks", () => {
 
   const frame = root.getFrame();
   assert(frame);
-  const target = findLastCell(frame, "Commit when ready");
+  const target = findLastCell(frame, "Review changes");
   assert(target, "expected final next action to render");
 
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
 
-  assert.deepEqual(clicked, ["final:/commit"]);
+  assert.deepEqual(clicked, ["final:/diff"]);
   root.unmount();
 });
 
@@ -394,7 +395,8 @@ test("ProductResultCard renders checkpoint rollback status in the result report"
 
   assert.match(availableText, /Undo\s+Workspace checkpoint available/);
   assert.doesNotMatch(availableText, /\[git\]|revert available/);
-  assert.match(availableText, /NEXT\s+Undo latest change\s+Review changes/);
+  assert.match(availableText, /NEXT\s+Undo latest change/);
+  assert.doesNotMatch(availableText, /NEXT\s+Undo latest change\s+Review changes/);
 
   const unavailable = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {

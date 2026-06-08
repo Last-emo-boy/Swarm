@@ -433,7 +433,7 @@ function NextActions(props: {
   if (!actions.length) {
     return null;
   }
-  const visible = actions.slice(0, props.density === "compact" ? 2 : 4);
+  const visible = actions.slice(0, 1);
   return (
     <Box flexDirection="row" width="100%" marginBottom={1}>
       <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Next")}</Text>
