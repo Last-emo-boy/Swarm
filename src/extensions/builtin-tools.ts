@@ -125,8 +125,8 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     name: "BlackboardWrite",
     action: "blackboard.write",
     aliases: ["blackboard.write"],
-    title: "Write Blackboard",
-    description: "Write a typed shared blackboard entry for other Swarm agents through the runtime protocol.",
+    title: "Save Shared Fact",
+    description: "Save a typed shared fact for the team.",
     riskClass: "r0",
     permissionName: "BlackboardWrite",
     inputSchema: objectSchema({ key: "string", type: "plan | observation | evidence | result | critique | decision | artifact", value: "JSON value", visibility: "private | team | public", tags: "string[]" })
@@ -135,8 +135,8 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     name: "BlackboardSearch",
     action: "blackboard.search",
     aliases: ["blackboard.search"],
-    title: "Search Blackboard",
-    description: "Search shared blackboard entries by text and metadata filters.",
+    title: "Search Shared Facts",
+    description: "Search shared facts by text and filters.",
     riskClass: "r0",
     permissionName: "BlackboardRead",
     inputSchema: objectSchema({ query: "string", type: "entry type", tag: "string", key_prefix: "string", task_id: "string", agent_id: "string", limit: "number" })
@@ -145,8 +145,8 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     name: "BlackboardRead",
     action: "blackboard.read",
     aliases: ["blackboard.read"],
-    title: "Read Blackboard",
-    description: "Read a shared blackboard entry by entry_id or key.",
+    title: "Read Shared Fact",
+    description: "Read a shared fact by id or key.",
     riskClass: "r0",
     permissionName: "BlackboardRead",
     inputSchema: objectSchema({ entry_id: "string", key: "string", limit: "number" })
@@ -155,8 +155,8 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     name: "BlackboardList",
     action: "blackboard.list",
     aliases: ["blackboard.list"],
-    title: "List Blackboard",
-    description: "List recent shared blackboard entries with optional metadata filters.",
+    title: "List Shared Facts",
+    description: "List recent shared facts with optional filters.",
     riskClass: "r0",
     permissionName: "BlackboardRead",
     inputSchema: objectSchema({ type: "entry type", tag: "string", key_prefix: "string", task_id: "string", agent_id: "string", limit: "number" })
