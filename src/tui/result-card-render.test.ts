@@ -105,7 +105,7 @@ test("ResultCard renders collapsed and expanded decision trail", () => {
   assert.doesNotMatch(collapsed, /Objective adopted|Code Worker owns patch/);
   assert.doesNotMatch(collapsed, /TRAIL 5 sections|Ctrl\+O details|split: Objective adopted/);
   assert.doesNotMatch(collapsed, /risk: low: narrow change/);
-  assert.match(expanded, /WHY showing 5 decisions/);
+  assert.match(expanded, /WHY Decisions/);
   assert.match(expanded, /PLAN Objective adopted/);
   assert.match(expanded, /OWNER Code Worker owns patch/);
   assert.match(expanded, /CHECK npm run check/);

@@ -106,7 +106,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Details\s+showing 5 details/);
+  assert.match(expandedText, /Details\s+Context/);
   assert.match(expandedText, /Detail\s+verification passed: npm test -- session-row/);
   assert.match(expandedText, /changed file: src\/runtime\/session-row\.ts/);
   assert.match(expandedText, /CONTRIBUTORS/);
@@ -254,7 +254,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   }), { columns: 120, rows: 20 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Why\s+showing 5 decisions/);
+  assert.match(expandedText, /Why\s+Decisions/);
   assert.match(expandedText, /Plan\s+Objective adopted/);
   assert.match(expandedText, /Owner\s+Code Worker owns patch/);
   assert.match(expandedText, /Check\s+focused test passed/);

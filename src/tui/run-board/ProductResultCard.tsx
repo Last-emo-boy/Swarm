@@ -279,12 +279,9 @@ function DecisionTrailLines(props: {
   }
   const visibleSections = props.expanded ? sections : [];
   const itemLimit = props.density === "compact" ? 2 : 4;
-  const value = props.expanded
-    ? `showing ${sections.length} decisions`
-    : "Decisions";
   return (
     <React.Fragment>
-      <ResultLine label="Why" value={value} onClick={props.onToggle} />
+      <ResultLine label="Why" value="Decisions" onClick={props.onToggle} />
       {visibleSections.map((entry) => (
         <ResultLine
           key={`trail:${entry.section}`}
@@ -321,14 +318,11 @@ function TeamReasoningLines(props: {
   const visible = props.expanded
     ? items.slice(0, props.density === "compact" ? 4 : 7)
     : [];
-  const value = props.expanded
-    ? `showing ${items.length} details`
-    : "Context";
   return (
     <React.Fragment>
       <ResultLine
         label="Details"
-        value={value}
+        value="Context"
         tone="text.muted"
         onClick={props.onToggle}
       />
