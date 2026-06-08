@@ -28,6 +28,7 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   assert.match(text, /Verified\s+npm test -- result-preview \[passed\]/);
   assert.doesNotMatch(text, /Checks\s+npm test -- result-preview/);
   assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
+  assert.doesNotMatch(text, /Hypothesis|Use focused checks before final review/);
   assert.match(text, /Next\s+Review changes\s+Commit when ready\s+Review this workspace/);
   assert.doesNotMatch(text, /Confidence\s+high/);
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
@@ -60,6 +61,7 @@ function previewFixture(): ResultPreviewData {
   return {
     status: "ready",
     summary: "Patch ready for review.",
+    hypothesis: "Use focused checks before final review.",
     changedFiles: ["src/tui/run-board/ResultPreview.tsx"],
     checks: [{ command: "npm test -- result-preview", status: "passed" }],
     artifacts: [],
