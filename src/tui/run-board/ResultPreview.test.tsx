@@ -11,6 +11,7 @@ test("ResultPreview keeps the empty state to one quiet line", () => {
   const text = frameText(frame);
 
   assert.match(text, /Waiting for your first task\./);
+  assert.doesNotMatch(text, /Confidence\s+low/);
   assert.doesNotMatch(text, /No activity yet\./);
   assert.doesNotMatch(text, /Activity\s+No activity/);
 });
@@ -21,6 +22,7 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   const text = frameText(frame);
 
   assert.match(text, /Next\s+Review changes\s+Commit when ready\s+Review this workspace/);
+  assert.match(text, /Confidence\s+high/);
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
 });
 
