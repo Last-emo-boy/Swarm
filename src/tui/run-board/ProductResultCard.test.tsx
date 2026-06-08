@@ -114,6 +114,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(expandedText, /Test Runner verified focused test/);
   assert.match(expandedText, /REQUESTS/);
   assert.match(expandedText, /waited; command completed successfully/);
+  assert.doesNotMatch(expandedText, /\[OK\]\s+Code Worker|\[WARN\]\s+Test Runner/);
   assert.doesNotMatch(expandedText, /TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
 });
 

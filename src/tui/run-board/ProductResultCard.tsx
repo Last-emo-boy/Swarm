@@ -423,7 +423,7 @@ function WorkerSummary(props: { view: ProductResultCardView; density?: TuiDensit
     <RunBoardPanel title="Contributors">
       {visible.map((contributor) => (
         <Text key={contributor.workerId} color={visualTokenColor("text.primary")} wrap="truncate">
-          [OK] {contributor.label} {contributor.contribution}
+          {contributor.label} {contributor.contribution}
         </Text>
       ))}
       {props.view.workerSummary.length > visible.length ? (
@@ -443,7 +443,7 @@ function AttentionHistory(props: { view: ProductResultCardView; density?: TuiDen
     <RunBoardPanel title="Requests">
       {visible.map((item) => (
         <Text key={item.id} color={visualTokenColor(item.resolved ? "text.muted" : "status.warning")} wrap="truncate">
-          [WARN] {item.summary}{item.resolution ? `; ${item.resolution}` : ""}
+          {item.summary}{item.resolution ? `; ${item.resolution}` : ""}
         </Text>
       ))}
       {props.view.attentionHistory.length > visible.length ? (
