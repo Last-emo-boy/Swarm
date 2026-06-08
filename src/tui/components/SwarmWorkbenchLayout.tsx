@@ -426,6 +426,7 @@ function NavigationRow({
 }
 
 function CenterHeader({ title, subtitle, detail, columns }: { title: string; subtitle?: string; detail?: string; columns: number }): React.ReactElement {
+  const visibleSubtitle = subtitle === undefined ? "Ready" : visibleCenterHeaderSubtitle(subtitle);
   const visibleDetail = visibleCenterHeaderDetail(detail);
   return (
     <Box width="100%" height={CENTER_HEADER_ROWS} flexDirection="column" overflow="hidden">
@@ -434,13 +435,25 @@ function CenterHeader({ title, subtitle, detail, columns }: { title: string; sub
         <Text color={visualTokenColor("brand.focus")} bold>{fitText(title, Math.max(12, columns - 2))}</Text>
       </Text>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {subtitle ?? "Ready"}
+        {visibleSubtitle ?? ""}
       </Text>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
         {visibleDetail ?? ""}
       </Text>
     </Box>
   );
+}
+
+function visibleCenterHeaderSubtitle(value: string): string | undefined {
+  const subtitle = value.trim();
+  if (!subtitle) return undefined;
+  const segments = subtitle.split(/\s*·\s*/u);
+  const visibleSegments = segments.filter((segment) => !isZeroCountHeaderSegment(segment));
+  return visibleSegments.length ? visibleSegments.join(" · ") : undefined;
+}
+
+function isZeroCountHeaderSegment(value: string): boolean {
+  return /^0\s+[\p{L}\p{N}_-]+/iu.test(value.trim());
 }
 
 function visibleCenterHeaderDetail(value: string | undefined): string | undefined {
