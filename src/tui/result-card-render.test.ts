@@ -101,7 +101,7 @@ test("ResultCard renders collapsed and expanded decision trail", () => {
     decisionTrailExpanded: true
   }), { columns: 100, rows: 16 }));
 
-  assert.match(collapsed, /WHY Show decisions/);
+  assert.match(collapsed, /WHY Decisions/);
   assert.doesNotMatch(collapsed, /Objective adopted|Code Worker owns patch/);
   assert.doesNotMatch(collapsed, /TRAIL 5 sections|Ctrl\+O details|split: Objective adopted/);
   assert.doesNotMatch(collapsed, /risk: low: narrow change/);

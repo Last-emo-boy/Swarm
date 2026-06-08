@@ -174,7 +174,7 @@ function DecisionTrailSection(props: {
         label="WHY"
         value={props.expanded
           ? `showing ${sections.length} decisions`
-          : "Show decisions"}
+          : "Decisions"}
         onClick={props.onToggle}
       />
       {visible.map((entry) => (
