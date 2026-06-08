@@ -109,7 +109,7 @@ swarm run "read this repo and summarize the main runtime"
 ## Golden Path
 
 1. Run `swarm` in a project directory.
-2. Swarm opens the local workspace Board.
+2. Choose the Codebase Deep Review starter, or ask Swarm to review auth and permissions.
 3. Create a Task from the prompt or select an existing Task.
 4. Assign work to main Swarm, a Worker, or a worker-style handoff when useful.
 5. Watch Activity, blockers, approvals, changed files, checks, and Output.
