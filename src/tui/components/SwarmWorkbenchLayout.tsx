@@ -517,9 +517,15 @@ function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchT
 
 function isVisibleWorkbenchTool(tool: SwarmWorkbenchToolItem): boolean {
   if (!tool.active) return false;
+  const name = tool.name.trim().toLowerCase();
   const status = tool.status?.trim().toLowerCase() ?? "";
   if (!status) return true;
+  if (isRoutineWorkbenchTool(name, status)) return false;
   return status !== "on" && status !== "ready" && !status.endsWith(" ready");
+}
+
+function isRoutineWorkbenchTool(name: string, status: string): boolean {
+  return name === "automations" && status === "running";
 }
 
 function isVisibleWorkbenchStatus(card: SwarmWorkbenchInfoCard): boolean {

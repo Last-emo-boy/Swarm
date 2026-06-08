@@ -115,6 +115,38 @@ test("SwarmWorkbenchLayout keeps attention-worthy status visible", () => {
   assert.match(text, /\[RISK\s+\]/);
 });
 
+test("SwarmWorkbenchLayout hides routine tool activity but keeps pending work visible", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    activity: { title: "Ready", badge: "READY" },
+    tools: [
+      { name: "Automations", status: "Running", tone: "status.running", active: true },
+      { name: "Approvals", status: "1 pending", tone: "status.pending", active: true }
+    ],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Composer")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /Tools/);
+  assert.match(text, /Approvals 1 pending/);
+  assert.doesNotMatch(text, /Automations/);
+});
+
 test("SwarmWorkbenchLayout disables side rails on narrow terminals", () => {
   const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
     columns: 90,
