@@ -11,7 +11,7 @@ export function compactWorkSnapshotLines(snapshot: WorkSnapshot): string[] {
     `${snapshot.session.session_id} [${snapshot.session.status}] source=${snapshot.session.source?.source ?? "unknown"}`,
     `objective=${snapshot.session.objective}`,
     `workspace=${snapshot.workspace?.workspace_path ?? "-"} boundary=${snapshot.workspace?.write_boundary ?? "-"}`,
-    `attempts=${snapshot.attempts.length} tasks=${snapshot.graph.tasks.length} workers=${snapshot.workers.length} changes=${snapshot.changed_files.length} checks=${snapshot.checks.length}`,
+    `runs=${snapshot.attempts.length} tasks=${snapshot.graph.tasks.length} team=${snapshot.workers.length} changes=${snapshot.changed_files.length} checks=${snapshot.checks.length}`,
     `tasks=running ${taskContracts.running} pending ${taskContracts.pending} blocked ${taskContracts.blocked} completed ${taskContracts.completed} failed ${taskContracts.failed} ro ${taskContracts.read_only} scoped ${taskContracts.scoped_write} workspace ${taskContracts.workspace_write}`,
     `contracts=running ${contracts.running_workers} pending ${contracts.pending_workers} active ${contracts.active_workers} resumable ${contracts.resumable_workers} handoffs ${contracts.active_handoffs} policies ro ${contracts.read_only} scoped ${contracts.scoped_write} workspace ${contracts.workspace_write}${scopePreview ? ` scope=${scopePreview}${scopeSuffix}` : ""}`,
     snapshot.review ? `review=${snapshot.review.verdict} score=${snapshot.review.score} ${snapshot.review.summary}` : "review=(none)",

@@ -117,6 +117,8 @@ test("work snapshot formatters expose operator kernel contract detail without In
   const detail = formatWorkSnapshot(snapshot);
 
   assert(compact.some((line) => line.includes("session-1 [running] source=gateway")));
+  assert(compact.some((line) => line.includes("runs=1 tasks=1 team=1 changes=1 checks=1")));
+  assert(!compact.some((line) => /attempts=|workers=/.test(line)));
   assert(compact.some((line) => line.includes("contracts=running 1 pending 0 active 1 resumable 1 handoffs 1")));
   assert(compact.some((line) => line.includes("scope=src/allowed.txt, docs/PRD.md")));
 
