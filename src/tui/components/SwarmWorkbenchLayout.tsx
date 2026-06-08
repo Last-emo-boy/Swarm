@@ -230,14 +230,10 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
 
 function WorkbenchTitleBar({ version, columns }: { version: string; columns: number }): React.ReactElement {
   const title = "Swarm";
-  const leftWidth = 10;
   const titleWidth = displayWidth(title);
-  const leftPadding = Math.max(0, Math.floor((columns - titleWidth) / 2) - leftWidth);
+  const leftPadding = Math.max(0, Math.floor((columns - titleWidth) / 2));
   return (
     <Box width="100%" height={TITLE_ROWS} flexDirection="row" overflow="hidden">
-      <Text color={visualTokenColor("status.danger")}>●</Text>
-      <Text color={visualTokenColor("status.pending")}> ●</Text>
-      <Text color={visualTokenColor("status.success")}> ●</Text>
       <Text color={visualTokenColor("brand.focus")}>{" ".repeat(leftPadding)}{title}</Text>
     </Box>
   );
