@@ -3886,7 +3886,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   });
   const activeSearchMatch = currentTranscriptSearchMatch(transcriptSearch);
   const activeSearchSummary = transcriptSearchSummary(transcriptSearch);
-  const chatFooterHint = "/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details";
+  const chatFooterHint = "Type a request  Ctrl+O details";
   const bottomFooterHint = transcriptSearch.active
     ? transcriptSearchHint(activeSearchSummary)
     : chatFooterHint;
@@ -7125,11 +7125,7 @@ function workerStatusColor(status: WorkerRecord["status"]): TuiColorRef {
 
 function workbenchCommandFooterItems(): Array<{ key: string; label: string; tone?: TuiColorRef }> {
   return [
-    { key: "help", label: "/help", tone: "brand.focus" },
-    { key: "continue", label: "/continue", tone: "brand.focus" },
-    { key: "memory", label: "/memory", tone: "brand.focus" },
-    { key: "scroll", label: "PgUp/PgDn scroll", tone: "text.muted" },
-    { key: "search", label: "/ search", tone: "text.muted" },
+    { key: "prompt", label: "Type a request", tone: "text.muted" },
     { key: "details", label: "Ctrl+O details", tone: "text.muted" }
   ];
 }

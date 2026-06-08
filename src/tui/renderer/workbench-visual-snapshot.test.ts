@@ -65,7 +65,8 @@ test("workbench visual snapshot covers result approval inspector action log and 
   }
 
   const wideSnapshot = snapshots[3]!.snapshot;
-  assert.match(wideSnapshot.lines.join("\n"), /\/help\s+\/continue\s+\/memory/);
+  assert.match(wideSnapshot.lines.join("\n"), /Type a request\s+Ctrl\+O details/);
+  assert.doesNotMatch(wideSnapshot.lines.join("\n"), /\/help|\/continue|\/memory|PgUp\/PgDn scroll|\/ search/);
   assert.doesNotMatch(wideSnapshot.lines.join("\n"), /\[cache:HIT 81%\]/);
   assert(colorCount(wideSnapshot) >= 6, "wide workbench should keep multiple semantic accents visible");
 });
@@ -116,11 +117,7 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
     compact ? inspector : actionLog
   );
   const commandFooterItems = [
-    { key: "help", label: "/help", tone: "brand.focus" as TuiColorRef },
-    { key: "continue", label: "/continue", tone: "brand.focus" as TuiColorRef },
-    { key: "memory", label: "/memory", tone: "brand.focus" as TuiColorRef },
-    { key: "scroll", label: "PgUp/PgDn scroll", tone: "text.muted" as TuiColorRef },
-    { key: "search", label: "/ search", tone: "text.muted" as TuiColorRef },
+    { key: "prompt", label: "Type a request", tone: "text.muted" as TuiColorRef },
     { key: "details", label: "Ctrl+O details", tone: "text.muted" as TuiColorRef }
   ];
   return React.createElement(SwarmWorkbenchLayout, {
@@ -177,7 +174,7 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
       footerSandboxLabel: "RW",
       footerSandboxTone: "status.success",
       footerItems: [],
-      footerHint: "/help  /continue  /memory  PgUp/PgDn scroll  / search  Ctrl+O details",
+      footerHint: "Type a request  Ctrl+O details",
       columns: input.columns,
       maxRows: 4
     })

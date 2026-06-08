@@ -20,7 +20,7 @@ test("TUI smoke harness captures ANSI screen debug log focus guard and cleanup e
     assert(result.stats.truecolorForegroundCount >= 4);
     assert(result.checks.every((check) => check.status === "pass"));
     assert.match(readFileSync(result.files.ansiOutput, "utf8"), /\u001B\[[^m]*38;2;224;151;88m/);
-    assert.match(readFileSync(result.files.plainScreen, "utf8"), /Ask Swarm|Reply to selected case|Reply to selected task|tui smoke input|❯/);
+    assert.match(readFileSync(result.files.plainScreen, "utf8"), /Ask Swarm|Type a request|tui smoke input|❯/);
     assert.doesNotMatch(readFileSync(result.files.plainScreen, "utf8"), /COMMAND OUTPUT/);
     assert.match(readFileSync(result.files.debugLog, "utf8"), /"section":"tui-exit"/);
     assert.match(readFileSync(result.files.checklist, "utf8"), /Swarm TUI Global Smoke V4/);

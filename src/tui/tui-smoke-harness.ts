@@ -288,10 +288,7 @@ function smokeChecks(input: {
 
 function initialPromptVisible(screen: string): boolean {
   return screen.includes("Ask Swarm") ||
-    screen.includes("Reply to selected case") ||
-    screen.includes("Reply to selected case or create the next case") ||
-    screen.includes("Reply to selected task") ||
-    screen.includes("Reply to selected task or create the next work item") ||
+    screen.includes("Type a request") ||
     screen.includes("❯");
 }
 

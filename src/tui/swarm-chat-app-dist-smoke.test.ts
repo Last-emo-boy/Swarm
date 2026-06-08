@@ -57,8 +57,8 @@ test("built TUI accepts input and exits through the global dist entry path", asy
     try {
       await waitFor(() => initialPromptVisible(stripAnsi(output)), "dist initial prompt render");
       await waitFor(
-        () => /\/help\s+\/continue\s+\/memory/u.test(stripAnsi(output)),
-        "dist command footer render"
+        () => stripAnsi(output).includes("Type a request"),
+        "dist minimal footer render"
       );
       stdin.emit("data", "dist smoke input");
       await waitFor(() => stripAnsi(output).includes("dist smoke input"), "dist prompt text update");
@@ -117,10 +117,7 @@ function stripAnsi(value: string): string {
 
 function initialPromptVisible(output: string): boolean {
   return output.includes("Ask Swarm") ||
-    output.includes("Reply to selected case") ||
-    output.includes("Reply to selected case or create the next case") ||
-    output.includes("Reply to selected task") ||
-    output.includes("Reply to selected task or create the next work item") ||
+    output.includes("Type a request") ||
     output.includes("❯");
 }
 

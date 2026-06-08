@@ -73,8 +73,8 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /Skills & Automations/);
   assert.doesNotMatch(text, /Activity Summary/);
   assert.match(text, /Ask Swarm prompt/);
-  assert.match(text, /\/help/);
-  assert.match(text, /PgUp\/PgDn scroll/);
+  assert.match(text, /Type a request/);
+  assert.doesNotMatch(text, /\/help|\/continue|\/memory|PgUp\/PgDn scroll|\/ search/);
   assert.doesNotMatch(text, /tasks:0\/0|approvals:1|cache:WARM/);
 });
 
@@ -258,11 +258,7 @@ function workerFixture(): React.ComponentProps<typeof SwarmWorkbenchLayout>["wor
 
 function footerFixture(): React.ComponentProps<typeof SwarmWorkbenchLayout>["footer"] {
   return [
-    { key: "help", label: "/help", tone: "brand.focus" },
-    { key: "continue", label: "/continue", tone: "brand.focus" },
-    { key: "memory", label: "/memory", tone: "brand.focus" },
-    { key: "scroll", label: "PgUp/PgDn scroll", tone: "text.muted" },
-    { key: "search", label: "/ search", tone: "text.muted" },
+    { key: "prompt", label: "Type a request", tone: "text.muted" },
     { key: "details", label: "Ctrl+O details", tone: "text.muted" }
   ];
 }
