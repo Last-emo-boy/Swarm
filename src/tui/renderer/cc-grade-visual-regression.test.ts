@@ -54,7 +54,8 @@ test("cc-grade visual matrix preserves semantic transcript footer and search lay
   }
 
   const wideText = snapshotText(snapshots[2]!.snapshot);
-  assert.match(wideText, /PgUp\/PgDn scroll\s+\/ search\s+Ctrl\+O details/);
+  assert.match(wideText, /Type a request\s+Ctrl\+O details/);
+  assert.doesNotMatch(wideText, /\/help|\/continue|\/memory|PgUp\/PgDn scroll|\/ search/);
 });
 
 test("cc-grade visual matrix keeps NO_COLOR readable and truecolor SGR expressive", () => {
