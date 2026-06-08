@@ -460,7 +460,7 @@ function RightRail({
       overflow="hidden"
     >
       <InfoSection title="Status" card={activity ?? runtime ?? memory} width={width} compact={compact} />
-      <InfoSection title="Mode" card={mode} width={width} compact={compact} />
+      {isVisibleWorkbenchMode(mode) ? <InfoSection title="Mode" card={mode} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchAccess(permission) ? <InfoSection title="Access" card={permission} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchSandbox(sandbox) ? <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} /> : null}
       {workers.length ? <WorkerSection workers={workers} width={width} /> : null}
@@ -519,6 +519,11 @@ function isVisibleWorkbenchTool(tool: SwarmWorkbenchToolItem): boolean {
   const status = tool.status?.trim().toLowerCase() ?? "";
   if (!status) return true;
   return status !== "on" && status !== "ready" && !status.endsWith(" ready");
+}
+
+function isVisibleWorkbenchMode(card: SwarmWorkbenchInfoCard): boolean {
+  const token = workbenchCardToken(card);
+  return token !== "plan-&-execute" && token !== "plan-&-execute-active";
 }
 
 function isVisibleWorkbenchAccess(card: SwarmWorkbenchInfoCard): boolean {

@@ -63,8 +63,8 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /# Board/);
   assert.match(text, /Transcript center/);
   assert.match(text, /Status/);
-  assert.match(text, /Mode/);
-  assert.match(text, /\[ACTIVE\s+\]/);
+  assert.doesNotMatch(text, /Mode/);
+  assert.doesNotMatch(text, /Plan & Execute/);
   assert.match(text, /Active helpers/);
   assert.match(text, /Tools/);
   assert.match(text, /Approvals/);
@@ -251,6 +251,33 @@ test("SwarmWorkbenchLayout hides routine footer hints but keeps real footer stat
   assert.doesNotMatch(text, /Type a request/);
   assert.doesNotMatch(text, /Ctrl\+O details/);
   assert.match(text, /Sync pending/);
+});
+
+test("SwarmWorkbenchLayout keeps non-default mode visible", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Chat", subtitle: "Answers without starting a run", badge: "ACTIVE", tone: "brand.focus" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Composer")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /Mode/);
+  assert.match(text, /Chat\s+\[ACTIVE\s+\]/);
 });
 
 test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible", () => {
