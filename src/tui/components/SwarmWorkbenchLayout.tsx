@@ -448,12 +448,23 @@ function visibleCenterHeaderSubtitle(value: string): string | undefined {
   const subtitle = value.trim();
   if (!subtitle) return undefined;
   const segments = subtitle.split(/\s*·\s*/u);
-  const visibleSegments = segments.filter((segment) => !isZeroCountHeaderSegment(segment));
+  const visibleSegments = segments
+    .filter((segment) => !isZeroCountHeaderSegment(segment))
+    .map(normalizeHeaderCountSegment);
   return visibleSegments.length ? visibleSegments.join(" · ") : undefined;
 }
 
 function isZeroCountHeaderSegment(value: string): boolean {
   return /^0\s+[\p{L}\p{N}_-]+/iu.test(value.trim());
+}
+
+function normalizeHeaderCountSegment(value: string): string {
+  return value
+    .replace(/\b1(\s+active\s+)tasks\b/iu, "1$1task")
+    .replace(/\b1(\s+)workers\b/iu, "1$1worker")
+    .replace(/\b1(\s+)helpers\b/iu, "1$1helper")
+    .replace(/\b1(\s+)approvals\b/iu, "1$1approval")
+    .replace(/\b1(\s+)files\b/iu, "1$1file");
 }
 
 function visibleCenterHeaderDetail(value: string | undefined): string | undefined {
