@@ -32,8 +32,7 @@ export function formatResultPreview(preview: ResultPreview, columns = 100): stri
     `Result: ${preview.summary}`,
     preview.changedFiles.length ? `Changed: ${preview.changedFiles.slice(0, 3).join(", ")}` : undefined,
     preview.checks.length ? `Verified: ${preview.checks.map((check) => `${check.command} [${check.status}]`).slice(0, 3).join(", ")}` : undefined,
-    preview.blockers.length ? `Blockers: ${preview.blockers.slice(0, 2).join(", ")}` : undefined,
-    preview.artifacts.length ? `Artifacts: ${preview.artifacts.slice(0, 2).join(", ")}` : undefined
+    preview.blockers.length ? `Blockers: ${preview.blockers.slice(0, 2).join(", ")}` : undefined
   ];
   return lines.filter((line): line is string => Boolean(line)).map((line) => clipDisplay(line, width));
 }
