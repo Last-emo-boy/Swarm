@@ -6,6 +6,7 @@ import test from "node:test";
 import { defaultSwarmSettings } from "../config/settings.js";
 import { DEFAULT_TOOL_NAMES } from "../runtime/coding-agent-loop.js";
 import { builtinAgentSpecs } from "../runtime/agent-specs.js";
+import type { BlackboardEntry } from "../protocol/types.js";
 import { LOCAL_TOOL_SCHEMAS } from "./tool-contracts.js";
 import { normalizeToolAction, runLocalTool } from "./local-tools.js";
 import type { LocalToolContext } from "./types.js";
@@ -409,6 +410,46 @@ test("structured interaction tools return recoverable waiting metadata", async (
     assert.equal(approval.metadata?.interaction, "plan_approval");
     assert.equal(approval.metadata?.requiresUserInput, true);
     assert.equal(approval.metadata?.readyForApproval, true);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("shared fact tools return product-facing summaries", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-shared-fact-tools-"));
+  try {
+    const entry = blackboardEntry();
+    const toolContext: LocalToolContext = {
+      ...context(workspace),
+      blackboard: {
+        write: () => entry,
+        read: () => [entry],
+        search: () => [entry],
+        list: () => []
+      }
+    };
+
+    const writeResult = await runLocalTool({
+      type: "blackboard.write",
+      key: "decision/auth",
+      value: { approved: true },
+      entryType: "decision"
+    }, toolContext);
+    assert.equal(writeResult.summary, "Saved shared fact decision/auth");
+    assert.doesNotMatch(writeResult.summary, /blackboard/i);
+
+    const readResult = await runLocalTool({ type: "blackboard.read", key: "decision/auth" }, toolContext);
+    assert.equal(readResult.summary, "Read 1 shared fact");
+    assert.doesNotMatch(readResult.summary, /blackboard/i);
+
+    const searchResult = await runLocalTool({ type: "blackboard.search", query: "auth" }, toolContext);
+    assert.equal(searchResult.summary, "Found 1 shared fact");
+    assert.doesNotMatch(searchResult.summary, /blackboard/i);
+
+    const listResult = await runLocalTool({ type: "blackboard.list" }, toolContext);
+    assert.equal(listResult.summary, "Listed 0 shared facts");
+    assert.equal(listResult.content, "(no shared facts)");
+    assert.doesNotMatch(`${listResult.summary}\n${listResult.content}`, /blackboard/i);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
@@ -1071,4 +1112,21 @@ function minimalInputsForTool(tool: string): Record<string, unknown> {
     "lsp.format": { file: "src/example.ts" }
   };
   return { action: tool, ...(inputs[tool] ?? {}) };
+}
+
+function blackboardEntry(overrides: Partial<BlackboardEntry> = {}): BlackboardEntry {
+  return {
+    entry_id: "entry-1",
+    swarm_id: "swarm-1",
+    session_id: "session-1",
+    key: "decision/auth",
+    value: { approved: true },
+    type: "decision",
+    created_by: { agent_id: "agent-1", role: "worker" },
+    created_at: "2026-06-08T00:00:00.000Z",
+    visibility: "team",
+    version: 1,
+    tags: ["decision"],
+    ...overrides
+  };
 }

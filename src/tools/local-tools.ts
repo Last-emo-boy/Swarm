@@ -2440,7 +2440,7 @@ async function writeBlackboard(action: Extract<ToolAction, { type: "blackboard.w
   return {
     action: action.type,
     status: "success",
-    summary: `blackboard.write ${entry.key}`,
+    summary: `Saved shared fact ${entry.key}`,
     content: renderBlackboardEntries([entry]),
     data: { entry }
   };
@@ -2454,7 +2454,7 @@ async function readBlackboard(action: Extract<ToolAction, { type: "blackboard.re
   return {
     action: action.type,
     status: "success",
-    summary: `blackboard.read returned ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+    summary: `Read ${sharedFactCount(entries.length)}`,
     content: renderBlackboardEntries(entries),
     data: { entries }
   };
@@ -2468,7 +2468,7 @@ async function searchBlackboard(action: Extract<ToolAction, { type: "blackboard.
   return {
     action: action.type,
     status: "success",
-    summary: `blackboard.search returned ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+    summary: `Found ${sharedFactCount(entries.length)}`,
     content: renderBlackboardEntries(entries),
     data: { entries }
   };
@@ -2482,7 +2482,7 @@ async function listBlackboard(action: Extract<ToolAction, { type: "blackboard.li
   return {
     action: action.type,
     status: "success",
-    summary: `blackboard.list returned ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+    summary: `Listed ${sharedFactCount(entries.length)}`,
     content: renderBlackboardEntries(entries),
     data: { entries }
   };
@@ -2759,13 +2759,17 @@ function automationDesignGuidance(action: Extract<ToolAction, {
 
 function renderBlackboardEntries(entries: import("../protocol/types.js").BlackboardEntry[]): string {
   if (entries.length === 0) {
-    return "(no blackboard entries)";
+    return "(no shared facts)";
   }
   return entries.map((entry) => [
     `${entry.entry_id} ${entry.key} [${entry.type}] v${entry.version}`,
     `created_by=${entry.created_by.agent_id ?? entry.created_by.role ?? entry.created_by.capability ?? "unknown"} visibility=${entry.visibility} tags=${(entry.tags ?? []).join(",") || "-"}`,
     JSON.stringify(entry.value, null, 2)
   ].join("\n")).join("\n\n");
+}
+
+function sharedFactCount(count: number): string {
+  return `${count} shared fact${count === 1 ? "" : "s"}`;
 }
 
 function permissionCheck(check: () => string): { allowed: boolean; reason?: string } {
