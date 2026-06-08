@@ -262,20 +262,20 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
 function emptyThread(input: Pick<SelectWorkBoardSurfaceInput, "recentMessages">): WorkBoardThreadView {
   return {
     id: "new-task",
-    title: "Create the first work item",
+    title: "Start a task",
     status: "ready",
     objective: "Ask Swarm to inspect, edit, test, or explain this workspace.",
     source: "user",
     plan: [
       "Type an objective below.",
-      "Swarm will plan, assign workers, and attach evidence here.",
-      "Use /view chat any time for the full transcript."
+      "Result reports show changes, checks, recovery, and next action.",
+      "Use chat any time for the full transcript."
     ],
     timeline: [],
     changedFiles: [],
     checks: [],
     comments: input.recentMessages?.slice(-3).map((message) => `${message.role}: ${message.brief}`) ?? [],
-    actions: ["/work board", "/view workers", "/view automations"]
+    actions: ["/review", "/plan"]
   };
 }
 

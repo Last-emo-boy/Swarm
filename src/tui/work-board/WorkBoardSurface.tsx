@@ -21,9 +21,8 @@ export function WorkBoardSurface({
     return (
       <Box flexDirection="column" width="100%" height={safeRows} overflow="hidden">
         <BoardHeader view={view} columns={safeColumns} />
-        <Text color={visualTokenColor("text.primary")}>No work items yet.</Text>
-        <Text color={visualTokenColor("text.muted")}>Type an objective below to create the first task for the local agent workspace.</Text>
-        <Text color={visualTokenColor("text.muted")}>Board will track workers, blockers, checks, files, and next actions.</Text>
+        <Text color={visualTokenColor("text.primary")}>Nothing to review yet.</Text>
+        <Text color={visualTokenColor("text.muted")}>Type an objective below; details appear here when work needs inspection.</Text>
       </Box>
     );
   }
@@ -44,7 +43,7 @@ export function WorkBoardSurface({
 }
 
 function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: number }): React.ReactElement {
-  const summary = [
+  const summary = view.empty ? "" : [
     `${view.summary.activeTasks} active tasks`,
     `${view.summary.workers} workers`,
     `${view.summary.approvals} approvals`,
@@ -54,16 +53,16 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
       <Text wrap="truncate">
-        <Text color={visualTokenColor("brand.focus")} bold>{fit("WORK BOARD", 16)}</Text>
-        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || view.subtitle, Math.max(10, columns - 18))}</Text>
+        <Text color={visualTokenColor("brand.focus")} bold>{fit("OBSERVATORY", 16)}</Text>
+        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? "Quiet until there is work to inspect." : view.subtitle), Math.max(10, columns - 18))}</Text>
       </Text>
       {view.summary.activity[0] ? (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
           activity: {fitToDisplayWidth(view.summary.activity[0], Math.max(10, columns - 10))}
         </Text>
-      ) : (
+      ) : view.empty ? null : (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          Board tracks tasks, teammates, blockers, checks, and delivery evidence.
+          No active detail.
         </Text>
       )}
     </Box>

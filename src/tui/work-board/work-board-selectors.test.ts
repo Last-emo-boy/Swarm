@@ -31,6 +31,8 @@ test("selectWorkBoardSurface provides an empty thread before work starts", () =>
   assert.equal(view.empty, true);
   assert.equal(view.selected?.id, "new-task");
   assert.match(view.selected?.objective ?? "", /Ask Swarm/);
+  assert.deepEqual(view.selected?.actions, ["/review", "/plan"]);
+  assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /assign workers|view workers|automations/i);
 });
 
 function fixtureBoard(): WorkBoard {
