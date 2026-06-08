@@ -524,14 +524,14 @@ function InfoSection({
 
 function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchToolItem[]; width: number; compact?: boolean }): React.ReactElement {
   return (
-    <SidebarSection title="Tools" width={width} marginTop={compact ? 0 : 1}>
+    <Box width="100%" flexDirection="column" marginTop={compact ? 0 : 1} overflow="hidden">
       {tools.slice(0, compact ? 4 : 6).map((tool) => (
         <Text key={tool.name} wrap="truncate">
           <Text>{fitText(tool.name, Math.max(8, width - 20))}</Text>
           {tool.status ? <Text color={resolveTuiColor(tool.tone ?? (tool.active ? "status.success" : "text.muted"))}> {fitText(tool.status, 18)}</Text> : null}
         </Text>
       ))}
-    </SidebarSection>
+    </Box>
   );
 }
 
