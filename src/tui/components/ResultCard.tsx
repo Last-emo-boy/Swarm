@@ -42,6 +42,7 @@ export function ResultCard(props: {
   const visibleRecovery = (card.recovery ?? []).slice(0, 2);
   const density = props.density ?? "default";
   const checkSummary = resultCardCheckSummary(card.checks, density === "compact" ? 2 : 3);
+  const reviewSummary = resultCardReviewSummary(card.review);
   const visibleArtifacts = card.artifacts.slice(0, density === "compact" ? 1 : 2);
   return (
     <Box flexDirection="column" width="100%">
@@ -60,11 +61,13 @@ export function ResultCard(props: {
           value={checkSummary}
         />
       ) : null}
-      <SectionLine
-        section="review"
-        tone={checkStatusTone(card.review.status)}
-        value={`${statusIconText(card.review.status, "badge")} ${compactValue(card.review.summary, 96)}`}
-      />
+      {reviewSummary ? (
+        <SectionLine
+          section="review"
+          tone={checkStatusTone(card.review.status)}
+          value={reviewSummary}
+        />
+      ) : null}
       {visibleRisks.length > 0 && (
         <SectionLine
           section="risks"
@@ -200,6 +203,18 @@ function resultCardCheckSummary(checks: ResultCardData["checks"], limit: number)
     return skipped.length ? "Passed; some skipped" : "Passed";
   }
   return "Pending";
+}
+
+function resultCardReviewSummary(review: ResultCardData["review"]): string | undefined {
+  const summary = review.summary.trim();
+  const normalized = summary.toLowerCase();
+  if (review.status === "passed" && ["passed", "review passed"].includes(normalized)) {
+    return undefined;
+  }
+  if (review.status === "skipped" && ["not recorded", "review not run", "skipped"].includes(normalized)) {
+    return undefined;
+  }
+  return `${statusIconText(review.status, "badge")} ${compactValue(summary || review.status, 96)}`;
 }
 
 function SectionLine(props: {
