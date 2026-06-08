@@ -110,7 +110,6 @@ function runBoardFooterChips(view: RunBoardSurfaceView): string[] {
   const chips = [
     counts.workers > 0 ? `[Helpers ${counts.workers}]` : undefined,
     counts.stuck > 0 ? `[Stuck ${counts.stuck}]` : counts.blocked > 0 ? `[Blocked ${counts.blocked}]` : undefined,
-    counts.files > 0 ? `[Files ${counts.files}]` : undefined,
     counts.checks > 0 ? `[Checks ${counts.passedChecks}/${counts.checks}]` : undefined,
     counts.approvals > 0 ? `[Approvals ${counts.approvals}]` : undefined
   ].filter((chip): chip is string => Boolean(chip));

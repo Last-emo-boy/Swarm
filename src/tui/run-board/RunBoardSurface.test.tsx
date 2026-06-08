@@ -131,6 +131,7 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     assert.match(text, /NEEDS YOU/);
     assert.match(text, /RESULT/);
     assert.doesNotMatch(text, /RESULT PREVIEW/);
+    assert.doesNotMatch(text, /\[Files 1\]/);
     assert.doesNotMatch(text, /waiting-attention|mode: auto|risk: workspace-write|handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);
   }
 });
