@@ -60,7 +60,8 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /Build workbench 2m !1/);
   assert.doesNotMatch(text, /active Swarm/);
   assert.doesNotMatch(text, /review no workspace/);
-  assert.match(text, /# Board/);
+  assert.match(text, /Board/);
+  assert.doesNotMatch(text, /# Board/);
   assert.match(text, /1 active task · 1 worker/);
   assert.doesNotMatch(text, /1 active tasks|1 workers/);
   assert.doesNotMatch(text, /0 approvals/);

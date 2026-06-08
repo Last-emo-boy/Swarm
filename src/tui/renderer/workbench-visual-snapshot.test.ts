@@ -48,7 +48,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP|Skills & Automations|Workers:|Automations/);
 
     assert.doesNotMatch(text, /Swarm >_/);
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Result"), "Result")?.color, resolveTuiColor("brand.focus"));
+    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Result"), "Result")?.color, resolveTuiColor("brand.focus"));
     if (text.includes("CHECKS")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
     }

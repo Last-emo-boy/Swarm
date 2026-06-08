@@ -431,7 +431,6 @@ function CenterHeader({ title, subtitle, detail, columns }: { title: string; sub
   return (
     <Box width="100%" height={CENTER_HEADER_ROWS} flexDirection="column" overflow="hidden">
       <Text wrap="truncate">
-        <Text color={visualTokenColor("brand.focus")} bold># </Text>
         <Text color={visualTokenColor("brand.focus")} bold>{fitText(title, Math.max(12, columns - 2))}</Text>
       </Text>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
