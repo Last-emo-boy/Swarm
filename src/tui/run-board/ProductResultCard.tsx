@@ -82,7 +82,6 @@ function ProductResultBody(props: {
   onTeamReasoningToggle?: () => void;
 }): React.ReactElement {
   const view = props.view;
-  const changedLimit = props.density === "compact" ? 2 : 4;
   const checkLimit = props.density === "compact" ? 2 : 4;
   return (
     <Box flexDirection="column" width="100%">
@@ -96,9 +95,6 @@ function ProductResultBody(props: {
         <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
       ) : null}
       <ResultLine label="Summary" value={view.summary} />
-      {view.changedFiles.length ? (
-        <ResultList label="Changed" empty="none" values={view.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, view.changedFiles.length - changedLimit)} />
-      ) : null}
       {view.checks.length ? (
         <ResultList
           label="Verified"
@@ -327,6 +323,7 @@ function teamReasoningItems(view: ProductResultCardView): string[] {
       (finding.evidence ?? []).slice(0, 2).map((evidence) => `${finding.severity} finding evidence: ${evidence}`)
     ) ?? [],
     ...view.checks.slice(0, 4).map((check) => `verification ${check.status}: ${check.command}`),
+    ...view.changedFiles.slice(0, 4).map((file) => `changed file: ${file}`),
     ...view.workerSummary.slice(0, 4).map((worker) => `${worker.label}: ${worker.contribution}`),
     ...view.attentionHistory.slice(0, 3).map((item) => `${item.resolved ? "resolved" : "open"}: ${item.summary}${item.resolution ? `; ${item.resolution}` : ""}`),
     ...view.artifacts.slice(0, 3).map((artifact) => `artifact: ${artifact}`)
