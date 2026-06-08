@@ -277,6 +277,19 @@ test("ActivityTimeline density controls scan depth and title chrome", async () =
   assert.equal(activityTimelineLimit(5, "default"), 4);
   assert.equal(activityTimelineLimit(5, "comfortable"), 5);
 
+  const empty = stripAnsi(await renderElement(React.createElement(ActivityTimeline, {
+    items: []
+  })));
+  assert.equal(empty.trim(), "");
+  assert.doesNotMatch(empty, /\(none\)|PROGRESS/);
+
+  const explicitEmpty = stripAnsi(await renderElement(React.createElement(ActivityTimeline, {
+    items: [],
+    emptyLabel: "No recent progress."
+  })));
+  assert.match(explicitEmpty, /PROGRESS/);
+  assert.match(explicitEmpty, /No recent progress\./);
+
   const compact = stripAnsi(await renderElement(React.createElement(ActivityTimeline, {
     title: "Progress",
     items: ["route", "thinking", "read files", "edit files", "run tests"],

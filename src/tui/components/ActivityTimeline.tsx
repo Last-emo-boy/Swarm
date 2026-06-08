@@ -10,9 +10,12 @@ export function ActivityTimeline(props: {
   emptyLabel?: string;
   limit?: number;
   density?: TuiDensity;
-}): React.ReactElement {
+}): React.ReactElement | null {
   const density = props.density ?? "default";
   const limit = activityTimelineLimit(props.limit, density);
+  if (!props.items.length && !props.emptyLabel?.trim()) {
+    return null;
+  }
   return (
     <Box flexDirection="column" width="100%">
       {density !== "compact" ? <Text color={visualTokenColor("text.primary")} bold>{sectionLabel(props.title ?? "Progress")}</Text> : null}
@@ -23,7 +26,7 @@ export function ActivityTimeline(props: {
           wrap="truncate"
         />
       )) : (
-        <Text color={visualTokenColor("text.muted")}>{props.emptyLabel ?? "(none)"}</Text>
+        <Text color={visualTokenColor("text.muted")}>{props.emptyLabel}</Text>
       )}
     </Box>
   );
