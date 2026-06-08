@@ -214,13 +214,13 @@ function describeToolAction(action: ToolAction): string {
     case "plan.exit":
       return `Request plan approval ${previewValue(action.summary ?? "approval requested", 180)}`;
     case "blackboard.write":
-      return `Board write ${previewValue(action.key)}`;
+      return `Save shared fact ${previewValue(action.key)}`;
     case "blackboard.read":
-      return `Board read ${previewValue(action.entryId ?? action.key ?? "entry")}`;
+      return `Read shared fact ${previewValue(action.entryId ?? action.key ?? "entry")}`;
     case "blackboard.search":
-      return `Board search ${previewValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
+      return `Search shared facts ${previewValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
     case "blackboard.list":
-      return `Board list ${previewValue(action.keyPrefix ?? action.tag ?? "entries")}`;
+      return `List shared facts ${previewValue(action.keyPrefix ?? action.tag ?? "entries")}`;
     case "shell.exec":
       return `Run shell command: ${previewValue(action.command, 180)}`;
     case "exec":

@@ -72,6 +72,38 @@ test("structured question and plan tools render product-facing transcript text",
   assert.match(approval.detail ?? "", /Plan: 1\. Inspect/);
 });
 
+test("shared fact tools render product-facing transcript text", () => {
+  const write = slashToolUseTranscriptMessage({
+    type: "blackboard.write",
+    key: "decision/auth",
+    value: { approved: true },
+    entryType: "decision"
+  });
+  assert.equal(write.brief, "Save shared fact decision/auth");
+
+  const read = slashToolUseTranscriptMessage({
+    type: "blackboard.read",
+    key: "decision/auth"
+  });
+  assert.equal(read.brief, "Read shared fact decision/auth");
+
+  const search = slashToolUseTranscriptMessage({
+    type: "blackboard.search",
+    query: "auth"
+  });
+  assert.equal(search.brief, "Search shared facts auth");
+
+  const list = slashToolUseTranscriptMessage({
+    type: "blackboard.list",
+    tag: "handoff"
+  });
+  assert.equal(list.brief, "List shared facts handoff");
+
+  for (const message of [write, read, search, list]) {
+    assert.doesNotMatch(message.brief, /Board (write|read|search|list)/);
+  }
+});
+
 test("runtime loop activity and tool results become visible transcript rows", () => {
   const thinking = runtimeEventTranscriptMessage({
     type: "loop_activity",
