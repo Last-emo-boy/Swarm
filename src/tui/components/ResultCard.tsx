@@ -53,11 +53,13 @@ export function ResultCard(props: {
           value={card.changedFiles.slice(0, density === "compact" ? 2 : 3).map((file) => compactValue(file, 44)).join(", ")}
         />
       ) : null}
-      <SectionLine
-        section="checks"
-        tone={card.checks.some((check) => check.status === "failed") ? "danger" : card.checks.length ? "success" : "muted"}
-        value={checkSummary ?? "none"}
-      />
+      {checkSummary ? (
+        <SectionLine
+          section="checks"
+          tone={card.checks.some((check) => check.status === "failed") ? "danger" : "success"}
+          value={checkSummary}
+        />
+      ) : null}
       <SectionLine
         section="review"
         tone={checkStatusTone(card.review.status)}
