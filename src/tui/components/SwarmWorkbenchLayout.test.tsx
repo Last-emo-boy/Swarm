@@ -55,6 +55,9 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /View all cases/);
   assert.match(text, /> Chat \[1\]/);
   assert.match(text, /Result \[2\]/);
+  assert.match(text, /Build workbench 2m !1/);
+  assert.doesNotMatch(text, /active Swarm/);
+  assert.doesNotMatch(text, /review no workspace/);
   assert.match(text, /# Board/);
   assert.match(text, /Transcript center/);
   assert.match(text, /Status/);
@@ -184,6 +187,37 @@ test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facin
     renderCenterBottom: () => React.createElement(Text, null, "Type a request")
   }), { columns: 160, rows: 32 }));
   assert.match(visible, /branch main clean/);
+});
+
+test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [
+      { id: "case-active", title: "Routine active case", age: "1m", badge: "active", subtitle: "Swarm", attention: 1, active: true },
+      { id: "case-failed", title: "Broken release", age: "4m", badge: "failed", subtitle: "release workspace", tone: "status.danger" }
+    ],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /Routine active case 1m !1/);
+  assert.doesNotMatch(text, /active Swarm/);
+  assert.match(text, /failed release workspace/);
 });
 
 test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible", () => {

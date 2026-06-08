@@ -323,6 +323,9 @@ function visibleWorkspaceMeta(value: string | undefined): string | undefined {
 function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionItem; width: number; onSelect?: (id: string) => void }): React.ReactElement {
   const titleBudget = Math.max(8, width - 14);
   const titleTone: TuiColorRef = session.active ? "brand.focus" : session.tone ?? "text.primary";
+  const badge = visibleCaseBadge(session.badge);
+  const subtitle = visibleCaseSubtitle(session.subtitle);
+  const showSecondary = Boolean(badge || subtitle);
   return (
     <Box flexDirection="column" width="100%">
       <Text
@@ -333,17 +336,42 @@ function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionI
         <Text color={session.active ? visualTokenColor("brand.focus") : visualTokenColor("text.muted")}>{session.active ? "> " : "  "}</Text>
         <Text color={resolveTuiColor(titleTone)}>{fitText(session.title || session.id, titleBudget)}</Text>
         {session.age ? <Text color={visualTokenColor("text.muted")}> {session.age}</Text> : null}
+        {session.attention && !showSecondary ? <Text color={visualTokenColor("status.warning")}> !{session.attention}</Text> : null}
       </Text>
-      {(session.subtitle || session.badge || session.attention) ? (
+      {showSecondary ? (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
           {"  "}
-          {session.badge ? <Text color={resolveTuiColor(session.tone ?? "role.gateway")}>{fitText(session.badge, 10)}</Text> : null}
-          {session.subtitle ? <Text> {fitText(session.subtitle, Math.max(8, width - 15))}</Text> : null}
+          {badge ? <Text color={resolveTuiColor(session.tone ?? "role.gateway")}>{fitText(badge, 10)}</Text> : null}
+          {subtitle ? <Text> {fitText(subtitle, Math.max(8, width - 15))}</Text> : null}
           {session.attention ? <Text color={visualTokenColor("status.warning")}> !{session.attention}</Text> : null}
         </Text>
       ) : null}
     </Box>
   );
+}
+
+function visibleCaseBadge(value: string | undefined): string | undefined {
+  const badge = value?.trim();
+  if (!badge) {
+    return undefined;
+  }
+  const normalized = badge.toLowerCase().replace(/[_\s-]+/gu, "-");
+  if (["active", "running", "review", "completed", "complete", "done", "success"].includes(normalized)) {
+    return undefined;
+  }
+  return badge;
+}
+
+function visibleCaseSubtitle(value: string | undefined): string | undefined {
+  const subtitle = value?.trim();
+  if (!subtitle) {
+    return undefined;
+  }
+  const normalized = subtitle.toLowerCase();
+  if (normalized === "swarm" || normalized === "no workspace") {
+    return undefined;
+  }
+  return subtitle;
 }
 
 function NavigationRow({
