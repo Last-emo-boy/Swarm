@@ -62,7 +62,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /review no workspace/);
   assert.match(text, /# Board/);
   assert.match(text, /Transcript center/);
-  assert.match(text, /Status/);
+  assert.doesNotMatch(text, /Status/);
   assert.doesNotMatch(text, /Mode/);
   assert.doesNotMatch(text, /Plan & Execute/);
   assert.match(text, /Active helpers/);
@@ -84,6 +84,35 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /Type a request/);
   assert.doesNotMatch(text, /\/help|\/continue|\/memory|PgUp\/PgDn scroll|\/ search/);
   assert.doesNotMatch(text, /tasks:0\/0|approvals:1|cache:WARM/);
+});
+
+test("SwarmWorkbenchLayout keeps attention-worthy status visible", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    activity: { title: "2 active · 1 blocked", subtitle: "Reviewer is running", badge: "RISK", tone: "status.warning" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Composer")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /Status/);
+  assert.match(text, /2 active · 1 blocked/);
+  assert.match(text, /\[RISK\s+\]/);
 });
 
 test("SwarmWorkbenchLayout disables side rails on narrow terminals", () => {

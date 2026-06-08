@@ -448,6 +448,7 @@ function RightRail({
   workers: SwarmWorkbenchWorkerItem[];
 }): React.ReactElement {
   const compact = height < 36;
+  const statusCard = activity ?? runtime ?? memory;
   const visibleTools = tools.filter(isVisibleWorkbenchTool);
   return (
     <ThemedBox
@@ -459,7 +460,7 @@ function RightRail({
       paddingX={1}
       overflow="hidden"
     >
-      <InfoSection title="Status" card={activity ?? runtime ?? memory} width={width} compact={compact} />
+      {isVisibleWorkbenchStatus(statusCard) ? <InfoSection title="Status" card={statusCard} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchMode(mode) ? <InfoSection title="Mode" card={mode} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchAccess(permission) ? <InfoSection title="Access" card={permission} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchSandbox(sandbox) ? <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} /> : null}
@@ -519,6 +520,24 @@ function isVisibleWorkbenchTool(tool: SwarmWorkbenchToolItem): boolean {
   const status = tool.status?.trim().toLowerCase() ?? "";
   if (!status) return true;
   return status !== "on" && status !== "ready" && !status.endsWith(" ready");
+}
+
+function isVisibleWorkbenchStatus(card: SwarmWorkbenchInfoCard): boolean {
+  const token = workbenchCardToken(card);
+  return hasAttentionWorkbenchStatus(token) || !isRoutineWorkbenchStatus(card);
+}
+
+function hasAttentionWorkbenchStatus(token: string): boolean {
+  return /(?:^|-)(failed|error|risk|warning|pending|waiting|setup|degraded)(?:-|$)/u.test(token)
+    || (/(?:^|-)blocked(?:-|$)/u.test(token) && !/(?:^|-)0-blocked(?:-|$)/u.test(token));
+}
+
+function isRoutineWorkbenchStatus(card: SwarmWorkbenchInfoCard): boolean {
+  const token = workbenchCardToken(card);
+  const subtitle = card.subtitle?.trim().toLowerCase().replace(/[_\s]+/gu, "-") ?? "";
+  if (/(?:^|-)0-blocked(?:-|$)/u.test(token)) return true;
+  return /^(ready|ready-ready|no-active-tasks|session-not-started)(?:-|$)/u.test(token)
+    || /^no-(activity|saved-context)/u.test(subtitle);
 }
 
 function isVisibleWorkbenchMode(card: SwarmWorkbenchInfoCard): boolean {
