@@ -88,8 +88,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /RECOVERY Model provider rate limit or quota was hit\./);
   assert.match(plain, /Next: Wait and retry/);
   assert.doesNotMatch(plain, /provider_rate_limit\/warning\/retry|Hint:/);
-  assert.match(plain, /ARTIFACTS saved/);
-  assert.doesNotMatch(plain, /⎿ artifact|\.swarm\/reports\/check\.report\.json/);
+  assert.doesNotMatch(plain, /ARTIFACTS|⎿ artifact|\.swarm\/reports\/check\.report\.json/);
   assert.doesNotMatch(plain, /\+\d/);
   assert.match(plain, /NEXT rerun focused tests/);
   assert.doesNotMatch(plain, /CHECKPOINT|Before TUI polish|snapshot|rollback \/revert last/);
@@ -215,7 +214,7 @@ test("ResultCard colors section labels and status badges without tinting values"
   assert.equal(colorAtText(frame, "REVIEW"), resolveTuiColor("status.warning"));
   assert.equal(colorAtText(frame, "[WARN]"), resolveTuiColor("status.warning"));
   assert.doesNotMatch(frameText(frame), /CACHE|cache:cache_hit|hit 64%/);
-  assert.equal(colorAtText(frame, "ARTIFACTS"), resolveTuiColor("text.primary"));
+  assert.doesNotMatch(frameText(frame), /ARTIFACTS/);
   assert.doesNotMatch(frameText(frame), /artifact\s+E:\/Playground\/Swarm\/\.swarm\/reports\/check\.report\.json/);
 });
 

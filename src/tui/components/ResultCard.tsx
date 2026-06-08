@@ -78,7 +78,6 @@ export function ResultCard(props: {
           value={visibleRecovery.map((advice) => compactValue(formatResultRecoveryAdvice(advice), 112)).join(" | ")}
         />
       )}
-      {card.artifacts.length > 0 ? <SectionLine section="artifacts" value="saved" /> : null}
       {card.next.length > 0 && (
         <SectionLine section="next" value={card.next.slice(0, density === "compact" ? 1 : 2).join(" · ")} />
       )}
