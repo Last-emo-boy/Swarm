@@ -101,11 +101,16 @@ test("ResultCard renders collapsed and expanded decision trail", () => {
     decisionTrailExpanded: true
   }), { columns: 100, rows: 16 }));
 
-  assert.match(collapsed, /TRAIL 5 sections\. Ctrl\+O details/);
-  assert.match(collapsed, /split: Objective adopted/);
+  assert.match(collapsed, /WHY 5 decisions\. Show details/);
+  assert.doesNotMatch(collapsed, /Objective adopted|Code Worker owns patch/);
+  assert.doesNotMatch(collapsed, /TRAIL 5 sections|Ctrl\+O details|split: Objective adopted/);
   assert.doesNotMatch(collapsed, /risk: low: narrow change/);
-  assert.match(expanded, /TRAIL expanded 5 sections/);
-  assert.match(expanded, /risk: low: narrow change/);
+  assert.match(expanded, /WHY showing 5 decisions/);
+  assert.match(expanded, /PLAN Objective adopted/);
+  assert.match(expanded, /OWNER Code Worker owns patch/);
+  assert.match(expanded, /CHECK npm run check/);
+  assert.match(expanded, /RISK low: narrow change/);
+  assert.doesNotMatch(expanded, /split: Objective adopted|assign: Code Worker owns patch|verify: npm run check/);
 });
 
 test("ResultCard decision trail hint dispatches mouse toggle", () => {
@@ -137,7 +142,7 @@ test("ResultCard decision trail hint dispatches mouse toggle", () => {
 
   const frame = root.getFrame();
   assert(frame);
-  const target = findCell(frame, "TRAIL");
+  const target = findCell(frame, "WHY");
   assert(target);
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
 

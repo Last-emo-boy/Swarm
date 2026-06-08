@@ -165,23 +165,24 @@ function DecisionTrailSection(props: {
   if (!sections.length) {
     return null;
   }
-  const visible = props.expanded
-    ? sections
-    : props.density === "compact" ? sections.slice(0, 2) : sections.slice(0, 3);
+  const visible = props.expanded ? sections : [];
+  const itemLimit = props.density === "compact" ? 2 : 4;
   return (
     <React.Fragment>
       <SectionLine
         section="trail"
+        label="WHY"
         value={props.expanded
-          ? `expanded ${sections.length} sections`
-          : `${sections.length} sections. Ctrl+O details`}
+          ? `showing ${sections.length} decisions`
+          : `${sections.length} decisions. Show details`}
         onClick={props.onToggle}
       />
       {visible.map((entry) => (
         <SectionLine
           key={`trail:${entry.section}`}
           section="trail"
-          value={`${entry.section}: ${entry.items.slice(0, props.expanded ? 4 : 1).join(" | ")}`}
+          label={decisionTrailSectionLabel(entry.section)}
+          value={entry.items.slice(0, itemLimit).join(" | ")}
           onClick={props.onToggle}
         />
       ))}
@@ -189,9 +190,18 @@ function DecisionTrailSection(props: {
   );
 }
 
+function decisionTrailSectionLabel(section: "split" | "assign" | "verify" | "decide" | "risk"): string {
+  if (section === "split") return "PLAN";
+  if (section === "assign") return "OWNER";
+  if (section === "verify") return "CHECK";
+  if (section === "decide") return "DECISION";
+  return "RISK";
+}
+
 function SectionLine(props: {
   section: ResultSectionKind;
   value: string;
+  label?: string;
   meta?: string;
   tone?: TuiTone;
   onClick?: () => void;
@@ -204,7 +214,7 @@ function SectionLine(props: {
       wrap="wrap"
       onClick={props.onClick}
       spans={[
-        { text: token.label, color: tone, bold: true },
+        { text: props.label ?? token.label, color: tone, bold: true },
         { text: " ", color: "text.muted" },
         ...valueSpans,
         ...(props.meta ? [{ text: ` ${props.meta}`, color: "text.muted" } satisfies SemanticTextSpan] : [])
