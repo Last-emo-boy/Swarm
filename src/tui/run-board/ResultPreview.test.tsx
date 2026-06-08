@@ -6,6 +6,15 @@ import { frameText, renderTuiToFrame } from "../renderer/testing.js";
 import { ResultPreview } from "./ResultPreview.js";
 import type { ResultPreview as ResultPreviewData } from "./run-board-types.js";
 
+test("ResultPreview keeps the empty state to one quiet line", () => {
+  const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview: emptyPreview() }), { columns: 80, rows: 8 });
+  const text = frameText(frame);
+
+  assert.match(text, /Waiting for your first task\./);
+  assert.doesNotMatch(text, /No activity yet\./);
+  assert.doesNotMatch(text, /Activity\s+No activity/);
+});
+
 test("ResultPreview shows user-facing next actions while preserving commands", () => {
   const preview = previewFixture();
   const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview }), { columns: 100, rows: 12 });
@@ -50,6 +59,21 @@ function previewFixture(): ResultPreviewData {
     contributors: [],
     risks: [],
     nextActions: ["/diff", "/commit", "/review auth and permissions"]
+  };
+}
+
+function emptyPreview(): ResultPreviewData {
+  return {
+    status: "empty",
+    summary: "Waiting for your first task.",
+    changedFiles: [],
+    checks: [],
+    artifacts: [],
+    blockers: [],
+    confidence: "low",
+    contributors: [],
+    risks: [],
+    nextActions: []
   };
 }
 

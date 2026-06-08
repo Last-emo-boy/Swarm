@@ -24,7 +24,6 @@ export function ResultPreview(props: {
         { text: " ", color: "text.muted" },
         { text: preview.summary, color: "text.primary" }
       ]} />
-      {preview.status === "empty" ? <PreviewLine label="Activity" value="No activity yet." /> : null}
       {preview.hypothesis ? <PreviewLine label="Hypothesis" value={preview.hypothesis} /> : null}
       {preview.changedFiles.length ? <PreviewLine label="Changed" value={preview.changedFiles.slice(0, 3).join(", ")} /> : null}
       {preview.checks.length ? (
