@@ -32,7 +32,6 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
     navigation: navigationFixture(),
     sessions: sessionFixture(),
     mode: { title: "Plan & Execute", subtitle: "Plans first, then edits safely", badge: "ACTIVE", tone: "role.gateway" },
-    runtime: { title: "Local Runtime", subtitle: "Gateway connected", badge: "READY", tone: "role.gateway" },
     permission: { title: "Ask Before Edit", subtitle: "Swarm asks before risky changes", badge: "SAFE", tone: "status.success" },
     sandbox: { title: "Workspace Write", subtitle: "Can modify this workspace", badge: "RW", tone: "status.success" },
     model: { title: "model", subtitle: "Provider: local-test", badge: "READY", tone: "role.gateway" },

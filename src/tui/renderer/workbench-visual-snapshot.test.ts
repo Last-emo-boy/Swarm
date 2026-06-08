@@ -139,7 +139,6 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
       { id: "session-review", title: "Review visual gates", age: "8m", status: "completed" }
     ],
     mode: { title: "Plan & Execute", subtitle: "Plans first, then edits safely", badge: "ACTIVE", tone: "role.gateway" },
-    runtime: { title: "Local Runtime", subtitle: "Gateway connected", badge: "READY", tone: "role.gateway" },
     permission: { title: "YOLO", subtitle: "Edits can run without asking", badge: "RISK", tone: "status.danger" },
     sandbox: { title: "Workspace Write", subtitle: "Can modify this workspace", badge: "RW", tone: "status.success" },
     model: { title: "kimi-k2.6", subtitle: "Provider: openai", badge: "READY", tone: "role.gateway" },
