@@ -150,13 +150,12 @@ function ReviewFindingLines(props: {
     <React.Fragment>
       {visible.map((finding, index) => {
         const location = finding.file ? `${finding.file}${finding.line ? `:${finding.line}` : ""} ` : "";
-        const confidence = finding.confidence ? ` confidence=${finding.confidence}` : "";
-        const recommendation = finding.recommendation ? ` fix=${finding.recommendation}` : "";
+        const recommendation = finding.recommendation ? ` Fix: ${finding.recommendation}` : "";
         return (
           <ResultLine
             key={`finding:${index}:${finding.severity}:${finding.title}`}
             label={index === 0 ? "Finding" : ""}
-            value={`${finding.severity}: ${location}${finding.title}${confidence}${recommendation}`}
+            value={`${reviewSeverityLabel(finding.severity)}: ${location}${finding.title}${recommendation}`}
             tone={finding.severity === "high" ? "status.danger" : finding.severity === "medium" ? "status.warning" : "text.primary"}
           />
         );
@@ -166,6 +165,10 @@ function ReviewFindingLines(props: {
       ) : null}
     </React.Fragment>
   );
+}
+
+function reviewSeverityLabel(severity: string): string {
+  return severity ? `${severity[0]?.toUpperCase() ?? ""}${severity.slice(1)}` : "Finding";
 }
 
 function RecoveryLines(props: {
