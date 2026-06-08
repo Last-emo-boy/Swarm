@@ -14059,9 +14059,9 @@ function checkResumePreflightReportBehavior(): EvalCaseResult {
       && report.includes("preflighting a session resume")
       && report.includes("Resume Health")
       && report.includes("Open attempts: 1")
-      && report.includes("Resume Work Contracts")
+      && report.includes("Resume Team")
       && report.includes("worker_preflight_live [running] coder/parallel policy=scoped_write scope=src/app.ts")
-      && report.includes("Context Memory");
+      && report.includes("Memory");
     return ok
       ? { name: "resume preflight report surfaces route, sandbox, freshness, and worker state", status: "pass", message: "renderResumePreflight summarizes what a continue/resume command is about to do before execution proceeds" }
       : { name: "resume preflight report surfaces route, sandbox, freshness, and worker state", status: "fail", message: report.slice(0, 1200) };
