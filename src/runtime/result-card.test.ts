@@ -12,7 +12,8 @@ test("Review / Verification evidence surfaces review warnings in result cards", 
       issues: [{
         severity: "medium",
         message: "Missing boundary case for failed verifier output.",
-        evidence: "src/runtime/result-card.ts"
+        evidence: "src/runtime/result-card.ts:45",
+        suggested_fix: "Add a focused failure-mode assertion."
       }]
     })
   });
@@ -23,8 +24,26 @@ test("Review / Verification evidence surfaces review warnings in result cards", 
   assert.equal(card.review.status, "warning");
   assert(card.review.summary.includes("needs_revision 82"));
   assert(card.review.summary.includes("missing edge-case assertion"));
+  assert.deepEqual(card.reviewFindings?.map((finding) => ({
+    severity: finding.severity,
+    title: finding.title,
+    file: finding.file,
+    line: finding.line,
+    recommendation: finding.recommendation,
+    confidence: finding.confidence
+  })), [{
+    severity: "medium",
+    title: "Missing boundary case for failed verifier output.",
+    file: "src/runtime/result-card.ts",
+    line: 45,
+    recommendation: "Add a focused failure-mode assertion.",
+    confidence: "medium"
+  }]);
   assert(card.risks.some((risk) => risk.level === "medium" && risk.message.includes("Reviewer reported findings")));
   assert(text.includes("Review: warning - needs_revision 82"));
+  assert(text.includes("Findings (1)"));
+  assert(text.includes("medium: src/runtime/result-card.ts:45"));
+  assert(text.includes("fix=Add a focused failure-mode assertion."));
   assert(text.includes("medium: Reviewer reported findings"));
 });
 

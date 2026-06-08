@@ -21,6 +21,9 @@ export type ProductResultCardView = {
   changedFiles: string[];
   checks: Array<{ command: string; status: "passed" | "failed" | "skipped" | "unknown" | "running" }>;
   review?: ResultCard["review"];
+  reviewFindings?: ResultCard["reviewFindings"];
+  recovery?: ResultCard["recovery"];
+  checkpoint?: ResultCard["checkpoint"];
   risk: RunBoardRisk;
   riskSummary: string;
   workerSummary: Array<{ workerId: string; label: string; contribution: string; status: "done" | "failed" | "cancelled" }>;
@@ -73,6 +76,9 @@ export function productResultCardViewFromParts(input: {
       summary: input.preview.summary,
       changedFiles: input.preview.changedFiles,
       checks: input.preview.checks,
+      reviewFindings: undefined,
+      recovery: undefined,
+      checkpoint: undefined,
       risk,
       riskSummary: risk,
       workerSummary: workerSummaryFromPreview(input.preview),
@@ -87,7 +93,7 @@ export function productResultCardViewFromParts(input: {
   return {
     status: productStatus(card.status),
     runtimeStatus: card.status,
-    title: "Result",
+    title: "Result Report",
     objective: input.objective,
     sessionId: card.sessionId,
     route: card.route,
@@ -95,6 +101,9 @@ export function productResultCardViewFromParts(input: {
     changedFiles: card.changedFiles,
     checks: card.checks,
     review: card.review,
+    reviewFindings: card.reviewFindings,
+    recovery: card.recovery,
+    checkpoint: card.checkpoint,
     risk,
     riskSummary: formatRiskSummary(card, risk),
     workerSummary: workerSummaryFromPreview(input.preview),

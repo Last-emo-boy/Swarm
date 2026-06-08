@@ -30,6 +30,7 @@ export type ResultCard = {
     message: string;
   }>;
   recovery?: RecoveryAdvice[];
+  reviewFindings?: ReviewFinding[];
   artifacts: string[];
   next: string[];
   memory?: {
@@ -72,6 +73,16 @@ export type ResultCard = {
   };
   cache?: ResultCardPromptCacheStatus;
   decisionTrail?: DecisionTrail;
+};
+
+export type ReviewFinding = {
+  severity: "low" | "medium" | "high";
+  title: string;
+  file?: string;
+  line?: number;
+  recommendation?: string;
+  confidence?: "low" | "medium" | "high";
+  evidence?: string[];
 };
 
 export type DecisionTrail = {
@@ -129,6 +140,7 @@ export function buildResultCard(input: ResultCardInput): ResultCard {
     },
     risks: buildRisks(snapshot, input.result),
     recovery: buildRecoveryAdvice(input.result, snapshot, input.cache, input.recovery),
+    reviewFindings: buildReviewFindings(snapshot),
     artifacts: uniqueStrings([
       ...(snapshot?.verification && typeof snapshot.verification === "object" && "worker_id" in snapshot.verification && typeof (snapshot.verification as { worker_id?: unknown }).worker_id === "string"
         ? [(snapshot.verification as { worker_id?: string }).worker_id as string]
@@ -198,6 +210,9 @@ export function formatResultCardText(card: ResultCard): string {
     `Recovery (${card.recovery?.length ?? 0})`,
     ...formatList((card.recovery ?? []).map(formatRecoveryAdviceInline), "(none)"),
     "",
+    `Findings (${card.reviewFindings?.length ?? 0})`,
+    ...formatReviewFindingLines(card.reviewFindings),
+    "",
     `Artifacts (${card.artifacts.length})`,
     ...formatList(card.artifacts),
     "",
@@ -257,6 +272,52 @@ function buildDecisionTrail(snapshot: WorkSnapshot | undefined, result: ResultCa
     trail.risk = risks.map((risk) => `${risk.level}: ${risk.message}`);
   }
   return Object.values(trail).some((items) => (items?.length ?? 0) > 0) ? trail : undefined;
+}
+
+function buildReviewFindings(snapshot: WorkSnapshot | undefined): ReviewFinding[] | undefined {
+  const issues = snapshot?.review?.issues ?? [];
+  if (!issues.length) {
+    return undefined;
+  }
+  return issues.slice(0, 8).map((issue) => {
+    const location = parseEvidenceLocation(issue.evidence);
+    return {
+      severity: issue.severity,
+      title: issue.message,
+      file: location.file,
+      line: location.line,
+      recommendation: issue.suggested_fix,
+      confidence: snapshot?.review && snapshot.review.score >= 90
+        ? "high"
+        : snapshot?.review && snapshot.review.score >= 70 ? "medium" : "low",
+      evidence: issue.evidence ? [issue.evidence] : undefined
+    };
+  });
+}
+
+function formatReviewFindingLines(findings: ReviewFinding[] | undefined): string[] {
+  if (!findings?.length) {
+    return ["  (none)"];
+  }
+  return findings.slice(0, 8).map((finding) => {
+    const location = finding.file ? ` ${finding.file}${finding.line ? `:${finding.line}` : ""}` : "";
+    const confidence = finding.confidence ? ` confidence=${finding.confidence}` : "";
+    const recommendation = finding.recommendation ? ` fix=${finding.recommendation}` : "";
+    return `  - ${finding.severity}:${location} ${firstLine(finding.title, 120)}${confidence}${recommendation}`;
+  });
+}
+
+function parseEvidenceLocation(evidence: string | undefined): { file?: string; line?: number } {
+  if (!evidence) {
+    return {};
+  }
+  const match = /(?<file>[\w./\\-]+\.[A-Za-z0-9]+)(?::(?<line>\d+))?/.exec(evidence);
+  const file = match?.groups?.file;
+  const lineText = match?.groups?.line;
+  return {
+    file,
+    line: lineText ? Number.parseInt(lineText, 10) : undefined
+  };
 }
 
 function formatDecisionTrailWorkerScope(worker: WorkSnapshot["work_contracts"]["active_workers"][number]): string {

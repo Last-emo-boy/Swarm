@@ -40,6 +40,20 @@ test("product result selector projects final card worker summary and attention h
         checks: [{ command: "npm test -- session-row", status: "passed" }],
         review: { status: "passed", summary: "review passed" },
         risks: [{ level: "medium", message: "broader verification pending" }],
+        recovery: [{
+          category: "sandbox",
+          severity: "error",
+          retryable: true,
+          summary: "Sandbox blocked shell.exec.",
+          nextAction: "Retry with an allowed command or request approval.",
+          commandHint: "swarm run --approval-mode wait"
+        }],
+        checkpoint: {
+          id: "cp_git_1",
+          name: "Workspace checkpoint",
+          mode: "git",
+          revertAvailable: true
+        },
         artifacts: [],
         next: ["/diff", "/commit"],
         decisionTrail: {
@@ -61,6 +75,12 @@ test("product result selector projects final card worker summary and attention h
   assert.deepEqual(view.changedFiles, ["src/runtime/session-row.ts"]);
   assert.deepEqual(view.workerSummary.map((item) => item.label), ["Code Worker"]);
   assert.deepEqual(view.attentionHistory.map((item) => item.resolution), ["waited; command completed successfully"]);
+  assert.equal(view.recovery?.[0]?.category, "sandbox");
+  assert.equal(view.recovery?.[0]?.nextAction, "Retry with an allowed command or request approval.");
+  assert.equal(view.checkpoint?.id, "cp_git_1");
+  assert.equal(view.checkpoint?.name, "Workspace checkpoint");
+  assert.equal(view.checkpoint?.mode, "git");
+  assert.equal(view.checkpoint?.revertAvailable, true);
   assert.deepEqual(view.decisionTrail?.assign, ["Code Worker owns patch"]);
   assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["final:/diff", "final:/commit"]);
 });

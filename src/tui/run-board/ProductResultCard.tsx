@@ -17,6 +17,7 @@ import {
   type ProductResultCardView
 } from "./product-result-card-selectors.js";
 import type { AttentionItemView, ResultPreview, RunBoardResultAction } from "./run-board-types.js";
+import type { RecoveryAdvice } from "../../runtime/recovery.js";
 
 export function ProductResultCard(props: {
   view?: ProductResultCardView;
@@ -28,6 +29,8 @@ export function ProductResultCard(props: {
   onNextAction?: (action: RunBoardResultAction) => void;
   decisionTrailExpanded?: boolean;
   onDecisionTrailToggle?: () => void;
+  teamReasoningExpanded?: boolean;
+  onTeamReasoningToggle?: () => void;
 }): React.ReactElement {
   const view = props.view ?? productResultCardViewFromParts({
     card: props.card,
@@ -44,6 +47,8 @@ export function ProductResultCard(props: {
               density={props.density}
               decisionTrailExpanded={Boolean(props.decisionTrailExpanded)}
               onDecisionTrailToggle={props.onDecisionTrailToggle}
+              teamReasoningExpanded={Boolean(props.teamReasoningExpanded)}
+              onTeamReasoningToggle={props.onTeamReasoningToggle}
             />
           : (
             <>
@@ -52,8 +57,8 @@ export function ProductResultCard(props: {
             </>
           )}
       </RunBoardPanel>
-      {view.finished ? <WorkerSummary view={view} density={props.density} /> : null}
-      {view.finished ? <AttentionHistory view={view} density={props.density} /> : null}
+      {view.finished && props.teamReasoningExpanded ? <WorkerSummary view={view} density={props.density} /> : null}
+      {view.finished && props.teamReasoningExpanded ? <AttentionHistory view={view} density={props.density} /> : null}
       {view.finished ? <NextActions actions={view.nextActions} onAction={props.onNextAction} density={props.density} /> : null}
     </Box>
   );
@@ -79,6 +84,8 @@ function ProductResultBody(props: {
   density?: TuiDensity;
   decisionTrailExpanded?: boolean;
   onDecisionTrailToggle?: () => void;
+  teamReasoningExpanded?: boolean;
+  onTeamReasoningToggle?: () => void;
 }): React.ReactElement {
   const view = props.view;
   const changedLimit = props.density === "compact" ? 2 : 4;
@@ -91,6 +98,7 @@ function ProductResultBody(props: {
         { text: view.runtimeStatus ?? view.status, color: "text.primary" }
       ]} />
       {view.sessionId && view.route ? <ResultLine label="Session" value={`${compactValue(view.sessionId, 18)}  route: ${routeBadge(view.route)}`} /> : null}
+      <CheckpointLine view={view} />
       <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
       <ResultLine label="Summary" value={view.summary} />
       <ResultList label="Changed" empty="none" values={view.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, view.changedFiles.length - changedLimit)} />
@@ -101,16 +109,114 @@ function ProductResultBody(props: {
         remaining={Math.max(0, view.checks.length - checkLimit)}
         badgeAware
       />
+      <ReviewFindingLines view={view} density={props.density} />
       {view.review?.summary ? <ResultLine label="Review" value={`${statusBadge(view.review.status)} ${view.review.summary}`} badgeAware tone={checkStatusTone(view.review.status)} /> : null}
+      <RecoveryLines view={view} density={props.density} />
       <DecisionTrailLines
         view={view}
         density={props.density}
         expanded={Boolean(props.decisionTrailExpanded)}
         onToggle={props.onDecisionTrailToggle}
       />
+      <TeamReasoningLines
+        view={view}
+        density={props.density}
+        expanded={Boolean(props.teamReasoningExpanded)}
+        onToggle={props.onTeamReasoningToggle}
+      />
       {view.detailHint ? <Text color={visualTokenColor("text.muted")} wrap="truncate">{view.detailHint}</Text> : null}
     </Box>
   );
+}
+
+function CheckpointLine(props: { view: ProductResultCardView }): React.ReactElement | null {
+  const checkpoint = props.view.checkpoint;
+  if (!checkpoint) {
+    return null;
+  }
+  return (
+    <ResultLine
+      label="Checkpoint"
+      value={`${compactValue(checkpoint.name, 36)} [${checkpoint.mode}] ${checkpoint.revertAvailable ? "revert available" : "revert unavailable"}`}
+      tone={checkpoint.revertAvailable ? "status.success" : "status.warning"}
+    />
+  );
+}
+
+function ReviewFindingLines(props: {
+  view: ProductResultCardView;
+  density?: TuiDensity;
+}): React.ReactElement | null {
+  const findings = props.view.reviewFindings ?? [];
+  if (!findings.length) {
+    return null;
+  }
+  const visible = findings.slice(0, props.density === "compact" ? 1 : 3);
+  return (
+    <React.Fragment>
+      {visible.map((finding, index) => {
+        const location = finding.file ? `${finding.file}${finding.line ? `:${finding.line}` : ""} ` : "";
+        const confidence = finding.confidence ? ` confidence=${finding.confidence}` : "";
+        const recommendation = finding.recommendation ? ` fix=${finding.recommendation}` : "";
+        return (
+          <ResultLine
+            key={`finding:${index}:${finding.severity}:${finding.title}`}
+            label={index === 0 ? "Finding" : ""}
+            value={`${finding.severity}: ${location}${finding.title}${confidence}${recommendation}`}
+            tone={finding.severity === "high" ? "status.danger" : finding.severity === "medium" ? "status.warning" : "text.primary"}
+          />
+        );
+      })}
+      {findings.length > visible.length ? (
+        <ResultLine label="" value={`+${findings.length - visible.length} more findings`} tone="text.muted" />
+      ) : null}
+    </React.Fragment>
+  );
+}
+
+function RecoveryLines(props: {
+  view: ProductResultCardView;
+  density?: TuiDensity;
+}): React.ReactElement | null {
+  const recovery = props.view.recovery ?? [];
+  if (!recovery.length) {
+    return null;
+  }
+  const visible = recovery.slice(0, props.density === "compact" ? 1 : 2);
+  return (
+    <React.Fragment>
+      {visible.map((advice, index) => (
+        <ResultLine
+          key={`recovery:${index}:${advice.category}:${advice.summary}`}
+          label={index === 0 ? "Recovery" : ""}
+          value={formatProductRecovery(advice)}
+          tone={recoveryTone(advice)}
+        />
+      ))}
+      {recovery.length > visible.length ? (
+        <ResultLine label="" value={`+${recovery.length - visible.length} more recovery steps`} tone="text.muted" />
+      ) : null}
+    </React.Fragment>
+  );
+}
+
+function formatProductRecovery(advice: RecoveryAdvice): string {
+  return [
+    `[${advice.category}/${advice.severity}${advice.retryable ? "/retry" : ""}]`,
+    advice.summary,
+    `Next: ${advice.nextAction}`,
+    advice.commandHint ? `Hint: ${advice.commandHint}` : undefined
+  ].filter(Boolean).join(" ");
+}
+
+function recoveryTone(advice: RecoveryAdvice): SemanticTextSpan["color"] {
+  if (advice.severity === "error") {
+    return "status.danger";
+  }
+  if (advice.severity === "warning") {
+    return "status.warning";
+  }
+  return "text.primary";
 }
 
 function DecisionTrailLines(props: {
@@ -148,6 +254,56 @@ function DecisionTrailLines(props: {
       ))}
     </React.Fragment>
   );
+}
+
+function TeamReasoningLines(props: {
+  view: ProductResultCardView;
+  density?: TuiDensity;
+  expanded: boolean;
+  onToggle?: () => void;
+}): React.ReactElement | null {
+  const items = teamReasoningItems(props.view);
+  if (!items.length) {
+    return null;
+  }
+  const visible = props.expanded
+    ? items.slice(0, props.density === "compact" ? 4 : 7)
+    : [];
+  return (
+    <React.Fragment>
+      <ResultLine
+        label="Evidence"
+        value={`${items.length} items. Show team's work`}
+        tone="text.muted"
+        onClick={props.onToggle}
+      />
+      {visible.map((item, index) => (
+        <ResultLine
+          key={`reasoning:${index}:${item}`}
+          label={index === 0 ? "Team" : ""}
+          value={item}
+          tone="text.primary"
+          onClick={props.onToggle}
+        />
+      ))}
+      {props.expanded && items.length > visible.length ? (
+        <ResultLine label="" value={`+${items.length - visible.length} more evidence items`} tone="text.muted" onClick={props.onToggle} />
+      ) : null}
+    </React.Fragment>
+  );
+}
+
+function teamReasoningItems(view: ProductResultCardView): string[] {
+  const items = [
+    ...view.reviewFindings?.flatMap((finding) =>
+      (finding.evidence ?? []).slice(0, 2).map((evidence) => `${finding.severity} finding evidence: ${evidence}`)
+    ) ?? [],
+    ...view.checks.slice(0, 4).map((check) => `verification ${check.status}: ${check.command}`),
+    ...view.workerSummary.slice(0, 4).map((worker) => `${worker.label}: ${worker.contribution}`),
+    ...view.attentionHistory.slice(0, 3).map((item) => `${item.resolved ? "resolved" : "open"}: ${item.summary}${item.resolution ? `; ${item.resolution}` : ""}`),
+    ...view.artifacts.slice(0, 3).map((artifact) => `artifact: ${artifact}`)
+  ];
+  return Array.from(new Set(items.filter((item) => item.trim())));
 }
 
 function ResultLine(props: {
@@ -251,10 +407,11 @@ function NextActions(props: {
   density?: TuiDensity;
   onAction?: (action: RunBoardResultAction) => void;
 }): React.ReactElement | null {
-  if (!props.actions.length) {
+  const actions = props.actions;
+  if (!actions.length) {
     return null;
   }
-  const visible = props.actions.slice(0, props.density === "compact" ? 2 : 4);
+  const visible = actions.slice(0, props.density === "compact" ? 2 : 4);
   return (
     <Box flexDirection="row" width="100%" marginBottom={1}>
       <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Next")}</Text>
