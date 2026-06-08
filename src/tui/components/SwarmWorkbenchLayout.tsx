@@ -591,9 +591,10 @@ function WorkbenchFooter({
   columns: number;
 }): React.ReactElement {
   const maxItems = columns < 150 ? 6 : items.length;
+  const visibleItems = items.filter(isVisibleWorkbenchFooterItem).slice(0, maxItems);
   return (
     <Box width="100%" height={FOOTER_ROWS} flexDirection="row" overflow="hidden">
-      {items.slice(0, maxItems).map((item, index) => (
+      {visibleItems.map((item, index) => (
         <React.Fragment key={`${item.key}:${item.label}`}>
           {index > 0 ? <Text color={visualTokenColor("text.muted")}>   </Text> : null}
           <Text color={resolveTuiColor(item.tone ?? "brand.focus")}>{item.label}</Text>
@@ -601,6 +602,11 @@ function WorkbenchFooter({
       ))}
     </Box>
   );
+}
+
+function isVisibleWorkbenchFooterItem(item: { key: string; label: string }): boolean {
+  const label = item.label.trim().toLowerCase();
+  return label !== "type a request" && label !== "ctrl+o details";
 }
 
 function disabledMetrics(columns: number, rows: number): SwarmWorkbenchMetrics {

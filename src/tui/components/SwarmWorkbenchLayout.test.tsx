@@ -81,7 +81,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /Skills & Automations/);
   assert.doesNotMatch(text, /Activity Summary/);
   assert.match(text, /Ask Swarm prompt/);
-  assert.match(text, /Type a request/);
+  assert.doesNotMatch(text, /Type a request/);
   assert.doesNotMatch(text, /\/help|\/continue|\/memory|PgUp\/PgDn scroll|\/ search/);
   assert.doesNotMatch(text, /tasks:0\/0|approvals:1|cache:WARM/);
 });
@@ -220,6 +220,37 @@ test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {
   assert.match(text, /Routine active case 1m !1/);
   assert.doesNotMatch(text, /active Swarm/);
   assert.match(text, /failed release workspace/);
+});
+
+test("SwarmWorkbenchLayout hides routine footer hints but keeps real footer status", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: [
+      ...footerFixture(),
+      { key: "sync", label: "Sync pending", tone: "status.warning" }
+    ],
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Composer")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.doesNotMatch(text, /Type a request/);
+  assert.doesNotMatch(text, /Ctrl\+O details/);
+  assert.match(text, /Sync pending/);
 });
 
 test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible", () => {

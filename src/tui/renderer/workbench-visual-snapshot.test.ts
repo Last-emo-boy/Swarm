@@ -65,7 +65,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
   }
 
   const wideSnapshot = snapshots[3]!.snapshot;
-  assert.match(wideSnapshot.lines.join("\n"), /Type a request\s+Ctrl\+O details/);
+  assert.match(wideSnapshot.lines.join("\n"), /Ctrl\+O details/);
   assert.doesNotMatch(wideSnapshot.lines.join("\n"), /\/help|\/continue|\/memory|PgUp\/PgDn scroll|\/ search/);
   assert.doesNotMatch(wideSnapshot.lines.join("\n"), /\[cache:HIT 81%\]/);
   assert(colorCount(wideSnapshot) >= 6, "wide workbench should keep multiple semantic accents visible");
