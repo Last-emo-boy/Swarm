@@ -60,10 +60,10 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(text, /Run\s+sess-1\s+WORK/);
   assert.doesNotMatch(text, /route:/i);
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
-  assert.match(text, /Evidence\s+4 items\. Show team's work/);
+  assert.match(text, /Evidence\s+4 items\. Show details/);
   assert.match(text, /NEXT\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /NEXT\s+\/diff\s+\/commit/);
-  assert.doesNotMatch(text, /NEXT\s+Show team's work/);
+  assert.doesNotMatch(text, /NEXT\s+Show details/);
   assert.doesNotMatch(text, /TEAM SUMMARY/);
   assert.doesNotMatch(text, /Code Worker implemented patch/);
   assert.doesNotMatch(text, /REQUEST HISTORY/);
@@ -88,7 +88,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Evidence\s+4 items\. Show team's work/);
+  assert.match(expandedText, /Evidence\s+4 items\. Show details/);
   assert.match(expandedText, /Team\s+verification passed: npm test -- session-row/);
   assert.match(expandedText, /TEAM SUMMARY/);
   assert.match(expandedText, /Code Worker implemented patch/);

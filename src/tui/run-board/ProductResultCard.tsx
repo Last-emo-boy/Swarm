@@ -268,7 +268,7 @@ function TeamReasoningLines(props: {
     <React.Fragment>
       <ResultLine
         label="Evidence"
-        value={`${items.length} items. Show team's work`}
+        value={`${items.length} items. Show details`}
         tone="text.muted"
         onClick={props.onToggle}
       />
