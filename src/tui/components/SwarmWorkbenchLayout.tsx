@@ -273,12 +273,7 @@ function LeftSidebar({
       <NavigationList items={primaryNavigation} width={width} onNavigate={onNavigate} primary marginTop={0} />
 
       {sessions.length ? (
-        <SidebarSection title="Cases" width={width}>
-          {sessions.slice(0, 6).map((session) => (
-            <CaseRow key={session.id} session={session} width={width} onSelect={onSelectSession} />
-          ))}
-          {sessions.length > 6 ? <Text color={visualTokenColor("text.muted")}>... View all cases</Text> : null}
-        </SidebarSection>
+        <CaseList sessions={sessions} width={width} onSelectSession={onSelectSession} />
       ) : null}
 
       {showWorkspace ? (
@@ -348,6 +343,25 @@ function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionI
           {secondaryAttention ? <Text color={visualTokenColor("status.warning")}> {secondaryAttention}</Text> : null}
         </Text>
       ) : null}
+    </Box>
+  );
+}
+
+function CaseList({
+  sessions,
+  width,
+  onSelectSession
+}: {
+  sessions: SwarmWorkbenchSessionItem[];
+  width: number;
+  onSelectSession?: (id: string) => void;
+}): React.ReactElement {
+  return (
+    <Box width="100%" flexDirection="column" marginTop={1} overflow="hidden">
+      {sessions.slice(0, 6).map((session) => (
+        <CaseRow key={session.id} session={session} width={width} onSelect={onSelectSession} />
+      ))}
+      {sessions.length > 6 ? <Text color={visualTokenColor("text.muted")}>... View all cases</Text> : null}
     </Box>
   );
 }
