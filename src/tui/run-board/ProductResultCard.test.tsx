@@ -49,6 +49,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
 
   assert.match(text, /RESULT/);
   assert.match(text, /Status\s+\[OK\] completed/);
+  assert.match(text, /Run\s+sess-1\s+WORK/);
+  assert.doesNotMatch(text, /route:/i);
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
   assert.match(text, /Evidence\s+4 items\. Show team's work/);
   assert.match(text, /NEXT\s+Review changes\s+Commit when ready/);
