@@ -79,6 +79,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   })));
 
   assert.match(plain, /SUMMARY Verification failed after TUI polish\./);
+  assert.doesNotMatch(plain, /session-result-card|WORK/);
   assert.match(plain, /CHANGED src\/tui\/components\/ResultCard\.tsx/);
   assert.match(plain, /CHECKS npm run check failed \[ERR\]/);
   assert.doesNotMatch(plain, /result-card-render\.test\.tsx \[OK\]|npm run lint|npm run typecheck/);

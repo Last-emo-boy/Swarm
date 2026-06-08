@@ -8,7 +8,6 @@ import {
   checkStatusTone,
   compactValue,
   resultSectionToken,
-  routeBadge,
   sectionLabel,
   visualTokenColor,
   type ResultSectionKind,
@@ -16,7 +15,7 @@ import {
 } from "../theme.js";
 import type { TuiDensity } from "../conversation-layout.js";
 import { SemanticTextLine, semanticToolLineSpans, type SemanticTextSpan } from "./SemanticTextLine.js";
-import { StatusIcon, statusIconText } from "./StatusIcon.js";
+import { statusIconText } from "./StatusIcon.js";
 import { toolResponseLineSpans } from "./ToolResponseSurface.js";
 
 export function ResultCard(props: {
@@ -47,13 +46,6 @@ export function ResultCard(props: {
   return (
     <Box flexDirection="column" width="100%">
       <Text color={visualTokenColor("text.primary")} bold wrap="truncate">{sectionLabel("Result")}</Text>
-      <Text wrap="truncate">
-        <Text color={visualTokenColor("text.muted")}>{compactValue(card.sessionId, 18)}</Text>
-        <Text color={visualTokenColor("text.muted")}> </Text>
-        <StatusIcon status={card.status} label="badge" />
-        <Text color={visualTokenColor("text.muted")}> </Text>
-        <Text color={visualTokenColor("text.primary")}>{routeBadge(card.route)}</Text>
-      </Text>
       <SectionLine section="summary" value={density === "compact" ? compactValue(card.summary, 80) : card.summary} />
       <SectionLine
         section="changed"
