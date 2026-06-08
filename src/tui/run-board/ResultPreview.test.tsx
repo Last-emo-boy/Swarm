@@ -27,6 +27,7 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.match(text, /Verified\s+npm test -- result-preview \[passed\]/);
   assert.doesNotMatch(text, /Checks\s+npm test -- result-preview/);
+  assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
   assert.match(text, /Next\s+Review changes\s+Commit when ready\s+Review this workspace/);
   assert.doesNotMatch(text, /Confidence\s+high/);
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
@@ -64,7 +65,7 @@ function previewFixture(): ResultPreviewData {
     artifacts: [],
     blockers: [],
     confidence: "high",
-    contributors: [],
+    contributors: [{ workerId: "worker:code", label: "Code Worker", contribution: "implemented patch" }],
     risks: [],
     nextActions: ["/diff", "/commit", "/review auth and permissions"]
   };

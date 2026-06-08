@@ -34,12 +34,6 @@ export function ResultPreview(props: {
       ) : null}
       {preview.blockers.length ? <PreviewLine label="Blockers" value={preview.blockers.slice(0, 2).join(", ")} /> : null}
       {preview.artifacts.length ? <PreviewLine label="Artifacts" value={preview.artifacts.slice(0, 2).join(", ")} /> : null}
-      {preview.contributors.length ? (
-        <PreviewLine
-          label="Contributors"
-          value={preview.contributors.slice(0, 3).map((contributor) => `${contributor.label}: ${contributor.contribution}`).join(", ")}
-        />
-      ) : null}
       {actions.length ? <ResultActions actions={actions} onAction={props.onAction} /> : null}
     </RunBoardPanel>
   );
