@@ -87,7 +87,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /RISKS high: One verification check failed\./);
   assert.match(plain, /RECOVERY \[provider_rate_limit\/warning\/retry\]/);
   assert.match(plain, /ARTIFACTS saved/);
-  assert.match(plain, /⎿ artifact\s+E:\/Playground\/Swarm\/\.swarm\/reports\/check\.report\.json/);
+  assert.doesNotMatch(plain, /⎿ artifact|\.swarm\/reports\/check\.report\.json/);
   assert.doesNotMatch(plain, /\+\d/);
   assert.match(plain, /NEXT rerun focused tests/);
   assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);
@@ -216,8 +216,7 @@ test("ResultCard colors section labels and status badges without tinting values"
   assert.equal(colorAtText(frame, "cache"), resolveTuiColor("status.success"));
   assert.equal(colorAtText(frame, "hit 64%"), resolveTuiColor("text.primary"));
   assert.equal(colorAtText(frame, "ARTIFACTS"), resolveTuiColor("text.primary"));
-  assert.equal(colorAtText(frame, "artifact"), resolveTuiColor("text.muted"));
-  assert.equal(colorAtText(frame, "check.report.json"), resolveTuiColor("text.muted"));
+  assert.doesNotMatch(frameText(frame), /artifact\s+E:\/Playground\/Swarm\/\.swarm\/reports\/check\.report\.json/);
 });
 
 test("InspectorPane wraps long recovery commands and artifact paths in narrow terminals", async () => {

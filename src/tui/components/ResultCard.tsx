@@ -16,7 +16,6 @@ import {
 import type { TuiDensity } from "../conversation-layout.js";
 import { SemanticTextLine, semanticToolLineSpans, type SemanticTextSpan } from "./SemanticTextLine.js";
 import { statusIconText } from "./StatusIcon.js";
-import { toolResponseLineSpans } from "./ToolResponseSurface.js";
 
 export function ResultCard(props: {
   card?: ResultCardData;
@@ -43,7 +42,6 @@ export function ResultCard(props: {
   const density = props.density ?? "default";
   const checkSummary = resultCardCheckSummary(card.checks, density === "compact" ? 2 : 3);
   const reviewSummary = resultCardReviewSummary(card.review);
-  const visibleArtifacts = card.artifacts.slice(0, density === "compact" ? 1 : 2);
   return (
     <Box flexDirection="column" width="100%">
       <Text color={visualTokenColor("text.primary")} bold wrap="truncate">{sectionLabel("Result")}</Text>
@@ -82,28 +80,7 @@ export function ResultCard(props: {
           value={visibleRecovery.map((advice) => compactValue(formatRecoveryAdviceInline(advice), 112)).join(" | ")}
         />
       )}
-      {visibleArtifacts.length > 0 && (
-        <React.Fragment>
-          <SectionLine
-            section="artifacts"
-            value="saved"
-          />
-          {visibleArtifacts.map((artifact, index) => (
-            <SemanticTextLine
-              key={`artifact:${index}:${artifact}`}
-              wrap="wrap"
-              spans={[
-                { text: "  ", color: "text.muted" },
-                ...toolResponseLineSpans(`artifact=${compactValue(artifact, 96)}`, {
-                  defaultColor: "text.muted",
-                  valueColor: "text.muted",
-                  fallbackLabel: "artifact"
-                })
-              ]}
-            />
-          ))}
-        </React.Fragment>
-      )}
+      {card.artifacts.length > 0 ? <SectionLine section="artifacts" value="saved" /> : null}
       {card.next.length > 0 && (
         <SectionLine section="next" value={card.next.slice(0, density === "compact" ? 1 : 2).join(" · ")} />
       )}
