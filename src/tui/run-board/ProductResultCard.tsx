@@ -83,6 +83,7 @@ function ProductResultBody(props: {
 }): React.ReactElement {
   const view = props.view;
   const checkLimit = props.density === "compact" ? 2 : 4;
+  const review = visibleReview(view);
   return (
     <Box flexDirection="column" width="100%">
       <ResultLine label="Status" spans={[
@@ -105,7 +106,7 @@ function ProductResultBody(props: {
         />
       ) : null}
       <ReviewFindingLines view={view} density={props.density} />
-      {view.review?.summary ? <ResultLine label="Review" value={`${statusBadge(view.review.status)} ${view.review.summary}`} badgeAware tone={checkStatusTone(view.review.status)} /> : null}
+      {review ? <ResultLine label="Review" value={`${statusBadge(review.status)} ${review.summary}`} badgeAware tone={checkStatusTone(review.status)} /> : null}
       <RecoveryLines view={view} density={props.density} />
       <DecisionTrailLines
         view={view}
@@ -126,6 +127,15 @@ function ProductResultBody(props: {
 
 function shouldShowRiskLine(view: ProductResultCardView): boolean {
   return !(view.risk === "low" && view.riskSummary === "low");
+}
+
+function visibleReview(view: ProductResultCardView): ProductResultCardView["review"] | undefined {
+  const review = view.review;
+  if (!review?.summary) {
+    return undefined;
+  }
+  const summary = review.summary.trim().toLowerCase();
+  return review.status === "passed" && ["passed", "review passed"].includes(summary) ? undefined : review;
 }
 
 function productStatusLabel(status: ProductResultCardView["status"]): string {

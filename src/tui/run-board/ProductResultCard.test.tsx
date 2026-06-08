@@ -65,6 +65,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(text, /Risk\s+low/);
   assert.doesNotMatch(text, /Changed\s+src\/runtime\/session-row\.ts/);
   assert.match(text, /Verified\s+\[OK\] npm test -- session-row/);
+  assert.doesNotMatch(text, /Review\s+\[OK\] review passed/);
   assert.doesNotMatch(text, /Details\s+\d+ items\. Show details/);
   assert.doesNotMatch(text, /Evidence\s+4 items/);
   assert.match(text, /NEXT\s+Review changes/);
@@ -297,6 +298,7 @@ test("ProductResultCard renders review findings as result-first report rows", ()
   assert.match(text, /Finding\s+High: src\/auth\/permissions\.ts:42 Permission check can be bypassed/);
   assert.match(text, /Fix: Validate inherited roles before granting access/);
   assert.match(text, /Medium: src\/auth\/audit\.ts Audit trail misses denied requests/);
+  assert.match(text, /Review\s+\[WARN\] 2 actionable findings\./);
   assert.doesNotMatch(text, /confidence=|fix=/);
   assert.doesNotMatch(text, /Changed\s+none/);
   assert.match(text, /NEXT\s+Review this workspace/);
