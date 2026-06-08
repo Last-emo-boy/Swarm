@@ -27,7 +27,6 @@ export function ResultPreview(props: {
         ] as const : []),
         { text: preview.summary, color: "text.primary" }
       ]} />
-      {preview.changedFiles.length ? <PreviewLine label="Changed" value={preview.changedFiles.slice(0, 3).join(", ")} /> : null}
       {preview.checks.length ? (
         <PreviewLine
           label="Verified"

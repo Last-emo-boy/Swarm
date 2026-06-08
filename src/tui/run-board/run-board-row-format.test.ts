@@ -61,6 +61,7 @@ test("attention and result preview formatters keep next step visible", () => {
   assert(formatAttentionItem(attention, 80).every((line) => !/recommend:|evidence:/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => displayWidth(line) <= 80));
   assert(formatResultPreview(preview, 80).every((line) => !/Confidence/.test(line)));
+  assert(formatResultPreview(preview, 80).every((line) => !/Changed:|src\/tui\/run-board\/WorkerRow\.tsx/.test(line)));
   assert(formatResultPreview(preview, 80).some((line) => /Verified: \[RUN\] npm test/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Checks:|npm test \[running\]/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Artifacts/.test(line)));

@@ -31,7 +31,6 @@ export function formatResultPreview(preview: ResultPreview, columns = 100): stri
   const blockers = visibleResultBlockers(preview);
   const lines = [
     `Result: ${preview.summary}`,
-    preview.changedFiles.length ? `Changed: ${preview.changedFiles.slice(0, 3).join(", ")}` : undefined,
     preview.checks.length ? `Verified: ${preview.checks.map((check) => `${checkStatusBadge(check.status)} ${check.command}`).slice(0, 3).join(", ")}` : undefined,
     blockers.length ? `Blockers: ${blockers.slice(0, 2).join(", ")}` : undefined
   ];
