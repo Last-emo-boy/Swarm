@@ -683,7 +683,7 @@ For this repo, these map to three concrete rules:
    surfaces unless they are the current action.
 5. Case/workbench projections must not treat the current cwd as implicit write
    authority. A selected case without `WorkspaceLease` remains planning/read-only
-   until a lease is attached; the TUI should show `Selected Lease: no workspace`
+   until a lease is attached; the TUI should show `Workspace: no workspace`
    and the Gateway projection should expose the same missing boundary.
 
 ## Next Iteration
