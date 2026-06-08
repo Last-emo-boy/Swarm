@@ -103,6 +103,8 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
   const text = frameText(frame);
 
   assert.match(text, /Waiting for your first task\./);
+  assert.doesNotMatch(text, /TEAM ACTIVITY/);
+  assert.doesNotMatch(text, /No workers yet/);
   assert.doesNotMatch(text, /\[Team 0\]/);
   assert.doesNotMatch(text, /\[Blocked 0\]/);
   assert.doesNotMatch(text, /\[Files 0\]/);

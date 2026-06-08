@@ -1,6 +1,5 @@
 import React from "react";
-import { Box, Text } from "../ui.js";
-import { visualTokenColor } from "../theme.js";
+import { Box } from "../ui.js";
 import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
 import { collaborationRoleDescriptor, collaborationRoleForWorker } from "../collaboration-role.js";
 import type { WorkerBoardRow as WorkerBoardRowData } from "./run-board-types.js";
@@ -60,8 +59,4 @@ function statusToneForRow(status: WorkerBoardRowData["status"]): SemanticTextSpa
     case "waiting": return "status.pending";
     case "active": return "status.running";
   }
-}
-
-export function WorkerRowEmpty(): React.ReactElement {
-  return <Text color={visualTokenColor("text.muted")}>No workers yet.</Text>;
 }
