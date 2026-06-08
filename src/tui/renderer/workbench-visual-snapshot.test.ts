@@ -39,18 +39,19 @@ test("workbench visual snapshot covers result approval inspector action log and 
       assert.match(text, /approval|Approval|DECISION|Reassign/);
     }
     if (viewport.columns >= 132) {
+      assert.match(text, /Status/);
       assert.match(text, /Mode/);
-      assert.match(text, /Skills & Automations/);
-      assert.match(text, /Workers/);
+      assert.match(text, /Active helpers/);
+      assert.match(text, /Tools/);
       assert.match(text, /ACTION LOG/);
     }
     assert.match(text, /Ask Swarm/);
-    assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP/);
+    assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP|Skills & Automations|Workers:/);
 
     if (text.includes("Swarm >_")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm >_"), "Swarm")?.color, resolveTuiColor("brand.focus"));
     } else {
-      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Board"), "Board")?.color, resolveTuiColor("brand.focus"));
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "# Result"), "Result")?.color, resolveTuiColor("brand.focus"));
     }
     if (text.includes("CHECKS")) {
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
@@ -126,21 +127,15 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
     columns: input.columns,
     rows: input.rows,
     version: "0.1.0",
-    title: "Board",
-    subtitle: "Run: Executing  Workers: 2  Files: 2  Approvals: 1",
+    title: "Result",
+    subtitle: "Run: Executing  Helpers: 2  Files: 2  Approvals: 1",
     headerDetail: "Waiting for reviewer confirmation",
     workspace: { path: "E:/Playground/Swarm", git: "checkpoint before-tui-polish", status: "running" },
     navigation: [
-      { id: "board", label: "Board", shortcut: "1", active: true },
-      { id: "sessions", label: "Tasks", shortcut: "2", active: false },
-      { id: "workers", label: "Workers", shortcut: "3", active: false },
-      { id: "activity", label: "Activity", shortcut: "4", active: false },
-      { id: "output", label: "Output", shortcut: "5", active: false },
-      { id: "skills", label: "Skills", shortcut: "6", active: false },
-      { id: "automations", label: "Automations", shortcut: "7", active: false },
-      { id: "trace", label: "Trace", shortcut: "8", active: false },
-      { id: "chat", label: "Chat", shortcut: "9", active: false },
-      { id: "plan", label: "Run", shortcut: "0", active: false }
+      { id: "chat", label: "Chat", shortcut: "1", active: false },
+      { id: "plan", label: "Result", shortcut: "2", active: true },
+      { id: "board", label: "Observatory", shortcut: "3", active: false },
+      { id: "trace", label: "Debug", shortcut: "4", active: false }
     ],
     sessions: [
       { id: "session-workbench-visual", title: "TUI workbench polish", age: "now", status: "running", active: true },
