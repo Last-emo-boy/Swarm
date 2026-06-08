@@ -85,13 +85,13 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /Status\s+Needs you/);
   assert.doesNotMatch(text, /waiting-attention/);
   assert.match(text, /Focus\s+Test Runner/);
-  assert.match(text, /TEAM ACTIVITY/);
+  assert.match(text, /PROGRESS/);
   assert.match(text, /Test Runner/);
   assert.match(text, /NEEDS YOU/);
   assert.match(text, /Next\s+Wait briefly before stopping\./);
   assert.doesNotMatch(text, /recommend:|activity:/);
   assert.match(text, /RESULT PREVIEW/);
-  assert.match(text, /\[Team 2\]/);
+  assert.match(text, /\[Helpers 2\]/);
   assert.match(text, /\[Stuck 1\]/);
   assert.doesNotMatch(text, /\[Checks 0\/0\]/);
   assert.doesNotMatch(text, /\[Files 0\]/);
@@ -107,9 +107,9 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
 
   assert.match(text, /Waiting for your first task\./);
   assert.doesNotMatch(text, /Phase\s+idle/);
-  assert.doesNotMatch(text, /TEAM ACTIVITY/);
+  assert.doesNotMatch(text, /PROGRESS/);
   assert.doesNotMatch(text, /No workers yet/);
-  assert.doesNotMatch(text, /\[Team 0\]/);
+  assert.doesNotMatch(text, /\[Helpers 0\]/);
   assert.doesNotMatch(text, /\[Blocked 0\]/);
   assert.doesNotMatch(text, /\[Files 0\]/);
   assert.doesNotMatch(text, /\[Checks 0\/0\]/);
@@ -126,7 +126,7 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     assert(lines.every((line) => line.length <= columns), `${columns}: expected all rows to fit`);
     assert.match(text, /WORK/);
     assert.doesNotMatch(text, /SWARM OBSERVATORY/);
-    assert.match(text, /TEAM ACTIVITY/);
+    assert.match(text, /PROGRESS/);
     assert.match(text, /NEEDS YOU/);
     assert.match(text, /RESULT PREVIEW/);
     assert.doesNotMatch(text, /waiting-attention|mode: auto|risk: workspace-write|handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);
@@ -159,9 +159,9 @@ test("RunBoardSurface uses product-facing overflow labels", () => {
   }), { columns: 100, rows: 28 });
   const text = frameText(frame);
 
-  assert.match(text, /\+1 more team activity/);
+  assert.match(text, /\+1 more updates/);
   assert.match(text, /\+1 more requests/);
-  assert.doesNotMatch(text, /more workers|more attention items/i);
+  assert.doesNotMatch(text, /more workers|more team activity|more attention items/i);
 });
 
 test("RunBoardSurface dispatches attention action clicks", () => {

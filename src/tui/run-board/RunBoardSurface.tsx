@@ -108,7 +108,7 @@ function RunBoardFooter(props: { view: RunBoardSurfaceView }): React.ReactElemen
 function runBoardFooterChips(view: RunBoardSurfaceView): string[] {
   const counts = summarizeRunBoardViewCounts(view);
   const chips = [
-    counts.workers > 0 ? `[Team ${counts.workers}]` : undefined,
+    counts.workers > 0 ? `[Helpers ${counts.workers}]` : undefined,
     counts.stuck > 0 ? `[Stuck ${counts.stuck}]` : counts.blocked > 0 ? `[Blocked ${counts.blocked}]` : undefined,
     counts.files > 0 ? `[Files ${counts.files}]` : undefined,
     counts.checks > 0 ? `[Checks ${counts.passedChecks}/${counts.checks}]` : undefined,

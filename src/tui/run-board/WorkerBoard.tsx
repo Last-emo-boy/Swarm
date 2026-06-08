@@ -18,7 +18,7 @@ export function WorkerBoard(props: {
     return null;
   }
   return (
-    <RunBoardPanel title="Team Activity">
+    <RunBoardPanel title="Progress">
       {visible.length
         ? visible.map((row) => (
             <WorkerRow
@@ -29,7 +29,7 @@ export function WorkerBoard(props: {
             />
           ))
         : null}
-      {hidden > 0 ? <Text color={visualTokenColor("text.muted")}>+{hidden} more team activity</Text> : null}
+      {hidden > 0 ? <Text color={visualTokenColor("text.muted")}>+{hidden} more updates</Text> : null}
     </RunBoardPanel>
   );
 }
