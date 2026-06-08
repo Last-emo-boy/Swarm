@@ -17,7 +17,6 @@ export type ProductResultCardView = {
   title: string;
   objective?: string;
   sessionId?: string;
-  route?: ResultCard["route"];
   summary: string;
   changedFiles: string[];
   checks: Array<{ command: string; status: "passed" | "failed" | "skipped" | "unknown" | "running" }>;
@@ -97,7 +96,6 @@ export function productResultCardViewFromParts(input: {
     title: "Result Report",
     objective: input.objective,
     sessionId: card.sessionId,
-    route: card.route,
     summary: card.summary,
     changedFiles: card.changedFiles,
     checks: card.checks,

@@ -71,6 +71,7 @@ test("product result selector projects final card worker summary and attention h
 
   assert.equal(view.status, "success");
   assert.equal(view.runtimeStatus, "completed");
+  assert.equal("route" in view, false);
   assert.equal(view.risk, "medium");
   assert.deepEqual(view.changedFiles, ["src/runtime/session-row.ts"]);
   assert.deepEqual(view.workerSummary.map((item) => item.label), ["Code Worker"]);
