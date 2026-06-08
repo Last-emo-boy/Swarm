@@ -426,6 +426,7 @@ function NavigationRow({
 }
 
 function CenterHeader({ title, subtitle, detail, columns }: { title: string; subtitle?: string; detail?: string; columns: number }): React.ReactElement {
+  const visibleDetail = visibleCenterHeaderDetail(detail);
   return (
     <Box width="100%" height={CENTER_HEADER_ROWS} flexDirection="column" overflow="hidden">
       <Text wrap="truncate">
@@ -436,10 +437,16 @@ function CenterHeader({ title, subtitle, detail, columns }: { title: string; sub
         {subtitle ?? "Ready"}
       </Text>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {detail ?? ""}
+        {visibleDetail ?? ""}
       </Text>
     </Box>
   );
+}
+
+function visibleCenterHeaderDetail(value: string | undefined): string | undefined {
+  const detail = value?.trim();
+  if (!detail) return undefined;
+  return /\b(reply below|open work stays here)\b/iu.test(detail) ? undefined : detail;
 }
 
 function RightRail({

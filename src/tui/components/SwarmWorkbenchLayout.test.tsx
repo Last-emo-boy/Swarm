@@ -62,6 +62,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /review no workspace/);
   assert.match(text, /# Board/);
   assert.match(text, /Transcript center/);
+  assert.doesNotMatch(text, /Open work stays here|Reply below/);
   assert.doesNotMatch(text, /Status/);
   assert.doesNotMatch(text, /Mode/);
   assert.doesNotMatch(text, /Plan & Execute/);
