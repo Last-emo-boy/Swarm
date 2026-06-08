@@ -340,7 +340,8 @@ function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionI
   const showSecondary = Boolean(badge || subtitle);
   const inlineAttention = session.attention && !showSecondary ? attentionLabel(session.attention) : undefined;
   const secondaryAttention = session.attention && showSecondary ? attentionLabel(session.attention) : undefined;
-  const ageWidth = session.age ? displayWidth(session.age) + 1 : 0;
+  const visibleAge = session.attention ? undefined : session.age;
+  const ageWidth = visibleAge ? displayWidth(visibleAge) + 1 : 0;
   const attentionWidth = inlineAttention ? displayWidth(inlineAttention) + 1 : 0;
   const titleBudget = Math.max(8, width - ageWidth - attentionWidth - 6);
   return (
@@ -352,7 +353,7 @@ function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionI
       >
         <Text color={session.active ? visualTokenColor("brand.focus") : visualTokenColor("text.muted")}>{session.active ? "> " : "  "}</Text>
         <Text color={resolveTuiColor(titleTone)}>{fitText(session.title || session.id, titleBudget)}</Text>
-        {session.age ? <Text color={visualTokenColor("text.muted")}> {session.age}</Text> : null}
+        {visibleAge ? <Text color={visualTokenColor("text.muted")}> {visibleAge}</Text> : null}
         {inlineAttention ? <Text color={visualTokenColor("status.warning")}> {inlineAttention}</Text> : null}
       </Text>
       {showSecondary ? (
