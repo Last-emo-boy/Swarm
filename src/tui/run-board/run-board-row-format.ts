@@ -28,13 +28,22 @@ export function formatAttentionItem(item: AttentionItemView, columns = 100): str
 
 export function formatResultPreview(preview: ResultPreview, columns = 100): string[] {
   const width = Math.max(40, Math.floor(columns));
+  const blockers = visibleResultBlockers(preview);
   const lines = [
     `Result: ${preview.summary}`,
     preview.changedFiles.length ? `Changed: ${preview.changedFiles.slice(0, 3).join(", ")}` : undefined,
     preview.checks.length ? `Verified: ${preview.checks.map((check) => `${checkStatusBadge(check.status)} ${check.command}`).slice(0, 3).join(", ")}` : undefined,
-    preview.blockers.length ? `Blockers: ${preview.blockers.slice(0, 2).join(", ")}` : undefined
+    blockers.length ? `Blockers: ${blockers.slice(0, 2).join(", ")}` : undefined
   ];
   return lines.filter((line): line is string => Boolean(line)).map((line) => clipDisplay(line, width));
+}
+
+function visibleResultBlockers(preview: ResultPreview): string[] {
+  const summary = preview.summary.toLowerCase();
+  return preview.blockers.filter((blocker) => {
+    const value = blocker.trim();
+    return value && !summary.includes(value.toLowerCase());
+  });
 }
 
 function checkStatusBadge(status: ResultPreview["checks"][number]["status"]): string {

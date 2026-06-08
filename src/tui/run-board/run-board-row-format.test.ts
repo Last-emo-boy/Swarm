@@ -49,7 +49,7 @@ test("attention and result preview formatters keep next step visible", () => {
     changedFiles: ["src/tui/run-board/WorkerRow.tsx"],
     checks: [{ command: "npm test", status: "running" }],
     artifacts: ["artifacts/result-preview.log"],
-    blockers: [],
+    blockers: ["checks pending", "review needed"],
     confidence: "medium",
     contributors: [],
     risks: [],
@@ -64,6 +64,8 @@ test("attention and result preview formatters keep next step visible", () => {
   assert(formatResultPreview(preview, 80).some((line) => /Verified: \[RUN\] npm test/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Checks:|npm test \[running\]/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Artifacts/.test(line)));
+  assert(formatResultPreview(preview, 80).some((line) => /Blockers: review needed/.test(line)));
+  assert(formatResultPreview(preview, 80).every((line) => !/Blockers: checks pending/.test(line)));
 });
 
 test("result preview formatter keeps empty state quiet", () => {

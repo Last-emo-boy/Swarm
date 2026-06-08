@@ -12,6 +12,7 @@ export function ResultPreview(props: {
 }): React.ReactElement {
   const preview = props.preview;
   const status = previewStatusLabel(preview.status);
+  const blockers = visibleBlockers(preview);
   const actions = preview.nextActions.slice(0, 3).map((command) => ({
     command,
     label: labelForRunBoardAction(command),
@@ -33,10 +34,18 @@ export function ResultPreview(props: {
           value={preview.checks.slice(0, 3).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ")}
         />
       ) : null}
-      {preview.blockers.length ? <PreviewLine label="Blockers" value={preview.blockers.slice(0, 2).join(", ")} /> : null}
+      {blockers.length ? <PreviewLine label="Blockers" value={blockers.slice(0, 2).join(", ")} /> : null}
       {actions.length ? <ResultActions actions={actions} onAction={props.onAction} /> : null}
     </RunBoardPanel>
   );
+}
+
+function visibleBlockers(preview: ResultPreviewData): string[] {
+  const summary = preview.summary.toLowerCase();
+  return preview.blockers.filter((blocker) => {
+    const value = blocker.trim();
+    return value && !summary.includes(value.toLowerCase());
+  });
 }
 
 function previewStatusLabel(status: ResultPreviewData["status"]): string | undefined {

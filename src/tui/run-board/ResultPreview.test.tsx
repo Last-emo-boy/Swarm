@@ -37,6 +37,21 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
 });
 
+test("ResultPreview hides blockers already covered by the summary", () => {
+  const frame = renderTuiToFrame(React.createElement(ResultPreview, {
+    preview: {
+      ...previewFixture(),
+      status: "blocked",
+      summary: "Patch ready, verification blocked.",
+      blockers: ["verification blocked", "approval pending"]
+    }
+  }), { columns: 100, rows: 12 });
+  const text = frameText(frame);
+
+  assert.match(text, /Blockers\s+approval pending/);
+  assert.doesNotMatch(text, /Blockers\s+verification blocked/);
+});
+
 test("ResultPreview next action clicks keep the original command", () => {
   const clicked: string[] = [];
   const root = createTuiRoot({
