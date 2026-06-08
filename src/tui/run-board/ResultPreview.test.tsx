@@ -32,7 +32,8 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
   assert.doesNotMatch(text, /Hypothesis|Use focused checks before final review/);
   assert.doesNotMatch(text, /Artifacts|artifacts\/result-preview\.log/);
-  assert.match(text, /Next\s+Review changes\s+Commit when ready\s+Review this workspace/);
+  assert.match(text, /Next\s+Review changes/);
+  assert.doesNotMatch(text, /Next\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /Confidence\s+high/);
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
 });
@@ -66,12 +67,12 @@ test("ResultPreview next action clicks keep the original command", () => {
 
   const frame = root.getFrame();
   assert(frame);
-  const target = findLastCell(frame, "Review this workspace");
+  const target = findLastCell(frame, "Review changes");
   assert(target, "expected preview next action to render");
 
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
 
-  assert.deepEqual(clicked, ["preview:/review auth and permissions"]);
+  assert.deepEqual(clicked, ["preview:/diff"]);
   root.unmount();
 });
 

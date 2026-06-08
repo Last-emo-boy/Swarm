@@ -13,7 +13,7 @@ export function ResultPreview(props: {
   const preview = props.preview;
   const status = previewStatusLabel(preview.status);
   const blockers = visibleBlockers(preview);
-  const actions = preview.nextActions.slice(0, 3).map((command) => ({
+  const actions = preview.nextActions.slice(0, 1).map((command) => ({
     command,
     label: labelForRunBoardAction(command),
     source: "preview" as const
