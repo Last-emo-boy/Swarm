@@ -50,12 +50,7 @@ export function ProductResultCard(props: {
               teamReasoningExpanded={Boolean(props.teamReasoningExpanded)}
               onTeamReasoningToggle={props.onTeamReasoningToggle}
             />
-          : (
-            <>
-              <Text color={visualTokenColor("text.muted")}>{view.summary || "Waiting for your first task."}</Text>
-              <Text color={visualTokenColor("text.muted")}>No activity yet.</Text>
-            </>
-          )}
+          : <Text color={visualTokenColor("text.muted")}>{view.summary || "Waiting for your first task."}</Text>}
       </RunBoardPanel>
       {view.finished && props.teamReasoningExpanded ? <WorkerSummary view={view} density={props.density} /> : null}
       {view.finished && props.teamReasoningExpanded ? <AttentionHistory view={view} density={props.density} /> : null}

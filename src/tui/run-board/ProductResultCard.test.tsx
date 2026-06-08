@@ -6,6 +6,14 @@ import { renderTuiToFrame, frameText } from "../renderer/testing.js";
 import { ProductResultCard } from "./ProductResultCard.js";
 import type { AttentionItemView, ResultPreview } from "./run-board-types.js";
 
+test("ProductResultCard keeps the empty state to one quiet line", () => {
+  const frame = renderTuiToFrame(React.createElement(ProductResultCard, {}), { columns: 80, rows: 8 });
+  const text = frameText(frame);
+
+  assert.match(text, /Waiting for your first task\./);
+  assert.doesNotMatch(text, /No activity yet\./);
+});
+
 test("ProductResultCard keeps team reasoning optional until expanded", () => {
   const preview: ResultPreview = {
     ...emptyPreview(),
