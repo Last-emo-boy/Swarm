@@ -47,7 +47,10 @@ test("attention and result preview formatters keep next step visible", () => {
     status: "pending",
     summary: "Patch ready, checks pending",
     changedFiles: ["src/tui/run-board/WorkerRow.tsx"],
-    checks: [{ command: "npm test", status: "running" }],
+    checks: [
+      { command: "npm test", status: "running" },
+      { command: "npm run lint", status: "passed" }
+    ],
     artifacts: ["artifacts/result-preview.log"],
     blockers: ["checks pending", "review needed"],
     confidence: "medium",
@@ -62,7 +65,8 @@ test("attention and result preview formatters keep next step visible", () => {
   assert(formatResultPreview(preview, 80).every((line) => displayWidth(line) <= 80));
   assert(formatResultPreview(preview, 80).every((line) => !/Confidence/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Changed:|src\/tui\/run-board\/WorkerRow\.tsx/.test(line)));
-  assert(formatResultPreview(preview, 80).some((line) => /Verified: \[RUN\] npm test/.test(line)));
+  assert(formatResultPreview(preview, 80).some((line) => /Verified: \[OK\] npm run lint/.test(line)));
+  assert(formatResultPreview(preview, 80).every((line) => !/\[RUN\] npm test|npm test/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Checks:|npm test \[running\]/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Artifacts/.test(line)));
   assert(formatResultPreview(preview, 80).some((line) => /Blockers: review needed/.test(line)));

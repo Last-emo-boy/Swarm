@@ -54,6 +54,23 @@ test("ResultPreview hides blockers already covered by the summary", () => {
   assert.doesNotMatch(text, /Blockers\s+verification blocked/);
 });
 
+test("ResultPreview hides checks that are still running", () => {
+  const frame = renderTuiToFrame(React.createElement(ResultPreview, {
+    preview: {
+      ...previewFixture(),
+      status: "pending",
+      checks: [
+        { command: "npm test -- slow", status: "running" },
+        { command: "npm run lint", status: "passed" }
+      ]
+    }
+  }), { columns: 100, rows: 12 });
+  const text = frameText(frame);
+
+  assert.match(text, /Verified\s+\[OK\] npm run lint/);
+  assert.doesNotMatch(text, /Verified\s+\[RUN\] npm test -- slow|npm test -- slow/);
+});
+
 test("ResultPreview next action clicks keep the original command", () => {
   const clicked: string[] = [];
   const root = createTuiRoot({

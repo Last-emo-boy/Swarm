@@ -29,12 +29,17 @@ export function formatAttentionItem(item: AttentionItemView, columns = 100): str
 export function formatResultPreview(preview: ResultPreview, columns = 100): string[] {
   const width = Math.max(40, Math.floor(columns));
   const blockers = visibleResultBlockers(preview);
+  const checks = visibleResultChecks(preview);
   const lines = [
     `Result: ${preview.summary}`,
-    preview.checks.length ? `Verified: ${preview.checks.map((check) => `${checkStatusBadge(check.status)} ${check.command}`).slice(0, 3).join(", ")}` : undefined,
+    checks.length ? `Verified: ${checks.map((check) => `${checkStatusBadge(check.status)} ${check.command}`).slice(0, 3).join(", ")}` : undefined,
     blockers.length ? `Blockers: ${blockers.slice(0, 2).join(", ")}` : undefined
   ];
   return lines.filter((line): line is string => Boolean(line)).map((line) => clipDisplay(line, width));
+}
+
+function visibleResultChecks(preview: ResultPreview): ResultPreview["checks"] {
+  return preview.checks.filter((check) => check.status !== "running" && check.status !== "unknown");
 }
 
 function visibleResultBlockers(preview: ResultPreview): string[] {

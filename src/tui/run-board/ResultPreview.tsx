@@ -13,6 +13,7 @@ export function ResultPreview(props: {
   const preview = props.preview;
   const status = previewStatusLabel(preview.status);
   const blockers = visibleBlockers(preview);
+  const checks = visibleChecks(preview.checks);
   const actions = preview.nextActions.slice(0, 1).map((command) => ({
     command,
     label: labelForRunBoardAction(command),
@@ -27,10 +28,10 @@ export function ResultPreview(props: {
         ] as const : []),
         { text: preview.summary, color: "text.primary" }
       ]} />
-      {preview.checks.length ? (
+      {checks.length ? (
         <PreviewLine
           label="Verified"
-          value={preview.checks.slice(0, 3).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ")}
+          value={checks.slice(0, 3).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ")}
         />
       ) : null}
       {blockers.length ? <PreviewLine label="Blockers" value={blockers.slice(0, 2).join(", ")} /> : null}
@@ -45,6 +46,10 @@ function visibleBlockers(preview: ResultPreviewData): string[] {
     const value = blocker.trim();
     return value && !summary.includes(value.toLowerCase());
   });
+}
+
+function visibleChecks(checks: ResultPreviewData["checks"]): ResultPreviewData["checks"] {
+  return checks.filter((check) => check.status !== "running" && check.status !== "unknown");
 }
 
 function previewStatusLabel(status: ResultPreviewData["status"]): string | undefined {
