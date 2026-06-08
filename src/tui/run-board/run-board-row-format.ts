@@ -55,9 +55,10 @@ export function formatResultPreview(preview: ResultPreview, columns = 100): stri
   const width = Math.max(40, Math.floor(columns));
   const blockers = visibleResultBlockers(preview);
   const checks = visibleResultChecks(preview);
+  const checkSummary = resultCheckSummary(checks);
   const lines = [
     `Result: ${preview.summary}`,
-    checks.length ? `Verified: ${checks.map((check) => `${checkStatusBadge(check.status)} ${check.command}`).slice(0, 3).join(", ")}` : undefined,
+    checkSummary ? `Verified: ${checkSummary}` : undefined,
     blockers.length ? `Blockers: ${blockers.slice(0, 2).join(", ")}` : undefined
   ];
   return lines.filter((line): line is string => Boolean(line)).map((line) => clipDisplay(line, width));
@@ -65,6 +66,21 @@ export function formatResultPreview(preview: ResultPreview, columns = 100): stri
 
 function visibleResultChecks(preview: ResultPreview): ResultPreview["checks"] {
   return preview.checks.filter((check) => check.status !== "running" && check.status !== "unknown");
+}
+
+function resultCheckSummary(checks: ResultPreview["checks"]): string | undefined {
+  if (!checks.length) {
+    return undefined;
+  }
+  const failed = checks.filter((check) => check.status === "failed");
+  if (failed.length) {
+    return failed.slice(0, 2).map((check) => `${checkStatusBadge(check.status)} ${check.command}`).join(", ");
+  }
+  const skipped = checks.filter((check) => check.status === "skipped");
+  if (skipped.length === checks.length) {
+    return "Skipped";
+  }
+  return skipped.length ? "Passed; some skipped" : "Passed";
 }
 
 function visibleResultBlockers(preview: ResultPreview): string[] {

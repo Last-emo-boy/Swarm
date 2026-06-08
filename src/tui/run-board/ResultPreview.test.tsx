@@ -19,7 +19,7 @@ test("ResultPreview keeps the empty state to one quiet line", () => {
   assert.doesNotMatch(text, /Activity\s+No activity/);
 });
 
-test("ResultPreview shows user-facing next actions while preserving commands", () => {
+test("ResultPreview hides successful check commands while preserving action commands", () => {
   const preview = previewFixture();
   const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview }), { columns: 100, rows: 12 });
   const text = frameText(frame);
@@ -28,7 +28,8 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.doesNotMatch(text, /ready\s+Patch ready for review/i);
   assert.doesNotMatch(text, /Changed\s+src\/tui\/run-board\/ResultPreview\.tsx/);
-  assert.match(text, /Verified\s+\[OK\] npm test -- result-preview/);
+  assert.match(text, /Verified\s+Passed/);
+  assert.doesNotMatch(text, /\[OK\] npm test -- result-preview|npm test -- result-preview/);
   assert.doesNotMatch(text, /Checks\s+npm test -- result-preview|npm test -- result-preview \[passed\]/);
   assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
   assert.doesNotMatch(text, /Hypothesis|Use focused checks before final review/);
@@ -37,6 +38,24 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   assert.doesNotMatch(text, /Next\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /Confidence\s+high/);
   assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
+});
+
+test("ResultPreview keeps failed checks actionable", () => {
+  const frame = renderTuiToFrame(React.createElement(ResultPreview, {
+    preview: {
+      ...previewFixture(),
+      status: "failed",
+      summary: "Verification failed.",
+      checks: [
+        { command: "npm test -- result-preview", status: "passed" },
+        { command: "npm run check", status: "failed" }
+      ]
+    }
+  }), { columns: 100, rows: 12 });
+  const text = frameText(frame);
+
+  assert.match(text, /Verified\s+\[ERR\] npm run check/);
+  assert.doesNotMatch(text, /\[OK\] npm test -- result-preview|npm test -- result-preview/);
 });
 
 test("ResultPreview hides blockers already covered by the summary", () => {
@@ -67,8 +86,8 @@ test("ResultPreview hides checks that are still running", () => {
   }), { columns: 100, rows: 12 });
   const text = frameText(frame);
 
-  assert.match(text, /Verified\s+\[OK\] npm run lint/);
-  assert.doesNotMatch(text, /Verified\s+\[RUN\] npm test -- slow|npm test -- slow/);
+  assert.match(text, /Verified\s+Passed/);
+  assert.doesNotMatch(text, /Verified\s+\[RUN\] npm test -- slow|npm test -- slow|\[OK\] npm run lint|npm run lint/);
 });
 
 test("ResultPreview next action clicks keep the original command", () => {

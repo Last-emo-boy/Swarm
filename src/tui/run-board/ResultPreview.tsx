@@ -14,6 +14,7 @@ export function ResultPreview(props: {
   const status = previewStatusLabel(preview.status);
   const blockers = visibleBlockers(preview);
   const checks = visibleChecks(preview.checks);
+  const checkSummary = previewChecksSummary(checks);
   const actions = preview.nextActions.slice(0, 1).map((command) => ({
     command,
     label: labelForRunBoardAction(command),
@@ -28,10 +29,10 @@ export function ResultPreview(props: {
         ] as const : []),
         { text: preview.summary, color: "text.primary" }
       ]} />
-      {checks.length ? (
+      {checkSummary ? (
         <PreviewLine
           label="Verified"
-          value={checks.slice(0, 3).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ")}
+          value={checkSummary}
         />
       ) : null}
       {blockers.length ? <PreviewLine label="Blockers" value={blockers.slice(0, 2).join(", ")} /> : null}
@@ -50,6 +51,21 @@ function visibleBlockers(preview: ResultPreviewData): string[] {
 
 function visibleChecks(checks: ResultPreviewData["checks"]): ResultPreviewData["checks"] {
   return checks.filter((check) => check.status !== "running" && check.status !== "unknown");
+}
+
+function previewChecksSummary(checks: ResultPreviewData["checks"]): string | undefined {
+  if (!checks.length) {
+    return undefined;
+  }
+  const failed = checks.filter((check) => check.status === "failed");
+  if (failed.length) {
+    return failed.slice(0, 2).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ");
+  }
+  const skipped = checks.filter((check) => check.status === "skipped");
+  if (skipped.length === checks.length) {
+    return "Skipped";
+  }
+  return skipped.length ? "Passed; some skipped" : "Passed";
 }
 
 function previewStatusLabel(status: ResultPreviewData["status"]): string | undefined {
