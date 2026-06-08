@@ -42,11 +42,11 @@ export function WorkBoardSurface({
 
 function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: number }): React.ReactElement {
   const summary = view.empty ? "" : [
-    `${view.summary.activeTasks} active tasks`,
-    `${view.summary.workers} workers`,
-    `${view.summary.approvals} approvals`,
-    view.summary.blockers ? `${view.summary.blockers} blockers` : undefined,
-    view.summary.automations ? `${view.summary.automations} automations` : undefined
+    countLabel(view.summary.activeTasks, "active task"),
+    countLabel(view.summary.workers, "helper"),
+    countLabel(view.summary.approvals, "approval"),
+    countLabel(view.summary.blockers, "blocker"),
+    countLabel(view.summary.automations, "automation")
   ].filter((value): value is string => Boolean(value)).join(" · ");
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
@@ -58,11 +58,7 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
           activity: {fitToDisplayWidth(view.summary.activity[0], Math.max(10, columns - 10))}
         </Text>
-      ) : view.empty ? null : (
-        <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          No active detail.
-        </Text>
-      )}
+      ) : null}
     </Box>
   );
 }
@@ -83,7 +79,7 @@ function BoardColumn({
   return (
     <Box flexDirection="column" width={compact ? "100%" : width} marginRight={compact ? 0 : 1} overflow="hidden">
       <Text wrap="truncate">
-        <Text color={visualTokenColor("role.swarm")} bold>{fit(`${column.title} ${column.count}`, width)}</Text>
+        <Text color={visualTokenColor("role.swarm")} bold>{fit(column.count > 0 ? `${column.title} ${column.count}` : column.title, width)}</Text>
       </Text>
       {column.items.length ? column.items.slice(0, itemRows).map((item) => (
         <Box key={item.id} flexDirection="column" width="100%" overflow="hidden">
@@ -96,11 +92,15 @@ function BoardColumn({
             </Text>
           )}
         </Box>
-      )) : (
-        <Text color={visualTokenColor("text.muted")}>{fit("(empty)", width)}</Text>
-      )}
+      )) : null}
     </Box>
   );
+}
+
+function countLabel(count: number, label: string): string | undefined {
+  const value = Math.max(0, Math.floor(count));
+  if (value === 0) return undefined;
+  return `${value} ${label}${value === 1 ? "" : "s"}`;
 }
 
 function fit(value: string, columns: number): string {
