@@ -207,6 +207,50 @@ test("worker coding loop annotates activity with the running worker identity", a
   assert.equal(thinking.agent?.worker_id, "worker-identity-1");
 });
 
+test("coding loop shared fact activity hides blackboard tool names", async () => {
+  const events = new RuntimeEvents();
+  const recorded: RuntimeEvent[] = [];
+  events.onEvent((event) => recorded.push(event));
+
+  await runCodingLoopWithFakeProvider((request) => {
+    const sawFailure = promptInputText(request.user).includes("blackboard is not configured");
+    return Promise.resolve(JSON.stringify(sawFailure
+      ? {
+          status: "completed",
+          summary: "Captured shared fact failure",
+          message: "Captured shared fact failure.",
+          files_touched: [],
+          next_actions: [],
+          tool_calls: []
+        }
+      : {
+          status: "continue",
+          summary: "Save a shared decision",
+          message: "Save a shared decision for the team.",
+          files_touched: [],
+          next_actions: [],
+          tool_calls: [
+            {
+              id: "save_decision",
+              action: "blackboard.write",
+              inputs: {
+                key: "decision/auth",
+                type: "decision",
+                value: { approved: true }
+              }
+            }
+          ]
+        }));
+  }, { events });
+
+  const runningTool = recorded.find((event): event is Extract<RuntimeEvent, { type: "loop_activity" }> =>
+    event.type === "loop_activity" && event.phase === "running_tool" && event.tool === "blackboard.write"
+  );
+  assert(runningTool, "expected shared fact running activity");
+  assert.equal(runningTool.message, "Running Save shared fact decision/auth");
+  assert.doesNotMatch(runningTool.message, /BlackboardWrite|blackboard/i);
+});
+
 test("coding loop exposes LSP semantic evidence for the next edit-planning turn", async () => {
   const requests: GenerateTextRequest[] = [];
 

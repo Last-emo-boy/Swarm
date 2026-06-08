@@ -1536,13 +1536,13 @@ function describeToolAction(action: ToolAction): string {
     case "worktree.exit":
       return `worktree.exit ${action.mode}`;
     case "blackboard.write":
-      return `BlackboardWrite ${previewActivityValue(action.key)}`;
+      return `Save shared fact ${previewActivityValue(action.key)}`;
     case "blackboard.read":
-      return `BlackboardRead ${previewActivityValue(action.entryId ?? action.key ?? "entry")}`;
+      return `Read shared fact ${previewActivityValue(action.entryId ?? action.key ?? "entry")}`;
     case "blackboard.search":
-      return `BlackboardSearch ${previewActivityValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
+      return `Search shared facts ${previewActivityValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
     case "blackboard.list":
-      return `BlackboardList ${previewActivityValue(action.keyPrefix ?? action.tag ?? "entries")}`;
+      return `List shared facts ${previewActivityValue(action.keyPrefix ?? action.tag ?? "entries")}`;
     case "shell.exec":
       return `shell.exec ${previewActivityValue(action.command)}`;
     case "powershell.exec":
