@@ -283,6 +283,7 @@ test("ProductResultCard renders review findings as result-first report rows", ()
   assert.match(text, /Fix: Validate inherited roles before granting access/);
   assert.match(text, /Medium: src\/auth\/audit\.ts Audit trail misses denied requests/);
   assert.doesNotMatch(text, /confidence=|fix=/);
+  assert.doesNotMatch(text, /Changed\s+none/);
   assert.match(text, /NEXT\s+Review this workspace/);
   assert.doesNotMatch(text, /\/review auth and permissions/);
 });
@@ -419,6 +420,7 @@ test("ProductResultCard renders checkpoint rollback status in the result report"
 
   assert.match(unavailableText, /Undo\s+Missing snapshot unavailable/);
   assert.doesNotMatch(unavailableText, /\[snapshot\]|revert unavailable/);
+  assert.doesNotMatch(unavailableText, /Changed\s+none|Verified\s+none/);
   assert.doesNotMatch(unavailableText, /Undo latest change/);
 });
 

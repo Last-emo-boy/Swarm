@@ -97,14 +97,18 @@ function ProductResultBody(props: {
         <ResultLine label="Risk" value={view.riskSummary} tone={view.risk === "high" ? "status.danger" : view.risk === "medium" ? "status.warning" : "status.success"} />
       ) : null}
       <ResultLine label="Summary" value={view.summary} />
-      <ResultList label="Changed" empty="none" values={view.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, view.changedFiles.length - changedLimit)} />
-      <ResultList
-        label="Verified"
-        empty="none"
-        values={view.checks.slice(0, checkLimit).map((check) => `${statusBadge(check.status)} ${check.command}`)}
-        remaining={Math.max(0, view.checks.length - checkLimit)}
-        badgeAware
-      />
+      {view.changedFiles.length ? (
+        <ResultList label="Changed" empty="none" values={view.changedFiles.slice(0, changedLimit)} remaining={Math.max(0, view.changedFiles.length - changedLimit)} />
+      ) : null}
+      {view.checks.length ? (
+        <ResultList
+          label="Verified"
+          empty="none"
+          values={view.checks.slice(0, checkLimit).map((check) => `${statusBadge(check.status)} ${check.command}`)}
+          remaining={Math.max(0, view.checks.length - checkLimit)}
+          badgeAware
+        />
+      ) : null}
       <ReviewFindingLines view={view} density={props.density} />
       {view.review?.summary ? <ResultLine label="Review" value={`${statusBadge(view.review.status)} ${view.review.summary}`} badgeAware tone={checkStatusTone(view.review.status)} /> : null}
       <RecoveryLines view={view} density={props.density} />
