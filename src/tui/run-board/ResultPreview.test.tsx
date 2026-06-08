@@ -11,8 +11,8 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
   const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview }), { columns: 100, rows: 12 });
   const text = frameText(frame);
 
-  assert.match(text, /Next\s+Review changes\s+Commit when ready/);
-  assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit/);
+  assert.match(text, /Next\s+Review changes\s+Commit when ready\s+Review this workspace/);
+  assert.doesNotMatch(text, /Next\s+\/diff\s+\/commit\s+\/review auth and permissions/);
 });
 
 test("ResultPreview next action clicks keep the original command", () => {
@@ -29,12 +29,12 @@ test("ResultPreview next action clicks keep the original command", () => {
 
   const frame = root.getFrame();
   assert(frame);
-  const target = findLastCell(frame, "Commit when ready");
+  const target = findLastCell(frame, "Review this workspace");
   assert(target, "expected preview next action to render");
 
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
 
-  assert.deepEqual(clicked, ["preview:/commit"]);
+  assert.deepEqual(clicked, ["preview:/review auth and permissions"]);
   root.unmount();
 });
 
@@ -49,7 +49,7 @@ function previewFixture(): ResultPreviewData {
     confidence: "high",
     contributors: [],
     risks: [],
-    nextActions: ["/diff", "/commit"]
+    nextActions: ["/diff", "/commit", "/review auth and permissions"]
   };
 }
 

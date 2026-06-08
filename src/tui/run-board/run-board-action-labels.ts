@@ -1,5 +1,9 @@
 export function labelForRunBoardAction(command: string): string {
-  switch (command.trim().toLowerCase()) {
+  const normalized = command.trim().toLowerCase();
+  if (normalized === "/review" || normalized.startsWith("/review ")) {
+    return "Review this workspace";
+  }
+  switch (normalized) {
     case "/revert last":
       return "Undo latest change";
     case "/diff":
@@ -12,8 +16,6 @@ export function labelForRunBoardAction(command: string): string {
       return "Continue work";
     case "/debug latest":
       return "Inspect latest issue";
-    case "/review":
-      return "Review this workspace";
     case "/plan":
       return "Plan a change";
     default:
