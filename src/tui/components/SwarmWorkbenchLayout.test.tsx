@@ -59,13 +59,15 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /Transcript center/);
   assert.match(text, /Status/);
   assert.match(text, /Mode/);
-  assert.match(text, /Access/);
-  assert.match(text, /Agent/);
   assert.match(text, /\[ACTIVE\s+\]/);
-  assert.match(text, /\[RW\s+\]/);
   assert.match(text, /Active helpers/);
   assert.match(text, /Tools/);
   assert.match(text, /Approvals/);
+  assert.doesNotMatch(text, /Access/);
+  assert.doesNotMatch(text, /Agent -/);
+  assert.doesNotMatch(text, /\[RW\s+\]/);
+  assert.doesNotMatch(text, /Workspace Write/);
+  assert.doesNotMatch(text, /model\s+Provider: local-test/);
   assert.doesNotMatch(text, /Runtime/);
   assert.doesNotMatch(text, /Selected Lease/);
   assert.doesNotMatch(text, /Tasks \[|Workers \[|Activity \[|Output \[|Skills \[|Automations \[/);
@@ -135,6 +137,37 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
   assert.match(text, /Workspace/);
   assert.match(text, /Navigation/);
   assert.doesNotMatch(text, /Cases|\(none\)|View all cases|No checkpoint yet/);
+});
+
+test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "YOLO", subtitle: "Edits can run without asking", badge: "RISK", tone: "status.warning" },
+    sandbox: { title: "Read Only", subtitle: "Can inspect files only", badge: "RO", tone: "status.pending" },
+    model: { title: "Model setup needed", subtitle: "Choose provider and model", badge: "SETUP", tone: "status.pending" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /Access/);
+  assert.match(text, /YOLO/);
+  assert.match(text, /Workspace/);
+  assert.match(text, /Read Only/);
+  assert.match(text, /Agent -/);
+  assert.match(text, /Model setup needed/);
 });
 
 test("SwarmWorkbenchLayout passes actual center dimensions to render props", () => {

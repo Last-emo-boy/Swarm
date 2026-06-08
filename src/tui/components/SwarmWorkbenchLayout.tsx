@@ -421,10 +421,10 @@ function RightRail({
     >
       <InfoSection title="Status" card={activity ?? runtime ?? memory} width={width} compact={compact} />
       <InfoSection title="Mode" card={mode} width={width} compact={compact} />
-      <InfoSection title="Access" card={permission} width={width} compact={compact} />
-      <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} />
+      {isVisibleWorkbenchAccess(permission) ? <InfoSection title="Access" card={permission} width={width} compact={compact} /> : null}
+      {isVisibleWorkbenchSandbox(sandbox) ? <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} /> : null}
       {workers.length ? <WorkerSection workers={workers} width={width} /> : null}
-      <InfoSection title="Agent" card={model} width={width} compact={compact} />
+      {isVisibleWorkbenchAgent(model) ? <InfoSection title="Agent" card={model} width={width} compact={compact} /> : null}
       {visibleTools.length ? <ToolSection tools={visibleTools} width={width} compact={compact} /> : null}
     </ThemedBox>
   );
@@ -479,6 +479,25 @@ function isVisibleWorkbenchTool(tool: SwarmWorkbenchToolItem): boolean {
   const status = tool.status?.trim().toLowerCase() ?? "";
   if (!status) return true;
   return status !== "on" && status !== "ready" && !status.endsWith(" ready");
+}
+
+function isVisibleWorkbenchAccess(card: SwarmWorkbenchInfoCard): boolean {
+  const token = workbenchCardToken(card);
+  return !/\b(ask|ask-before-edit|safe)\b/u.test(token);
+}
+
+function isVisibleWorkbenchSandbox(card: SwarmWorkbenchInfoCard): boolean {
+  const token = workbenchCardToken(card);
+  return !/\b(workspace-write|rw)\b/u.test(token);
+}
+
+function isVisibleWorkbenchAgent(card: SwarmWorkbenchInfoCard): boolean {
+  const token = workbenchCardToken(card);
+  return /\b(setup|not-connected|disabled|error|degraded)\b/u.test(token);
+}
+
+function workbenchCardToken(card: SwarmWorkbenchInfoCard): string {
+  return `${card.title} ${card.badge ?? ""}`.trim().toLowerCase().replace(/[_\s]+/gu, "-");
 }
 
 function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]; width: number }): React.ReactElement {

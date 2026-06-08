@@ -32,9 +32,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     const text = snapshotText(snapshot);
     assert.match(text, /Swarm/);
     assert.match(text, /RESULT/);
-    if (viewport.columns >= 120) {
-      assert.match(text, /TRAIL/);
-    }
+    assert.doesNotMatch(text, /TRAIL/);
     if (viewport.columns >= 120) {
       assert.match(text, /approval|Approval|DECISION|Reassign/);
     }
@@ -44,6 +42,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
       assert.match(text, /Active helpers/);
       assert.match(text, /Tools/);
       assert.match(text, /ACTION LOG/);
+      assert.doesNotMatch(text, /Workspace Write|Provider: openai|kimi-k2\.6/);
     }
     assert.match(text, /Ask Swarm/);
     assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP|Skills & Automations|Workers:/);
