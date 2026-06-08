@@ -22,7 +22,7 @@ export function RunBoardSurface(props: {
       <RunBoardPanel title={view.title === "Swarm Board" ? "Work" : view.title}>
         {view.objective ? <HeaderObjectiveLine view={view} /> : <SwarmBoardMetaLine view={view} />}
         {shouldShowPhaseLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Status     {phaseDisplayLabel(view.phase)}</Text> : null}
-        {view.focus ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
+        {shouldShowFocusLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
       </RunBoardPanel>
       <WorkerBoard
         rows={view.workers}
@@ -83,6 +83,14 @@ function shouldShowPhaseLine(view: RunBoardSurfaceView): boolean {
     return false;
   }
   return !(view.phase === "waiting-attention" && view.attention.length > 0);
+}
+
+function shouldShowFocusLine(view: RunBoardSurfaceView): boolean {
+  const focus = view.focus?.trim().toLowerCase();
+  if (!focus) {
+    return false;
+  }
+  return !view.workers.some((worker) => worker.label.trim().toLowerCase() === focus);
 }
 
 function phaseDisplayLabel(phase: RunBoardSurfaceView["phase"]): string {

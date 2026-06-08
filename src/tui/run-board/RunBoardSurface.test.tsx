@@ -84,7 +84,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.doesNotMatch(text, /risk: workspace-write/);
   assert.doesNotMatch(text, /Status\s+Needs you/);
   assert.doesNotMatch(text, /waiting-attention/);
-  assert.match(text, /Focus\s+Test Runner/);
+  assert.doesNotMatch(text, /Focus\s+Test Runner/);
   assert.match(text, /PROGRESS/);
   assert.match(text, /Test Runner/);
   assert.match(text, /NEEDS YOU/);
