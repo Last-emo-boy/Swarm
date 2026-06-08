@@ -20,7 +20,7 @@ export function RunBoardSurface(props: {
   return (
     <Box flexDirection="column" width="100%">
       <RunBoardPanel title={view.title === "Swarm Board" ? "Work" : view.title}>
-        {view.objective ? <HeaderObjectiveLine view={view} /> : <SwarmBoardMetaLine view={view} />}
+        {view.objective ? <HeaderObjectiveLine view={view} /> : null}
         {shouldShowPhaseLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Status     {phaseDisplayLabel(view.phase)}</Text> : null}
         {shouldShowFocusLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
       </RunBoardPanel>
@@ -60,22 +60,7 @@ export function RunBoardPanel(props: {
 }
 
 function HeaderObjectiveLine(props: { view: RunBoardSurfaceView }): React.ReactElement {
-  const meta = headerMetaText(props.view);
-  const suffix = meta ? `   ${meta}` : "";
-  return <Text color={visualTokenColor("text.muted")} wrap="truncate">Objective  {props.view.objective}{suffix}</Text>;
-}
-
-function SwarmBoardMetaLine(props: { view: RunBoardSurfaceView }): React.ReactElement | null {
-  const text = headerMetaText(props.view);
-  if (!text) {
-    return null;
-  }
-  return <Text color={visualTokenColor("text.muted")} wrap="truncate">{text}</Text>;
-}
-
-function headerMetaText(view: RunBoardSurfaceView): string {
-  const meta = view.meta;
-  return meta?.repo ? `workspace: ${meta.repo}` : "";
+  return <Text color={visualTokenColor("text.muted")} wrap="truncate">Objective  {props.view.objective}</Text>;
 }
 
 function shouldShowPhaseLine(view: RunBoardSurfaceView): boolean {

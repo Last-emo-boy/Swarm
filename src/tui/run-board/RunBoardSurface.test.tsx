@@ -79,7 +79,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
 
   assert.match(text, /WORK/);
   assert.doesNotMatch(text, /SWARM OBSERVATORY/);
-  assert.match(text, /workspace: Swarm/);
+  assert.doesNotMatch(text, /workspace: Swarm/);
   assert.doesNotMatch(text, /mode: auto/);
   assert.doesNotMatch(text, /risk: workspace-write/);
   assert.doesNotMatch(text, /Status\s+Needs you/);
