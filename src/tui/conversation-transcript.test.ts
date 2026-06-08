@@ -16,9 +16,22 @@ test("startup logo message carries compact welcome metadata", () => {
   });
 
   assert.equal(message.kind, "logo");
-  assert.match(message.brief, /Symphony Swarm/);
-  assert.match(message.brief, /Local Swarm Runtime v0\.1\.0/);
+  assert.match(message.brief, /Swarm/);
+  assert.match(message.brief, /Local workspace/);
+  assert.match(message.brief, /v0\.1\.0/);
   assert.match(message.brief, /openai\/gpt/);
+  assert.doesNotMatch(message.brief, /Symphony|Local Swarm Runtime|model not configured/i);
+});
+
+test("startup logo message hides missing model fallback copy", () => {
+  const message = createStartupLogoMessage({
+    cwd: "E:\\Playground\\Swarm",
+    model: "model not configured"
+  });
+
+  assert.equal(message.detail, undefined);
+  assert.match(message.brief, /Local workspace/);
+  assert.doesNotMatch(message.brief, /model not configured/i);
 });
 
 test("slash command and tool use become transcript messages", () => {

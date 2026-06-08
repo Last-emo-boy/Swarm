@@ -8,19 +8,20 @@ export function createStartupLogoMessage(input: {
   model?: string;
 } = {}): ConversationMessage {
   const cwd = input.cwd ?? process.cwd();
-  const model = input.model?.trim() || "model not configured";
+  const model = normalizeStartupModel(input.model);
+  const metadata = [input.version ? `v${input.version}` : undefined, model].filter((value): value is string => Boolean(value)).join(" · ");
   return {
     role: "system",
     kind: "logo",
     title: input.version,
-    detail: model,
+    detail: metadata || undefined,
     preview: cwd,
     brief: [
       "╭────────────────────────────╮",
-      "│        Symphony Swarm       │",
+      "│            Swarm            │",
       "╰────────────────────────────╯",
-      `Local Swarm Runtime${input.version ? ` v${input.version}` : ""}`,
-      model,
+      "Local workspace",
+      ...(metadata ? [metadata] : []),
       compactPath(cwd)
     ].join("\n")
   };
@@ -367,6 +368,11 @@ function previewValue(value: unknown, maxLength = 120): string {
 
 function firstLine(value: string): string {
   return value.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
+}
+
+function normalizeStartupModel(value: string | undefined): string | undefined {
+  const model = value?.trim();
+  return model && model.toLowerCase() !== "model not configured" ? model : undefined;
 }
 
 function compactPath(value: string): string {
