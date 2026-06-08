@@ -381,9 +381,13 @@ function CaseList({
       {sessions.slice(0, 6).map((session) => (
         <CaseRow key={session.id} session={session} width={width} onSelect={onSelectSession} />
       ))}
-      {sessions.length > 6 ? <Text color={visualTokenColor("text.muted")}>... View all cases</Text> : null}
+      {sessions.length > 6 ? <Text color={visualTokenColor("text.muted")}>{caseOverflowLabel(sessions.length - 6)}</Text> : null}
     </Box>
   );
+}
+
+function caseOverflowLabel(value: number): string {
+  return `${value} more`;
 }
 
 function attentionLabel(value: number): string {

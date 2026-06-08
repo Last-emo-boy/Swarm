@@ -329,6 +329,41 @@ test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {
   assert.match(text, /failed release workspace/);
 });
 
+test("SwarmWorkbenchLayout keeps case overflow hint compact", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [
+      ...sessionFixture(),
+      { id: "case-3", title: "Polish result", age: "7m" },
+      { id: "case-4", title: "Review shell", age: "6m" },
+      { id: "case-5", title: "Update docs", age: "5m" },
+      { id: "case-6", title: "Check metrics", age: "4m" },
+      { id: "case-7", title: "Hidden overflow", age: "3m" }
+    ],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /1 more/);
+  assert.doesNotMatch(text, /View all cases/);
+  assert.doesNotMatch(text, /Hidden overflow/);
+});
+
 test("SwarmWorkbenchLayout hides routine footer hints but keeps real footer status", () => {
   const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
     columns: 160,
