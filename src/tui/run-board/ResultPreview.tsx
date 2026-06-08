@@ -65,7 +65,7 @@ function previewChecksSummary(checks: ResultPreviewData["checks"]): string | und
   if (skipped.length === checks.length) {
     return "Skipped";
   }
-  return skipped.length ? "Passed; some skipped" : "Passed";
+  return skipped.length ? "Passed; some skipped" : undefined;
 }
 
 function previewStatusLabel(status: ResultPreviewData["status"]): string | undefined {

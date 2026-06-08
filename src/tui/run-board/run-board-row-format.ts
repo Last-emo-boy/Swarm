@@ -80,7 +80,7 @@ function resultCheckSummary(checks: ResultPreview["checks"]): string | undefined
   if (skipped.length === checks.length) {
     return "Skipped";
   }
-  return skipped.length ? "Passed; some skipped" : "Passed";
+  return skipped.length ? "Passed; some skipped" : undefined;
 }
 
 function visibleResultBlockers(preview: ResultPreview): string[] {

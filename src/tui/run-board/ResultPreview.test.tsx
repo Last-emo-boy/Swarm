@@ -28,8 +28,7 @@ test("ResultPreview hides successful check commands while preserving action comm
   assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.doesNotMatch(text, /ready\s+Patch ready for review/i);
   assert.doesNotMatch(text, /Changed\s+src\/tui\/run-board\/ResultPreview\.tsx/);
-  assert.match(text, /Verified\s+Passed/);
-  assert.doesNotMatch(text, /\[OK\] npm test -- result-preview|npm test -- result-preview/);
+  assert.doesNotMatch(text, /Verified\s+Passed|\[OK\] npm test -- result-preview|npm test -- result-preview/);
   assert.doesNotMatch(text, /Checks\s+npm test -- result-preview|npm test -- result-preview \[passed\]/);
   assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
   assert.doesNotMatch(text, /Hypothesis|Use focused checks before final review/);
@@ -86,8 +85,7 @@ test("ResultPreview hides checks that are still running", () => {
   }), { columns: 100, rows: 12 });
   const text = frameText(frame);
 
-  assert.match(text, /Verified\s+Passed/);
-  assert.doesNotMatch(text, /Verified\s+\[RUN\] npm test -- slow|npm test -- slow|\[OK\] npm run lint|npm run lint/);
+  assert.doesNotMatch(text, /Verified\s+Passed|Verified\s+\[RUN\] npm test -- slow|npm test -- slow|\[OK\] npm run lint|npm run lint/);
 });
 
 test("ResultPreview next action clicks keep the original command", () => {
