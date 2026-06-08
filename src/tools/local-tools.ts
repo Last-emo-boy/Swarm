@@ -245,7 +245,7 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
   if (action === "blackboard.write") {
     return {
       type: "blackboard.write",
-      key: requiredStringInput(inputs.key, "BlackboardWrite requires key"),
+      key: requiredStringInput(inputs.key, "Saving a shared fact requires key"),
       value: inputs.value ?? inputs.content,
       entryType: blackboardEntryTypeInput(inputs.entryType ?? inputs.entry_type ?? inputs.type),
       visibility: blackboardVisibilityInput(inputs.visibility),
@@ -258,7 +258,7 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
     const entryId = optionalStringInput(inputs.entryId ?? inputs.entry_id);
     const key = optionalStringInput(inputs.key);
     if (!entryId && !key) {
-      throw new Error("BlackboardRead requires entry_id or key");
+      throw new Error("Reading a shared fact requires entry_id or key");
     }
     return {
       type: "blackboard.read",
@@ -2434,7 +2434,7 @@ async function exitWorktree(action: Extract<ToolAction, { type: "worktree.exit" 
 
 async function writeBlackboard(action: Extract<ToolAction, { type: "blackboard.write" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!context.blackboard) {
-    throw new Error("BlackboardWrite is only available inside a Swarm runtime session");
+    throw new Error("Shared facts are only available inside a Swarm runtime session");
   }
   const entry = await context.blackboard.write(action, blackboardToolContext(context));
   return {
@@ -2448,7 +2448,7 @@ async function writeBlackboard(action: Extract<ToolAction, { type: "blackboard.w
 
 async function readBlackboard(action: Extract<ToolAction, { type: "blackboard.read" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!context.blackboard) {
-    throw new Error("BlackboardRead is only available inside a Swarm runtime session");
+    throw new Error("Shared facts are only available inside a Swarm runtime session");
   }
   const entries = await context.blackboard.read(action, blackboardToolContext(context));
   return {
@@ -2462,7 +2462,7 @@ async function readBlackboard(action: Extract<ToolAction, { type: "blackboard.re
 
 async function searchBlackboard(action: Extract<ToolAction, { type: "blackboard.search" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!context.blackboard) {
-    throw new Error("BlackboardSearch is only available inside a Swarm runtime session");
+    throw new Error("Shared facts are only available inside a Swarm runtime session");
   }
   const entries = await context.blackboard.search(action, blackboardToolContext(context));
   return {
@@ -2476,7 +2476,7 @@ async function searchBlackboard(action: Extract<ToolAction, { type: "blackboard.
 
 async function listBlackboard(action: Extract<ToolAction, { type: "blackboard.list" }>, context: LocalToolContext): Promise<ToolResult> {
   if (!context.blackboard) {
-    throw new Error("BlackboardList is only available inside a Swarm runtime session");
+    throw new Error("Shared facts are only available inside a Swarm runtime session");
   }
   const entries = await context.blackboard.list(action, blackboardToolContext(context));
   return {

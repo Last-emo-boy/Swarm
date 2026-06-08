@@ -455,6 +455,37 @@ test("shared fact tools return product-facing summaries", async () => {
   }
 });
 
+test("shared fact tools return product-facing validation errors", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-shared-fact-errors-"));
+  try {
+    assert.throws(
+      () => normalizeToolAction({ action: "BlackboardWrite", type: "decision", value: {} }),
+      /Saving a shared fact requires key/
+    );
+    assert.throws(
+      () => normalizeToolAction({ action: "BlackboardRead" }),
+      /Reading a shared fact requires entry_id or key/
+    );
+
+    await assert.rejects(
+      runLocalTool({
+        type: "blackboard.write",
+        key: "decision/auth",
+        value: { approved: true },
+        entryType: "decision"
+      }, context(workspace)),
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /Shared facts are only available inside a Swarm runtime session/);
+        assert.doesNotMatch(message, /Blackboard/i);
+        return true;
+      }
+    );
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("shell.exec persists truncated foreground output with a retrievable outputRef", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "swarm-shell-output-"));
   const previousSwarmHome = process.env.SWARM_HOME;

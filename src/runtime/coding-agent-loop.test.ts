@@ -213,7 +213,7 @@ test("coding loop shared fact activity hides blackboard tool names", async () =>
   events.onEvent((event) => recorded.push(event));
 
   await runCodingLoopWithFakeProvider((request) => {
-    const sawFailure = promptInputText(request.user).includes("blackboard is not configured");
+    const sawFailure = promptInputText(request.user).includes("Shared facts are only available");
     return Promise.resolve(JSON.stringify(sawFailure
       ? {
           status: "completed",
