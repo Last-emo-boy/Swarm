@@ -36,7 +36,7 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
     "Workspace",
     snapshot.workspace ? `${snapshot.workspace.workspace_path} boundary=${snapshot.workspace.write_boundary}` : "(none)",
     "",
-    `Run Attempts: ${snapshot.attempts.length}`,
+    `Runs: ${snapshot.attempts.length}`,
     ...(snapshot.attempts.length
       ? snapshot.attempts.map(formatRunAttemptSummary)
       : ["(none)"]),
@@ -66,7 +66,7 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
         ].filter(Boolean).join(" "))
       : ["(none)"]),
     "",
-    `Workers: ${snapshot.workers.length}`,
+    `Team: ${snapshot.workers.length}`,
     ...(snapshot.workers.length
       ? snapshot.workers.map((worker) => formatWorkerBrief(worker as Parameters<typeof formatWorkerBrief>[0]))
       : ["(none)"]),
