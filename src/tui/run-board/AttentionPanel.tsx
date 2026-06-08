@@ -18,27 +18,51 @@ export function AttentionPanel(props: {
   const visible = props.items.slice(0, limit);
   return (
     <RunBoardPanel title="Needs You">
-      {visible.map((item) => (
-        <Box key={item.id} flexDirection="column" width="100%">
-          <SemanticTextLine wrap="truncate" spans={attentionTitleSpans(item)} />
-          {item.evidence[0] ? (
-            <SemanticTextLine wrap="truncate" spans={[
-              { text: "  Why  ", color: "text.muted" },
-              { text: item.evidence[0], color: "text.primary" }
-            ]} />
-          ) : null}
-          <SemanticTextLine wrap="truncate" spans={[
-            { text: "  Next ", color: "status.warning", bold: true },
-            { text: item.recommendation, color: "text.primary" }
-          ]} />
-          {item.actions.length ? <AttentionActions item={item} onAction={props.onAction} /> : null}
-        </Box>
-      ))}
+      {visible.map((item) => <AttentionItem key={item.id} item={item} onAction={props.onAction} />)}
       {props.items.length > visible.length ? (
         <Text color={visualTokenColor("text.muted")}>+{props.items.length - visible.length} more requests</Text>
       ) : null}
     </RunBoardPanel>
   );
+}
+
+function AttentionItem(props: {
+  item: AttentionItemView;
+  onAction?: (item: AttentionItemView, action: AttentionAction) => void;
+}): React.ReactElement {
+  const item = props.item;
+  const evidence = visibleAttentionEvidence(item);
+  return (
+    <Box flexDirection="column" width="100%">
+      <SemanticTextLine wrap="truncate" spans={attentionTitleSpans(item)} />
+      {evidence ? (
+        <SemanticTextLine wrap="truncate" spans={[
+          { text: "  Why  ", color: "text.muted" },
+          { text: evidence, color: "text.primary" }
+        ]} />
+      ) : null}
+      <SemanticTextLine wrap="truncate" spans={[
+        { text: "  Next ", color: "status.warning", bold: true },
+        { text: item.recommendation, color: "text.primary" }
+      ]} />
+      {item.actions.length ? <AttentionActions item={item} onAction={props.onAction} /> : null}
+    </Box>
+  );
+}
+
+function visibleAttentionEvidence(item: AttentionItemView): string | undefined {
+  const evidence = item.evidence[0];
+  if (!evidence) {
+    return undefined;
+  }
+  const normalized = normalizedAttentionText(evidence);
+  return [item.title, item.summary].some((value) => normalizedAttentionText(value).includes(normalized))
+    ? undefined
+    : evidence;
+}
+
+function normalizedAttentionText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function attentionTitleSpans(item: AttentionItemView): SemanticTextSpan[] {

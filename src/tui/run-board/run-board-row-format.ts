@@ -35,8 +35,20 @@ export function formatAttentionItem(item: AttentionItemView, columns = 100): str
   const width = Math.max(40, Math.floor(columns));
   const first = clipDisplay(`${attentionBadge(item.kind)} ${item.title}: ${item.summary}`, width);
   const recommendation = clipDisplay(`  Next: ${item.recommendation}`, width);
-  const evidence = item.evidence[0] ? clipDisplay(`  Why: ${item.evidence[0]}`, width) : undefined;
+  const visibleEvidence = visibleAttentionEvidence(item);
+  const evidence = visibleEvidence ? clipDisplay(`  Why: ${visibleEvidence}`, width) : undefined;
   return [first, evidence, recommendation].filter((line): line is string => Boolean(line));
+}
+
+function visibleAttentionEvidence(item: AttentionItemView): string | undefined {
+  const evidence = item.evidence[0];
+  if (!evidence) {
+    return undefined;
+  }
+  const normalized = normalizedEvidence(evidence);
+  return [item.title, item.summary].some((value) => normalizedEvidence(value).includes(normalized))
+    ? undefined
+    : evidence;
 }
 
 export function formatResultPreview(preview: ResultPreview, columns = 100): string[] {
