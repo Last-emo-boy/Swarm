@@ -10,7 +10,8 @@ export function ConversationLogo(props: {
 }): React.ReactElement {
   const compact = Math.max(0, props.columns ?? 80) < 64;
   const cwd = compactPath(props.cwd ?? process.cwd(), compact ? 42 : 72);
-  const model = props.model?.trim() || "model not configured";
+  const model = props.model?.trim();
+  const metadata = [props.version ? `v${props.version}` : undefined, model].filter((value): value is string => Boolean(value)).join(" · ");
   return (
     <Box flexDirection="column" alignItems="center" width="100%" marginBottom={1}>
       <Box borderStyle="round" borderColor={visualTokenColor("brand.focus")} paddingX={1} paddingY={compact ? 0 : 1} alignItems="center" flexDirection="column">
@@ -18,9 +19,7 @@ export function ConversationLogo(props: {
           Swarm
         </Text>
         {!compact && <Text color={visualTokenColor("role.swarm")}>Local workspace</Text>}
-        <Text dimColor>
-          {props.version ? `v${props.version} · ` : ""}{model}
-        </Text>
+        {metadata ? <Text dimColor>{metadata}</Text> : null}
         <Text dimColor wrap="truncate">
           {cwd}
         </Text>
