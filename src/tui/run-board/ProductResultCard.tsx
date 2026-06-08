@@ -369,14 +369,14 @@ function WorkerSummary(props: { view: ProductResultCardView; density?: TuiDensit
   const limit = props.density === "compact" ? 2 : 4;
   const visible = props.view.workerSummary.slice(0, limit);
   return (
-    <RunBoardPanel title="Worker Summary">
+    <RunBoardPanel title="Team Summary">
       {visible.map((contributor) => (
         <Text key={contributor.workerId} color={visualTokenColor("text.primary")} wrap="truncate">
           [OK] {contributor.label} {contributor.contribution}
         </Text>
       ))}
       {props.view.workerSummary.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.view.workerSummary.length - visible.length} more workers</Text>
+        <Text color={visualTokenColor("text.muted")}>+{props.view.workerSummary.length - visible.length} more team activity</Text>
       ) : null}
     </RunBoardPanel>
   );
@@ -389,14 +389,14 @@ function AttentionHistory(props: { view: ProductResultCardView; density?: TuiDen
   const limit = props.density === "compact" ? 1 : 3;
   const visible = props.view.attentionHistory.slice(0, limit);
   return (
-    <RunBoardPanel title="Attention History">
+    <RunBoardPanel title="Request History">
       {visible.map((item) => (
         <Text key={item.id} color={visualTokenColor(item.resolved ? "text.muted" : "status.warning")} wrap="truncate">
           [WARN] {item.summary}{item.resolution ? `; ${item.resolution}` : ""}
         </Text>
       ))}
       {props.view.attentionHistory.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.view.attentionHistory.length - visible.length} more attention items</Text>
+        <Text color={visualTokenColor("text.muted")}>+{props.view.attentionHistory.length - visible.length} more requests</Text>
       ) : null}
     </RunBoardPanel>
   );

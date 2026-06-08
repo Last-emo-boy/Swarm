@@ -54,9 +54,9 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(text, /NEXT\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /NEXT\s+\/diff\s+\/commit/);
   assert.doesNotMatch(text, /NEXT\s+Show team's work/);
-  assert.doesNotMatch(text, /WORKER SUMMARY/);
+  assert.doesNotMatch(text, /TEAM SUMMARY/);
   assert.doesNotMatch(text, /Code Worker implemented patch/);
-  assert.doesNotMatch(text, /ATTENTION HISTORY/);
+  assert.doesNotMatch(text, /REQUEST HISTORY/);
   assert.doesNotMatch(text, /waited; command completed successfully/);
 
   const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
@@ -80,11 +80,40 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
 
   assert.match(expandedText, /Evidence\s+4 items\. Show team's work/);
   assert.match(expandedText, /Team\s+verification passed: npm test -- session-row/);
-  assert.match(expandedText, /WORKER SUMMARY/);
+  assert.match(expandedText, /TEAM SUMMARY/);
   assert.match(expandedText, /Code Worker implemented patch/);
   assert.match(expandedText, /Test Runner verified focused test/);
-  assert.match(expandedText, /ATTENTION HISTORY/);
+  assert.match(expandedText, /REQUEST HISTORY/);
   assert.match(expandedText, /waited; command completed successfully/);
+  assert.doesNotMatch(expandedText, /WORKER SUMMARY|ATTENTION HISTORY/);
+});
+
+test("ProductResultCard uses product-facing overflow labels in expanded detail", () => {
+  const preview: ResultPreview = {
+    ...emptyPreview(),
+    contributors: [
+      { workerId: "worker_code", label: "Code Worker", contribution: "implemented patch" },
+      { workerId: "worker_test", label: "Test Runner", contribution: "verified focused test" },
+      { workerId: "worker_docs", label: "Docs Pass", contribution: "checked user-facing copy" }
+    ]
+  };
+  const attentionHistory: AttentionItemView[] = [
+    attentionHistoryFixture("slow-test", "waited; command completed successfully"),
+    attentionHistoryFixture("slow-lint", "continued after user approval")
+  ];
+
+  const frame = renderTuiToFrame(React.createElement(ProductResultCard, {
+    card: completedCardFixture(),
+    preview,
+    attentionHistory,
+    density: "compact",
+    teamReasoningExpanded: true
+  }), { columns: 120, rows: 28 });
+  const text = frameText(frame);
+
+  assert.match(text, /\+1 more team activity/);
+  assert.match(text, /\+1 more requests/);
+  assert.doesNotMatch(text, /more workers|more attention items/i);
 });
 
 test("ProductResultCard dispatches final next action clicks", () => {
@@ -354,6 +383,38 @@ function emptyPreview(): ResultPreview {
     contributors: [],
     risks: [],
     nextActions: ["/diff", "/commit"]
+  };
+}
+
+function completedCardFixture(): NonNullable<React.ComponentProps<typeof ProductResultCard>["card"]> {
+  return {
+    status: "completed",
+    sessionId: "sess-1",
+    route: "work",
+    summary: "Fixed session restore.",
+    changedFiles: ["src/runtime/session-row.ts"],
+    checks: [{ command: "npm test -- session-row", status: "passed" }],
+    review: { status: "passed", summary: "review passed" },
+    risks: [],
+    artifacts: [],
+    next: ["/diff", "/commit"]
+  };
+}
+
+function attentionHistoryFixture(id: string, resolution: string): AttentionItemView {
+  return {
+    id,
+    kind: "slow",
+    severity: "warning",
+    title: "Test Runner may be slow",
+    summary: "Test Runner had no output for 72s",
+    evidence: ["npm test -- session-row"],
+    recommendation: "Wait briefly before stopping.",
+    actions: [],
+    createdAt: "2026-05-28T00:00:00.000Z",
+    updatedAt: "2026-05-28T00:01:12.000Z",
+    resolvedAt: "2026-05-28T00:01:20.000Z",
+    resolution
   };
 }
 
