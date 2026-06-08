@@ -86,7 +86,7 @@ export function productResultCardViewFromParts(input: {
       attentionHistory: attentionHistoryView(input.attentionHistory),
       artifacts: input.preview.artifacts,
       decisionTrail: undefined,
-      nextActions: input.preview.nextActions.map((command) => ({ command, label: command, source: "preview" })),
+      nextActions: input.preview.nextActions.map((command) => ({ command, label: labelForRunBoardAction(command), source: "preview" })),
       detailHint: input.detailHint,
       finished: false
     };

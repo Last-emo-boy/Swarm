@@ -113,3 +113,22 @@ test("product result selector can disable decision trail for collaboration rollb
   assert.equal(selectProductResultCardView(state, { decisionTrailEnabled: true }).decisionTrail?.split?.[0], "Objective adopted");
   assert.equal(selectProductResultCardView(state, { decisionTrailEnabled: false }).decisionTrail, undefined);
 });
+
+test("product result selector keeps preview commands behind user-facing labels", () => {
+  const state = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
+    {
+      type: "result/preview",
+      at: "2026-05-28T00:00:01.000Z",
+      preview: {
+        summary: "Patch ready for inspection.",
+        nextActions: ["/diff", "/commit"]
+      }
+    }
+  ]);
+
+  const view = selectProductResultCardView(state);
+
+  assert.equal(view.status, "preview");
+  assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["preview:/diff", "preview:/commit"]);
+  assert.deepEqual(view.nextActions.map((item) => item.label), ["Review changes", "Commit when ready"]);
+});
