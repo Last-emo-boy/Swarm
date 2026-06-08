@@ -39,7 +39,7 @@ import {
   buildVirtualConversationLayout,
   createConversationRenderCache
 } from "./components/VirtualConversationList.js";
-import { mainPaneLabels, mainPaneOrder, normalizeMainPaneId } from "./main-panes.js";
+import { allMainPaneIds, mainPaneLabels, mainPaneOrder, normalizeMainPaneId } from "./main-panes.js";
 import { statusRailSummary } from "./components/StatusRail.js";
 
 test("conversation-first layout keeps transcript as the default surface", () => {
@@ -831,25 +831,31 @@ test("virtual conversation layout separates compact and expanded fold cache entr
 });
 
 test("main pane order uses product navigation and keeps legacy aliases routable", () => {
-  assert.deepEqual(mainPaneOrder, ["board", "sessions", "workers", "activity", "output", "skills", "automations", "trace", "chat", "plan"]);
-  assert.equal(mainPaneOrder[0], "board");
-  assert.equal(mainPaneLabels.board, "Board");
+  assert.deepEqual(mainPaneOrder, ["chat", "plan", "board", "trace"]);
+  assert.equal(mainPaneOrder[0], "chat");
+  assert.deepEqual(allMainPaneIds, ["chat", "plan", "board", "sessions", "workers", "activity", "output", "skills", "automations", "trace"]);
+  assert.equal(mainPaneLabels.board, "Observatory");
   assert.equal(mainPaneLabels.sessions, "Tasks");
-  assert.equal(mainPaneLabels.workers, "Workers");
+  assert.equal(mainPaneLabels.workers, "Team");
   assert.equal(mainPaneLabels.activity, "Activity");
   assert.equal(mainPaneLabels.output, "Output");
   assert.equal(mainPaneLabels.skills, "Skills");
   assert.equal(mainPaneLabels.automations, "Automations");
-  assert.equal(mainPaneLabels.trace, "Trace");
+  assert.equal(mainPaneLabels.trace, "Debug");
   assert.equal(mainPaneLabels.chat, "Chat");
-  assert.equal(mainPaneLabels.plan, "Run");
+  assert.equal(mainPaneLabels.plan, "Result");
   assert.equal(normalizeMainPaneId("overview"), "board");
+  assert.equal(normalizeMainPaneId("sessions"), "sessions");
   assert.equal(normalizeMainPaneId("tasks"), "sessions");
   assert.equal(normalizeMainPaneId("agents"), "workers");
   assert.equal(normalizeMainPaneId("symphony"), "automations");
   assert.equal(normalizeMainPaneId("run"), "plan");
+  assert.equal(normalizeMainPaneId("result"), "plan");
+  assert.equal(normalizeMainPaneId("report"), "plan");
   assert.equal(normalizeMainPaneId("attempts"), "trace");
   assert.equal(normalizeMainPaneId("blackboard"), "board");
+  assert.equal(normalizeMainPaneId("observatory"), "board");
+  assert.equal(normalizeMainPaneId("inspect"), "board");
 });
 
 test("detail open target keeps chat and trace shortcuts separate", () => {

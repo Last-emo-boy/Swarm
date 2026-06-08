@@ -1,44 +1,50 @@
-export type MainPaneId = "board" | "sessions" | "workers" | "activity" | "output" | "skills" | "automations" | "trace" | "chat" | "plan";
+export type MainPaneId = "chat" | "plan" | "board" | "sessions" | "workers" | "activity" | "output" | "skills" | "automations" | "trace";
 
-export const mainPaneOrder: MainPaneId[] = ["board", "sessions", "workers", "activity", "output", "skills", "automations", "trace", "chat", "plan"];
+export const allMainPaneIds: MainPaneId[] = ["chat", "plan", "board", "sessions", "workers", "activity", "output", "skills", "automations", "trace"];
+
+export const mainPaneOrder: MainPaneId[] = ["chat", "plan", "board", "trace"];
 
 export const mainPaneLabels: Record<MainPaneId, string> = {
-  board: "Board",
+  chat: "Chat",
+  plan: "Result",
+  board: "Observatory",
   sessions: "Tasks",
-  workers: "Workers",
+  workers: "Team",
   activity: "Activity",
   output: "Output",
   skills: "Skills",
   automations: "Automations",
-  trace: "Trace",
-  chat: "Chat",
-  plan: "Run"
+  trace: "Debug"
 };
 
 export const mainPaneShortLabels: Record<MainPaneId, string> = {
-  board: "Brd",
+  chat: "Chat",
+  plan: "Res",
+  board: "Obs",
   sessions: "Task",
-  workers: "Wrk",
+  workers: "Team",
   activity: "Act",
   output: "Out",
   skills: "Skl",
   automations: "Auto",
-  trace: "Tr",
-  chat: "Chat",
-  plan: "Run"
+  trace: "Dbg"
 };
 
-export const mainPaneAliases: Record<string, MainPaneId> = {
+const mainPaneAliases: Record<string, MainPaneId> = {
   agents: "workers",
   attempts: "trace",
   automation: "automations",
   blackboard: "board",
+  inspect: "board",
+  observatory: "board",
+  overview: "board",
+  report: "plan",
+  result: "plan",
   run: "plan",
   runs: "plan",
   task: "sessions",
   tasks: "sessions",
   log: "trace",
-  overview: "board",
   symphony: "automations"
 };
 
@@ -47,12 +53,15 @@ export function normalizeMainPaneId(value: string | undefined): MainPaneId | und
   if (!normalized) {
     return undefined;
   }
-  const direct = mainPaneOrder.find((pane) => pane === normalized);
+  const direct = allMainPaneIds.find((pane) => pane === normalized);
   return direct ?? mainPaneAliases[normalized];
 }
 
 export function nextMainPane(current: MainPaneId, direction: 1 | -1): MainPaneId {
   const index = mainPaneOrder.indexOf(current);
+  if (index < 0) {
+    return direction > 0 ? mainPaneOrder[0] ?? "chat" : mainPaneOrder[mainPaneOrder.length - 1] ?? "trace";
+  }
   const next = (index + direction + mainPaneOrder.length) % mainPaneOrder.length;
-  return mainPaneOrder[next] ?? "board";
+  return mainPaneOrder[next] ?? "chat";
 }

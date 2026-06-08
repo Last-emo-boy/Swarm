@@ -349,10 +349,12 @@ test("protocol timeline action rows filter actor events for the inspector", () =
 });
 
 test("main pane navigation remains explicit through slash view routing", () => {
-  assert.equal(nextMainPane("board", 1), "sessions");
+  assert.equal(nextMainPane("board", 1), "trace");
   assert.equal(nextMainPane("board", -1), "plan");
   assert.equal(nextMainPane("plan", 1), "board");
   assert.equal(nextMainPane("chat", 1), "plan");
+  assert.equal(nextMainPane("sessions", 1), "chat");
+  assert.equal(nextMainPane("sessions", -1), "trace");
 });
 
 test("ActionLog renders status and kind accents without tinting neutral titles", () => {

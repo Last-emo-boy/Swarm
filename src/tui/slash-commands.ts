@@ -34,12 +34,13 @@ export type CommandOutputPreviewRecord = {
   recoverySuggestion?: string;
 };
 
-export const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Agents", "Symphony", "Config"];
+const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Agents", "Symphony", "Config"];
 
 export const slashCommands: SlashCommandSpec[] = [
   { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 10 },
   { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight.", completionPriority: 20 },
   { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode.", completionPriority: 40 },
+  { name: "review", group: "Core", usage: "/review [focus]", description: "Run a result-first Codebase Deep Review for a focused area.", aliases: ["rev"], completionPriority: 42 },
   { name: "density", group: "Core", usage: "/density [auto|compact|default|comfortable]", description: "Tune TUI information density without changing focus behavior.", completionPriority: 43 },
   { name: "view", group: "Core", usage: "/view [chat|plan|activity|output|sessions|workers|trace|board]", description: "Switch the TUI surface without exposing pane controls by default.", completionPriority: 45 },
   { name: "plan", group: "Core", usage: "/plan [objective]", description: "Enter planning mode or show the current implementation plan.", completionPriority: 47 },
@@ -52,9 +53,9 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "improve-self", group: "Core", usage: "/improve-self", description: "Ask Swarm to improve its own implementation." },
   { name: "evals", group: "Core", usage: "/evals [--release-gate|--cache-lab|--tui-replay]", description: "Run local product regression evals, cache lab, TUI replay, or the offline parity release gate." },
   { name: "prd", group: "Core", usage: "/prd", description: "Show the local PRD." },
-  { name: "reply", group: "Core", usage: "/reply <message>", description: "Send a live reply to the active run." },
-  { name: "interrupt", group: "Core", usage: "/interrupt <message>", description: "Interrupt active work and ask Swarm to reassess." },
-  { name: "onboard", group: "Core", usage: "/onboard", description: "Open provider/model onboarding." },
+  { name: "reply", group: "Core", usage: "/reply <message>", description: "Guide the active team while it is running." },
+  { name: "interrupt", group: "Core", usage: "/interrupt <message>", description: "Pause or redirect active work at the next safe boundary." },
+  { name: "onboard", group: "Core", usage: "/onboard", description: "Open provider/model onboarding.", completionPriority: 49 },
   { name: "read", group: "Tools", usage: "/read <path> [start:end]", description: "Read a file from the workspace.", completionPriority: 80 },
   { name: "grep", group: "Tools", usage: "/grep <pattern> [root]", description: "Search workspace text.", completionPriority: 90 },
   { name: "glob", group: "Tools", usage: "/glob <pattern> [root]", description: "Find files by glob." },
@@ -140,15 +141,14 @@ export const slashCommands: SlashCommandSpec[] = [
 const BASIC_SLASH_COMMAND_NAMES = new Set([
   "help",
   "doctor",
-  "mode",
-  "density",
-  "view",
+  "review",
   "plan",
   "approve",
-  "model",
-  "swarm",
-  "approval",
-  "kernel",
+  "work",
+  "checkpoint",
+  "revert",
+  "onboard",
+  "why",
   "resume",
   "continue"
 ]);
@@ -248,6 +248,9 @@ export function rawSlashArgsAfter(parsed: ParsedSlashCommand, consumedArgs: numb
 export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?: string } = {}): string {
   const includeAdvanced = options.includeAdvanced ?? false;
   const namespace = options.namespace?.toLowerCase();
+  if (!includeAdvanced && (!namespace || namespace === "main")) {
+    return renderMainSlashHelp();
+  }
   if (namespace && SLASH_HELP_NAMESPACES[namespace]) {
     const help = SLASH_HELP_NAMESPACES[namespace];
     const commands = help.names
@@ -277,6 +280,34 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?
     .join("\n\n");
 }
 
+function renderMainSlashHelp(): string {
+  return [
+    "Work",
+    "  /work <board|sessions|attempts|output|files|checks> - Inspect current work evidence.",
+    "  /plan [objective] - Draft or show the current implementation plan.",
+    "  /approve [approval_id] [message] - Approve the current plan or one pending approval.",
+    "  /continue [message] - Continue the latest local coding session.",
+    "",
+    "Ask",
+    "  /review [focus] - Run a result-first Codebase Deep Review.",
+    "  /why - Explain recent decisions.",
+    "",
+    "Setup",
+    "  /onboard - Configure provider, API key, and model once.",
+    "  /doctor [workflow_path] - Check local setup readiness.",
+    "",
+    "Recovery",
+    "  /checkpoint <list|create|revert> [name|id] - Manage workspace recovery points.",
+    "  /revert last|<checkpoint_id> - Undo a checkpoint-backed change.",
+    "",
+    "Advanced",
+    "  /help all - Show every command.",
+    "  /help debug - Show Debug detail commands.",
+    "  /help work - Show extra work evidence commands.",
+    "  /help ext - Show extension detail commands."
+  ].join("\n");
+}
+
 export function commandCandidatesForInput(
   value: string,
   cursor: number,
@@ -295,7 +326,7 @@ export function commandCandidatesForInput(
       .sort((a, b) => a.score - b.score || a.command.name.localeCompare(b.command.name))
       .map((item) => item.command);
   }
-  const visibleNamespaces = new Set(["debug", "work", "ext", "symphony"]);
+  const visibleNamespaces = new Set<string>();
   const baseCommands = options.includeAdvanced || query.length >= 2
     ? slashCommands
     : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name) || visibleNamespaces.has(command.name));

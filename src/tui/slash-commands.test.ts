@@ -15,6 +15,7 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("symphony")?.group, "Symphony");
   assert.equal(commands.get("approvals")?.group, "Kernel");
   assert.equal(commands.get("doctor")?.group, "Core");
+  assert.equal(commands.get("review")?.usage, "/review [focus]");
   assert.equal(commands.get("density")?.usage, "/density [auto|compact|default|comfortable]");
   assert.equal(commands.get("view")?.group, "Core");
   assert.equal(commands.get("plan")?.usage, "/plan [objective]");
@@ -43,14 +44,20 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
 test("default slash help stays on the main path unless advanced help is requested", () => {
   const basicHelp = renderSlashHelp();
 
-  assert.match(basicHelp, /\/help/);
-  assert.match(basicHelp, /\/density \[auto\|compact\|default\|comfortable\]/);
-  assert.match(basicHelp, /\/view \[chat\|plan\|activity\|output\|sessions\|workers\|trace\|board\]/);
+  assert.match(basicHelp, /Work/);
+  assert.match(basicHelp, /Ask/);
+  assert.match(basicHelp, /Setup/);
+  assert.match(basicHelp, /Recovery/);
+  assert.match(basicHelp, /\/review \[focus\]/);
+  assert.match(basicHelp, /\/work <board\|sessions\|attempts\|output\|files\|checks>/);
   assert.match(basicHelp, /\/plan \[objective\]/);
   assert.match(basicHelp, /\/approve \[approval_id\] \[message\]/);
-  assert.match(basicHelp, /\/swarm/);
-  assert.match(basicHelp, /\/kernel \[workflow_path\]/);
+  assert.match(basicHelp, /\/onboard/);
+  assert.match(basicHelp, /\/checkpoint <list\|create\|revert>/);
+  assert.match(basicHelp, /\/help all/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
+  assert.doesNotMatch(basicHelp, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
+  assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
 });
@@ -62,9 +69,25 @@ test("slash command candidates include required commands and aliases", () => {
   assert.equal(commandCandidatesForInput("/debug l", 8, { includeAdvanced: true })[0]?.name, "latest");
   assert.equal(commandCandidatesForInput("/debug t", 8, { includeAdvanced: true })[0]?.name, "timeline");
   assert.equal(commandCandidatesForInput("/pla", 4)[0]?.name, "plan");
+  assert.equal(commandCandidatesForInput("/rev", 4)[0]?.name, "review");
   assert.equal(commandCandidatesForInput("/appr", 5).some((command) => command.name === "approve"), true);
   assert.equal(commandCandidatesForInput("/swa", 4)[0]?.name, "swarm");
   assert.equal(commandCandidatesForInput("/mail", 5, { includeAdvanced: true })[0]?.name, "mailbox");
+});
+
+test("slash command candidates keep the empty menu on the main path", () => {
+  const names = commandCandidatesForInput("/", 1).map((command) => command.name);
+
+  assert(names.includes("review"));
+  assert(names.includes("plan"));
+  assert(names.includes("approve"));
+  assert(names.includes("onboard"));
+  assert(!names.includes("debug"));
+  assert(!names.includes("ext"));
+  assert(!names.includes("symphony"));
+  assert(!names.includes("swarm"));
+  assert(!names.includes("approval"));
+  assert(!names.includes("density"));
 });
 
 test("slash command parser preserves raw args for operator commands", () => {
@@ -114,6 +137,17 @@ test("slash command parser preserves raw args for operator commands", () => {
       { value: "worker:surface-1", start: 9, end: 25 }
     ],
     source: "/mailbox worker:surface-1"
+  });
+  assert.deepEqual(parseSlashCommandLine("/review auth and permissions"), {
+    command: "review",
+    args: ["auth", "and", "permissions"],
+    rawArgs: "auth and permissions",
+    argSpans: [
+      { value: "auth", start: 8, end: 12 },
+      { value: "and", start: 13, end: 16 },
+      { value: "permissions", start: 17, end: 28 }
+    ],
+    source: "/review auth and permissions"
   });
   assert.deepEqual(parseSlashCommandLine("/agent worker:surface-1"), {
     command: "agent",
