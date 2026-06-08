@@ -15,9 +15,9 @@ export function ConversationLogo(props: {
     <Box flexDirection="column" alignItems="center" width="100%" marginBottom={1}>
       <Box borderStyle="round" borderColor={visualTokenColor("brand.focus")} paddingX={1} paddingY={compact ? 0 : 1} alignItems="center" flexDirection="column">
         <Text color={visualTokenColor("brand.focus")} bold>
-          {compact ? "Symphony Swarm" : "Symphony Swarm"}
+          Swarm
         </Text>
-        {!compact && <Text color={visualTokenColor("role.swarm")}>Local Swarm Runtime</Text>}
+        {!compact && <Text color={visualTokenColor("role.swarm")}>Local coding agent</Text>}
         <Text dimColor>
           {props.version ? `v${props.version} · ` : ""}{model}
         </Text>
