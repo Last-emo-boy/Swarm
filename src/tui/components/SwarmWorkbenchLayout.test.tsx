@@ -444,7 +444,7 @@ test("SwarmWorkbenchLayout passes actual center dimensions to render props", () 
     }
   }), { columns: 160, rows: 32 });
 
-  assert.deepEqual(contentInputs, [{ rows: 23, columns: 83 }]);
+  assert.deepEqual(contentInputs, [{ rows: 24, columns: 83 }]);
   assert.deepEqual(bottomInputs, [{ rows: 4, columns: 83 }]);
 });
 
@@ -480,7 +480,7 @@ test("SwarmWorkbenchLayout gives empty right rail space back to the center", () 
   }), { columns: 160, rows: 32 });
   const text = frameText(frame);
 
-  assert.deepEqual(contentInputs, [{ rows: 23, columns: 120 }]);
+  assert.deepEqual(contentInputs, [{ rows: 24, columns: 120 }]);
   assert.deepEqual(bottomInputs, [{ rows: 4, columns: 120 }]);
   assert.doesNotMatch(text, /Status|Access|Workspace Write|Agent/);
 });

@@ -148,8 +148,10 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
   });
   const centerBottomRows = Math.max(1, props.centerBottomRows);
   const centerHeaderRows = visibleCenterHeaderRows(props.subtitle, props.headerDetail);
+  const footerRows = visibleWorkbenchFooterRows(props.footer, metrics.columns);
+  const bodyRows = metrics.bodyRows + (FOOTER_ROWS - footerRows);
   if (!metrics.enabled) {
-    const compactMainRows = Math.max(4, metrics.bodyRows - centerBottomRows);
+    const compactMainRows = Math.max(4, bodyRows - centerBottomRows);
     const compactContentRows = Math.max(1, compactMainRows - centerHeaderRows);
     return (
       <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
@@ -169,7 +171,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
             columns: Math.max(20, metrics.columns - 2)
           })}
         </Box>
-        <WorkbenchFooter items={props.footer} columns={metrics.columns} />
+        {footerRows ? <WorkbenchFooter items={props.footer} columns={metrics.columns} /> : null}
       </Box>
     );
   }
@@ -186,21 +188,21 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
   });
   const centerColumns = showRightRail ? metrics.centerColumns : metrics.centerColumns + metrics.rightColumns + 1;
   const centerInnerColumns = Math.max(20, centerColumns - CENTER_BORDER_COLUMNS - CENTER_PADDING_COLUMNS);
-  const centerMainRows = Math.max(4, metrics.centerMainRows + (CENTER_HEADER_ROWS - centerHeaderRows));
+  const centerMainRows = Math.max(4, bodyRows - CENTER_BORDER_ROWS - centerHeaderRows - centerBottomRows);
   return (
     <Box width={metrics.columns} height={metrics.rows} flexDirection="column" overflow="hidden">
       <WorkbenchTitleBar columns={metrics.columns} />
-      <Box flexDirection="row" width="100%" height={metrics.bodyRows} overflow="hidden">
+      <Box flexDirection="row" width="100%" height={bodyRows} overflow="hidden">
         <LeftSidebar
           width={metrics.leftColumns}
-          height={metrics.bodyRows}
+          height={bodyRows}
           workspace={props.workspace}
           navigation={props.navigation}
           sessions={props.sessions}
           onNavigate={props.onNavigate}
           onSelectSession={props.onSelectSession}
         />
-        <Box width={centerColumns} height={metrics.bodyRows} marginLeft={1} marginRight={showRightRail ? 1 : 0} overflow="hidden">
+        <Box width={centerColumns} height={bodyRows} marginLeft={1} marginRight={showRightRail ? 1 : 0} overflow="hidden">
           <ThemedBox
             width="100%"
             height="100%"
@@ -228,7 +230,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
         {showRightRail ? (
           <RightRail
             width={metrics.rightColumns}
-            height={metrics.bodyRows}
+            height={bodyRows}
             mode={props.mode}
             runtime={props.runtime}
             permission={props.permission}
@@ -241,7 +243,7 @@ export function SwarmWorkbenchLayout(props: SwarmWorkbenchLayoutProps): React.Re
           />
         ) : null}
       </Box>
-      <WorkbenchFooter items={props.footer} columns={metrics.columns} />
+      {footerRows ? <WorkbenchFooter items={props.footer} columns={metrics.columns} /> : null}
     </Box>
   );
 }
@@ -758,8 +760,7 @@ function WorkbenchFooter({
   items: Array<{ key: string; label: string; tone?: TuiColorRef }>;
   columns: number;
 }): React.ReactElement {
-  const maxItems = columns < 150 ? 6 : items.length;
-  const visibleItems = items.filter(isVisibleWorkbenchFooterItem).slice(0, maxItems);
+  const visibleItems = visibleWorkbenchFooterItems(items, columns);
   return (
     <Box width="100%" height={FOOTER_ROWS} flexDirection="row" overflow="hidden">
       {visibleItems.map((item, index) => (
@@ -770,6 +771,18 @@ function WorkbenchFooter({
       ))}
     </Box>
   );
+}
+
+function visibleWorkbenchFooterRows(items: Array<{ key: string; label: string; tone?: TuiColorRef }>, columns: number): number {
+  return visibleWorkbenchFooterItems(items, columns).length ? FOOTER_ROWS : 0;
+}
+
+function visibleWorkbenchFooterItems(
+  items: Array<{ key: string; label: string; tone?: TuiColorRef }>,
+  columns: number
+): Array<{ key: string; label: string; tone?: TuiColorRef }> {
+  const maxItems = columns < 150 ? 6 : items.length;
+  return items.filter(isVisibleWorkbenchFooterItem).slice(0, maxItems);
 }
 
 function isVisibleWorkbenchFooterItem(item: { key: string; label: string }): boolean {
