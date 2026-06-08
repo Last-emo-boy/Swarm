@@ -256,6 +256,9 @@ function DecisionTrailLines(props: {
   if (!sections.length) {
     return null;
   }
+  if (!props.expanded && !props.onToggle) {
+    return null;
+  }
   const visibleSections = props.expanded ? sections : [];
   const itemLimit = props.density === "compact" ? 2 : 4;
   const value = props.expanded

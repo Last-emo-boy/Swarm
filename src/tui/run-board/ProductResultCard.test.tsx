@@ -259,6 +259,33 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   assert.match(expandedText, /Owner\s+Code Worker owns patch/);
   assert.match(expandedText, /Check\s+focused test passed/);
   assert.doesNotMatch(expandedText, /split\s+Objective adopted|assign\s+Code Worker owns patch|verify\s+focused test passed/);
+
+  const inert = renderTuiToFrame(React.createElement(ProductResultCard, {
+    card: {
+      status: "completed",
+      sessionId: "sess-1",
+      route: "team",
+      summary: "Fixed session restore.",
+      changedFiles: ["src/runtime/session-row.ts"],
+      checks: [{ command: "npm test -- session-row", status: "passed" }],
+      review: { status: "passed", summary: "review passed" },
+      risks: [],
+      artifacts: [],
+      next: ["/diff"],
+      decisionTrail: {
+        split: ["Objective adopted"],
+        assign: ["Code Worker owns patch"],
+        verify: ["focused test passed"],
+        decide: ["Reviewer approved"],
+        risk: ["low: narrow change"]
+      }
+    },
+    preview: emptyPreview(),
+    attentionHistory: []
+  }), { columns: 120, rows: 20 });
+  const inertText = frameText(inert);
+
+  assert.doesNotMatch(inertText, /Why\s+5 decisions\. Show details/);
 });
 
 test("ProductResultCard renders review findings as result-first report rows", () => {
