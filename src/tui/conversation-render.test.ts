@@ -46,7 +46,8 @@ test("default conversation surface shows a cc-style startup logo on empty chats"
   const plain = terminalFrameText(output);
 
   assert.match(plain, /Swarm/);
-  assert.match(plain, /Local coding agent|openai\/gpt/);
+  assert.match(plain, /Local workspace|openai\/gpt/);
+  assert.doesNotMatch(plain, /Local coding agent/);
   assert.match(plain, /E:\\Playground\\Swarm/);
   assert.match(plain, /Start with/);
   assert.match(plain, /Review auth and permissions/);

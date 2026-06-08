@@ -17,7 +17,7 @@ export function ConversationLogo(props: {
         <Text color={visualTokenColor("brand.focus")} bold>
           Swarm
         </Text>
-        {!compact && <Text color={visualTokenColor("role.swarm")}>Local coding agent</Text>}
+        {!compact && <Text color={visualTokenColor("role.swarm")}>Local workspace</Text>}
         <Text dimColor>
           {props.version ? `v${props.version} · ` : ""}{model}
         </Text>
