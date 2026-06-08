@@ -319,11 +319,15 @@ function isVisibleWorkspaceSection(workspace: SwarmWorkbenchWorkspace, workspace
 }
 
 function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionItem; width: number; onSelect?: (id: string) => void }): React.ReactElement {
-  const titleBudget = Math.max(8, width - 14);
   const titleTone: TuiColorRef = session.active ? "brand.focus" : session.tone ?? "text.primary";
   const badge = visibleCaseBadge(session.badge);
   const subtitle = visibleCaseSubtitle(session.subtitle);
   const showSecondary = Boolean(badge || subtitle);
+  const inlineAttention = session.attention && !showSecondary ? attentionLabel(session.attention) : undefined;
+  const secondaryAttention = session.attention && showSecondary ? attentionLabel(session.attention) : undefined;
+  const ageWidth = session.age ? displayWidth(session.age) + 1 : 0;
+  const attentionWidth = inlineAttention ? displayWidth(inlineAttention) + 1 : 0;
+  const titleBudget = Math.max(8, width - ageWidth - attentionWidth - 6);
   return (
     <Box flexDirection="column" width="100%">
       <Text
@@ -334,18 +338,22 @@ function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionI
         <Text color={session.active ? visualTokenColor("brand.focus") : visualTokenColor("text.muted")}>{session.active ? "> " : "  "}</Text>
         <Text color={resolveTuiColor(titleTone)}>{fitText(session.title || session.id, titleBudget)}</Text>
         {session.age ? <Text color={visualTokenColor("text.muted")}> {session.age}</Text> : null}
-        {session.attention && !showSecondary ? <Text color={visualTokenColor("status.warning")}> !{session.attention}</Text> : null}
+        {inlineAttention ? <Text color={visualTokenColor("status.warning")}> {inlineAttention}</Text> : null}
       </Text>
       {showSecondary ? (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
           {"  "}
           {badge ? <Text color={resolveTuiColor(session.tone ?? "role.gateway")}>{fitText(badge, 10)}</Text> : null}
           {subtitle ? <Text> {fitText(subtitle, Math.max(8, width - 15))}</Text> : null}
-          {session.attention ? <Text color={visualTokenColor("status.warning")}> !{session.attention}</Text> : null}
+          {secondaryAttention ? <Text color={visualTokenColor("status.warning")}> {secondaryAttention}</Text> : null}
         </Text>
       ) : null}
     </Box>
   );
+}
+
+function attentionLabel(value: number): string {
+  return `needs ${value}`;
 }
 
 function visibleCaseBadge(value: string | undefined): string | undefined {
