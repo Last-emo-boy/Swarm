@@ -15,7 +15,7 @@ export function WorkerBoard(props: {
   const visible = props.rows.slice(0, limit);
   const hidden = Math.max(0, props.rows.length - visible.length);
   return (
-    <RunBoardPanel title="Workers">
+    <RunBoardPanel title="Team Activity">
       {visible.length
         ? visible.map((row) => (
             <WorkerRow
@@ -26,7 +26,7 @@ export function WorkerBoard(props: {
             />
           ))
         : <WorkerRowEmpty />}
-      {hidden > 0 ? <Text color={visualTokenColor("text.muted")}>+{hidden} more workers</Text> : null}
+      {hidden > 0 ? <Text color={visualTokenColor("text.muted")}>+{hidden} more team activity</Text> : null}
     </RunBoardPanel>
   );
 }

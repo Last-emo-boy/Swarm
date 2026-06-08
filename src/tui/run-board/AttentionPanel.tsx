@@ -17,7 +17,7 @@ export function AttentionPanel(props: {
   const limit = Math.max(1, props.limit ?? props.items.length);
   const visible = props.items.slice(0, limit);
   return (
-    <RunBoardPanel title="Attention">
+    <RunBoardPanel title="Needs You">
       {visible.map((item) => (
         <Box key={item.id} flexDirection="column" width="100%">
           <SemanticTextLine wrap="truncate" spans={attentionTitleSpans(item)} />
@@ -35,7 +35,7 @@ export function AttentionPanel(props: {
         </Box>
       ))}
       {props.items.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.items.length - visible.length} more attention items</Text>
+        <Text color={visualTokenColor("text.muted")}>+{props.items.length - visible.length} more requests</Text>
       ) : null}
     </RunBoardPanel>
   );

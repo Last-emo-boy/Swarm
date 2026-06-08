@@ -83,12 +83,12 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /mode: auto/);
   assert.match(text, /risk: workspace-write/);
   assert.match(text, /Focus\s+Test Runner/);
-  assert.match(text, /WORKERS/);
+  assert.match(text, /TEAM ACTIVITY/);
   assert.match(text, /Test Runner/);
-  assert.match(text, /ATTENTION/);
+  assert.match(text, /NEEDS YOU/);
   assert.match(text, /recommend/);
   assert.match(text, /RESULT PREVIEW/);
-  assert.match(text, /\[Workers 2\]/);
+  assert.match(text, /\[Team 2\]/);
   assert.match(text, /\[Stuck 1\]/);
   assert.match(text, /\[Checks 0\/0\]/);
   assert.match(text, /\[Details Enter\]/);
@@ -105,11 +105,42 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     assert(lines.every((line) => line.length <= columns), `${columns}: expected all rows to fit`);
     assert.match(text, /WORK/);
     assert.doesNotMatch(text, /SWARM OBSERVATORY/);
-    assert.match(text, /WORKERS/);
-    assert.match(text, /ATTENTION/);
+    assert.match(text, /TEAM ACTIVITY/);
+    assert.match(text, /NEEDS YOU/);
     assert.match(text, /RESULT PREVIEW/);
     assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);
   }
+});
+
+test("RunBoardSurface uses product-facing overflow labels", () => {
+  const view = fixtureView();
+  view.workers = [
+    ...view.workers,
+    {
+      ...view.workers[0]!,
+      id: "worker:lint",
+      label: "Lint Runner"
+    }
+  ];
+  view.attention = [
+    ...view.attention,
+    {
+      ...view.attention[0]!,
+      id: "att-2",
+      title: "Lint Runner needs a decision"
+    }
+  ];
+
+  const frame = renderTuiToFrame(React.createElement(RunBoardSurface, {
+    view,
+    workerLimit: 1,
+    attentionLimit: 1
+  }), { columns: 100, rows: 28 });
+  const text = frameText(frame);
+
+  assert.match(text, /\+1 more team activity/);
+  assert.match(text, /\+1 more requests/);
+  assert.doesNotMatch(text, /more workers|more attention items/i);
 });
 
 test("RunBoardSurface dispatches attention action clicks", () => {

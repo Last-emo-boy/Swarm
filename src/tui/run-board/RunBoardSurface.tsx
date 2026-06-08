@@ -90,7 +90,7 @@ function RunBoardFooter(props: { view: RunBoardSurfaceView }): React.ReactElemen
   return (
     <Box flexDirection="row" width="100%" marginTop={0}>
       <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {[`[Workers ${counts.workers}]`, blockedOrStuck, `[Files ${counts.files}]`, `[Checks ${counts.passedChecks}/${counts.checks}]`, `[Approvals ${counts.approvals}]`, "[Details Enter]"].join(" ")}
+        {[`[Team ${counts.workers}]`, blockedOrStuck, `[Files ${counts.files}]`, `[Checks ${counts.passedChecks}/${counts.checks}]`, `[Approvals ${counts.approvals}]`, "[Details Enter]"].join(" ")}
       </Text>
     </Box>
   );
