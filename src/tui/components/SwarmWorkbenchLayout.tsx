@@ -649,12 +649,28 @@ function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchT
     <Box width="100%" flexDirection="column" marginTop={compact ? 0 : 1} overflow="hidden">
       {tools.slice(0, compact ? 4 : 6).map((tool) => (
         <Text key={tool.name} wrap="truncate">
-          <Text>{fitText(tool.name, Math.max(8, width - 20))}</Text>
-          {tool.status ? <Text color={resolveTuiColor(tool.tone ?? (tool.active ? "status.success" : "text.muted"))}> {fitText(tool.status, 18)}</Text> : null}
+          <Text>{fitText(toolDisplayName(tool), Math.max(8, width - 20))}</Text>
+          {tool.status ? <Text color={resolveTuiColor(tool.tone ?? (tool.active ? "status.success" : "text.muted"))}> {fitText(toolDisplayStatus(tool), 18)}</Text> : null}
         </Text>
       ))}
     </Box>
   );
+}
+
+function toolDisplayName(tool: SwarmWorkbenchToolItem): string {
+  const status = tool.status?.trim().toLowerCase() ?? "";
+  if (tool.name.trim().toLowerCase() === "approvals" && status === "1 pending") {
+    return "Approval";
+  }
+  return tool.name;
+}
+
+function toolDisplayStatus(tool: SwarmWorkbenchToolItem): string {
+  const status = tool.status?.trim() ?? "";
+  if (tool.name.trim().toLowerCase() === "approvals" && status.toLowerCase() === "1 pending") {
+    return "pending";
+  }
+  return status;
 }
 
 function isVisibleWorkbenchTool(tool: SwarmWorkbenchToolItem): boolean {
