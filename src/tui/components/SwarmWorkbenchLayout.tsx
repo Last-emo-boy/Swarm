@@ -301,11 +301,7 @@ function LeftSidebar({
       ) : null}
 
       {secondaryNavigation.length ? (
-        <SidebarSection title="Navigation" width={width}>
-          {secondaryNavigation.map((item) => (
-            <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} />
-          ))}
-        </SidebarSection>
+        <NavigationList items={secondaryNavigation} width={width} onNavigate={onNavigate} />
       ) : null}
     </ThemedBox>
   );
@@ -378,6 +374,24 @@ function visibleCaseSubtitle(value: string | undefined): string | undefined {
     return undefined;
   }
   return subtitle;
+}
+
+function NavigationList({
+  items,
+  width,
+  onNavigate
+}: {
+  items: SwarmWorkbenchNavigationItem[];
+  width: number;
+  onNavigate?: (id: string) => void;
+}): React.ReactElement {
+  return (
+    <Box width="100%" flexDirection="column" marginTop={1} overflow="hidden">
+      {items.map((item) => (
+        <NavigationRow key={item.id} item={item} width={width} onNavigate={onNavigate} />
+      ))}
+    </Box>
+  );
 }
 
 function NavigationRow({

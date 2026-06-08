@@ -52,7 +52,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /Inbox/);
   assert.match(text, /Cases/);
   assert.doesNotMatch(text, /Workspace -/);
-  assert.match(text, /Navigation/);
+  assert.doesNotMatch(text, /Navigation/);
   assert.doesNotMatch(text, /View all cases/);
   assert.match(text, /> Chat \[1\]/);
   assert.equal(occurrences(text, "Chat [1]"), 1);
@@ -201,8 +201,8 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
   const text = frameText(frame);
 
   assert.match(text, /Inbox/);
-  assert.match(text, /Navigation/);
-  assert.doesNotMatch(text, /Workspace -|Cases|\(none\)|View all cases|No checkpoint yet/);
+  assert.match(text, /Result \[2\]/);
+  assert.doesNotMatch(text, /Navigation|Workspace -|Cases|\(none\)|View all cases|No checkpoint yet/);
 });
 
 test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facing notes", () => {
