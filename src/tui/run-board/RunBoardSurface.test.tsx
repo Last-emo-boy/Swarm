@@ -92,7 +92,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.doesNotMatch(text, /recommend:|activity:/);
   assert.match(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT PREVIEW/);
-  assert.match(text, /\[Helpers 2\]/);
+  assert.doesNotMatch(text, /\[Helpers 2\]/);
   assert.match(text, /\[Stuck 1\]/);
   assert.doesNotMatch(text, /\[Checks 0\/0\]/);
   assert.doesNotMatch(text, /\[Files 0\]/);
@@ -131,6 +131,7 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     assert.match(text, /NEEDS YOU/);
     assert.match(text, /RESULT/);
     assert.doesNotMatch(text, /RESULT PREVIEW/);
+    assert.doesNotMatch(text, /\[Helpers 1\]/);
     assert.doesNotMatch(text, /\[Files 1\]/);
     assert.doesNotMatch(text, /waiting-attention|mode: auto|risk: workspace-write|handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);
   }
