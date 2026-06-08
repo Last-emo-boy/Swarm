@@ -132,7 +132,14 @@ test("ProductResultCard uses product-facing overflow labels in expanded detail",
   ];
 
   const frame = renderTuiToFrame(React.createElement(ProductResultCard, {
-    card: completedCardFixture(),
+    card: {
+      ...completedCardFixture(),
+      checks: [
+        { command: "npm test -- session-row", status: "passed" },
+        { command: "npm run check", status: "passed" },
+        { command: "npm run typecheck", status: "passed" }
+      ]
+    },
     preview,
     attentionHistory,
     density: "compact",
@@ -140,8 +147,9 @@ test("ProductResultCard uses product-facing overflow labels in expanded detail",
   }), { columns: 120, rows: 28 });
   const text = frameText(frame);
 
-  assert.match(text, /\+1 more contributions/);
-  assert.match(text, /\+1 more requests/);
+  assert.match(text, /More contributions/);
+  assert.match(text, /More requests/);
+  assert.doesNotMatch(text, /\+\d/);
   assert.doesNotMatch(text, /more workers|more attention items/i);
 });
 
@@ -407,7 +415,8 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   const compactText = frameText(compact);
 
   assert.match(compactText, /Recovery\s+Tool action file\.edit failed\./);
-  assert.match(compactText, /\+1 more steps/);
+  assert.match(compactText, /More steps/);
+  assert.doesNotMatch(compactText, /\+1 more steps/);
   assert.doesNotMatch(compactText, /\[cache\/info\/retry\] Prompt cache prefix changed\./);
 });
 

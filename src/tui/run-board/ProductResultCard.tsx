@@ -101,7 +101,6 @@ function ProductResultBody(props: {
           label="Verified"
           empty="none"
           values={view.checks.slice(0, checkLimit).map((check) => `${statusBadge(check.status)} ${check.command}`)}
-          remaining={Math.max(0, view.checks.length - checkLimit)}
           badgeAware
         />
       ) : null}
@@ -189,7 +188,7 @@ function ReviewFindingLines(props: {
         );
       })}
       {findings.length > visible.length ? (
-        <ResultLine label="" value={`+${findings.length - visible.length} more findings`} tone="text.muted" />
+        <ResultLine label="" value={moreItemsLabel("findings")} tone="text.muted" />
       ) : null}
     </React.Fragment>
   );
@@ -219,7 +218,7 @@ function RecoveryLines(props: {
         />
       ))}
       {recovery.length > visible.length ? (
-        <ResultLine label="" value={`+${recovery.length - visible.length} more steps`} tone="text.muted" />
+        <ResultLine label="" value={moreItemsLabel("steps")} tone="text.muted" />
       ) : null}
     </React.Fragment>
   );
@@ -336,7 +335,7 @@ function TeamReasoningLines(props: {
         />
       ))}
       {props.expanded && items.length > visible.length ? (
-        <ResultLine label="" value={`+${items.length - visible.length} more details`} tone="text.muted" onClick={props.onToggle} />
+        <ResultLine label="" value={moreItemsLabel("details")} tone="text.muted" onClick={props.onToggle} />
       ) : null}
     </React.Fragment>
   );
@@ -380,12 +379,14 @@ function ResultList(props: {
   label: string;
   values: string[];
   empty: string;
-  remaining?: number;
   badgeAware?: boolean;
 }): React.ReactElement {
   const value = props.values.length ? props.values.join(", ") : props.empty;
-  const suffix = props.remaining ? ` +${props.remaining}` : "";
-  return <ResultLine label={props.label} value={`${value}${suffix}`} badgeAware={props.badgeAware} />;
+  return <ResultLine label={props.label} value={value} badgeAware={props.badgeAware} />;
+}
+
+function moreItemsLabel(kind: string): string {
+  return `More ${kind}`;
 }
 
 function valueSpans(value: string, badgeAware = false, tone?: SemanticTextSpan["color"]): SemanticTextSpan[] {
@@ -426,7 +427,7 @@ function WorkerSummary(props: { view: ProductResultCardView; density?: TuiDensit
         </Text>
       ))}
       {props.view.workerSummary.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.view.workerSummary.length - visible.length} more contributions</Text>
+        <Text color={visualTokenColor("text.muted")}>{moreItemsLabel("contributions")}</Text>
       ) : null}
     </RunBoardPanel>
   );
@@ -446,7 +447,7 @@ function AttentionHistory(props: { view: ProductResultCardView; density?: TuiDen
         </Text>
       ))}
       {props.view.attentionHistory.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>+{props.view.attentionHistory.length - visible.length} more requests</Text>
+        <Text color={visualTokenColor("text.muted")}>{moreItemsLabel("requests")}</Text>
       ) : null}
     </RunBoardPanel>
   );
