@@ -23,6 +23,8 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   assert.equal(view.selected?.title, "T-101");
   assert.match(view.selected?.objective ?? "", /Board-first/);
   assert(view.selected?.comments.some((line) => /Make Swarm/.test(line)));
+  assert.deepEqual(view.selected?.actions, ["Continue task", "Open result", "Review teammates"]);
+  assert(!view.selected?.actions.some((action) => action.startsWith("/")));
 });
 
 test("selectWorkBoardSurface provides an empty thread before work starts", () => {
@@ -31,7 +33,8 @@ test("selectWorkBoardSurface provides an empty thread before work starts", () =>
   assert.equal(view.empty, true);
   assert.equal(view.selected?.id, "new-task");
   assert.match(view.selected?.objective ?? "", /Ask Swarm/);
-  assert.deepEqual(view.selected?.actions, ["/review", "/plan"]);
+  assert.deepEqual(view.selected?.actions, ["Review this workspace", "Plan a change"]);
+  assert(!view.selected?.actions.some((action) => action.startsWith("/")));
   assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /assign workers|view workers|automations/i);
 });
 

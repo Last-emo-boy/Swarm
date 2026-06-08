@@ -203,7 +203,7 @@ function threadFromSession(session: WorkBoardSession, input: Parameters<typeof s
     changedFiles: input.changedFiles.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: session.next_action ? [session.next_action] : ["/continue", "/work board", "/view activity"]
+    actions: session.next_action ? [session.next_action] : ["Continue work", "Review progress", "Check activity"]
   };
 }
 
@@ -230,7 +230,7 @@ function threadFromTask(task: WorkBoardTask, input: Parameters<typeof selectThre
     changedFiles: task.file_scope.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: task.recovery ? [task.recovery] : ["/continue", "/view output", "/view workers"]
+    actions: task.recovery ? [task.recovery] : ["Continue task", "Open result", "Review teammates"]
   };
 }
 
@@ -255,7 +255,7 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
     changedFiles: worker.trajectory?.changed_files.slice(0, 5) ?? worker.file_scope.slice(0, 5),
     checks: worker.trajectory?.checks.slice(0, 5) ?? [],
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: worker.recovery ? [worker.recovery] : [worker.resume_command ?? "/view workers"]
+    actions: worker.recovery ? [worker.recovery] : [worker.resume_command ? "Continue teammate" : "Review teammate"]
   };
 }
 
@@ -275,7 +275,7 @@ function emptyThread(input: Pick<SelectWorkBoardSurfaceInput, "recentMessages">)
     changedFiles: [],
     checks: [],
     comments: input.recentMessages?.slice(-3).map((message) => `${message.role}: ${message.brief}`) ?? [],
-    actions: ["/review", "/plan"]
+    actions: ["Review this workspace", "Plan a change"]
   };
 }
 
