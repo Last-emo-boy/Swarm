@@ -355,7 +355,8 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
         severity: "info",
         retryable: true,
         summary: "Prompt cache prefix changed.",
-        nextAction: "Keep stable system text and tool schemas unchanged."
+        nextAction: "Keep stable system text and tool schemas unchanged.",
+        commandHint: "swarm doctor"
       }],
       artifacts: [],
       next: ["/debug latest"]
@@ -368,8 +369,9 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   assert.match(text, /Recovery\s+Tool action file\.edit failed\./);
   assert.match(text, /Risk\s+high: tool action failed/);
   assert.match(text, /Next: Run file\.grep for a unique oldText, then retry file\.edit\./);
-  assert.match(text, /Try: file\.grep/);
+  assert.doesNotMatch(text, /Try: file\.grep/);
   assert.match(text, /Prompt cache prefix changed\./);
+  assert.match(text, /Try: swarm doctor/);
   assert.doesNotMatch(text, /\[tool\/warning\/retry\]|\[cache\/info\/retry\]|Hint:/);
 
   const compact = renderTuiToFrame(React.createElement(ProductResultCard, {

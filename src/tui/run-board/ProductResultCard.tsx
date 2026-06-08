@@ -226,11 +226,26 @@ function RecoveryLines(props: {
 }
 
 function formatProductRecovery(advice: RecoveryAdvice): string {
+  const commandHint = visibleRecoveryCommandHint(advice);
   return [
     advice.summary,
     `Next: ${advice.nextAction}`,
-    advice.commandHint ? `Try: ${advice.commandHint}` : undefined
+    commandHint ? `Try: ${commandHint}` : undefined
   ].filter(Boolean).join(" ");
+}
+
+function visibleRecoveryCommandHint(advice: RecoveryAdvice): string | undefined {
+  const command = advice.commandHint?.trim();
+  if (!command) {
+    return undefined;
+  }
+  return normalizedRecoveryText(advice.nextAction).includes(normalizedRecoveryText(command))
+    ? undefined
+    : command;
+}
+
+function normalizedRecoveryText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function recoveryTone(advice: RecoveryAdvice): SemanticTextSpan["color"] {
