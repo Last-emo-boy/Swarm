@@ -91,7 +91,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.doesNotMatch(plain, /\+\d/);
   assert.match(plain, /NEXT rerun focused tests/);
   assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);
-  assert.match(plain, /CACHE cache:cache_hit hit 64%, write 12%/);
+  assert.doesNotMatch(plain, /CACHE|cache:cache_hit|hit 64%/);
 });
 
 test("ResultCard renders collapsed and expanded decision trail", () => {
@@ -212,9 +212,7 @@ test("ResultCard colors section labels and status badges without tinting values"
   assert.doesNotMatch(frameText(frame), /\[OK\] node --import tsx --test/);
   assert.equal(colorAtText(frame, "REVIEW"), resolveTuiColor("status.warning"));
   assert.equal(colorAtText(frame, "[WARN]"), resolveTuiColor("status.warning"));
-  assert.equal(colorAtText(frame, "CACHE"), resolveTuiColor("status.success"));
-  assert.equal(colorAtText(frame, "cache"), resolveTuiColor("status.success"));
-  assert.equal(colorAtText(frame, "hit 64%"), resolveTuiColor("text.primary"));
+  assert.doesNotMatch(frameText(frame), /CACHE|cache:cache_hit|hit 64%/);
   assert.equal(colorAtText(frame, "ARTIFACTS"), resolveTuiColor("text.primary"));
   assert.doesNotMatch(frameText(frame), /artifact\s+E:\/Playground\/Swarm\/\.swarm\/reports\/check\.report\.json/);
 });

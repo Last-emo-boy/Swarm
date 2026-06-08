@@ -1,10 +1,8 @@
 import React from "react";
 import { Box, Text } from "../ui.js";
 import type { ResultCard as ResultCardData } from "../../runtime/result-card.js";
-import { formatPromptCacheInline } from "../../runtime/prompt-cache-status.js";
 import { formatRecoveryAdviceInline } from "../../runtime/recovery.js";
 import {
-  cacheOutcomeTone,
   checkStatusTone,
   compactValue,
   resultSectionToken,
@@ -98,13 +96,6 @@ export function ResultCard(props: {
           tone={card.checkpoint.revertAvailable ? "running" : "warning"}
           value={`${compactValue(card.checkpoint.name, 40)} ${card.checkpoint.mode}`}
           meta={card.checkpoint.revertAvailable ? "rollback /revert last" : "rollback locked"}
-        />
-      )}
-      {card.cache && (
-        <SectionLine
-          section="cache"
-          tone={cacheOutcomeTone(card.cache.status)}
-          value={formatPromptCacheInline(card.cache) ?? card.cache.status}
         />
       )}
       {props.detailHint ? (
