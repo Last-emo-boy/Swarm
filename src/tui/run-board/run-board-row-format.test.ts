@@ -59,3 +59,22 @@ test("attention and result preview formatters keep recommendation visible", () =
   assert(formatAttentionItem(attention, 80).some((line) => /recommend/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => displayWidth(line) <= 80));
 });
+
+test("result preview formatter keeps empty state quiet", () => {
+  const preview: ResultPreview = {
+    status: "empty",
+    summary: "Waiting for your first task.",
+    changedFiles: [],
+    checks: [],
+    artifacts: [],
+    blockers: [],
+    confidence: "low",
+    contributors: [],
+    risks: [],
+    nextActions: []
+  };
+
+  const lines = formatResultPreview(preview, 80);
+  assert.deepEqual(lines, ["Result Preview: Waiting for your first task."]);
+  assert(lines.every((line) => displayWidth(line) <= 80));
+});

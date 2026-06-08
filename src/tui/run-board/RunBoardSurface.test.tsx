@@ -82,6 +82,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /repo: Swarm/);
   assert.match(text, /mode: auto/);
   assert.match(text, /risk: workspace-write/);
+  assert.match(text, /Phase\s+waiting-attention/);
   assert.match(text, /Focus\s+Test Runner/);
   assert.match(text, /TEAM ACTIVITY/);
   assert.match(text, /Test Runner/);
@@ -103,6 +104,7 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
   const text = frameText(frame);
 
   assert.match(text, /Waiting for your first task\./);
+  assert.doesNotMatch(text, /Phase\s+idle/);
   assert.doesNotMatch(text, /TEAM ACTIVITY/);
   assert.doesNotMatch(text, /No workers yet/);
   assert.doesNotMatch(text, /\[Team 0\]/);
