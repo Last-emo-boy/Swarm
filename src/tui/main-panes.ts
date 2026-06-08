@@ -7,27 +7,27 @@ export const mainPaneOrder: MainPaneId[] = ["chat", "plan", "board", "trace"];
 export const mainPaneLabels: Record<MainPaneId, string> = {
   chat: "Chat",
   plan: "Result",
-  board: "Observatory",
+  board: "Details",
   sessions: "Tasks",
   workers: "Team",
   activity: "Activity",
   output: "Output",
   skills: "Skills",
   automations: "Automations",
-  trace: "Debug"
+  trace: "Logs"
 };
 
 export const mainPaneShortLabels: Record<MainPaneId, string> = {
   chat: "Chat",
   plan: "Res",
-  board: "Obs",
+  board: "Det",
   sessions: "Task",
   workers: "Team",
   activity: "Act",
   output: "Out",
   skills: "Skl",
   automations: "Auto",
-  trace: "Dbg"
+  trace: "Log"
 };
 
 const mainPaneAliases: Record<string, MainPaneId> = {
@@ -35,6 +35,9 @@ const mainPaneAliases: Record<string, MainPaneId> = {
   attempts: "trace",
   automation: "automations",
   blackboard: "board",
+  debug: "trace",
+  detail: "board",
+  details: "board",
   inspect: "board",
   observatory: "board",
   overview: "board",
@@ -45,6 +48,7 @@ const mainPaneAliases: Record<string, MainPaneId> = {
   task: "sessions",
   tasks: "sessions",
   log: "trace",
+  logs: "trace",
   symphony: "automations"
 };
 

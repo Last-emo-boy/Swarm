@@ -46,8 +46,9 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
     assert.match(initialScreen, /Ask Swarm/);
     assert.match(initialScreen, /Chat/);
     assert.match(initialScreen, /Result/);
-    assert.match(initialScreen, /Observatory/);
-    assert.match(initialScreen, /Debug/);
+    assert.match(initialScreen, /Details/);
+    assert.match(initialScreen, /Logs/);
+    assert.doesNotMatch(initialScreen, /Observatory|Debug/);
     assert.match(initialScreen, /Helpers: 0/);
     assert.doesNotMatch(initialScreen, /Tasks \[|Team \[|Activity \[|Output \[|Skills \[|Automations \[/);
     assert.doesNotMatch(initialScreen, /Workers:|Skills \d+ ready|Automations/);

@@ -834,14 +834,14 @@ test("main pane order uses product navigation and keeps legacy aliases routable"
   assert.deepEqual(mainPaneOrder, ["chat", "plan", "board", "trace"]);
   assert.equal(mainPaneOrder[0], "chat");
   assert.deepEqual(allMainPaneIds, ["chat", "plan", "board", "sessions", "workers", "activity", "output", "skills", "automations", "trace"]);
-  assert.equal(mainPaneLabels.board, "Observatory");
+  assert.equal(mainPaneLabels.board, "Details");
   assert.equal(mainPaneLabels.sessions, "Tasks");
   assert.equal(mainPaneLabels.workers, "Team");
   assert.equal(mainPaneLabels.activity, "Activity");
   assert.equal(mainPaneLabels.output, "Output");
   assert.equal(mainPaneLabels.skills, "Skills");
   assert.equal(mainPaneLabels.automations, "Automations");
-  assert.equal(mainPaneLabels.trace, "Debug");
+  assert.equal(mainPaneLabels.trace, "Logs");
   assert.equal(mainPaneLabels.chat, "Chat");
   assert.equal(mainPaneLabels.plan, "Result");
   assert.equal(normalizeMainPaneId("overview"), "board");
@@ -854,6 +854,9 @@ test("main pane order uses product navigation and keeps legacy aliases routable"
   assert.equal(normalizeMainPaneId("report"), "plan");
   assert.equal(normalizeMainPaneId("attempts"), "trace");
   assert.equal(normalizeMainPaneId("blackboard"), "board");
+  assert.equal(normalizeMainPaneId("details"), "board");
+  assert.equal(normalizeMainPaneId("logs"), "trace");
+  assert.equal(normalizeMainPaneId("debug"), "trace");
   assert.equal(normalizeMainPaneId("observatory"), "board");
   assert.equal(normalizeMainPaneId("inspect"), "board");
 });

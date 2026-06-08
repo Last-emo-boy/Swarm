@@ -131,8 +131,8 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
     navigation: [
       { id: "chat", label: "Chat", shortcut: "1", active: false },
       { id: "plan", label: "Result", shortcut: "2", active: true },
-      { id: "board", label: "Observatory", shortcut: "3", active: false },
-      { id: "trace", label: "Debug", shortcut: "4", active: false }
+      { id: "board", label: "Details", shortcut: "3", active: false },
+      { id: "trace", label: "Logs", shortcut: "4", active: false }
     ],
     sessions: [
       { id: "session-workbench-visual", title: "TUI workbench polish", age: "now", status: "running", active: true },

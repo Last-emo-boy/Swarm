@@ -221,8 +221,8 @@ function navigationFixture(): SwarmWorkbenchNavigationItem[] {
   return [
     { id: "chat", label: "Chat", shortcut: "1", active: true },
     { id: "result", label: "Result", shortcut: "2" },
-    { id: "observatory", label: "Observatory", shortcut: "3" },
-    { id: "debug", label: "Debug", shortcut: "4" }
+    { id: "observatory", label: "Details", shortcut: "3" },
+    { id: "debug", label: "Logs", shortcut: "4" }
   ];
 }
 
