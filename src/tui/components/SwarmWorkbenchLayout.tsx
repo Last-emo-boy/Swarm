@@ -670,7 +670,6 @@ function SectionHeader({ title, width }: { title: string; width: number }): Reac
   return (
     <Text wrap="truncate">
       <Text color={visualTokenColor("brand.focus")} bold>{label}</Text>
-      <Text color={visualTokenColor("surface.line")}>{sectionRule(label, width)}</Text>
     </Text>
   );
 }
@@ -721,11 +720,6 @@ function clampDimension(value: number, min: number, max: number): number {
 
 function fitText(value: string, columns: number): string {
   return fitToDisplayWidth(value, Math.max(1, Math.floor(columns)));
-}
-
-function sectionRule(title: string, columns: number): string {
-  const width = Math.max(0, Math.floor(columns) - displayWidth(title) - 1);
-  return width > 0 ? ` ${"-".repeat(width)}` : "";
 }
 
 function fixedTag(value: string): string {

@@ -51,6 +51,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /●/);
   assert.doesNotMatch(text, /Inbox/);
   assert.match(text, /Cases/);
+  assert.doesNotMatch(text, /Cases -/);
   assert.doesNotMatch(text, /Workspace -/);
   assert.doesNotMatch(text, /Navigation/);
   assert.doesNotMatch(text, /View all cases/);
@@ -402,7 +403,8 @@ test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible",
   assert.match(text, /YOLO/);
   assert.match(text, /Workspace/);
   assert.match(text, /Read Only/);
-  assert.match(text, /Agent -/);
+  assert.match(text, /Agent/);
+  assert.doesNotMatch(text, /Agent -/);
   assert.match(text, /Model setup needed/);
 });
 
