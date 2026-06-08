@@ -38,7 +38,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     }
     if (viewport.columns >= 132) {
       assert.match(text, /Status/);
-      assert.match(text, /Active helpers/);
+      assert.doesNotMatch(text, /Active helpers/);
       assert.doesNotMatch(text, /Tools/);
       assert.match(text, /ACTION LOG/);
       assert.doesNotMatch(text, /Mode|Plan & Execute|Workspace Write|Provider: openai|kimi-k2\.6/);

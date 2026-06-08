@@ -592,7 +592,7 @@ function workbenchCardToken(card: SwarmWorkbenchInfoCard): string {
 
 function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]; width: number }): React.ReactElement {
   return (
-    <SidebarSection title="Active helpers" width={width} marginTop={0}>
+    <Box width="100%" flexDirection="column" marginTop={0} overflow="hidden">
       {workers.slice(0, 3).map((worker) => (
         <Text key={worker.id} wrap="truncate">
           <Text color={resolveTuiColor(worker.tone ?? "role.worker")}># </Text>
@@ -600,7 +600,7 @@ function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]
           <Text color={resolveTuiColor(worker.tone ?? "text.muted")}>  {workerStatusLabel(worker.status)}</Text>
         </Text>
       ))}
-    </SidebarSection>
+    </Box>
   );
 }
 
