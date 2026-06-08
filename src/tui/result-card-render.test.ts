@@ -81,6 +81,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.match(plain, /SUMMARY Verification failed after TUI polish\./);
   assert.match(plain, /CHANGED src\/tui\/components\/ResultCard\.tsx/);
   assert.match(plain, /CHECKS npm run check failed \[ERR\]/);
+  assert.doesNotMatch(plain, /result-card-render\.test\.tsx \[OK\]|npm run lint|npm run typecheck/);
   assert.match(plain, /REVIEW \[WARN\] Review found a narrow viewport risk\./);
   assert.match(plain, /RISKS high: One verification check failed\./);
   assert.match(plain, /RECOVERY \[provider_rate_limit\/warning\/retry\]/);
@@ -124,6 +125,8 @@ test("ResultCard renders collapsed and expanded decision trail", () => {
   }), { columns: 100, rows: 16 }));
 
   assert.match(collapsed, /WHY Decisions/);
+  assert.match(collapsed, /CHECKS Passed/);
+  assert.doesNotMatch(collapsed, /CHECKS npm run check|\[OK\] npm run check/);
   assert.doesNotMatch(collapsed, /Objective adopted|Code Worker owns patch/);
   assert.doesNotMatch(collapsed, /TRAIL 5 sections|Ctrl\+O details|split: Objective adopted/);
   assert.doesNotMatch(collapsed, /risk: low: narrow change/);
@@ -202,7 +205,7 @@ test("ResultCard colors section labels and status badges without tinting values"
   assert.equal(colorAtText(frame, "CHECKS"), resolveTuiColor("status.danger"));
   assert.equal(colorAtText(frame, "npm run check failed"), resolveTuiColor("text.primary"));
   assert.equal(colorAtText(frame, "[ERR]"), resolveTuiColor("status.danger"));
-  assert.equal(colorAtText(frame, "[OK]"), resolveTuiColor("status.success"));
+  assert.doesNotMatch(frameText(frame), /\[OK\] node --import tsx --test/);
   assert.equal(colorAtText(frame, "REVIEW"), resolveTuiColor("status.warning"));
   assert.equal(colorAtText(frame, "[WARN]"), resolveTuiColor("status.warning"));
   assert.equal(colorAtText(frame, "CACHE"), resolveTuiColor("status.success"));

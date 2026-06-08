@@ -36,17 +36,13 @@ export function ResultCard(props: {
     );
   }
   const card = props.card;
-  const failedChecks = card.checks.filter((check) => check.status === "failed");
-  const visibleChecks = [
-    ...failedChecks,
-    ...card.checks.filter((check) => check.status !== "failed")
-  ].slice(0, 3);
   const visibleRisks = [
     ...card.risks.filter((risk) => risk.level === "high"),
     ...card.risks.filter((risk) => risk.level !== "high")
   ].slice(0, 2);
   const visibleRecovery = (card.recovery ?? []).slice(0, 2);
   const density = props.density ?? "default";
+  const checkSummary = resultCardCheckSummary(card.checks, density === "compact" ? 2 : 3);
   const visibleArtifacts = card.artifacts.slice(0, density === "compact" ? 1 : 2);
   return (
     <Box flexDirection="column" width="100%">
@@ -66,7 +62,7 @@ export function ResultCard(props: {
       <SectionLine
         section="checks"
         tone={card.checks.some((check) => check.status === "failed") ? "danger" : card.checks.length ? "success" : "muted"}
-        value={visibleChecks.length ? visibleChecks.slice(0, density === "compact" ? 2 : visibleChecks.length).map((check) => `${compactValue(check.command, 36)} ${statusIconText(check.status, "badge")}`).join(", ") : "none"}
+        value={checkSummary ?? "none"}
       />
       <SectionLine
         section="review"
@@ -189,6 +185,25 @@ function decisionTrailSectionLabel(section: "split" | "assign" | "verify" | "dec
   if (section === "verify") return "CHECK";
   if (section === "decide") return "DECISION";
   return "RISK";
+}
+
+function resultCardCheckSummary(checks: ResultCardData["checks"], limit: number): string | undefined {
+  if (!checks.length) {
+    return undefined;
+  }
+  const failed = checks.filter((check) => check.status === "failed");
+  if (failed.length) {
+    return failed.slice(0, limit).map((check) => `${compactValue(check.command, 36)} ${statusIconText(check.status, "badge")}`).join(", ");
+  }
+  const skipped = checks.filter((check) => check.status === "skipped");
+  if (skipped.length === checks.length) {
+    return "Skipped";
+  }
+  const passed = checks.some((check) => check.status === "passed");
+  if (passed) {
+    return skipped.length ? "Passed; some skipped" : "Passed";
+  }
+  return "Pending";
 }
 
 function SectionLine(props: {
