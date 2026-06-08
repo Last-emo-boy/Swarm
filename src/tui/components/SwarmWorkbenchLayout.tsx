@@ -625,7 +625,6 @@ function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]
     <Box width="100%" flexDirection="column" marginTop={0} overflow="hidden">
       {workers.slice(0, 3).map((worker) => (
         <Text key={worker.id} wrap="truncate">
-          <Text color={resolveTuiColor(worker.tone ?? "role.worker")}># </Text>
           <Text>{fitText(worker.label, Math.max(8, width - 16))}</Text>
           <Text color={resolveTuiColor(worker.tone ?? "text.muted")}>  {workerStatusLabel(worker.status)}</Text>
         </Text>
