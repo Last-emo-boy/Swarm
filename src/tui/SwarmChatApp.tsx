@@ -3973,7 +3973,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     tone: selectedModel === "unset" ? "status.pending" : "role.gateway"
   } satisfies React.ComponentProps<typeof SwarmWorkbenchLayout>["model"];
   const workbenchFooterHint = mainPane === "board"
-    ? "Reply to selected case  /continue  /case  /view chat  /view workers  Ctrl+O details"
+    ? "Reply or start the next task  Ctrl+O details"
     : chatFooterHint;
   const workbenchSubtitle = mainPane === "board"
     ? caseWorkbenchSubtitle(selectedCase, caseWorkbench?.summary.inbox ?? 0, workBoardSurface.subtitle)
@@ -3989,7 +3989,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const workbenchHeaderDetail = busy
     ? currentAction
     : mainPane === "board"
-      ? selectedCase?.next_action ?? "Cases are the workbench source of truth. Chat below coordinates the selected case."
+      ? selectedCase?.next_action ?? "Open work stays here. Reply below to steer the selected task."
       : "Waiting for your first task.";
   const workbenchCurrentAction = showCurrentAction ? (
     <CurrentActionRow
@@ -4018,9 +4018,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         onCompletionStateChange={setChatCompletion}
         controllerStateRef={chatInputState}
         extraCommands={extensionCommandCandidates}
-        promptLabel={mainPane === "board" ? "case" : routeBadge(routeLabel).toLowerCase()}
+        promptLabel={mainPane === "board" ? "reply" : routeBadge(routeLabel).toLowerCase()}
         sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
-        placeholder={mainPane === "board" ? "Reply to selected case or create the next case" : undefined}
+        placeholder={mainPane === "board" ? "Reply or start the next task" : undefined}
         footerHint={workbenchFooterHint}
         footerActivityLabel={transcriptSearch.active ? "search" : undefined}
         footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}

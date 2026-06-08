@@ -27,7 +27,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
     version: "0.1.0",
     title: "Board",
     subtitle: "1 active tasks · 1 workers · 0 approvals",
-    headerDetail: "Cases are the workbench source of truth.",
+    headerDetail: "Open work stays here. Reply below to steer the selected task.",
     workspace: { path: "Swarm", git: "lease: workspace; E:/Playground/Swarm", status: "active" },
     navigation: navigationFixture(),
     sessions: sessionFixture(),
