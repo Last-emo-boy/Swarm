@@ -2792,8 +2792,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const rows = runtime.listBlackboardEntries(sessionId, query).slice(0, 80);
       const detail = rows.length
         ? rows.map(formatBlackboardEntry).join("\n\n")
-        : "No blackboard entries matched.";
-      return { brief: appendDetailShortcut(`${rows.length} blackboard entries${sessionId ? ` for ${sessionId}` : ""}`), detail };
+        : "No shared facts matched.";
+      return { brief: appendDetailShortcut(`${rows.length} shared facts${sessionId ? ` for ${sessionId}` : ""}`), detail };
     }
 
     if (command === "capabilities") {
