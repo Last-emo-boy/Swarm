@@ -438,7 +438,10 @@ function NavigationList({
 
 function isVisibleWorkbenchNavigationItem(item: SwarmWorkbenchNavigationItem): boolean {
   const label = item.label.trim().toLowerCase();
-  return item.active || label !== "logs";
+  if (item.active) {
+    return true;
+  }
+  return label === "result";
 }
 
 function NavigationRow({
