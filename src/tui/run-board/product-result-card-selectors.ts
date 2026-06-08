@@ -93,7 +93,7 @@ export function productResultCardViewFromParts(input: {
   return {
     status: productStatus(card.status),
     runtimeStatus: card.status,
-    title: "Result Report",
+    title: "Result",
     objective: input.objective,
     sessionId: card.sessionId,
     summary: card.summary,
