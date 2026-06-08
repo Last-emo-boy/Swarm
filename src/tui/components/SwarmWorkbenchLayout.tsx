@@ -457,12 +457,17 @@ function visibleCenterHeaderSubtitle(value: string): string | undefined {
   const segments = subtitle.split(/\s*·\s*/u);
   const visibleSegments = segments
     .filter((segment) => !isZeroCountHeaderSegment(segment))
+    .filter((segment) => !isRoutineHeaderCountSegment(segment))
     .map(normalizeHeaderCountSegment);
   return visibleSegments.length ? visibleSegments.join(" · ") : undefined;
 }
 
 function isZeroCountHeaderSegment(value: string): boolean {
   return /^0\s+[\p{L}\p{N}_-]+/iu.test(value.trim());
+}
+
+function isRoutineHeaderCountSegment(value: string): boolean {
+  return /^\d+\s+(workers?|helpers?)$/iu.test(value.trim());
 }
 
 function normalizeHeaderCountSegment(value: string): string {
