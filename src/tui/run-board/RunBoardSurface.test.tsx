@@ -82,7 +82,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /workspace: Swarm/);
   assert.doesNotMatch(text, /mode: auto/);
   assert.doesNotMatch(text, /risk: workspace-write/);
-  assert.match(text, /Status\s+Needs you/);
+  assert.doesNotMatch(text, /Status\s+Needs you/);
   assert.doesNotMatch(text, /waiting-attention/);
   assert.match(text, /Focus\s+Test Runner/);
   assert.match(text, /PROGRESS/);
@@ -129,6 +129,7 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     assert.doesNotMatch(text, /SWARM OBSERVATORY/);
     assert.match(text, /PROGRESS/);
     assert.match(text, /NEEDS YOU/);
+    assert.doesNotMatch(text, /Status\s+Needs you/);
     assert.match(text, /RESULT/);
     assert.doesNotMatch(text, /RESULT PREVIEW/);
     assert.doesNotMatch(text, /\[Helpers 1\]/);

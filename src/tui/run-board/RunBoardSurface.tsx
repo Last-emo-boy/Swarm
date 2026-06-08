@@ -21,7 +21,7 @@ export function RunBoardSurface(props: {
     <Box flexDirection="column" width="100%">
       <RunBoardPanel title={view.title === "Swarm Board" ? "Work" : view.title}>
         {view.objective ? <HeaderObjectiveLine view={view} /> : <SwarmBoardMetaLine view={view} />}
-        {view.phase !== "idle" ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Status     {phaseDisplayLabel(view.phase)}</Text> : null}
+        {shouldShowPhaseLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Status     {phaseDisplayLabel(view.phase)}</Text> : null}
         {view.focus ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
       </RunBoardPanel>
       <WorkerBoard
@@ -76,6 +76,13 @@ function SwarmBoardMetaLine(props: { view: RunBoardSurfaceView }): React.ReactEl
 function headerMetaText(view: RunBoardSurfaceView): string {
   const meta = view.meta;
   return meta?.repo ? `workspace: ${meta.repo}` : "";
+}
+
+function shouldShowPhaseLine(view: RunBoardSurfaceView): boolean {
+  if (view.phase === "idle") {
+    return false;
+  }
+  return !(view.phase === "waiting-attention" && view.attention.length > 0);
 }
 
 function phaseDisplayLabel(phase: RunBoardSurfaceView["phase"]): string {
