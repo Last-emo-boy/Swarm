@@ -274,7 +274,7 @@ function TeamReasoningLines(props: {
   return (
     <React.Fragment>
       <ResultLine
-        label="Evidence"
+        label="Details"
         value={`${items.length} items. Show details`}
         tone="text.muted"
         onClick={props.onToggle}
@@ -289,7 +289,7 @@ function TeamReasoningLines(props: {
         />
       ))}
       {props.expanded && items.length > visible.length ? (
-        <ResultLine label="" value={`+${items.length - visible.length} more evidence items`} tone="text.muted" onClick={props.onToggle} />
+        <ResultLine label="" value={`+${items.length - visible.length} more details`} tone="text.muted" onClick={props.onToggle} />
       ) : null}
     </React.Fragment>
   );
