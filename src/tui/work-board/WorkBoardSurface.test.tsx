@@ -48,8 +48,8 @@ test("WorkBoardSurface keeps the empty work view quiet", () => {
 
   assert.match(text, /WORK/);
   assert.doesNotMatch(text, /OBSERVATORY/);
-  assert.match(text, /Nothing to review yet\./);
-  assert.match(text, /details appear here when work needs inspection/i);
+  assert.match(text, /Ready when work needs review\./);
+  assert.doesNotMatch(text, /Nothing to review yet|Type an objective below|details appear here/i);
   assert.doesNotMatch(text, /0 active tasks|0 workers|0 approvals|team activity|blockers|checks|delivery evidence|activity:/i);
 });
 

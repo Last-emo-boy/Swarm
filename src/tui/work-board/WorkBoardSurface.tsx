@@ -21,8 +21,6 @@ export function WorkBoardSurface({
     return (
       <Box flexDirection="column" width="100%" height={safeRows} overflow="hidden">
         <BoardHeader view={view} columns={safeColumns} />
-        <Text color={visualTokenColor("text.primary")}>Nothing to review yet.</Text>
-        <Text color={visualTokenColor("text.muted")}>Type an objective below; details appear here when work needs inspection.</Text>
       </Box>
     );
   }
@@ -54,7 +52,7 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
     <Box flexDirection="column" width="100%" overflow="hidden">
       <Text wrap="truncate">
         <Text color={visualTokenColor("brand.focus")} bold>{fit("WORK", 16)}</Text>
-        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? "Quiet until there is work to inspect." : view.subtitle), Math.max(10, columns - 18))}</Text>
+        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? "Ready when work needs review." : view.subtitle), Math.max(10, columns - 18))}</Text>
       </Text>
       {view.summary.activity[0] ? (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
