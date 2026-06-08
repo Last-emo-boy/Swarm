@@ -52,6 +52,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /Cases/);
   assert.match(text, /Workspace/);
   assert.match(text, /Navigation/);
+  assert.doesNotMatch(text, /View all cases/);
   assert.match(text, /> Chat \[1\]/);
   assert.match(text, /Result \[2\]/);
   assert.match(text, /# Board/);
@@ -103,6 +104,37 @@ test("SwarmWorkbenchLayout disables side rails on narrow terminals", () => {
   assert.match(text, /Only primary surface/);
   assert.match(text, /Composer/);
   assert.doesNotMatch(text, /Cases/);
+});
+
+test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
+  const frame = renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    subtitle: "Run: Waiting",
+    workspace: { path: "E:/Playground/Swarm" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    activity: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 });
+  const text = frameText(frame);
+
+  assert.match(text, /Inbox/);
+  assert.match(text, /Workspace/);
+  assert.match(text, /Navigation/);
+  assert.doesNotMatch(text, /Cases|\(none\)|View all cases|No checkpoint yet/);
 });
 
 test("SwarmWorkbenchLayout passes actual center dimensions to render props", () => {

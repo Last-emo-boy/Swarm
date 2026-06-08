@@ -277,12 +277,14 @@ function LeftSidebar({
         ))}
       </SidebarSection>
 
-      <SidebarSection title="Cases" width={width}>
-        {sessions.length ? sessions.slice(0, 6).map((session) => (
-          <CaseRow key={session.id} session={session} width={width} onSelect={onSelectSession} />
-        )) : <Text color={visualTokenColor("text.muted")}>(none)</Text>}
-        <Text color={visualTokenColor("text.muted")}>... View all cases</Text>
-      </SidebarSection>
+      {sessions.length ? (
+        <SidebarSection title="Cases" width={width}>
+          {sessions.slice(0, 6).map((session) => (
+            <CaseRow key={session.id} session={session} width={width} onSelect={onSelectSession} />
+          ))}
+          {sessions.length > 6 ? <Text color={visualTokenColor("text.muted")}>... View all cases</Text> : null}
+        </SidebarSection>
+      ) : null}
 
       <SidebarSection title="Workspace" width={width}>
         <Text wrap="truncate">
@@ -290,9 +292,11 @@ function LeftSidebar({
           <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
           {workspace.status ? <Text color={visualTokenColor(workspace.path === "no workspace" ? "status.warning" : "status.success")}> *</Text> : null}
         </Text>
-        <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          {workspace.git ?? "No checkpoint yet"}
-        </Text>
+        {workspace.git ? (
+          <Text color={visualTokenColor("text.muted")} wrap="truncate">
+            {workspace.git}
+          </Text>
+        ) : null}
       </SidebarSection>
 
       <SidebarSection title="Navigation" width={width}>
