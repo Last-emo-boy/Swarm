@@ -284,14 +284,14 @@ function LeftSidebar({
         <Text color={visualTokenColor("text.muted")}>... View all cases</Text>
       </SidebarSection>
 
-      <SidebarSection title="Selected Lease" width={width}>
+      <SidebarSection title="Workspace" width={width}>
         <Text wrap="truncate">
           <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("role.gateway")}>@ </Text>
           <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
           {workspace.status ? <Text color={visualTokenColor(workspace.path === "no workspace" ? "status.warning" : "status.success")}> *</Text> : null}
         </Text>
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          {workspace.git ?? "lease: pending"}
+          {workspace.git ?? "No checkpoint yet"}
         </Text>
       </SidebarSection>
 
@@ -403,6 +403,8 @@ function RightRail({
   tools: SwarmWorkbenchToolItem[];
   workers: SwarmWorkbenchWorkerItem[];
 }): React.ReactElement {
+  const compact = height < 36;
+  const visibleTools = tools.filter((tool) => tool.active);
   return (
     <ThemedBox
       width={width}
@@ -413,14 +415,13 @@ function RightRail({
       paddingX={1}
       overflow="hidden"
     >
-      <InfoSection title="Runtime" card={runtime ?? { title: "Local runtime", subtitle: "Connected to this workspace", badge: "READY", tone: "role.gateway" }} width={width} compact={height < 36} />
-      <InfoSection title="Mode" card={mode} width={width} compact={height < 36} />
-      <InfoSection title="Permission" card={permission} width={width} compact={height < 36} />
-      <InfoSection title="Sandbox" card={sandbox} width={width} compact={height < 36} />
-      <WorkerSection workers={workers} width={width} />
-      <InfoSection title="Model" card={model} width={width} compact={height < 36} />
-      <ToolSection tools={tools} width={width} compact={height < 36} />
-      <InfoSection title="Activity Summary" card={activity ?? memory} width={width} compact={height < 36} />
+      <InfoSection title="Status" card={activity ?? runtime ?? memory} width={width} compact={compact} />
+      <InfoSection title="Mode" card={mode} width={width} compact={compact} />
+      <InfoSection title="Access" card={permission} width={width} compact={compact} />
+      <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} />
+      {workers.length ? <WorkerSection workers={workers} width={width} /> : null}
+      <InfoSection title="Agent" card={model} width={width} compact={compact} />
+      {visibleTools.length ? <ToolSection tools={visibleTools} width={width} compact={compact} /> : null}
     </ThemedBox>
   );
 }
@@ -458,7 +459,7 @@ function InfoSection({
 
 function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchToolItem[]; width: number; compact?: boolean }): React.ReactElement {
   return (
-    <SidebarSection title="Skills & Automations" width={width} marginTop={compact ? 0 : 1}>
+    <SidebarSection title="Tools" width={width} marginTop={compact ? 0 : 1}>
       {tools.slice(0, compact ? 4 : 6).map((tool) => (
         <Text key={tool.name} wrap="truncate">
           <Text>{fitText(tool.name, Math.max(8, width - 20))}</Text>
@@ -471,15 +472,14 @@ function ToolSection({ tools, width, compact = false }: { tools: SwarmWorkbenchT
 
 function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]; width: number }): React.ReactElement {
   return (
-    <SidebarSection title="Workers" width={width} marginTop={0}>
-      {workers.length ? workers.slice(0, 3).map((worker) => (
+    <SidebarSection title="Active helpers" width={width} marginTop={0}>
+      {workers.slice(0, 3).map((worker) => (
         <Text key={worker.id} wrap="truncate">
           <Text color={resolveTuiColor(worker.tone ?? "role.worker")}># </Text>
           <Text>{fitText(worker.label, Math.max(8, width - 16))}</Text>
           <Text color={resolveTuiColor(worker.tone ?? "text.muted")}>  {workerStatusLabel(worker.status)}</Text>
         </Text>
-      )) : <Text color={visualTokenColor("text.muted")}>No active workers</Text>}
-      {workers.length === 0 ? <Text color={visualTokenColor("text.muted")}>Open Workers for profiles</Text> : null}
+      ))}
     </SidebarSection>
   );
 }

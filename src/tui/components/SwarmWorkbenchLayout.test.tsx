@@ -51,19 +51,26 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.match(text, /Local Agent Workspace/);
   assert.match(text, /Inbox/);
   assert.match(text, /Cases/);
-  assert.match(text, /Selected Lease/);
+  assert.match(text, /Workspace/);
   assert.match(text, /Navigation/);
-  assert.match(text, /> Board \[1\]/);
-  assert.match(text, /Tasks \[2\]/);
+  assert.match(text, /> Chat \[1\]/);
+  assert.match(text, /Result \[2\]/);
   assert.match(text, /# Board/);
   assert.match(text, /Transcript center/);
-  assert.match(text, /Runtime/);
+  assert.match(text, /Status/);
   assert.match(text, /Mode/);
+  assert.match(text, /Access/);
+  assert.match(text, /Agent/);
   assert.match(text, /\[ACTIVE\s+\]/);
   assert.match(text, /\[RW\s+\]/);
-  assert.match(text, /Skills & Automations/);
-  assert.match(text, /Automations/);
-  assert.match(text, /Activity Summary/);
+  assert.match(text, /Active helpers/);
+  assert.match(text, /Tools/);
+  assert.match(text, /Skills/);
+  assert.doesNotMatch(text, /Runtime/);
+  assert.doesNotMatch(text, /Selected Lease/);
+  assert.doesNotMatch(text, /Tasks \[|Workers \[|Activity \[|Output \[|Automations \[/);
+  assert.doesNotMatch(text, /Skills & Automations/);
+  assert.doesNotMatch(text, /Activity Summary/);
   assert.match(text, /Ask Swarm prompt/);
   assert.match(text, /\/help/);
   assert.match(text, /PgUp\/PgDn scroll/);
@@ -145,7 +152,7 @@ test("SwarmWorkbenchLayout navigation rows are clickable", () => {
     version: "0.1.0",
     title: "Board",
     workspace: { path: "E:/Playground/Swarm" },
-    navigation: navigationFixture(),
+    navigation: advancedNavigationFixture(),
     sessions: sessionFixture(),
     mode: { title: "Plan & Execute" },
     permission: { title: "Ask" },
@@ -212,16 +219,17 @@ test("SwarmWorkbenchLayout case rows are clickable", () => {
 
 function navigationFixture(): SwarmWorkbenchNavigationItem[] {
   return [
-    { id: "board", label: "Board", shortcut: "1", active: true },
-    { id: "sessions", label: "Tasks", shortcut: "2" },
-    { id: "workers", label: "Workers", shortcut: "3" },
-    { id: "activity", label: "Activity", shortcut: "4" },
-    { id: "output", label: "Output", shortcut: "5" },
-    { id: "skills", label: "Skills", shortcut: "6" },
-    { id: "automations", label: "Automations", shortcut: "7" },
-    { id: "trace", label: "Trace", shortcut: "8" },
-    { id: "chat", label: "Chat", shortcut: "9" },
-    { id: "plan", label: "Run", shortcut: "0" }
+    { id: "chat", label: "Chat", shortcut: "1", active: true },
+    { id: "result", label: "Result", shortcut: "2" },
+    { id: "observatory", label: "Observatory", shortcut: "3" },
+    { id: "debug", label: "Debug", shortcut: "4" }
+  ];
+}
+
+function advancedNavigationFixture(): SwarmWorkbenchNavigationItem[] {
+  return [
+    ...navigationFixture(),
+    { id: "trace", label: "Trace", shortcut: "8" }
   ];
 }
 
