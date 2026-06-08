@@ -66,7 +66,7 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Show the unified Swarm, Work Kernel, and Symphony status view.", aliases: ["status"], completionPriority: 30 },
   { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"], completionPriority: 80 },
   { name: "changes", group: "Kernel", usage: "/changes [session_id]", description: "Show recorded workspace changes." },
-  { name: "blackboard", group: "Kernel", usage: "/blackboard [session_id] [tag:<tag>|type:<type>|key:<prefix>|agent:<id>|task:<id>]", description: "Query shared board facts." },
+  { name: "blackboard", group: "Kernel", usage: "/blackboard [session_id] [tag:<tag>|type:<type>|key:<prefix>|agent:<id>|task:<id>]", description: "Query shared facts." },
   { name: "session", group: "Kernel", usage: "/session [session_id|new]", description: "Inspect sessions or start a fresh TUI chat state.", completionPriority: 60 },
   { name: "memory", group: "Kernel", usage: "/memory [session_id]", description: "Show remembered session context and resume freshness.", completionPriority: 65 },
   { name: "resume", group: "Kernel", usage: "/resume [session_id] [message]", description: "Resume the recent local coding-loop session or a stored planned session with a preflight summary.", aliases: ["continue"], completionPriority: 70 },
@@ -192,7 +192,7 @@ const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
   ],
   debug: [
     { name: "trace", group: "Kernel", usage: "/debug trace", description: "Show persisted envelopes.", completionPriority: 10 },
-    { name: "blackboard", group: "Kernel", usage: "/debug blackboard", description: "Query blackboard facts.", completionPriority: 20 },
+    { name: "blackboard", group: "Kernel", usage: "/debug blackboard", description: "Query shared facts.", completionPriority: 20 },
     { name: "audit", group: "Kernel", usage: "/debug audit", description: "List audit records.", completionPriority: 30 },
     { name: "usage", group: "Kernel", usage: "/debug usage", description: "Inspect usage counters.", completionPriority: 40 },
     { name: "cache", group: "Kernel", usage: "/debug cache", description: "Inspect prompt cache status.", completionPriority: 50 },

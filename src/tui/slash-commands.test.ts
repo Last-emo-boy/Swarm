@@ -20,6 +20,7 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("view")?.group, "Core");
   assert.equal(commands.get("plan")?.usage, "/plan [objective]");
   assert.equal(commands.get("approve")?.usage, "/approve [approval_id] [message]");
+  assert.equal(commands.get("blackboard")?.description, "Query shared facts.");
   assert.equal(commands.get("evals")?.usage, "/evals [--release-gate|--cache-lab|--tui-replay]");
   assert.equal(commands.get("swarm")?.group, "Agents");
   assert.equal(commands.get("swarm")?.usage, "/swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]");
@@ -35,6 +36,8 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon_id\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[session_id\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug blackboard - Query shared facts\./);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /Query blackboard facts|shared board facts/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug timeline \[actor:<id>\|task:<id>\|correlation:<id>\|category:<kind>\]/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/swarm/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <actor_id>/);
