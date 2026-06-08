@@ -90,14 +90,6 @@ export function ResultCard(props: {
           onToggle={props.onDecisionTrailToggle}
         />
       )}
-      {card.checkpoint && (
-        <SectionLine
-          section="checkpoint"
-          tone={card.checkpoint.revertAvailable ? "running" : "warning"}
-          value={`${compactValue(card.checkpoint.name, 40)} ${card.checkpoint.mode}`}
-          meta={card.checkpoint.revertAvailable ? "rollback /revert last" : "rollback locked"}
-        />
-      )}
       {props.detailHint ? (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
           {props.detailHint}

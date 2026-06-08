@@ -90,7 +90,7 @@ test("ResultCard renders sectioned outcome hierarchy with cache and checkpoint d
   assert.doesNotMatch(plain, /⎿ artifact|\.swarm\/reports\/check\.report\.json/);
   assert.doesNotMatch(plain, /\+\d/);
   assert.match(plain, /NEXT rerun focused tests/);
-  assert.match(plain, /CHECKPOINT Before TUI polish snapshot rollback \/revert last/);
+  assert.doesNotMatch(plain, /CHECKPOINT|Before TUI polish|snapshot|rollback \/revert last/);
   assert.doesNotMatch(plain, /CACHE|cache:cache_hit|hit 64%/);
 });
 
