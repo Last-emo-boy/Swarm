@@ -387,6 +387,9 @@ function CaseList({
 }
 
 function attentionLabel(value: number): string {
+  if (value === 1) {
+    return "needs you";
+  }
   return `needs ${value}`;
 }
 

@@ -61,7 +61,8 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /Details/);
   assert.doesNotMatch(text, /Logs/);
   assert.doesNotMatch(text, /Chat \[1\]|Result \[2\]|Details \[3\]|Logs \[4\]/);
-  assert.match(text, /Build workbench 2m needs 1/);
+  assert.match(text, /Build workbench 2m needs you/);
+  assert.doesNotMatch(text, /needs 1/);
   assert.doesNotMatch(text, /!1/);
   assert.doesNotMatch(text, /active Swarm/);
   assert.doesNotMatch(text, /review no workspace/);
@@ -321,7 +322,8 @@ test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {
   }), { columns: 160, rows: 32 });
   const text = frameText(frame);
 
-  assert.match(text, /Routine active .* 1m needs 1/);
+  assert.match(text, /Routine activ.*1m needs you/);
+  assert.doesNotMatch(text, /needs 1/);
   assert.doesNotMatch(text, /!1/);
   assert.doesNotMatch(text, /active Swarm/);
   assert.match(text, /failed release workspace/);
