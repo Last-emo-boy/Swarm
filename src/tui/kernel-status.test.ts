@@ -125,14 +125,16 @@ test("work snapshot formatters expose operator kernel contract detail without In
   assert.match(detail, /Workspace/);
   assert.match(detail, /Runs: 1/);
   assert.match(detail, /Tasks: 1/);
-  assert.match(detail, /Task Contracts: total=1 pending=0 running=1 blocked=0 completed=0 failed=0 ro=0 scoped=1 workspace=0/);
+  assert.match(detail, /Task Detail: total=1 pending=0 running=1 blocked=0 completed=0 failed=0 ro=0 scoped=1 workspace=0/);
   assert.match(detail, /Team: 1/);
-  assert.match(detail, /Work Contracts: running=1 pending=0 active=1 resumable=1 handoffs=1 ro=0 scoped=2 workspace=0/);
+  assert.match(detail, /Team Detail: running=1 pending=0 active=1 resumable=1 handoffs=1 ro=0 scoped=2 workspace=0/);
   assert.match(detail, /handoff-1 \[active\].*policy=scoped_write scope=docs\/PRD.md/);
   assert.match(detail, /Changes: 1/);
   assert.match(detail, /Verification: 1/);
   assert.match(detail, /Review: approve 0.92 - good/);
-  assert.match(detail, /Context Memory/);
+  assert.match(detail, /Shared Facts/);
+  assert.match(detail, /Memory/);
+  assert.doesNotMatch(detail, /Task Contracts|Work Contracts|Context Memory/);
 });
 
 test("compact idle rows prioritize attention states and shorten noisy ids", () => {

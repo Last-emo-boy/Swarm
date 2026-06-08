@@ -54,7 +54,7 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
         ].filter(Boolean).join(" "))
       : ["(none)"]),
     "",
-    `Task Contracts: total=${taskContracts.total} pending=${taskContracts.pending} running=${taskContracts.running} blocked=${taskContracts.blocked} completed=${taskContracts.completed} failed=${taskContracts.failed} ro=${taskContracts.read_only} scoped=${taskContracts.scoped_write} workspace=${taskContracts.workspace_write}`,
+    `Task Detail: total=${taskContracts.total} pending=${taskContracts.pending} running=${taskContracts.running} blocked=${taskContracts.blocked} completed=${taskContracts.completed} failed=${taskContracts.failed} ro=${taskContracts.read_only} scoped=${taskContracts.scoped_write} workspace=${taskContracts.workspace_write}`,
     ...(snapshot.task_contracts.tasks.length
       ? snapshot.task_contracts.tasks.map((task) => [
           `${task.task_id} [${task.status}] #${task.attempt}`,
@@ -71,7 +71,7 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
       ? snapshot.workers.map((worker) => formatWorkerBrief(worker as Parameters<typeof formatWorkerBrief>[0]))
       : ["(none)"]),
     "",
-    `Work Contracts: running=${contracts.running_workers} pending=${contracts.pending_workers} active=${contracts.active_workers} resumable=${contracts.resumable_workers} handoffs=${contracts.active_handoffs} ro=${contracts.read_only} scoped=${contracts.scoped_write} workspace=${contracts.workspace_write}`,
+    `Team Detail: running=${contracts.running_workers} pending=${contracts.pending_workers} active=${contracts.active_workers} resumable=${contracts.resumable_workers} handoffs=${contracts.active_handoffs} ro=${contracts.read_only} scoped=${contracts.scoped_write} workspace=${contracts.workspace_write}`,
     ...(snapshot.work_contracts.active_workers.length
       ? snapshot.work_contracts.active_workers.map((worker) => [
           `${worker.worker_id} [${worker.status}]`,
@@ -106,13 +106,13 @@ export function formatWorkSnapshot(snapshot: WorkSnapshot): string {
     "",
     `Review: ${snapshot.review ? `${snapshot.review.verdict} ${snapshot.review.score} - ${snapshot.review.summary}` : "(none)"}`,
     "",
-    "Board",
+    "Shared Facts",
     JSON.stringify(snapshot.blackboard_counts, null, 2),
     "",
     "Usage",
     JSON.stringify(snapshot.usage_summary, null, 2),
     "",
-    "Context Memory",
+    "Memory",
     snapshot.context_summary ? JSON.stringify(snapshot.context_summary, null, 2) : "(none)",
     "",
     `Final: ${snapshot.final_outcome?.final_summary ?? "(none)"}`
