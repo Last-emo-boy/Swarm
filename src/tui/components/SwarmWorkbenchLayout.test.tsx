@@ -51,7 +51,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /●/);
   assert.match(text, /Inbox/);
   assert.match(text, /Cases/);
-  assert.match(text, /Workspace/);
+  assert.doesNotMatch(text, /Workspace -/);
   assert.match(text, /Navigation/);
   assert.doesNotMatch(text, /View all cases/);
   assert.match(text, /> Chat \[1\]/);
@@ -201,9 +201,8 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
   const text = frameText(frame);
 
   assert.match(text, /Inbox/);
-  assert.match(text, /Workspace/);
   assert.match(text, /Navigation/);
-  assert.doesNotMatch(text, /Cases|\(none\)|View all cases|No checkpoint yet/);
+  assert.doesNotMatch(text, /Workspace -|Cases|\(none\)|View all cases|No checkpoint yet/);
 });
 
 test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facing notes", () => {
@@ -228,6 +227,7 @@ test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facin
     renderCenterBottom: () => React.createElement(Text, null, "Type a request")
   }), { columns: 160, rows: 32 }));
   assert.doesNotMatch(internal, /checkpoint before-polish/);
+  assert.doesNotMatch(internal, /Workspace -/);
 
   const visible = frameText(renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
     columns: 160,
@@ -249,7 +249,31 @@ test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facin
     renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
     renderCenterBottom: () => React.createElement(Text, null, "Type a request")
   }), { columns: 160, rows: 32 }));
+  assert.match(visible, /Workspace/);
   assert.match(visible, /branch main clean/);
+
+  const missing = frameText(renderTuiToFrame(React.createElement(SwarmWorkbenchLayout, {
+    columns: 160,
+    rows: 32,
+    version: "0.1.0",
+    title: "Chat",
+    workspace: { path: "no workspace" },
+    navigation: navigationFixture(),
+    sessions: [],
+    mode: { title: "Plan & Execute" },
+    permission: { title: "Ask" },
+    sandbox: { title: "Workspace Write" },
+    model: { title: "local-test/model" },
+    memory: { title: "Ready" },
+    tools: [],
+    workers: [],
+    footer: footerFixture(),
+    centerBottomRows: 4,
+    renderCenterContent: () => React.createElement(Text, null, "Ask Swarm"),
+    renderCenterBottom: () => React.createElement(Text, null, "Type a request")
+  }), { columns: 160, rows: 32 }));
+  assert.match(missing, /Workspace/);
+  assert.match(missing, /no workspace/);
 });
 
 test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {

@@ -257,6 +257,7 @@ function LeftSidebar({
   onSelectSession?: (id: string) => void;
 }): React.ReactElement {
   const workspaceMeta = visibleWorkspaceMeta(workspace.git);
+  const showWorkspace = isVisibleWorkspaceSection(workspace, workspaceMeta);
   const primaryNavigation = navigation.slice(0, 1);
   const secondaryNavigation = navigation.slice(1);
   return (
@@ -285,18 +286,20 @@ function LeftSidebar({
         </SidebarSection>
       ) : null}
 
-      <SidebarSection title="Workspace" width={width}>
-        <Text wrap="truncate">
-          <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("role.gateway")}>@ </Text>
-          <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
-          {workspace.status ? <Text color={visualTokenColor(workspace.path === "no workspace" ? "status.warning" : "status.success")}> *</Text> : null}
-        </Text>
-        {workspaceMeta ? (
-          <Text color={visualTokenColor("text.muted")} wrap="truncate">
-            {workspaceMeta}
+      {showWorkspace ? (
+        <SidebarSection title="Workspace" width={width}>
+          <Text wrap="truncate">
+            <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("role.gateway")}>@ </Text>
+            <Text color={workspace.path === "no workspace" ? visualTokenColor("status.warning") : visualTokenColor("brand.focus")}>{fitText(workspace.path, width - 6)}</Text>
+            {workspace.status ? <Text color={visualTokenColor(workspace.path === "no workspace" ? "status.warning" : "status.success")}> *</Text> : null}
           </Text>
-        ) : null}
-      </SidebarSection>
+          {workspaceMeta ? (
+            <Text color={visualTokenColor("text.muted")} wrap="truncate">
+              {workspaceMeta}
+            </Text>
+          ) : null}
+        </SidebarSection>
+      ) : null}
 
       {secondaryNavigation.length ? (
         <SidebarSection title="Navigation" width={width}>
@@ -318,6 +321,10 @@ function visibleWorkspaceMeta(value: string | undefined): string | undefined {
     return undefined;
   }
   return meta;
+}
+
+function isVisibleWorkspaceSection(workspace: SwarmWorkbenchWorkspace, workspaceMeta: string | undefined): boolean {
+  return workspace.path.trim().toLowerCase() === "no workspace" || Boolean(workspaceMeta);
 }
 
 function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionItem; width: number; onSelect?: (id: string) => void }): React.ReactElement {
