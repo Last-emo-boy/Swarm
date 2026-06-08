@@ -82,7 +82,8 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.match(text, /workspace: Swarm/);
   assert.doesNotMatch(text, /mode: auto/);
   assert.doesNotMatch(text, /risk: workspace-write/);
-  assert.match(text, /Phase\s+waiting-attention/);
+  assert.match(text, /Status\s+Needs you/);
+  assert.doesNotMatch(text, /waiting-attention/);
   assert.match(text, /Focus\s+Test Runner/);
   assert.match(text, /TEAM ACTIVITY/);
   assert.match(text, /Test Runner/);
@@ -127,7 +128,7 @@ test("RunBoardSurface stays bounded across rollout viewports", () => {
     assert.match(text, /TEAM ACTIVITY/);
     assert.match(text, /NEEDS YOU/);
     assert.match(text, /RESULT PREVIEW/);
-    assert.doesNotMatch(text, /mode: auto|risk: workspace-write|handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);
+    assert.doesNotMatch(text, /waiting-attention|mode: auto|risk: workspace-write|handoff contract id|lease participant|blackboard claim owner|ASP|worker_test/u);
   }
 });
 
