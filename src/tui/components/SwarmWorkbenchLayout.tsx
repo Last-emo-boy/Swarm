@@ -560,6 +560,7 @@ function RightRail({
 }): React.ReactElement {
   const compact = height < 36;
   const statusCard = activity ?? runtime ?? memory;
+  const visibleWorkers = workers.filter(isVisibleWorkbenchWorker);
   const visibleTools = tools.filter(isVisibleWorkbenchTool);
   return (
     <ThemedBox
@@ -575,7 +576,7 @@ function RightRail({
       {isVisibleWorkbenchMode(mode) ? <InfoSection title="Mode" card={mode} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchAccess(permission) ? <InfoSection title="Access" card={permission} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchSandbox(sandbox) ? <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} /> : null}
-      {workers.length ? <WorkerSection workers={workers} width={width} /> : null}
+      {visibleWorkers.length ? <WorkerSection workers={visibleWorkers} width={width} /> : null}
       {isVisibleWorkbenchAgent(model) ? <InfoSection title="Agent" card={model} width={width} compact={compact} /> : null}
       {visibleTools.length ? <ToolSection tools={visibleTools} width={width} compact={compact} /> : null}
     </ThemedBox>
@@ -608,7 +609,7 @@ function hasVisibleRightRailContent({
     || isVisibleWorkbenchMode(mode)
     || isVisibleWorkbenchAccess(permission)
     || isVisibleWorkbenchSandbox(sandbox)
-    || workers.length > 0
+    || workers.some(isVisibleWorkbenchWorker)
     || isVisibleWorkbenchAgent(model)
     || tools.some(isVisibleWorkbenchTool);
 }
@@ -741,6 +742,10 @@ function WorkerSection({ workers, width }: { workers: SwarmWorkbenchWorkerItem[]
       ))}
     </Box>
   );
+}
+
+function isVisibleWorkbenchWorker(worker: SwarmWorkbenchWorkerItem): boolean {
+  return isVisibleWorkerStatus(worker.status);
 }
 
 function isVisibleWorkerStatus(value: string): boolean {
