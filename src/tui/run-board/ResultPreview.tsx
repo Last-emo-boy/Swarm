@@ -20,8 +20,10 @@ export function ResultPreview(props: {
   return (
     <RunBoardPanel title="Result">
       <SemanticTextLine wrap="truncate" spans={[
-        { text: status, color: preview.status === "failed" ? "status.danger" : preview.status === "blocked" ? "status.warning" : "text.muted", bold: true },
-        { text: " ", color: "text.muted" },
+        ...(status ? [
+          { text: status, color: preview.status === "failed" ? "status.danger" : preview.status === "blocked" ? "status.warning" : "text.muted", bold: true },
+          { text: " ", color: "text.muted" }
+        ] as const : []),
         { text: preview.summary, color: "text.primary" }
       ]} />
       {preview.changedFiles.length ? <PreviewLine label="Changed" value={preview.changedFiles.slice(0, 3).join(", ")} /> : null}
@@ -37,11 +39,11 @@ export function ResultPreview(props: {
   );
 }
 
-function previewStatusLabel(status: ResultPreviewData["status"]): string {
+function previewStatusLabel(status: ResultPreviewData["status"]): string | undefined {
   switch (status) {
-    case "empty": return "waiting";
+    case "empty": return undefined;
     case "pending": return "working";
-    case "ready": return "ready";
+    case "ready": return undefined;
     case "blocked": return "blocked";
     case "failed": return "failed";
   }

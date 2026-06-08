@@ -14,6 +14,7 @@ test("ResultPreview keeps the empty state to one quiet line", () => {
   assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.match(text, /Waiting for your first task\./);
   assert.doesNotMatch(text, /Confidence\s+low/);
+  assert.doesNotMatch(text, /waiting\s+Waiting for your first task/i);
   assert.doesNotMatch(text, /No activity yet\./);
   assert.doesNotMatch(text, /Activity\s+No activity/);
 });
@@ -25,6 +26,7 @@ test("ResultPreview shows user-facing next actions while preserving commands", (
 
   assert.match(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT PREVIEW/);
+  assert.doesNotMatch(text, /ready\s+Patch ready for review/i);
   assert.match(text, /Verified\s+\[OK\] npm test -- result-preview/);
   assert.doesNotMatch(text, /Checks\s+npm test -- result-preview|npm test -- result-preview \[passed\]/);
   assert.doesNotMatch(text, /Contributors|Code Worker: implemented patch/);
