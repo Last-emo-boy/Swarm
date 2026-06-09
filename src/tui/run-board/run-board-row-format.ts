@@ -44,6 +44,9 @@ export function formatAttentionItem(item: AttentionItemView, columns = 100): str
 }
 
 function visibleAttentionEvidence(item: AttentionItemView): string | undefined {
+  if (item.severity !== "failed" && item.severity !== "blocking") {
+    return undefined;
+  }
   const evidence = item.evidence[0];
   if (!evidence) {
     return undefined;

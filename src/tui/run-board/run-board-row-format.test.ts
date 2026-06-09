@@ -123,10 +123,10 @@ test("worker row hides raw waiting target ids in default output", () => {
 });
 
 test("attention and result preview formatters keep next step visible", () => {
-  const attention: AttentionItemView = {
+  const warningAttention: AttentionItemView = {
     id: "att-1",
     kind: "blocked",
-    severity: "blocking",
+    severity: "warning",
     title: "Reviewer blocked",
     summary: "waiting for Test Runner",
     recommendation: "Wait for verification before reviewing.",
@@ -134,6 +134,20 @@ test("attention and result preview formatters keep next step visible", () => {
     actions: [],
     createdAt: "2026-05-28T00:00:00.000Z",
     updatedAt: "2026-05-28T00:00:00.000Z"
+  };
+  const blockingAttention: AttentionItemView = {
+    ...warningAttention,
+    id: "att-approval",
+    kind: "approval",
+    severity: "blocking",
+    title: "Approval needed"
+  };
+  const failedAttention: AttentionItemView = {
+    ...warningAttention,
+    id: "att-failed",
+    kind: "failed",
+    severity: "failed",
+    title: "Command failed"
   };
   const preview: ResultPreview = {
     status: "pending",
@@ -151,12 +165,13 @@ test("attention and result preview formatters keep next step visible", () => {
     nextActions: []
   };
 
-  assert(formatAttentionItem(attention, 80).some((line) => /Next:/.test(line)));
-  assert(formatAttentionItem(attention, 80).some((line) => /Seen:/.test(line)));
-  assert(formatAttentionItem(attention, 80).every((line) => !/Why:/.test(line)));
-  assert(formatAttentionItem(attention, 80).every((line) => !/recommend:|evidence:/.test(line)));
+  assert(formatAttentionItem(warningAttention, 80).some((line) => /Next:/.test(line)));
+  assert(formatAttentionItem(warningAttention, 80).every((line) => !/Seen:|Why:/.test(line)));
+  assert(formatAttentionItem(blockingAttention, 80).some((line) => /Seen: Test Runner is still active/.test(line)));
+  assert(formatAttentionItem(failedAttention, 80).some((line) => /Seen: Test Runner is still active/.test(line)));
+  assert(formatAttentionItem(warningAttention, 80).every((line) => !/recommend:|evidence:/.test(line)));
   assert(formatAttentionItem({
-    ...attention,
+    ...blockingAttention,
     summary: "Reviewer is waiting for Test Runner.",
     evidence: ["Reviewer is waiting for Test Runner."]
   }, 80).every((line) => !/Seen: Reviewer is waiting for Test Runner\.|Why: Reviewer is waiting for Test Runner\./.test(line)));
