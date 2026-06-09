@@ -412,15 +412,17 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   }), { columns: 180, rows: 20 });
   const text = frameText(frame);
 
-  assert.match(text, /Next\s+Run file\.grep for a unique oldText, then retry file\.edit\./);
+  assert.match(text, /Verified\s+\[ERR\] Edit attempt/);
+  assert.match(text, /Next\s+Search for exact replacement text, then retry the edit\./);
   assert.match(text, /Risk\s+high: tool action failed/);
   assert.doesNotMatch(text, /Recovery\s+Tool action file\.edit failed\.|Next:/);
   assert.doesNotMatch(text, /Try: file\.grep/);
   assert.doesNotMatch(text, /Prompt cache prefix changed\./);
-  assert.match(text, /Keep stable system text and tool schemas unchanged\./);
+  assert.match(text, /Keep setup text and available tools stable\./);
   assert.match(text, /Try: Run setup check/);
   assert.doesNotMatch(text, /Try: swarm doctor/);
   assert.doesNotMatch(text, /\[tool\/warning\/retry\]|\[cache\/info\/retry\]|Hint:/);
+  assert.doesNotMatch(text, /file\.grep|file\.edit|tool schemas/);
 
   const compact = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -454,11 +456,12 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   }), { columns: 160, rows: 16 });
   const compactText = frameText(compact);
 
-  assert.match(compactText, /Next\s+Run file\.grep for a unique oldText, then retry file\.edit\./);
+  assert.match(compactText, /Next\s+Search for exact replacement text, then retry the edit\./);
   assert.doesNotMatch(compactText, /Recovery\s+Tool action file\.edit failed\.|Next:/);
   assert.match(compactText, /More steps/);
   assert.doesNotMatch(compactText, /\+1 more steps/);
   assert.doesNotMatch(compactText, /\[cache\/info\/retry\] Prompt cache prefix changed\./);
+  assert.doesNotMatch(compactText, /file\.grep|file\.edit|tool schemas/);
 });
 
 test("ProductResultCard renders checkpoint rollback status in the result report", () => {

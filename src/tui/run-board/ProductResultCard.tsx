@@ -144,7 +144,7 @@ function productCheckSummary(
   }
   const failed = checks.filter((check) => check.status === "failed");
   if (failed.length) {
-    return failed.slice(0, limit).map((check) => `${statusBadge(check.status)} ${check.command}`).join(", ");
+    return failed.slice(0, limit).map((check) => `${statusBadge(check.status)} ${productCheckCommandLabel(check.command)}`).join(", ");
   }
   const skipped = checks.filter((check) => check.status === "skipped");
   if (skipped.length === checks.length) {
@@ -247,9 +247,20 @@ function RecoveryLines(props: {
 function formatProductRecovery(advice: RecoveryAdvice): string {
   const commandHint = visibleRecoveryCommandHint(advice);
   return [
-    advice.nextAction,
+    productRecoveryNextAction(advice.nextAction),
     commandHint ? `Try: ${commandHint}` : undefined
   ].filter(Boolean).join(" ");
+}
+
+function productRecoveryNextAction(value: string): string {
+  const normalized = normalizedRecoveryText(value);
+  if (normalized === "run file.grep for a unique oldtext, then retry file.edit.") {
+    return "Search for exact replacement text, then retry the edit.";
+  }
+  if (normalized === "keep stable system text and tool schemas unchanged.") {
+    return "Keep setup text and available tools stable.";
+  }
+  return value;
 }
 
 function visibleRecoveryCommandHint(advice: RecoveryAdvice): string | undefined {
@@ -388,13 +399,25 @@ function teamReasoningItems(view: ProductResultCardView): string[] {
 }
 
 function teamContextCheckLine(check: ProductResultCardView["checks"][number]): string {
+  const command = productCheckCommandLabel(check.command);
   switch (check.status) {
-    case "passed": return `Verified: ${check.command}`;
-    case "failed": return `Failed check: ${check.command}`;
-    case "skipped": return `Skipped: ${check.command}`;
-    case "running": return `Checking: ${check.command}`;
-    case "unknown": return `Checked: ${check.command}`;
+    case "passed": return `Verified: ${command}`;
+    case "failed": return `Failed check: ${command}`;
+    case "skipped": return `Skipped: ${command}`;
+    case "running": return `Checking: ${command}`;
+    case "unknown": return `Checked: ${command}`;
   }
+}
+
+function productCheckCommandLabel(command: string): string {
+  const normalized = normalizedRecoveryText(command);
+  if (normalized === "file.edit") {
+    return "Edit attempt";
+  }
+  if (normalized === "file.grep") {
+    return "Search attempt";
+  }
+  return command;
 }
 
 function ResultLine(props: {
