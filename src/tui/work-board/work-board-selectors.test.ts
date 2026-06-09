@@ -98,6 +98,23 @@ test("selectWorkBoardSurface maps failed detail actions to output review", () =>
   assert.deepEqual(view.selected?.actions, ["Review output"]);
 });
 
+test("selectWorkBoardSurface keeps worker resume commands out of default detail", () => {
+  const board = fixtureBoard();
+  board.workers = board.workers.map((worker) => worker.worker_id === "worker-tui"
+    ? {
+        ...worker,
+        status: "stopped",
+        resume_command: "swarm workers continue worker-tui \"continue implementation\""
+      }
+    : worker);
+
+  const view = selectWorkBoardSurface({ board, selectedId: "worker-tui" });
+
+  assert.deepEqual(view.selected?.actions, ["Continue"]);
+  assert(view.selected?.plan.some((line) => /^Files: tui\/SwarmChatApp\.tsx$/u.test(line)));
+  assert(!view.selected?.plan.some((line) => /swarm workers continue|worker-tui|continue implementation/u.test(line)));
+});
+
 function fixtureBoard(): WorkBoard {
   return {
     schema_version: "swarm.work_board.v1",

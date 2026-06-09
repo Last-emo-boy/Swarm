@@ -252,7 +252,6 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
     source: "worker",
     plan: [
       worker.recovery,
-      worker.resume_command,
       worker.file_scope.length ? `Files: ${worker.file_scope.slice(0, 3).map(shortPath).join(", ")}` : undefined
     ].filter((value): value is string => Boolean(value)),
     timeline: [
