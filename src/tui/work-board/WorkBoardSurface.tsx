@@ -46,7 +46,7 @@ export function WorkBoardSurface({
 function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: number }): React.ReactElement {
   const summary = view.empty ? EMPTY_WORK_PROMPT : [
     countLabel(view.summary.approvals, "approval"),
-    countLabel(view.summary.blockers, "blocker")
+    countLabel(view.summary.blockers, "need")
   ].filter((value): value is string => Boolean(value)).join(" · ");
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">

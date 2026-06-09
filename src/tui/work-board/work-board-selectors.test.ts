@@ -13,7 +13,7 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   });
 
   assert.equal(view.title, "Board");
-  assert.equal(view.subtitle, "1 active task · 1 approval · 1 blocker");
+  assert.equal(view.subtitle, "1 active task · 1 approval · 1 need");
   assert.equal(view.summary.activeTasks, 1);
   assert.equal(view.summary.approvals, 1);
   assert.equal(view.summary.skills, 1);
@@ -24,7 +24,7 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   assert(view.selected?.comments.some((line) => /Make Swarm/.test(line)));
   assert.deepEqual(view.selected?.actions, ["Continue"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
-  assert.doesNotMatch(view.subtitle, /workers|helpers|0 approvals|0 blockers/i);
+  assert.doesNotMatch(view.subtitle, /workers|helpers|blocker|0 approvals|0 needs/i);
   assert.doesNotMatch(view.selected?.actions.join("\n") ?? "", /teammate/i);
 });
 

@@ -16,14 +16,16 @@ test("WorkBoardSurface renders board columns and selected task thread", () => {
   assert.match(text, /WORK/);
   assert.doesNotMatch(text, /OBSERVATORY/);
   assert.match(text, /Running 1/);
-  assert.match(text, /Blocked 1/);
+  assert.match(text, /Needs 1/);
+  assert.doesNotMatch(text, /Blocked 1/);
   assert.doesNotMatch(text, /\bBacklog\b|\bReview\b|\bDone\b/);
   assert.match(text, /T-101/);
   assert.doesNotMatch(text, /# T-101/);
   assert.match(text, /Need approval/);
   assert.match(text, /Build Board-first workspace/);
   assert.doesNotMatch(text, /Objective:/);
-  assert.match(text, /1 blocker/);
+  assert.match(text, /1 need/);
+  assert.doesNotMatch(text, /1 blocker/);
   assert.doesNotMatch(text, /1 active task/);
   assert.doesNotMatch(text, /Status: running/);
   assert.doesNotMatch(text, /Plan:/);
@@ -70,7 +72,7 @@ test("WorkBoardSurface keeps the empty work view quiet", () => {
 function fixtureView(): WorkBoardSurfaceView {
   return {
     title: "Board",
-    subtitle: "1 active task · 1 blocker",
+    subtitle: "1 active task · 1 need",
     empty: false,
     summary: {
       activeTasks: 1,
@@ -91,7 +93,7 @@ function fixtureView(): WorkBoardSurfaceView {
       { id: "done", title: "Done", count: 0, items: [] },
       {
         id: "blocked",
-        title: "Blocked",
+        title: "Needs",
         count: 1,
         items: [{ id: "T-102", title: "T-102", status: "blocked", subtitle: "Need approval", owner: "Reviewer", meta: ["layout"], tone: "warning" }]
       }

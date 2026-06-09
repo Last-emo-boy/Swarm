@@ -76,7 +76,7 @@ function workBoardSubtitle(activeTasks: number, approvals: number, blockers: num
   const parts = [
     countLabel(activeTasks, "active task"),
     countLabel(approvals, "approval"),
-    countLabel(blockers, "blocker")
+    countLabel(blockers, "need")
   ].filter((value): value is string => Boolean(value));
   return parts.length ? parts.join(" · ") : "Ready";
 }
@@ -95,7 +95,7 @@ function buildColumns(items: WorkBoardItemView[], limit: number): WorkBoardColum
     { id: "running", title: "Running" },
     { id: "review", title: "Review" },
     { id: "done", title: "Done" },
-    { id: "blocked", title: "Blocked" }
+    { id: "blocked", title: "Needs" }
   ];
   return specs.map((spec) => {
     const matching = items.filter((item) => columnForStatus(item.status) === spec.id);
