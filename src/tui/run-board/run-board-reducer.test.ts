@@ -228,6 +228,8 @@ test("selectors derive slow attention from stale active workers", () => {
   assert.equal(attention[0]?.kind, "slow");
   assert.equal(attention[0]?.subjectWorkerId, "worker:test");
   assert.match(attention[0]?.summary ?? "", /No new evidence for 72s/);
+  assert.equal(attention[0]?.recommendation, "Wait briefly if the process is still alive; review output before stopping.");
+  assert.doesNotMatch(attention[0]?.recommendation ?? "", /inspect output/i);
   assert.deepEqual(attention[0]?.evidence, ["npm test -- src/runtime/session-row.test.ts"]);
   assert.equal(selectRunBoardPhase(state, { now: "2026-05-28T00:01:12.000Z" }), "waiting-attention");
   assert.equal(summarizeRunBoardCounts(state, { now: "2026-05-28T00:01:12.000Z" }).stuck, 1);

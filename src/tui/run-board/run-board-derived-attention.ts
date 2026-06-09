@@ -32,7 +32,7 @@ export function derivedSlowAttentionItems(
       subjectWorkerId: worker.id,
       summary: `No new evidence for ${seconds}s while ${worker.currentAction}.`,
       evidenceIds: worker.lastEvidenceId ? [worker.lastEvidenceId] : [],
-      recommendation: "Wait briefly if the process is still alive; inspect output before stopping.",
+      recommendation: "Wait briefly if the process is still alive; review output before stopping.",
       actions: [
         { key: "w", label: "wait", enabled: true },
         { key: "d", label: "details", enabled: true }
