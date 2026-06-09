@@ -92,6 +92,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.doesNotMatch(text, /routine background poll finished/);
   assert.match(text, /PROGRESS/);
   assert.match(text, /Test Runner/);
+  assert.doesNotMatch(text, /\[PLAN\]|\[WORK\]|\[REV\]|\[AGG\]/);
   assert.match(text, /NEEDS YOU/);
   assert.match(text, /Next\s+Wait briefly before stopping\./);
   assert.doesNotMatch(text, /recommend:|activity:/);
@@ -138,6 +139,7 @@ test("WorkerRow hides routine evidence but keeps blocked evidence", () => {
   }).map((span) => span.text).join("");
 
   assert.doesNotMatch(routine, /opened src\/tui\/run-board\/WorkerRow\.tsx/);
+  assert.doesNotMatch(`${routine}\n${blocked}`, /\[PLAN\]|\[WORK\]|\[REV\]|\[AGG\]/);
   assert.match(blocked, /npm test produced no output/);
 });
 

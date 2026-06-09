@@ -33,11 +33,9 @@ export function workerRowSpans(row: WorkerBoardRowData, selected = false): Seman
   const role = collaborationRoleDescriptor(collaborationRoleForWorker(row));
   const elapsed = workerElapsedLabel(row);
   return [
-    { text: role.badge, color: role.color, bold: true },
-    { text: " ", color: "text.muted" },
     { text: statusBadge(row.status), color: tone, bold: true },
     { text: " ", color: "text.muted" },
-    { text: `${row.label.padEnd(15, " ")} `, color: selected ? "brand.focus" : "text.primary", bold: selected },
+    { text: `${row.label.padEnd(15, " ")} `, color: selected ? "brand.focus" : role.color, bold: selected },
     { text: row.currentAction, color: "text.primary" },
     ...(elapsed
       ? [
