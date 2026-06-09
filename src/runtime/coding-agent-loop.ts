@@ -5,7 +5,6 @@ import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../to
 import { LOCAL_TOOL_SCHEMAS, localToolSchemaForModel, validateLocalToolActionInputs } from "../tools/tool-contracts.js";
 import { createToolApprovalRequest, decideToolPermission } from "../tools/permissions.js";
 import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
-import { writeTaskOutput } from "../storage/task-output-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
 import { OpenAIProvider, type PromptBlock } from "../providers/openai-provider.js";
 import type { SwarmSettings } from "../config/settings.js";
@@ -38,6 +37,7 @@ import {
 import { taskContractForToolAction } from "./tool-task-sandbox.js";
 import { attachApprovalGovernance, shouldRecordGovernanceEvidence } from "./safety-governance.js";
 import type { LspRange } from "../lsp/types.js";
+import { materializeToolOutput, truncateMiddle } from "./tool-result-materializer.js";
 
 type CodingLoopToolCall = {
   id?: string;
@@ -2023,11 +2023,11 @@ export function evaluateCodingLoopCacheLab(replays: CodingLoopCacheLabReplay[]):
   };
 }
 
-export function selectBestCodingLoopCacheLabResult(report: CodingLoopCacheLabReport): CodingLoopCacheLabResult | undefined {
+function selectBestCodingLoopCacheLabResult(report: CodingLoopCacheLabReport): CodingLoopCacheLabResult | undefined {
   return [...report.replays].sort(compareCacheLabResultsByQualityGuard)[0];
 }
 
-export function selectTopHitCodingLoopCacheLabResult(report: CodingLoopCacheLabReport): CodingLoopCacheLabResult | undefined {
+function selectTopHitCodingLoopCacheLabResult(report: CodingLoopCacheLabReport): CodingLoopCacheLabResult | undefined {
   return [...report.replays].sort(compareCacheLabResultsByTopHit)[0];
 }
 
@@ -3721,20 +3721,15 @@ async function prepareToolOutput(
   result: ToolResult,
   detail: string
 ): Promise<{ content?: string; outputRef?: string; data?: unknown }> {
-  const data = result.data ?? result.metadata;
-  const bytes = Buffer.byteLength(detail, "utf8");
-  const shouldPersist = result.status === "failed" || bytes > TOOL_RESULT_PERSIST_THRESHOLD_BYTES;
-  if (!shouldPersist) {
-    return { content: detail, outputRef: result.outputRef, data };
-  }
-  const ref = await writeTaskOutput({ sessionId, taskId, attempt: 0, content: detail });
-  return {
-    content: bytes <= TOOL_RESULT_PERSIST_THRESHOLD_BYTES
-      ? detail
-      : truncateMiddle(detail, TOOL_RESULT_PERSIST_PREVIEW_BYTES, ref.bytes, ref.lines, ref.path),
-    outputRef: ref.path,
-    data: isRecord(data) ? { ...data, outputRef: ref } : { value: data, outputRef: ref }
-  };
+  return materializeToolOutput({
+    sessionId,
+    taskId,
+    result,
+    detail,
+    maxInlineBytes: TOOL_RESULT_PERSIST_THRESHOLD_BYTES,
+    previewBytes: TOOL_RESULT_PERSIST_PREVIEW_BYTES,
+    persistFailed: true
+  });
 }
 
 function compactToolResultHistory(results: CodingLoopToolResult[]): CodingLoopToolResult[] {
@@ -3993,23 +3988,6 @@ export function formatToolFailureContent(
     advice ? formatRecoveryAdvice(advice) : undefined,
     `Action: ${action}`
   ].filter(Boolean).join("\n");
-}
-
-function truncateMiddle(content: string, maxBytes: number, totalBytes: number, totalLines: number, path: string): string {
-  const buffer = Buffer.from(content, "utf8");
-  if (buffer.length <= maxBytes) {
-    return content;
-  }
-  const headBytes = Math.floor(maxBytes * 0.7);
-  const tailBytes = maxBytes - headBytes;
-  const omitted = Math.max(0, totalBytes - headBytes - tailBytes);
-  return [
-    buffer.subarray(0, headBytes).toString("utf8").trimEnd(),
-    "",
-    `[... ${omitted} bytes omitted from ${totalLines} lines. Full output: ${path}]`,
-    "",
-    buffer.subarray(Math.max(headBytes, buffer.length - tailBytes)).toString("utf8").trimStart()
-  ].join("\n");
 }
 
 function truncateTextBytes(content: string, maxBytes: number): string {

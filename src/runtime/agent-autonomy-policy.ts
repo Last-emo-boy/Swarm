@@ -116,7 +116,7 @@ export function decideEnvelopeAutonomy(
   };
 }
 
-export function requiredLevelForEnvelope(type: SwarmMessageType): AgentAutonomyLevel {
+function requiredLevelForEnvelope(type: SwarmMessageType): AgentAutonomyLevel {
   if ([
     "ack",
     "swarm.heartbeat",

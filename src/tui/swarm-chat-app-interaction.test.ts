@@ -45,11 +45,9 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
     const initialScreen = stripAnsi(output);
     assert.match(initialScreen, /Ask Swarm/);
     assert.match(initialScreen, /Chat/);
-    assert.match(initialScreen, /Result/);
-    assert.match(initialScreen, /Details/);
-    assert.match(initialScreen, /Logs/);
+    assert.doesNotMatch(initialScreen, /Result|Details|Logs/);
     assert.doesNotMatch(initialScreen, /Observatory|Debug/);
-    assert.match(initialScreen, /Run: Waiting/);
+    assert.doesNotMatch(initialScreen, /Run: Waiting/);
     assert.doesNotMatch(initialScreen, /Helpers: 0|Files: 0|Approvals: 0/);
     assert.doesNotMatch(initialScreen, /Session not started|No saved context yet|No activity yet|0 active · 0 blocked/);
     assert.doesNotMatch(initialScreen, /Tasks \[|Team \[|Activity \[|Output \[|Skills \[|Automations \[/);
@@ -88,6 +86,50 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
       delete process.env.SWARM_DEBUG_SESSION_ID;
     } else {
       process.env.SWARM_DEBUG_SESSION_ID = previousDebugSessionId;
+    }
+    await removeTree(home);
+  }
+});
+
+test("SwarmChatApp routes onboarding stdin through focused DOM input without duplicate fallback edits", async () => {
+  const previousHome = process.env.SWARM_HOME;
+  const home = mkdtempSync(join(tmpdir(), "swarm-tui-onboarding-input-"));
+  process.env.SWARM_HOME = home;
+  createConfiguredSwarmHome(home);
+
+  const stdout = new PassThrough() as PassThrough & NodeJS.WriteStream & { columns: number; rows: number; isTTY: false };
+  const stdin = new PassThrough() as PassThrough & NodeJS.ReadStream;
+  stdout.columns = 120;
+  stdout.rows = 28;
+  stdout.isTTY = false;
+  let output = "";
+  stdout.on("data", (chunk: Buffer | string) => {
+    output += chunk.toString();
+  });
+
+  const app = render(React.createElement(SwarmChatApp, { forceOnboarding: true }), {
+    stdout,
+    stderr: stdout,
+    stdin,
+    patchConsole: false
+  });
+
+  try {
+    await waitFor(() => stripAnsi(output).includes("Swarm Onboarding"), "onboarding screen render");
+    await waitFor(() => stripAnsi(output).includes("Provider id: local-test"), "initial provider field render");
+
+    stdin.emit("data", "z");
+    await waitFor(() => stripAnsi(output).includes("Provider id: local-testz"), "provider field update from stdin");
+
+    assert.doesNotMatch(stripAnsi(output), /Provider id: local-testzz/);
+    stdin.emit("data", "\x03");
+    await withTimeout(app.waitUntilExit(), 1_000, "SwarmChatApp onboarding did not exit after Ctrl+C");
+  } finally {
+    app.unmount();
+    if (previousHome === undefined) {
+      delete process.env.SWARM_HOME;
+    } else {
+      process.env.SWARM_HOME = previousHome;
     }
     await removeTree(home);
   }

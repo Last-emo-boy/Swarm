@@ -111,6 +111,7 @@ import { buildProtocolReplay, diffProtocolReplaySnapshots } from "../runtime/pro
 import { runFaultInjectionDrills } from "../runtime/fault-injection.js";
 import { formatBudgetPressure, SwarmBudgetGovernor } from "../runtime/budget-governor.js";
 import { buildResultCard, formatResultCardText } from "../runtime/result-card.js";
+import { productMetricsSmokeEvents, summarizeProductMetricEvents } from "../runtime/product-translation-metrics.js";
 import { AgentRegistry } from "../runtime/registry.js";
 import { decideCapabilitySandbox, decideToolActionSandbox } from "../runtime/sandbox-policy.js";
 import { sandboxedToolTaskInputs } from "../runtime/tool-task-sandbox.js";
@@ -557,13 +558,13 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkContains(root, "src/protocol/types.ts", "RiskClass", "risk class protocol type exists"),
     checkContains(root, "src/tools/types.ts", "predicted_impact", "approval challenge fields exist"),
     checkFile(root, "src/tui/approval-input.ts", "TUI approval input helper is isolated"),
-    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Decision Menu", "TUI approval overlay uses a decision-oriented layout"),
-    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "allow same target", "TUI approval overlay supports session-scoped allow"),
-    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Esc cancel", "TUI approval overlay advertises cancel behavior"),
-    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Review focus:", "TUI approval overlay surfaces risk-specific review focus"),
+    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Needs you", "TUI approval overlay explains why the team needs user input"),
+    checkContains(root, "src/tui/shortcuts.ts", "allow same target", "TUI approval overlay supports session-scoped allow"),
+    checkContains(root, "src/tui/shortcuts.ts", "Esc cancel", "TUI approval overlay advertises cancel behavior"),
+    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Safety check", "TUI approval overlay surfaces risk-specific review focus"),
     checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "approvalReviewFocus", "TUI approval overlay derives tool-specific review focus"),
     checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Why now", "TUI approval overlay surfaces why-now context"),
-    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Permission:", "TUI approval overlay surfaces permission decision context"),
+    checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "Guardrail", "TUI approval overlay surfaces permission decision context"),
     checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "permission_rule", "TUI approval overlay surfaces matched permission rules"),
     checkContains(root, "src/tui/components/ApprovalOverlay.tsx", "attention_note", "TUI approval overlay surfaces destructive approval attention notes"),
     checkContains(root, "src/tui/SwarmChatApp.tsx", "approvalSessionRuleKey", "TUI approval can remember same action and target for the session"),
@@ -1017,6 +1018,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkResultCardInfersVerifierCompletedCheckBehavior(),
     checkResultCardRisksFailedChecksBehavior(),
     checkResultCardSurfacesContractsBehavior(),
+    checkProductTranslationMetricsBehavior(),
     checkReviewSummarySkipsAgentHeadingBehavior(root),
     checkPostChangeChecksHydrateOutputRefsBehavior(root),
     checkPostChangeStatusMappingPreservesVerifiedWorkBehavior(),
@@ -11098,6 +11100,28 @@ function checkResultCardSurfacesContractsBehavior(): EvalCaseResult {
   return ok
     ? { name: "result card surfaces task and worker contracts", status: "pass", message: "result cards include write policies, scoped targets, pending workers, and handoffs" }
     : { name: "result card surfaces task and worker contracts", status: "fail", message: text };
+}
+
+function checkProductTranslationMetricsBehavior(): EvalCaseResult {
+  const summary = summarizeProductMetricEvents(productMetricsSmokeEvents(), "product-metrics-smoke.jsonl");
+  const ok = summary.scenario_sessions === 1
+    && summary.scenario_completed === 1
+    && summary.time_to_impressive_result.p50_ms === 87_000
+    && summary.sessions_without_advanced_views.percent === 100
+    && summary.steering.reply === 1
+    && summary.privacy.local_only
+    && !summary.privacy.prompt_text_stored;
+  return ok
+    ? {
+        name: "product translation metrics aggregate local privacy-safe signals",
+        status: "pass",
+        message: "smoke scenario reports first-result timing, no advanced views, steering, and no prompt text storage"
+      }
+    : {
+        name: "product translation metrics aggregate local privacy-safe signals",
+        status: "fail",
+        message: JSON.stringify(summary)
+      };
 }
 
 function checkReviewSummarySkipsAgentHeadingBehavior(root: string): EvalCaseResult {

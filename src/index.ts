@@ -25,6 +25,15 @@ import type { GeneratedPlan } from "./protocol/types.js";
 import { restoreSessionFromRow } from "./sessions/session-row.js";
 import type { SessionRow } from "./storage/session-store.js";
 import { decideResumeExecution } from "./tui/resume-control.js";
+import type {
+  HeadlessProductMetricsContext
+} from "./runtime/product-metrics-cli.js";
+import {
+  createCodebaseReviewMetricsContext,
+  formatProductMetricsCommandOutput,
+  recordCliProductMetric,
+  stringRecordValue
+} from "./runtime/product-metrics-cli.js";
 
 const MCP_CONFIG_OPTION_SEPARATOR = "\u001f";
 
@@ -58,7 +67,11 @@ if (args.includes("--yolo") || command === "yolo") {
 if (!command) {
   await launchChat();
 } else if (command === "help" || command === "--help" || command === "-h") {
-  printHelp();
+  if (args.includes("--advanced") || args.includes("--all") || args.includes("advanced") || args.includes("detail")) {
+    printAdvancedHelp();
+  } else {
+    printHelp();
+  }
 } else if (command === "version" || command === "--version" || command === "-V") {
   console.log(loadSwarmVersion());
 } else if (command === "chat") {
@@ -67,6 +80,8 @@ if (!command) {
   await runHeadless(args);
 } else if (command === "work") {
   await runHeadless(["--mode", "coding_loop", ...args]);
+} else if (command === "review") {
+  await runReviewCommand(args);
 } else if (command === "watch") {
   await runWatchCommand(args);
 } else if (command === "live") {
@@ -95,6 +110,8 @@ if (!command) {
   await runDoctorCommand(args);
 } else if (command === "logs") {
   await runLogsCommand(args);
+} else if (command === "metrics") {
+  await runMetricsCommand(args);
 } else if (command === "capabilities") {
   await runCapabilitiesCommand(args);
 } else if (command === "approvals") {
@@ -521,6 +538,21 @@ async function runLogsCommand(values: string[]): Promise<void> {
   console.log(readSwarmLogTail(log.path, tailLines ?? 120));
 }
 
+async function runMetricsCommand(values: string[]): Promise<void> {
+  const options = parseOptions(values);
+  const jsonOutput = parseBooleanOption(options.json);
+  if (options.help === "true") {
+    console.log("Usage: swarm metrics [--json] [--demo] [--path <metrics.jsonl>]");
+    console.log("       Shows local-only product translation metrics for result-first scenarios.");
+    return;
+  }
+  console.log(formatProductMetricsCommandOutput({
+    json: jsonOutput,
+    demo: parseBooleanOption(options.demo),
+    path: normalizeOptionalValue(options.path)
+  }));
+}
+
 async function runLiveControlCommand(commandName: "reply" | "interrupt", values: string[]): Promise<void> {
   const options = parseOptions(values);
   const jsonOutput = parseBooleanOption(options.json);
@@ -556,6 +588,14 @@ async function runLiveControlCommand(commandName: "reply" | "interrupt", values:
           requestId: normalizeOptionalValue(options["request-id"]),
           message: message || undefined
         });
+    await recordCliProductMetric({
+      event: "steering_used",
+      source: "cli",
+      session_id: stringRecordValue(report.data, "session_id"),
+      route: stringRecordValue(report.data, "route"),
+      steering: commandName,
+      trigger: "top_level"
+    });
     console.log(jsonOutput ? JSON.stringify(report.data, null, 2) : report.detail);
   } catch (error) {
     if (jsonOutput && isSessionGatewayControlError(error)) {
@@ -860,7 +900,7 @@ async function runBoardCommand(values: string[]): Promise<void> {
   const jsonOutput = parseBooleanOption(options.json);
   if (options.help === "true") {
     console.log("Usage: swarm board [--workspace <path>] [--limit N] [--json]");
-    console.log("       Shows the Local Agent Workspace board from the read-only Agent Workspace projection.");
+    console.log("       Shows the advanced Swarm Observatory projection from local workspace state.");
     return;
   }
   const { SwarmRuntime } = await import("./runtime/runtime.js");
@@ -882,6 +922,12 @@ async function runBoardCommand(values: string[]): Promise<void> {
       providers,
       symphonyStatus: getSymphonyStatus({ runtime, workflowPath: options.workflow, limit: parsePositiveIntegerOption(options, "symphony-limit") }),
       workspacePath: runtime.getWorkspacePath()
+    });
+    await recordCliProductMetric({
+      event: "observatory_opened",
+      source: "cli",
+      view: "observatory",
+      trigger: "board_command"
     });
     if (jsonOutput) {
       console.log(JSON.stringify(projection, null, 2));
@@ -1725,6 +1771,7 @@ async function runWorkersCommand(values: string[]): Promise<void> {
     console.log("       swarm workers watch <worker_id|latest> [--session <session_id|latest>] [--gateway-url <url>] [--protocol runtime|work] [--workspace <path>] [--jsonl]");
     console.log("       swarm workers stop <worker_id|latest> [--session <session_id|latest>] [--gateway-url <url>] [--workspace <path>] [--json]");
     console.log("       swarm workers continue <worker_id|latest> <message> [--session <session_id|latest>] [--gateway-url <url>] [--workspace <path>] [--json]");
+    console.log("       Advanced Team activity controls; primary results stay in the Result report.");
     return;
   }
 
@@ -1784,6 +1831,12 @@ async function runWorkersCommand(values: string[]): Promise<void> {
         limit: parsePositiveIntegerOption(options, "limit"),
         sessionSelector: normalizeOptionalValue(options.session)
       });
+      await recordCliProductMetric({
+        event: "observatory_opened",
+        source: "cli",
+        view: "workers",
+        trigger: "workers_list"
+      });
       console.log(jsonOutput ? JSON.stringify(report.data, null, 2) : report.detail);
       return;
     }
@@ -1801,6 +1854,12 @@ async function runWorkersCommand(values: string[]): Promise<void> {
       const report = buildWorkerDetailReport(runtime, selector, {
         sessionSelector: normalizeOptionalValue(options.session)
       });
+      await recordCliProductMetric({
+        event: "observatory_opened",
+        source: "cli",
+        view: "workers",
+        trigger: "workers_show"
+      });
       console.log(jsonOutput ? JSON.stringify(report.data, null, 2) : report.detail);
       return;
     }
@@ -1811,6 +1870,12 @@ async function runWorkersCommand(values: string[]): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      await recordCliProductMetric({
+        event: "observatory_opened",
+        source: "cli",
+        view: "workers",
+        trigger: "workers_watch"
+      });
       await watchWorkerViaGateway({
         gatewayUrl: normalizeOptionalValue(options["gateway-url"]),
         worker: resolveWorkerRecord(selector, normalizeOptionalValue(options.session)),
@@ -2295,7 +2360,7 @@ async function runSymphonyDaemon(
   console.log("Symphony daemon stopped.");
 }
 
-async function runHeadless(values: string[]): Promise<void> {
+async function runReviewCommand(values: string[]): Promise<void> {
   let parsed: { options: Record<string, string>; objective: string };
   try {
     parsed = parseRunArgs(values);
@@ -2304,7 +2369,35 @@ async function runHeadless(values: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const { options, objective } = parsed;
+  if (parseBooleanOption(parsed.options.help)) {
+    console.log("Usage: swarm review [focus] [run flags]");
+    console.log("       Runs a result-first Codebase Deep Review and opens with the final report.");
+    console.log("       Example: swarm review \"auth and permissions\" --read-only");
+    return;
+  }
+  const { buildCodebaseDeepReviewObjective } = await import("./runtime/experience-template.js");
+  await runHeadless(
+    values,
+    buildCodebaseDeepReviewObjective(parsed.objective),
+    createCodebaseReviewMetricsContext(parsed.objective)
+  );
+}
+
+async function runHeadless(
+  values: string[],
+  objectiveOverride?: string,
+  productMetrics?: HeadlessProductMetricsContext
+): Promise<void> {
+  let parsed: { options: Record<string, string>; objective: string };
+  try {
+    parsed = parseRunArgs(values);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+    return;
+  }
+  const { options } = parsed;
+  const objective = objectiveOverride ?? parsed.objective;
   const requestedResumeSessionId = normalizeOptionalValue(options.resume);
   const continueRequested = parseBooleanOption(options["continue"]);
   if (requestedResumeSessionId && continueRequested) {
@@ -2429,6 +2522,16 @@ async function runHeadless(values: string[]): Promise<void> {
   runtimeForApproval = runtime;
   runtimeForBrokenPipe = runtime;
   const permissionMode = normalizeHeadlessPermissionMode(runtime.settings.permissions.defaultMode);
+  if (productMetrics) {
+    await recordCliProductMetric({
+      event: "scenario_started",
+      source: "headless",
+      flow_id: productMetrics.flowId,
+      scenario: productMetrics.scenario,
+      route: mode,
+      focus_provided: productMetrics.focusProvided
+    });
+  }
   let operation: HeadlessOperation = "run";
   let resumeSessionId: string | undefined;
   let resumeRow: SessionRow | undefined;
@@ -2654,6 +2757,22 @@ async function runHeadless(values: string[]): Promise<void> {
     }
 
     const sessionId = resolveHeadlessSessionId({ capturedEvents, result });
+    if (productMetrics) {
+      await recordCliProductMetric({
+        event: "headless_result_completed",
+        source: "headless",
+        flow_id: productMetrics.flowId,
+        session_id: sessionId,
+        scenario: productMetrics.scenario,
+        route: result?.result_card?.route ?? mode,
+        status: artifacts.report.status,
+        has_result_card: Boolean(result?.result_card),
+        duration_ms: endedAtMs - startedAtMs,
+        changed_files: result?.result_card?.changedFiles.length ?? result?.outcome?.changed_files.length,
+        checks: result?.result_card?.checks.length ?? result?.outcome?.tests_run.length,
+        findings: result?.result_card?.reviewFindings?.length
+      });
+    }
     const resumeHint = buildHeadlessResumeHint(sessionId);
     if (stdoutGuard.brokenPipe()) {
       // Downstream has closed stdout; avoid emitting fallback text into stderr from guarded console methods.
@@ -3450,7 +3569,61 @@ function isCapabilityCliKind(value: string): boolean {
 
 function printHelp(): void {
   const binary = process.platform === "win32" ? "swarm" : "swarm";
-  console.log(`Agent Swarm Protocol CLI
+  console.log(`Swarm Local Agent Workspace CLI
+
+Give Swarm a repo task, get a result-first patch or review report, then use
+checkpoint undo when you want to roll back a workspace change.
+
+Usage:
+  ${binary}
+  ${binary} work "<coding task>"
+  ${binary} review [focus]
+  ${binary} metrics --demo
+  ${binary} checkpoints list
+  ${binary} checkpoints revert [checkpoint_id|last]
+  ${binary} onboard
+  ${binary} help --advanced
+
+Work:
+  ${binary} work "fix the failing auth test"
+  ${binary} work "add a small CLI flag and tests"
+  ${binary} work "explain this repo and suggest the next cleanup"
+
+Ask:
+  ${binary} review "auth and permissions"
+  ${binary} review "what changed in this branch?"
+
+Automate:
+  ${binary} automation list
+  ${binary} automation run
+
+Setup:
+  ${binary} onboard                  Configure provider, API key, and model once
+  ${binary} metrics --demo           Check local product-readiness signals
+  ${binary} checkpoints list         See workspace recovery points
+  ${binary} checkpoints revert last  Undo the latest checkpoint-backed change
+
+Starters:
+  1. Codebase Deep Review: ${binary} review "architecture and risks"
+  2. Fix A Failing Test: ${binary} work "fix the failing test and verify it"
+  3. Explain This Repo: ${binary} work "explain this repo and where to start"
+
+Advanced:
+  ${binary} help --advanced          Show Observatory, Debug, protocol, provider,
+                                     capability, and automation controls
+`);
+  const ignoredArgs = args.filter((arg) => !["--advanced", "--all", "advanced", "detail"].includes(arg));
+  if (ignoredArgs.length > 0) {
+    console.log(`Ignored arguments: ${ignoredArgs.join(" ")}`);
+  }
+}
+
+function printAdvancedHelp(): void {
+  const binary = process.platform === "win32" ? "swarm" : "swarm";
+  console.log(`Swarm Local Agent Workspace CLI
+
+Result-first scenarios for local coding work. Start with \`${binary}\` for the TUI,
+or run \`${binary} review "auth and permissions"\` for the fastest useful report.
 
 Usage:
   ${binary} [--debug] [--debug-trace]
@@ -3458,6 +3631,7 @@ Usage:
   ${binary} --yolo
   ${binary} yolo
   ${binary} chat [--debug]
+  ${binary} review [focus] [run flags]
   ${binary} run [--mode auto|chat|coding_loop|full_swarm] [--resume <session_id>|--continue] [--max-turns N] [--max-tool-calls N] [--allowed-tools A,B] [--disallowed-tools A,B] [--add-dir DIR] [--skill NAME] [--skills A,B] [--mcp-config JSON_OR_FILE] [--strict-mcp-config] [--system-prompt TEXT] [--append-system-prompt TEXT] [--permission-mode ask|auto-edit|full-auto|yolo] [--approval-mode fail|wait] [--approval-timeout-ms N] [--sandbox workspace-write|read-only] [--read-only] [--json|--stream-json|--output-format text|json|stream-json] [--report <path>] [--telemetry <path>] [--trajectory <path>] <objective>
   ${binary} work [run flags] <objective>
   ${binary} watch [--gateway-url <url>] [--protocol runtime|work] [--jsonl]
@@ -3500,6 +3674,7 @@ Usage:
   ${binary} approvals approve <approval_id|latest> [--session <session_id|latest>] [--gateway-url <url>] [--workspace <path>] [--json]
   ${binary} approvals deny <approval_id|latest> [--session <session_id|latest>] [--gateway-url <url>] [--workspace <path>] [--json]
   ${binary} ps [--limit N] [--workspace <path>] [--json]
+  ${binary} metrics [--json] [--demo] [--path <metrics.jsonl>]
   ${binary} doctor [workflow_path] [--workflow WORKFLOW.md] [--workspace <path>]
   ${binary} logs [latest|log_name] [--tail N] [--limit N]
   ${binary} capabilities [list] [kind:<kind>|provider:<provider>|query...] [--all] [--include-disabled] [--workspace <path>] [--json]
@@ -3556,23 +3731,26 @@ Usage:
   ${binary} models set --planner <provider/model> --worker <provider/model> --aggregator <provider/model>
 
 Commands:
-  chat       Open the interactive swarm TUI (also the default)
+  chat       Open the interactive Swarm TUI (also the default)
   version    Print the Swarm CLI version
+  review     Run the result-first Codebase Deep Review scenario
   run        Run one objective non-interactively. Defaults to the local coding loop in auto mode.
+  work       Run one objective through the local coding_loop main path
   watch      Follow the live Gateway event stream for the current workspace
   live       Show the active Gateway-controlled live target and its current session summary
-  reply      Send a live reply to the active Gateway-controlled run
-  interrupt  Request an interrupt for the active Gateway-controlled coding loop
+  reply      Guide the active Gateway-controlled team while it is running
+  interrupt  Pause or redirect active work at the next safe boundary
   runs       Inspect and watch Gateway runs
   checkpoints
              List, create, and revert local workspace checkpoints
   sessions   List, inspect, resume, execute, and fork persisted WorkSessions
-  board      Show the Local Agent Workspace board projection
+  board      Show the advanced Swarm Observatory projection
   task       List and inspect task-centric Agent Workspace projections
-  workers    Inspect, watch, stop, and continue persisted worker contracts
+  workers    Inspect, watch, stop, and continue Team worker contracts
   handoffs   Inspect, watch, and take back persisted handoff contracts
   approvals  Inspect approval records and answer live Gateway approval requests
   ps         Alias for swarm sessions
+  metrics    Show local-only product translation metrics for result-first scenarios
   doctor     Diagnose local model setup, stores, extensions, logs, and Symphony preflight
   logs       List recent debug logs or tail the latest matching log file
   capabilities

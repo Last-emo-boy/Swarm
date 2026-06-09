@@ -93,7 +93,7 @@ export function buildProtocolDebugTimeline(input: {
   return summarizeProtocolTimeline(limited);
 }
 
-export function summarizeProtocolTimeline(events: readonly ProtocolTimelineEvent[]): ProtocolTimelineSummary {
+function summarizeProtocolTimeline(events: readonly ProtocolTimelineEvent[]): ProtocolTimelineSummary {
   const byCategory = { ...CATEGORY_ZERO };
   const bySeverity = { ...SEVERITY_ZERO };
   const groups = new Map<string, ProtocolTimelineCorrelationGroup>();
@@ -236,7 +236,7 @@ export function formatProtocolTimelineEvent(event: ProtocolTimelineEvent): strin
   return parts.join(" ");
 }
 
-export function redactTimelineEvent(event: ProtocolTimelineEvent): ProtocolTimelineEvent {
+function redactTimelineEvent(event: ProtocolTimelineEvent): ProtocolTimelineEvent {
   return {
     ...event,
     source: redactSensitive(event.source),

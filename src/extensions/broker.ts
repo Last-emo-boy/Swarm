@@ -15,7 +15,7 @@ import {
 import { attachApprovalGovernance, shouldRecordGovernanceEvidence } from "../runtime/safety-governance.js";
 import type { ApprovalGovernanceEvidence } from "../runtime/safety-governance.js";
 import { taskContractForToolAction } from "../runtime/tool-task-sandbox.js";
-import { writeTaskOutput } from "../storage/task-output-store.js";
+import { materializeToolOutput } from "../runtime/tool-result-materializer.js";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import { createToolApprovalRequest, decideToolPermission, riskClassForAction } from "../tools/permissions.js";
 import type { AgentDelegateAction, LocalToolContext, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata, FileLockEvent } from "../tools/types.js";
@@ -658,7 +658,7 @@ function taskContractForCapability(
   return {};
 }
 
-export function capabilityRequiresApproval(capability: CapabilityDescriptor, settings: SwarmSettings): boolean {
+function capabilityRequiresApproval(capability: CapabilityDescriptor, settings: SwarmSettings): boolean {
   if (matchesCapabilityPermission(capability, settings.permissions.deny)) {
     throw new Error(`Capability denied by settings: ${capability.permissionName}`);
   }
@@ -709,7 +709,7 @@ export function createCapabilityApprovalRequest(
   });
 }
 
-export function matchesCapabilityPermission(capability: CapabilityDescriptor, rules: string[]): boolean {
+function matchesCapabilityPermission(capability: CapabilityDescriptor, rules: string[]): boolean {
   if (rules.includes(capability.permissionName) || rules.includes(`${capability.permissionName}(*)`)) {
     return true;
   }
@@ -822,17 +822,14 @@ async function prepareBrokerOutput(
   result: ToolResult,
   detail: string
 ): Promise<{ content?: string; outputRef?: string; data?: unknown }> {
-  const data = result.data ?? result.metadata;
-  const bytes = Buffer.byteLength(detail, "utf8");
-  if (bytes <= LONG_OUTPUT_THRESHOLD_BYTES) {
-    return { content: detail, outputRef: result.outputRef, data };
-  }
-  const ref = await writeTaskOutput({ sessionId, taskId, attempt: 0, content: detail });
-  return {
-    content: truncateMiddle(detail, LONG_OUTPUT_PREVIEW_BYTES, ref.bytes, ref.lines, ref.path),
-    outputRef: ref.path,
-    data: isRecord(data) ? { ...data, outputRef: ref } : { value: data, outputRef: ref }
-  };
+  return materializeToolOutput({
+    sessionId,
+    taskId,
+    result,
+    detail,
+    maxInlineBytes: LONG_OUTPUT_THRESHOLD_BYTES,
+    previewBytes: LONG_OUTPUT_PREVIEW_BYTES
+  });
 }
 
 function riskForCapability(capability: CapabilityDescriptor): ToolApprovalRequest["risk"] {
@@ -1005,23 +1002,6 @@ function promptArguments(args: Record<string, unknown>): Record<string, string> 
     .filter(([, value]) => value !== undefined && value !== null)
     .map(([key, value]) => [key, String(value)] as const);
   return entries.length ? Object.fromEntries(entries) : undefined;
-}
-
-function truncateMiddle(content: string, maxBytes: number, totalBytes: number, totalLines: number, path: string): string {
-  const buffer = Buffer.from(content, "utf8");
-  if (buffer.length <= maxBytes) {
-    return content;
-  }
-  const headBytes = Math.floor(maxBytes * 0.7);
-  const tailBytes = maxBytes - headBytes;
-  const omitted = Math.max(0, totalBytes - headBytes - tailBytes);
-  return [
-    buffer.subarray(0, headBytes).toString("utf8").trimEnd(),
-    "",
-    `[... ${omitted} bytes omitted from ${totalLines} lines. Full output: ${path}]`,
-    "",
-    buffer.subarray(Math.max(headBytes, buffer.length - tailBytes)).toString("utf8").trimStart()
-  ].join("\n");
 }
 
 function wildcardMatch(value: string, pattern: string): boolean {

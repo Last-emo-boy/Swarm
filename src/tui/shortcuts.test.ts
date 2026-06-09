@@ -10,7 +10,7 @@ import {
 
 test("TUI shortcut registry formats detail and modal hints consistently", () => {
   assert.equal(shortcutHint(["command.select", "command.accept", "command.close"]), "Up/Down select | Tab accept | Esc close");
-  assert.equal(shortcutHint(["approval.approve_once", "approval.allow_target", "approval.deny", "approval.cancel"]), "Y approve once | S allow target | N deny | Esc cancel");
+  assert.equal(shortcutHint(["approval.approve_once", "approval.allow_target", "approval.deny", "approval.cancel"]), "Y approve once | S allow same target | N deny | Esc cancel");
   assert.equal(shortcutHint(["collab.ownership", "collab.negotiation", "collab.blackboard", "collab.reassign"]), "O claims | N negotiations | B board | R reassign");
   assert.equal(detailShortcutPhrase(), "Ctrl+O for details");
   assert.equal(appendDetailShortcut("Work commands"), "Work commands. Ctrl+O for details.");

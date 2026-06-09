@@ -418,7 +418,7 @@ export function statusBadge(status: string | undefined): string {
   return "[--]";
 }
 
-export function statusMarker(status: string | undefined): string {
+function statusMarker(status: string | undefined): string {
   const tone = statusTone(status);
   if (tone === "danger") return "✗";
   if (tone === "warning") return "!";
@@ -575,7 +575,7 @@ export function sectionLabel(label: string): string {
   return label.toUpperCase();
 }
 
-export function compactId(value: string | undefined, maxLength = 10): string {
+function compactId(value: string | undefined, maxLength = 10): string {
   return compactValue(value ?? "-", maxLength);
 }
 

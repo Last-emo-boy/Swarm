@@ -19,17 +19,20 @@ test("ApprovalOverlay puts decision controls before high-risk detail", async () 
   const decisionIndex = plain.indexOf("DECISION Y approve once");
   const riskIndex = plain.indexOf("[HIGH] R4/SHELL shell.exec · TARGET Remove-Item -Recurse build");
   const summaryIndex = plain.indexOf("SUMMARY Delete generated files under the workspace.");
+  const needsYouIndex = plain.indexOf("NEEDS YOU");
   const impactIndex = plain.indexOf("IMPACT Deletes generated output.");
   const rollbackIndex = plain.indexOf("ROLLBACK Restore from checkpoint or rebuild artifacts.");
 
   assert(decisionIndex >= 0);
   assert(riskIndex > decisionIndex);
   assert(summaryIndex > riskIndex);
-  assert(impactIndex > summaryIndex);
+  assert(needsYouIndex > summaryIndex);
+  assert(impactIndex > needsYouIndex);
   assert(rollbackIndex > impactIndex);
   assert.doesNotMatch(plain, /[┌┐└┘]/);
   assert.match(plain, /^\s*─{20,}/m);
   assert.match(plain, /Destructive shell command detected/);
+  assert.match(plain, /team needs your explicit confirmation/i);
   assert.match(plain, /GOVERNANCE actor=worker:safety scope=Remove-Item -Recurse build/);
   assert.match(plain, /ttl=900000ms expires=2026-05-26T00:15:00.000Z/);
   assert.match(plain, /PREVIEW/);
@@ -38,7 +41,7 @@ test("ApprovalOverlay puts decision controls before high-risk detail", async () 
 test("ApprovalOverlay renders compact risk row with top divider and local accents", () => {
   const frame = renderTuiToFrame(React.createElement(ApprovalOverlay, {
     request: approvalFixture()
-  }), { columns: 100, rows: 12 });
+  }), { columns: 100, rows: 14 });
   const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).join("\n");
 
   assert.match(plain, /^\s*─{20,}/m);
@@ -46,6 +49,7 @@ test("ApprovalOverlay renders compact risk row with top divider and local accent
   assert.equal(colorAtText(frame, "[HIGH]"), resolveTuiColor("status.danger"));
   assert.equal(colorAtText(frame, "TARGET"), resolveTuiColor("role.gateway"));
   assert.equal(colorAtText(frame, "SUMMARY"), resolveTuiColor("text.muted"));
+  assert.equal(colorAtText(frame, "NEEDS YOU"), resolveTuiColor("text.muted"));
   assert.equal(colorAtText(frame, "Delete generated files"), resolveTuiColor("status.danger"));
 });
 
@@ -74,19 +78,20 @@ test("PlanApprovalOverlay renders pending plan controls with semantic colors", (
   const frame = renderTuiToFrame(React.createElement(PlanApprovalOverlay, {
     summary: "Refactor the TUI footer and command-output focus flow.",
     taskCount: 3
-  }), { columns: 96, rows: 5 });
+  }), { columns: 96, rows: 6 });
   const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("")).join("\n");
 
-  assert.match(plain, /PLAN APPROVAL/);
+  assert.match(plain, /TEAM PLAN CHECK/);
+  assert.match(plain, /team has a plan and is waiting/);
   assert.match(plain, /Refactor the TUI footer/);
-  assert.match(plain, /y approve/);
+  assert.match(plain, /y approve team plan/);
   assert.match(plain, /^\s*─{20,}/m);
   assert.doesNotMatch(plain, /[┌┐└┘]/);
   assert.equal(colorAtText(frame, "[?]"), resolveTuiColor("status.pending"));
-  assert.equal(colorAtText(frame, "REVIEW"), resolveTuiColor("role.gateway"));
+  assert.equal(colorAtText(frame, "PLAN Refactor"), resolveTuiColor("role.gateway"));
   assert.equal(colorAtText(frame, "Refactor the TUI footer"), resolveTuiColor("text.primary"));
   assert.equal(colorAtText(frame, "[ASK]"), resolveTuiColor("status.pending"));
-  assert.equal(colorAtText(frame, "y approve"), resolveTuiColor("text.muted"));
+  assert.equal(colorAtText(frame, "y approve team plan"), resolveTuiColor("text.muted"));
 });
 
 function renderElement(element: React.ReactElement): Promise<string> {

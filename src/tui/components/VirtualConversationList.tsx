@@ -1,5 +1,6 @@
 import React, { useRef } from "react";
 import { Box, Text } from "../ui.js";
+import ScrollBox from "../renderer/components/ScrollBox.js";
 import {
   normalizeConversationScrollOffset,
   applyConversationDynamicLineState,
@@ -207,15 +208,24 @@ export function VirtualConversationList(input: {
           ❯ {layout.stickyPrompt}
         </Text>
       )}
-      <Box flexDirection="column" width="100%" flexGrow={1} flexShrink={1} overflow="hidden">
+      <ScrollBox
+        width="100%"
+        height={layout.transcriptLimit}
+        flexDirection="column"
+        scrollTop={layout.scrollOffset}
+        scrollHeight={layout.totalRows}
+        viewportHeight={layout.transcriptLimit}
+        viewportTop={layout.visibleRange.start}
+        stickyScroll={layout.scrollOffset === 0}
+      >
         {layout.transcript.map((line) => <TranscriptRow key={line.key} line={line} />)}
         <Box flexGrow={1} />
-        {input.tail && (
-          <Box width="100%" flexDirection="column" flexShrink={0}>
-            {input.tail}
-          </Box>
-        )}
-      </Box>
+      </ScrollBox>
+      {input.tail && (
+        <Box width="100%" flexDirection="column" flexShrink={0}>
+          {input.tail}
+        </Box>
+      )}
       {layout.bottomPill && (
         <Box width="100%" justifyContent="center" position="absolute" marginTop={Math.max(0, input.rows - 1)}>
           <Text inverse dimColor wrap="truncate">

@@ -8,7 +8,6 @@ import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../to
 import type { AgentDelegateAction, BlackboardListAction, BlackboardReadAction, BlackboardSearchAction, BlackboardToolContext, BlackboardWriteAction, ToolAction, ToolResult, WebSearchAction } from "../tools/types.js";
 import { formatToolFailureContent } from "../runtime/coding-agent-loop.js";
 import { getDebugLogger, type DebugLogger } from "../runtime/debug-logger.js";
-import { writeTaskOutput } from "../storage/task-output-store.js";
 import { renderHostEnvironmentPrompt } from "../runtime/host-context.js";
 import {
   assertToolActionAllowedBySandbox,
@@ -20,6 +19,7 @@ import {
   type SandboxWritePolicy
 } from "../runtime/sandbox-policy.js";
 import { applyToolResultBudget, createContentReplacementState } from "../runtime/tool-result-budget.js";
+import { materializeToolOutput } from "../runtime/tool-result-materializer.js";
 import {
   buildWorkerToolProgressPayload,
   parseWorkerLoopModelResult,
@@ -1073,56 +1073,17 @@ async function prepareToolOutput(
   result: ToolResult,
   detail: string
 ): Promise<{ content?: string; outputRef?: string; data?: unknown }> {
-  const data = result.data ?? result.metadata;
-  const bytes = Buffer.byteLength(detail, "utf8");
-  const shouldPersist = result.status === "failed";
-  if (!shouldPersist && bytes <= LONG_OUTPUT_THRESHOLD_BYTES) {
-    return { content: detail, outputRef: result.outputRef, data };
-  }
-
-  const ref = await writeTaskOutput({
+  return materializeToolOutput({
     sessionId: envelope.session_id,
     taskId: envelope.task_id ?? "task",
     attempt: envelope.attempt ?? 0,
-    content: detail
+    result,
+    detail,
+    maxInlineBytes: LONG_OUTPUT_THRESHOLD_BYTES,
+    previewBytes: LONG_OUTPUT_PREVIEW_BYTES,
+    persistFailed: true,
+    wrapUndefinedData: false
   });
-  return {
-    content: bytes <= LONG_OUTPUT_THRESHOLD_BYTES
-      ? detail
-      : truncateMiddle(detail, LONG_OUTPUT_PREVIEW_BYTES, ref.bytes, ref.lines, ref.path),
-    outputRef: ref.path,
-    data: attachOutputRefData(data, ref)
-  };
-}
-
-function truncateMiddle(content: string, maxBytes: number, totalBytes: number, totalLines: number, path: string): string {
-  const buffer = Buffer.from(content, "utf8");
-  if (buffer.length <= maxBytes) {
-    return content;
-  }
-  const headBytes = Math.floor(maxBytes * 0.7);
-  const tailBytes = maxBytes - headBytes;
-  const head = buffer.subarray(0, headBytes).toString("utf8");
-  const tail = buffer.subarray(Math.max(headBytes, buffer.length - tailBytes)).toString("utf8");
-  const omitted = Math.max(0, totalBytes - headBytes - tailBytes);
-  return [
-    head.trimEnd(),
-    "",
-    `[... ${omitted} bytes omitted from ${totalLines} lines. Full output: ${path}]`,
-    "",
-    tail.trimStart()
-  ].join("\n");
-}
-
-function attachOutputRefData(data: unknown, ref: { path: string; bytes: number; lines: number }): unknown {
-  const outputRef = { path: ref.path, bytes: ref.bytes, lines: ref.lines };
-  if (isRecord(data)) {
-    return { ...data, outputRef };
-  }
-  if (data === undefined) {
-    return { outputRef };
-  }
-  return { value: data, outputRef };
 }
 
 function selectFallbackReadPaths(context: BlackboardEntry[]): string[] {

@@ -119,7 +119,7 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
   "approval.allow_target": {
     id: "approval.allow_target",
     keys: ["S"],
-    label: "S allow target",
+    label: "S allow same target",
     scope: "approval"
   },
   "approval.deny": {

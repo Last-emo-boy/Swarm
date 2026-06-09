@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { SwarmPolicy, SwarmSession, WorkItem } from "../protocol/types.js";
+import {
+  applyExperienceProfileToPolicy,
+  resolveExperienceProfile,
+  type ExperienceProfileName
+} from "../runtime/experience-template.js";
 import { workItemLabel, workItemSourceId } from "./work-item.js";
 
 export function createSymphonyWorkSession(input: {
@@ -7,6 +12,7 @@ export function createSymphonyWorkSession(input: {
   maxAgents: number;
   timeoutMs: number;
   status?: SwarmSession["status"];
+  experienceProfileName?: ExperienceProfileName;
 }): SwarmSession {
   const now = new Date().toISOString();
   const sessionId = `sym_${randomUUID()}`;
@@ -21,7 +27,9 @@ export function createSymphonyWorkSession(input: {
     participants: [],
     created_at: now,
     updated_at: now,
-    policy: createSymphonyPolicy(input.maxAgents, input.timeoutMs)
+    policy: input.experienceProfileName
+      ? createSymphonyPolicyForExperienceProfile(input.maxAgents, input.timeoutMs, input.experienceProfileName)
+      : createSymphonyPolicy(input.maxAgents, input.timeoutMs)
   };
 }
 
@@ -55,6 +63,18 @@ export function createSymphonyPolicy(maxAgents: number, timeoutMs: number): Swar
       max_tool_calls: 50
     }
   };
+}
+
+export function createSymphonyPolicyForExperienceProfile(
+  maxAgents: number,
+  timeoutMs: number,
+  profileName: ExperienceProfileName
+): SwarmPolicy {
+  const profile = resolveExperienceProfile(profileName);
+  if (!profile) {
+    return createSymphonyPolicy(maxAgents, timeoutMs);
+  }
+  return applyExperienceProfileToPolicy(createSymphonyPolicy(maxAgents, timeoutMs), profile);
 }
 
 export function workItemToTemplateIssue(item: WorkItem): Record<string, unknown> {

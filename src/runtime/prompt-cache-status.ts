@@ -330,7 +330,7 @@ export function promptCacheTrendFromStatuses(
   );
 }
 
-export function cacheFactsFromStatuses(statuses: ResultCardPromptCacheStatus[]): CacheFact[] {
+function cacheFactsFromStatuses(statuses: ResultCardPromptCacheStatus[]): CacheFact[] {
   return statuses.map(cacheFactFromStatus);
 }
 
@@ -378,7 +378,7 @@ export function cacheFactFromStatus(status: ResultCardPromptCacheStatus): CacheF
   };
 }
 
-export function promptCacheTrendFromCacheFacts(
+function promptCacheTrendFromCacheFacts(
   facts: CacheFact[],
   source: PromptCacheTrend["source"] = "provider_usage",
   latest?: ResultCardPromptCacheStatus
@@ -665,7 +665,7 @@ export function swarmCacheImpactFromUsage(
   });
 }
 
-export function swarmCacheImpactFromPromptCacheStatus(
+function swarmCacheImpactFromPromptCacheStatus(
   status: ResultCardPromptCacheStatus | undefined
 ): SwarmContextCacheImpact | undefined {
   if (!status) {

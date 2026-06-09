@@ -72,7 +72,7 @@ export function applyTaskAttemptToTuiState(
   };
 }
 
-export function countCompletedTasks(tasks: Map<string, TuiTaskState>): number {
+function countCompletedTasks(tasks: Map<string, TuiTaskState>): number {
   let completed = 0;
   for (const task of tasks.values()) {
     if (task.phase === "completed" || task.status === "completed" || task.status.endsWith("/completed")) {

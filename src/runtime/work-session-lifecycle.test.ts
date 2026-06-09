@@ -625,6 +625,8 @@ test("runtime coding loop creates WorkSession attempts and WorkSnapshot through 
     assert.equal(finalEvent?.type, "final");
     assert.equal(finalEvent?.checkpoint?.name, "Prove runtime-created WorkSession evidence");
     assert.equal(finalEvent?.checkpoint?.revertAvailable, true);
+    assert.equal(result.result_card?.checkpoint?.name, "Prove runtime-created WorkSession evidence");
+    assert.equal(result.result_card?.checkpoint?.revertAvailable, true);
 
     const row = runtime.sessionStore.get(result.session_id);
     assert(row, "runtime entrypoint should persist a WorkSession row");

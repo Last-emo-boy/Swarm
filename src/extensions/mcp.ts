@@ -343,10 +343,6 @@ export class McpClientProvider implements CapabilityProvider {
   }
 }
 
-export function mcpToolCapabilityId(serverId: string, toolName: string): string {
-  return `mcp_tool.${encodeMcpIdPart(serverId)}.${encodeMcpIdPart(toolName)}`;
-}
-
 function parseMcpToolCapabilityId(capabilityId: string): { serverId: string; toolName: string } {
   const parts = capabilityId.split(".");
   if (parts.length < 3 || parts[0] !== "mcp_tool") {

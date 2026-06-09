@@ -220,7 +220,7 @@ function formatAgentPrefix(agent: RuntimeAgentIdentity | undefined): string {
   return label ? `@${label} ` : "";
 }
 
-export function formatRuntimeAgentLabel(agent: RuntimeAgentIdentity | undefined): string | undefined {
+function formatRuntimeAgentLabel(agent: RuntimeAgentIdentity | undefined): string | undefined {
   if (!agent) {
     return undefined;
   }

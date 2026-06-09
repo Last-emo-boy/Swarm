@@ -184,6 +184,56 @@ test("runtime event mapper covers review verification queue progress and final e
   assert.equal(selectWorkerRows(state, { now: AT }).some((row) => row.currentAction === "progress 1/2"), true);
 });
 
+test("runtime event mapper preserves checkpoint-bearing final result cards", () => {
+  const event: RuntimeEvent = {
+    type: "final",
+    session_id: "sess-checkpoint",
+    status: "completed",
+    content: "Created checkpoint-backed result.",
+    outcome: {
+      final_summary: "Created checkpoint-backed result.",
+      changed_files: [],
+      tests_run: [],
+      intermediate_artifacts: []
+    },
+    checkpoint: {
+      id: "cp_git_1",
+      name: "Workspace checkpoint",
+      mode: "git",
+      status: "available",
+      revertAvailable: true
+    }
+  };
+  const state = reduceRunBoardActions(
+    createInitialRunBoardState({ now: AT }),
+    runBoardActionsFromRuntimeEvent(event, {
+      now: AT,
+      latestResultCard: {
+        sessionId: "sess-checkpoint",
+        status: "completed",
+        route: "work",
+        summary: "Created checkpoint-backed result.",
+        changedFiles: [],
+        checks: [],
+        review: { status: "skipped", summary: "not recorded" },
+        risks: [],
+        checkpoint: {
+          id: "cp_git_1",
+          name: "Workspace checkpoint",
+          mode: "git",
+          revertAvailable: true
+        },
+        artifacts: [],
+        next: ["/diff"]
+      }
+    })
+  );
+
+  assert.equal(state.finalResult?.checkpoint?.id, "cp_git_1");
+  assert.equal(state.finalResult?.checkpoint?.name, "Workspace checkpoint");
+  assert.equal(state.finalResult?.checkpoint?.revertAvailable, true);
+});
+
 test("runtime event mapper keeps unknown events as safe no-ops", () => {
   const actions = runBoardActionsFromRuntimeEvent({ type: "log", level: "info", message: "hello" } as RuntimeEvent, { now: AT });
 

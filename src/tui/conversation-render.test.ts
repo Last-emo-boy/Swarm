@@ -3,7 +3,8 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import test from "node:test";
 import { render } from "./ui.js";
-import { ChatCommandCandidates, ChatInputArea } from "./ChatInputArea.js";
+import { ChatCommandCandidates, ChatInputArea, type ChatInputTelemetryEvent } from "./ChatInputArea.js";
+import { ApprovalOverlay } from "./components/ApprovalOverlay.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout } from "./components/ConversationFullscreenLayout.js";
 import { createTuiRoot } from "./renderer/root.js";
@@ -14,6 +15,7 @@ import { formatCompactIdleRows } from "./SwarmChatApp.js";
 import type { ConversationMessage } from "./conversation-layout.js";
 import { resolveTuiColor } from "./theme.js";
 import type { ResultCard } from "../runtime/result-card.js";
+import type { ToolApprovalRequest } from "../tools/types.js";
 
 test("default conversation surface renders without dashboard chrome", async () => {
   const output = await renderConversationFrame();
@@ -318,7 +320,8 @@ test("default conversation surface keeps prompt visible when slash completions o
   const rows = plainRows(plain);
 
   assert.doesNotMatch(plain, /Command Palette|COMMAND PALETTE/);
-  assert.match(plain, /\/help/);
+  assert.match(plain, /\/review/);
+  assert.doesNotMatch(plain, /\/help/);
   assert.equal(promptRowIndex(plain), closedPromptRow);
   assert(rows.slice(-2).some((line) => line.includes("❯") || line.includes("/")));
   assert(rows.every((line) => displayWidth(line) <= 58));
@@ -390,6 +393,114 @@ test("chat input footer renders cc-style semantic status pills and muted hint", 
   assert.equal(footerRow![cacheIndex]?.style.backgroundColor, resolveTuiColor("surface.selection"));
   assert.equal(footerRow![cacheIndex]?.style.inverse, undefined);
   assert.equal(footerRow![yoloIndex]?.style.color, resolveTuiColor("status.danger"));
+});
+
+test("chat input owns prompt and slash completion keys through focused DOM handler", () => {
+  const submissions: string[] = [];
+  const telemetry: ChatInputTelemetryEvent[] = [];
+  const controllerState = { current: createChatInputControllerState() };
+  const root = createTuiRoot({ columns: 100, rows: 12 });
+
+  try {
+    root.render(React.createElement(ChatInputArea, {
+      onSubmit: (value) => {
+        submissions.push(value);
+      },
+      onCompletionRowsChange: () => undefined,
+      onInputTelemetry: (event) => telemetry.push(event),
+      controllerStateRef: controllerState,
+      inputActive: true,
+      completionPlacement: "inline",
+      columns: 100,
+      maxRows: 12
+    }));
+
+    assert.equal(root.getFocusManager().activeElement?.focusable, true);
+    root.dispatchInput("/");
+    assert.equal(controllerState.current.input.value, "/");
+    assert(telemetry.every((event) => event.source === "dom-renderer"));
+    const candidates = chatInputCompletionCandidates(controllerState.current);
+    assert(candidates.length > 0);
+    assert.equal(candidates[0]?.name, "review");
+
+    root.dispatchInput(undefined, { downArrow: true });
+    assert.equal(selectedChatInputCompletionIndex(controllerState.current) > 0, true);
+    root.dispatchInput(undefined, { upArrow: true });
+    assert.equal(selectedChatInputCompletionIndex(controllerState.current), 0);
+    root.dispatchInput(undefined, { tab: true });
+    assert.equal(controllerState.current.input.value, "/review ");
+    root.dispatchInput("a");
+    root.dispatchInput("u");
+    root.dispatchInput("t");
+    root.dispatchInput("h");
+    root.dispatchInput(undefined, { return: true });
+
+    assert.deepEqual(submissions, ["/review auth"]);
+    assert.equal(controllerState.current.input.value, "");
+    assert(telemetry.some((event) => event.key === "return" && event.submitted));
+    assert(telemetry.every((event) => event.source === "dom-renderer"));
+  } finally {
+    root.unmount();
+  }
+});
+
+test("approval overlay temporarily owns input and restores prompt focus", () => {
+  const submissions: string[] = [];
+  const decisions: string[] = [];
+  const telemetry: ChatInputTelemetryEvent[] = [];
+  const controllerState = { current: createChatInputControllerState() };
+  const root = createTuiRoot({ columns: 100, rows: 16 });
+
+  function Harness({ approval }: { approval: boolean }): React.ReactElement {
+    return React.createElement(React.Fragment, null,
+      React.createElement(ChatInputArea, {
+        onSubmit: (value) => {
+          submissions.push(value);
+        },
+        onCompletionRowsChange: () => undefined,
+        onInputTelemetry: (event) => telemetry.push(event),
+        controllerStateRef: controllerState,
+        inputActive: true,
+        columns: 100,
+        maxRows: 4
+      }),
+      approval ? React.createElement(ApprovalOverlay, {
+        request: approvalFixtureForPromptOwnership(),
+        onDecision(decision) {
+          decisions.push(`${decision.approved}:${decision.rememberForSession}`);
+        }
+      }) : null
+    );
+  }
+
+  try {
+    root.render(React.createElement(Harness, { approval: true }));
+    const prompt = root.getDom().childNodes[0];
+    const approval = root.getDom().childNodes[1];
+    assert(prompt && prompt.nodeName !== "#text");
+    assert(approval && approval.nodeName !== "#text");
+
+    root.focusElement(prompt);
+    root.dispatchInput("a");
+    root.dispatchInput("b");
+    assert.equal(controllerState.current.input.value, "ab");
+
+    root.focusElement(approval);
+    root.dispatchInput("s");
+    root.dispatchInput(undefined, { escape: true });
+    assert.deepEqual(decisions, ["true:true", "false:false"]);
+    assert.equal(controllerState.current.input.value, "ab");
+
+    root.rerender(React.createElement(Harness, { approval: false }));
+    root.dispatchInput("p");
+    root.dispatchInput(undefined, { return: true });
+
+    assert.equal(root.getFocusManager().activeElement, prompt);
+    assert.deepEqual(submissions, ["abp"]);
+    assert(telemetry.every((event) => event.source === "dom-renderer"));
+  } finally {
+    root.unmount();
+  }
 });
 
 test("chat input footer dispatches mouse clicks on service pills", () => {
@@ -701,16 +812,16 @@ test("slash completion overlay centers the selected command without title chrome
     rows: 12,
     bottomRows: 4,
     completionPlacement: "overlay",
-    inputValue: "/cap"
+    inputValue: "/rev"
   });
   const plain = terminalFrameText(output);
   const rows = plainRows(plain);
 
   assert.doesNotMatch(plain, /Command Palette|COMMAND PALETTE|Up\/Down select/);
-  assert.match(plain, /\/capabilities/);
-  assert(rows.some((line) => line.trimStart().startsWith("› /capabilities")));
-  assert(rows.some((line) => line.includes("[Config]")));
-  assert(rows.slice(-2).some((line) => line.includes("❯") || line.includes("/cap")));
+  assert.match(plain, /\/review/);
+  assert(rows.some((line) => line.trimStart().startsWith("› /review")));
+  assert(rows.some((line) => line.includes("[Core]")));
+  assert(rows.slice(-2).some((line) => line.includes("❯") || line.includes("/rev")));
   assert(rows.every((line) => displayWidth(line) <= 72));
 });
 
@@ -1025,6 +1136,24 @@ function sampleResultCard(): ResultCard {
     risks: [],
     artifacts: [],
     next: []
+  };
+}
+
+function approvalFixtureForPromptOwnership(): ToolApprovalRequest {
+  return {
+    id: "approval-prompt-ownership",
+    action: "shell.exec",
+    summary: "Run a focused renderer verification command.",
+    detail: "cwd=E:/Playground/Swarm\ncommand=node --import tsx --test src/tui/conversation-render.test.ts",
+    risk: "shell",
+    risk_class: "r3",
+    target: "node --import tsx --test src/tui/conversation-render.test.ts",
+    why_now: "The prompt focus regression must be verified before completing the task.",
+    predicted_impact: "Runs a local test command.",
+    rollback_plan: "No workspace changes are expected from this command.",
+    permission_decision: "ask",
+    permission_name: "shell.exec",
+    permission_rule: "r3 shell"
   };
 }
 

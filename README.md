@@ -1,23 +1,24 @@
 # Swarm
 
-Swarm is a local agent workspace for coding work. The CLI TUI is the main
-product surface: create or select a Task, assign Workers, watch Activity,
-inspect Output, use Skills, run Automations, and keep Trace/debug details
-available when needed.
+Swarm is a local agent workspace for result-first coding scenarios. Start with a
+focused request like "review auth and permissions", get a scannable report with
+findings and evidence, then open the Swarm Observatory only when you want to see
+team activity, boards, workers, trace, or deeper runtime details.
 
-The product bias is simple: finish useful workspace work, show task progress and
-result evidence first, and keep the internal Work Kernel, ASP protocol, Gateway,
-and Symphony surfaces available without making them the default mental model.
+The product bias is simple: deliver a useful result first, keep evidence close
+to the report, and preserve the internal Work Kernel, ASP protocol, Gateway, and
+Symphony depth as opt-in power tools instead of the default mental model.
 
 ## What It Does
 
 | Area | Current behavior |
 | --- | --- |
-| Main entry | `swarm` opens the Board-first Local Agent Workspace TUI by default. |
-| Task-centric UX | Board, task detail, activity, output, result evidence, and next actions are derived from the shared Work Kernel. |
-| Local coding | Reads, edits, runs shell/test/lint/build/git tools, and verifies results. |
+| Main entry | `swarm` opens the result-first TUI; `swarm review "focus"` runs the fastest Codebase Deep Review path. |
+| Scenarios | Review, planning, safe draft, and coding-loop flows wrap the same kernel in named experience templates. |
+| Result-first UX | Result reports, evidence, changed files, checks, risks, and next actions lead before process detail. |
+| Local coding | Reads, edits, runs shell/test/lint/build/git tools, and verifies results inside local policy boundaries. |
 | Memory | Sessions keep compacted context and require freshness checks on resume. |
-| Workers | The main Swarm owns worker spawning, continuation, stop, handoff, and teammate-style projections. |
+| Observatory | Boards, workers, trace, blackboard, approvals, and Gateway streams remain available for power users. |
 | Extensions | Built-in tools, MCP, skills, slash commands, agent specs, and plugins share one capability plane. |
 | Automations | Symphony remains the internal automation engine; product surfaces call it Automations. |
 
@@ -86,7 +87,7 @@ npm install -g .
 # Configure provider/model/API key in the TUI
 swarm onboard
 
-# Start the product UI
+# Start the result-first product UI
 swarm
 ```
 
@@ -100,7 +101,13 @@ swarm models set \
   --aggregator kimi-coding/kimi-for-coding
 ```
 
-Run one objective without the TUI:
+Run the first killer scenario without opening the TUI:
+
+```bash
+swarm review "auth and permissions" --read-only
+```
+
+Run any custom objective without the TUI:
 
 ```bash
 swarm run "read this repo and summarize the main runtime"
@@ -110,15 +117,18 @@ swarm run "read this repo and summarize the main runtime"
 
 1. Run `swarm` in a project directory.
 2. Choose the Codebase Deep Review starter, or ask Swarm to review auth and permissions.
-3. Create a Task from the prompt or select an existing Task.
-4. Assign work to main Swarm, a Worker, or a worker-style handoff when useful.
-5. Watch Activity, blockers, approvals, changed files, checks, and Output.
-6. Read the result evidence, then Continue, Verify, create a follow-up Task, or
-   archive the work.
+3. Swarm scopes the work and runs the local team behind the scenes.
+4. Read the Result Report first: prioritized findings, severity, file:line,
+   concrete fixes, confidence, and evidence.
+5. Steer the team only when useful with `/reply`, `/interrupt`, or an approval.
+6. Open Observatory views such as Board, Team, Trace, or Debug only when you want
+   to inspect how the result was produced.
 
 Useful product-path commands:
 
 ```bash
+swarm review "auth and permissions" --read-only
+swarm metrics --demo
 swarm board --json
 swarm task list
 swarm task show <task_id>
@@ -127,10 +137,10 @@ swarm automation list
 swarm automation run --workflow WORKFLOW.md
 ```
 
-Swarm is not a report generator by default. For coding and project work, the
-final product is real workspace changes. Long logs, worker drafts, trace
-snapshots, and large tool outputs are stored under local Swarm state instead of
-flooding the chat.
+Swarm is still not only a report generator. For coding and project work, the
+final product can be real workspace changes. Long logs, worker drafts, trace
+snapshots, and large tool outputs stay under local Swarm state instead of
+flooding the main result.
 
 ## CLI
 
@@ -139,6 +149,7 @@ swarm [--debug] [--debug-trace] [--yolo]
 
 Commands:
   chat       Open the interactive Swarm TUI (default)
+  review     Run the result-first Codebase Deep Review scenario
   run        Run one objective non-interactively
   work       Run one objective through the local coding_loop main path
   watch      Follow the live Gateway event stream for the current workspace
@@ -146,12 +157,13 @@ Commands:
   checkpoints
              List, create, and revert local workspace checkpoints
   sessions   List, inspect, resume, execute, and fork persisted WorkSessions
-  board      Show the Local Agent Workspace board projection
+  board      Show the advanced Swarm Observatory projection
   task       List and inspect task-centric Agent Workspace projections
-  workers    Inspect, watch, stop, and continue persisted worker contracts
+  workers    Inspect, watch, stop, and continue Team worker contracts
   handoffs   Inspect, watch, and take back persisted handoff contracts
   approvals  Inspect approval records and answer live Gateway approval requests
   ps         Alias for `swarm sessions`
+  metrics    Show local-only product translation metrics for result-first scenarios
   doctor     Diagnose local model setup, stores, extensions, logs, and Symphony preflight
   logs       List recent debug logs or tail the latest matching log file
   capabilities
@@ -187,6 +199,7 @@ vLLM, LocalAI, and custom OpenAI-compatible or Claude-compatible endpoints.
 Headless runs can emit machine-readable artifacts:
 
 ```bash
+swarm review "auth and permissions" --read-only
 swarm run --mode auto --json --report report.json "fix the failing tests"
 swarm work "fix the failing tests"
 swarm run --stream-json "fix the failing tests"
@@ -235,6 +248,8 @@ swarm handoffs --session sess_123
 swarm handoffs watch handoff_123 --gateway-url http://127.0.0.1:38171 --protocol runtime --jsonl
 swarm handoffs take-back handoff_123 --gateway-url http://127.0.0.1:38171
 swarm ps --limit 5
+swarm metrics --demo
+swarm metrics --json
 swarm run --telemetry telemetry.json --trajectory trajectory.json "inspect this repo"
 swarm doctor
 swarm doctor ./WORKFLOW.md --workspace ../other-repo
@@ -271,6 +286,20 @@ swarm approvals approve approval_123 --gateway-url http://127.0.0.1:38171
 `swarm work ...` is the short main-path command for the local `coding_loop`.
 It accepts the same run flags as `swarm run` and sets `--mode coding_loop`
 before execution.
+
+`swarm review ...` is the fastest result-first scenario. It wraps the objective
+in the Codebase Deep Review experience so the run asks for prioritized findings,
+severity, file:line references, concrete fixes, confidence, and evidence
+summaries without making the user operate the underlying team mechanics.
+
+`swarm metrics` summarizes local product validation signals for the
+result-first translation. It reads
+`~/.swarm/state/product-translation-metrics.jsonl` by default, or the path in
+`SWARM_PRODUCT_METRICS_PATH`. Use `swarm metrics --demo` for a smoke summary and
+`swarm metrics --json` for automation. Set `SWARM_PRODUCT_METRICS=0` to disable
+recording. The initial signals are time to impressive result, scenario
+completion rate, sessions that never opened Observatory views, and steering
+usage. Prompt text is not stored, and no metrics leave the machine.
 
 `swarm doctor` prints a local readiness report for the current workspace:
 models and API keys, permission mode, core store paths, recent Kernel state,
@@ -333,11 +362,11 @@ session lifecycle controls use the words operators naturally reach for. The
 default view follows the stable work-protocol stream, while `--protocol runtime`
 and `--jsonl` expose raw event automation.
 
-`swarm workers` turns persisted worker contracts into a first-class CLI surface.
-Local `list` and `show` commands inspect workspace or session-family worker
-state, `watch` tails the parent session and attached worker session through the
-Gateway so you can follow live delegated progress, and `stop` / `continue`
-bridge through the local Gateway to control workers without opening the TUI.
+`swarm board` and `swarm workers` are Swarm Observatory tools. Local `list` and
+`show` commands inspect workspace or session-family team state, `watch` tails
+the parent session and attached worker session through the Gateway so you can
+follow live delegated progress, and `stop` / `continue` bridge through the local
+Gateway to control workers without opening the TUI.
 
 `swarm handoffs` does the same for persisted handoff contracts. `list` and
 `show` inspect session-family handoff state, `watch` follows the active handoff

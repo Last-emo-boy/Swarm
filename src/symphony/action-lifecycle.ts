@@ -77,7 +77,7 @@ export function createSymphonyActionFact(input: Omit<SymphonyActionFact, "schema
   });
 }
 
-export function symphonyActionFactFromUnknown(value: unknown): SymphonyActionFact | undefined {
+function symphonyActionFactFromUnknown(value: unknown): SymphonyActionFact | undefined {
   if (!isRecord(value)) {
     return undefined;
   }

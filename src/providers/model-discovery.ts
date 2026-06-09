@@ -31,7 +31,7 @@ export async function refreshProviderModels(providerId: string): Promise<ModelDi
   }
 }
 
-export async function fetchProviderModels(provider: ProviderDefinition, apiKey: string): Promise<string[]> {
+async function fetchProviderModels(provider: ProviderDefinition, apiKey: string): Promise<string[]> {
   if (!provider.modelListURL || provider.modelListProtocol === "none") {
     throw new Error(`Provider "${provider.id}" does not support automatic model discovery.`);
   }

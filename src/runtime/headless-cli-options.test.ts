@@ -11,6 +11,67 @@ type CliResult = {
   stderr: string;
 };
 
+test("swarm help leads with result-first review and Observatory positioning", async () => {
+  const result = await runCli(["help"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /Swarm Local Agent Workspace CLI/);
+  assert.match(result.stdout, /Work:/);
+  assert.match(result.stdout, /Ask:/);
+  assert.match(result.stdout, /Automate:/);
+  assert.match(result.stdout, /Setup:/);
+  assert.match(result.stdout, /checkpoint undo/i);
+  assert.match(result.stdout, /Codebase Deep Review/);
+  assert.match(result.stdout, /Fix A Failing Test/);
+  assert.match(result.stdout, /Explain This Repo/);
+  assert.match(result.stdout, /help --advanced/);
+  assert.doesNotMatch(result.stdout, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
+});
+
+test("swarm advanced help keeps operator surfaces behind explicit detail", async () => {
+  const result = await runCli(["help", "--advanced"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /Result-first scenarios/);
+  assert.match(result.stdout, /swarm review \[focus\] \[run flags\]/);
+  assert.match(result.stdout, /Codebase Deep Review/);
+  assert.match(result.stdout, /Swarm Observatory/);
+  assert.match(result.stdout, /Kernel|Gateway|Symphony|MCP|LSP/);
+});
+
+test("swarm review help is available without provider preflight", async () => {
+  const result = await runCli(["review", "--help"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /Usage: swarm review \[focus\] \[run flags\]/);
+  assert.match(result.stdout, /result-first Codebase Deep Review/);
+  assert.match(result.stdout, /swarm review "auth and permissions" --read-only/);
+});
+
+test("swarm metrics demo prints local product validation summary", async () => {
+  const result = await runCli(["metrics", "--demo"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /Product Translation Metrics/);
+  assert.match(result.stdout, /time_to_impressive_result/);
+  assert.match(result.stdout, /privacy=local-only prompt_text_stored=false/);
+});
+
+test("swarm metrics demo supports json output", async () => {
+  const result = await runCli(["metrics", "--demo", "--json"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+  assert.equal(parsed.schema_version, "swarm.product_metrics_summary.v1");
+  assert.equal((parsed.privacy as Record<string, unknown>).local_only, true);
+  assert.equal((parsed.privacy as Record<string, unknown>).prompt_text_stored, false);
+});
+
 const invalidRunOptionCases: Array<{
   name: string;
   args: string[];

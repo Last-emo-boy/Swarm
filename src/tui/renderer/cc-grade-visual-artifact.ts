@@ -135,7 +135,7 @@ export function renderCcGradeVisualArtifact(input: {
   };
 }
 
-export function renderCcGradeVisualProfileArtifact(input: {
+function renderCcGradeVisualProfileArtifact(input: {
   profile: CcGradeVisualProfileName;
   columns: number;
   rows: number;
@@ -167,7 +167,7 @@ export function renderCcGradeVisualProfileArtifact(input: {
   }));
 }
 
-export function summarizeCcGradeVisualArtifact(artifact: CcGradeVisualArtifact): CcGradeVisualArtifactSummary {
+function summarizeCcGradeVisualArtifact(artifact: CcGradeVisualArtifact): CcGradeVisualArtifactSummary {
   return {
     kind: artifact.kind,
     createdAt: artifact.createdAt,

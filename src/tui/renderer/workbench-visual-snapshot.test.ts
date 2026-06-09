@@ -43,7 +43,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
       assert.doesNotMatch(text, /Reviewer is running/);
       assert.doesNotMatch(text, /Active helpers/);
       assert.doesNotMatch(text, /Tools/);
-      assert.match(text, /ACTION LOG/);
+      assert.match(text, /ACTIVITY \//);
       assert.doesNotMatch(text, /Mode|Plan & Execute|Workspace Write|Provider: openai|kimi-k2\.6/);
     }
     assert.match(text, /Ask Swarm/);
@@ -60,7 +60,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
       assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "TARGET"), "TARGET")?.color, resolveTuiColor("role.gateway"));
     }
     if (viewport.columns >= 132) {
-      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "ACTION LOG"), "ACTION LOG")?.color, resolveTuiColor("text.primary"));
+      assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "ACTIVITY /"), "ACTIVITY /")?.color, resolveTuiColor("text.primary"));
     }
   }
 

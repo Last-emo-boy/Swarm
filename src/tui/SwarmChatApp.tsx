@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "./ui.js";
+import { Box, Text, resolveTuiRendererMode, useApp, useInput, useStdout } from "./ui.js";
 import {
   addPermissionAdditionalDirectory,
   addCustomProvider,
@@ -31,8 +31,15 @@ import { buildSessionWorkBoard, buildWorkspaceWorkBoard, formatWorkBoard, isWork
 import type { CaseWorkbenchDetail, CaseWorkbenchItem } from "../runtime/case-workbench.js";
 import { buildLatestRunDiagnosis } from "../runtime/latest-diagnosis.js";
 import { buildProtocolDebugTimeline, formatProtocolDebugTimeline, type ProtocolTimelineCategory, type ProtocolTimelineFilter } from "../runtime/protocol-debug-timeline.js";
+import { buildCodebaseDeepReviewObjective } from "../runtime/experience-template.js";
+import {
+  createProductMetricFlowId,
+  recordProductMetricEvent,
+  type ProductMetricEventInput,
+  type ProductMetricObservatoryView
+} from "../runtime/product-translation-metrics.js";
 import type { RunMode, RunSandboxMode } from "../runtime/execution-router.js";
-import type { PlannedSession } from "../runtime/orchestrator.js";
+import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
 import { buildResultCardFromSnapshot, type ResultCard as RuntimeResultCard } from "../runtime/result-card.js";
 import { formatPromptCacheBrief, formatPromptCacheDetailWithTrend } from "../runtime/prompt-cache-status.js";
 import type { PromptCacheRuntimeStatus } from "../runtime/prompt-cache-status.js";
@@ -44,11 +51,11 @@ import {
   sandboxFailureSummary,
   sandboxRecoverySuggestion
 } from "../runtime/sandbox-policy.js";
-import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
+import { normalizeToolAction, runLocalTool } from "../tools/local-tools.js";
 import { createToolApprovalRequest, decideToolPermission } from "../tools/permissions.js";
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
 import type { PermissionMode } from "../config/settings.js";
-import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js";
+import { readTaskOutput } from "../storage/task-output-store.js";
 import type { BlackboardEntry, GeneratedPlan, RunAttempt, WorkItem, WorkspaceLease } from "../protocol/types.js";
 import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
@@ -73,6 +80,7 @@ import {
   renderSlashHelp,
   type SlashCommandSpec
 } from "./slash-commands.js";
+import { prepareSlashToolOutput } from "./slash-tool-output.js";
 import { buildResumeCommandResult, decideResumeExecution } from "./resume-control.js";
 import { ChatCommandCandidates, ChatInputArea, emptyChatCompletionState, type ChatCompletionState, type ChatInputTelemetryEvent } from "./ChatInputArea.js";
 import { createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
@@ -322,8 +330,6 @@ const customFieldOrder: OnboardField[] = [
   "worker",
   "aggregator"
 ];
-const SLASH_OUTPUT_INLINE_BYTES = 18_000;
-const SLASH_OUTPUT_PREVIEW_BYTES = 6_000;
 const LOOP_ACTIVITY_TIMELINE_LIMIT = 6;
 const MESSAGE_OUTPUT_PREVIEW_LINES = 4;
 const MESSAGE_OUTPUT_PREVIEW_CHARS = 800;
@@ -358,6 +364,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const approvalResolver = useRef<((approved: boolean) => void) | undefined>();
   const sessionApprovalAllow = useRef<Set<string>>(new Set());
   const chatSessionId = useRef(createChatSessionId());
+  const productReviewFlow = useRef<{ flowId: string; startedAtMs: number; completed?: boolean } | undefined>();
   const symphonyDaemonManager = useRef<SymphonyDaemonManager | undefined>();
   const [approval, setApproval] = useState<ToolApprovalRequest | undefined>();
   const [runtime, setRuntime] = useState<SwarmRuntime | undefined>(() => (needsOnboarding ? undefined : createRuntime()));
@@ -374,6 +381,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [collaborationOverlayFilter, setCollaborationOverlayFilter] = useState("");
   const [collaborationOverlayFiltering, setCollaborationOverlayFiltering] = useState(false);
   const [decisionTrailExpanded, setDecisionTrailExpanded] = useState(false);
+  const [teamReasoningExpanded, setTeamReasoningExpanded] = useState(false);
   const [latestDetail, setLatestDetail] = useState("");
   const [latestDetailSource, setLatestDetailSource] = useState<"none" | "ai" | "task" | "command" | "event">("none");
   const [onboard, setOnboard] = useState<OnboardState>(() => createOnboardState(needsOnboarding));
@@ -443,6 +451,32 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     const nextSettings = loadSwarmSettings();
     setSettingsSnapshot(nextSettings);
     return nextSettings;
+  }
+
+  function recordTuiProductMetric(input: ProductMetricEventInput): void {
+    try {
+      recordProductMetricEvent(input);
+    } catch {
+      // Local product metrics must never affect interactive work.
+    }
+  }
+
+  function recordTuiObservatoryOpened(view: ProductMetricObservatoryView, trigger: string): void {
+    recordTuiProductMetric({
+      event: "observatory_opened",
+      source: "tui",
+      flow_id: productReviewFlow.current?.flowId,
+      session_id: latestResultCard?.sessionId ?? lastSessionId,
+      view,
+      trigger
+    });
+  }
+
+  function recordTuiPaneOpened(pane: MainPaneId, trigger: string): void {
+    const view = productMetricViewForPane(pane);
+    if (view) {
+      recordTuiObservatoryOpened(view, trigger);
+    }
   }
 
   function buildPermissionsCommandResult(settings = loadSwarmSettings()): SlashCommandResult {
@@ -977,13 +1011,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     try {
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode, tuiChatSessionId: chatSessionId.current });
       const display = formatExecutionResultDisplay(result, runtime);
-      setLatestResultCard(result.result_card);
-      recordRunBoardResultCard(result.result_card);
-      recordAiDetail(display.detail);
+      recordExecutionCompletion(result, display);
       appendChatMessage({
         role: "assistant",
         brief: display.brief,
-        detail: display.detail,
+        detail: executionCompletionDetail(result, display.detail),
         preview: display.preview
       });
     } catch (error) {
@@ -1007,13 +1039,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     try {
       const result = await runtime.execute(planned);
       const display = formatExecutionResultDisplay(result, runtime);
-      setLatestResultCard(result.result_card);
-      recordRunBoardResultCard(result.result_card);
-      recordAiDetail(display.detail);
+      recordExecutionCompletion(result, display);
       appendChatMessage({
         role: "assistant",
         brief: display.brief,
-        detail: display.detail,
+        detail: executionCompletionDetail(result, display.detail),
         preview: display.preview
       });
     } catch (error) {
@@ -1058,6 +1088,50 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       card,
       at
     }]));
+  }
+
+  function recordExecutionCompletion(
+    result: ExecutionResult,
+    display: ReturnType<typeof formatExecutionResultDisplay>
+  ): void {
+    const detail = executionCompletionDetail(result, display.detail);
+    setLatestResultCard(result.result_card);
+    recordRunBoardResultCard(result.result_card);
+    setLastSessionId(result.session_id);
+    setDecisionTrailExpanded(false);
+    setTeamReasoningExpanded(false);
+    if (result.result_card) {
+      const activeReviewFlow = productReviewFlow.current && !productReviewFlow.current.completed
+        ? productReviewFlow.current
+        : undefined;
+      recordTuiProductMetric({
+        event: "result_card_shown",
+        source: "tui",
+        flow_id: activeReviewFlow?.flowId,
+        session_id: result.session_id,
+        scenario: activeReviewFlow ? "codebase_deep_review" : undefined,
+        route: result.result_card.route,
+        status: result.result_card.status,
+        has_result_card: true,
+        duration_ms: activeReviewFlow ? Date.now() - activeReviewFlow.startedAtMs : undefined,
+        changed_files: result.result_card.changedFiles.length,
+        checks: result.result_card.checks.length,
+        findings: result.result_card.reviewFindings?.length ?? 0
+      });
+      if (activeReviewFlow) {
+        productReviewFlow.current = { ...activeReviewFlow, completed: true };
+      }
+      setLatestDetail(detail);
+      setLatestDetailSource("ai");
+      setDetailScroll(0);
+      setDetailOpen(false);
+      setMainPane("plan");
+    } else {
+      if (productReviewFlow.current && !productReviewFlow.current.completed) {
+        productReviewFlow.current = { ...productReviewFlow.current, completed: true };
+      }
+      recordAiDetail(detail);
+    }
   }
 
   function recordCommandDetail(detail: string, open = false): void {
@@ -1215,6 +1289,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleRunBoardResultAction(action: RunBoardResultAction): void {
+    if (action.command === "swarm-observatory") {
+      recordTuiObservatoryOpened("team_reasoning", "result_action");
+      setTeamReasoningExpanded(true);
+      setDetailOpen(false);
+      setMainPane("plan");
+      return;
+    }
     if (action.command.startsWith("/")) {
       void handleSlashCommand(action.command);
       return;
@@ -1494,6 +1575,16 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setDecisionTrailExpanded((value) => !value);
     logCollaborationTelemetry("tui.decision_trail.expand", {
       result: decisionTrailExpanded ? "collapsed" : "expanded"
+    });
+  }
+
+  function toggleTeamReasoning(): void {
+    if (!teamReasoningExpanded) {
+      recordTuiObservatoryOpened("team_reasoning", "toggle");
+    }
+    setTeamReasoningExpanded((value) => !value);
+    logCollaborationTelemetry("tui.team_reasoning.expand", {
+      result: teamReasoningExpanded ? "collapsed" : "expanded"
     });
   }
 
@@ -1919,10 +2010,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   function handleOnboardInput(
     character: string | undefined,
     key: { return?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean }
-  ): void {
+  ): boolean {
     if (key.return || key.tab) {
       advanceOnboard();
-      return;
+      return true;
+    }
+
+    const currentEdit = editOnboardFieldInput(onboard.values[onboard.field], character, key);
+    if (!currentEdit.handled) {
+      return false;
     }
 
     setOnboard((state) => {
@@ -1937,6 +2033,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         error: undefined
       };
     });
+    return true;
   }
 
   function advanceOnboard(): void {
@@ -2237,6 +2334,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!pane) {
         throw new Error("Usage: /view board|tasks|workers|activity|output|skills|automations|trace|chat|run");
       }
+      recordTuiPaneOpened(pane, "slash_view");
       setMainPane(pane);
       if (pane === "chat") {
         setConversationViewport(resetConversationViewport());
@@ -2547,14 +2645,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           });
       void runPromise.then((result) => {
         const display = formatExecutionResultDisplay(result, runtime);
-        setLatestResultCard(result.result_card);
-        recordRunBoardResultCard(result.result_card);
-        recordAiDetail(display.detail);
-        setLastSessionId(result.session_id);
+        recordExecutionCompletion(result, display);
         appendChatMessage({
           role: "assistant",
           brief: display.brief,
-          detail: display.detail,
+          detail: executionCompletionDetail(result, display.detail),
           preview: display.preview
         });
       }).catch((error: unknown) => {
@@ -3180,9 +3275,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       try {
         const result = await runtime.improveSelf();
         const display = formatExecutionResultDisplay(result, runtime);
-        recordAiDetail(display.detail);
-        setLastSessionId(result.session_id);
-        return { brief: display.brief, detail: display.detail, detailSource: "ai" };
+        recordExecutionCompletion(result, display);
+        return { brief: display.brief, detail: executionCompletionDetail(result, display.detail), detailSource: "ai" };
       } finally {
         setBusy(false);
       }
@@ -3310,17 +3404,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
     if (command === "interrupt") {
       if (!runtime) throw new Error("Runtime is not ready.");
-      const message = parsed?.rawArgs || args.join(" ").trim() || "User requested an interrupt. Reassess before continuing.";
+      const message = parsed?.rawArgs || args.join(" ").trim() || "Pause at the next safe boundary, explain what you found, and wait for guidance.";
       const target = runtime.requestInterrupt(message);
       setLastSessionId(target.session_id);
+      recordTuiProductMetric({
+        event: "steering_used",
+        source: "tui",
+        flow_id: productReviewFlow.current?.flowId,
+        session_id: target.session_id,
+        route: target.route,
+        steering: "interrupt",
+        trigger: "slash"
+      });
       const detail = [
-        "Interrupt Request",
+        "Team Steering",
         `Session: ${target.session_id}`,
         `Route: ${target.route}`,
-        `Message: ${message}`
+        `Instruction: ${message}`
       ].join("\n");
       return {
-        brief: appendDetailShortcut(`Interrupt requested for ${target.session_id} (${target.route})`),
+        brief: appendDetailShortcut(`Team asked to pause and reassess ${target.session_id} (${target.route})`),
         detail
       };
     }
@@ -3331,14 +3434,23 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (!message) throw new Error("Usage: /reply <message>");
       const target = await runtime.sendUserMessage(message);
       setLastSessionId(target.session_id);
+      recordTuiProductMetric({
+        event: "steering_used",
+        source: "tui",
+        flow_id: productReviewFlow.current?.flowId,
+        session_id: target.session_id,
+        route: target.route,
+        steering: "reply",
+        trigger: "slash"
+      });
       const detail = [
-        "Live Reply",
+        "Guide the Team",
         `Session: ${target.session_id}`,
         `Route: ${target.route}`,
-        `Message: ${message}`
+        `Guidance: ${message}`
       ].join("\n");
       return {
-        brief: appendDetailShortcut(`Live reply sent to ${target.session_id} (${target.route})`),
+        brief: appendDetailShortcut(`Guidance sent to ${target.session_id} (${target.route})`),
         detail
       };
     }
@@ -3421,6 +3533,42 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           ? "Execution mode set to full_swarm. This path is experimental; use it for explicit multi-agent tasks."
           : `Execution mode set to ${normalized}.`
       };
+    }
+
+    if (command === "review") {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      const focus = parsed?.rawArgs || args.join(" ").trim();
+      const objective = buildCodebaseDeepReviewObjective(focus);
+      const flowId = createProductMetricFlowId("review");
+      productReviewFlow.current = { flowId, startedAtMs: Date.now(), completed: false };
+      recordTuiProductMetric({
+        event: "scenario_started",
+        source: "tui",
+        flow_id: flowId,
+        scenario: "codebase_deep_review",
+        route: runMode,
+        focus_provided: focus.trim().length > 0
+      });
+      setBusy(true);
+      setLoopActivity(undefined);
+      setLoopActivityTimeline([]);
+      setLatestResultCard(undefined);
+      appendReadRootPreflightMessage(objective);
+      try {
+        const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode, tuiChatSessionId: chatSessionId.current });
+        const display = formatExecutionResultDisplay(result, runtime);
+        recordExecutionCompletion(result, display);
+        return {
+          brief: `${display.brief} via /review.`,
+          detail: executionCompletionDetail(result, display.detail),
+          detailSource: "ai"
+        };
+      } finally {
+        if (productReviewFlow.current?.flowId === flowId && !productReviewFlow.current.completed) {
+          productReviewFlow.current = { ...productReviewFlow.current, completed: true };
+        }
+        setBusy(false);
+      }
     }
 
     if (command === "density") {
@@ -3574,9 +3722,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     try {
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode });
       const display = formatExecutionResultDisplay(result, runtime);
+      recordExecutionCompletion(result, display);
       return {
         brief: `${display.brief} via /${command.contribution.id}.`,
-        detail: display.detail,
+        detail: executionCompletionDetail(result, display.detail),
         detailSource: "ai"
       };
     } finally {
@@ -3596,9 +3745,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     try {
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode });
       const display = formatExecutionResultDisplay(result, runtime);
+      recordExecutionCompletion(result, display);
       return {
         brief: `${display.brief} via /${command.name}.`,
-        detail: display.detail,
+        detail: executionCompletionDetail(result, display.detail),
         detailSource: "ai"
       };
     } finally {
@@ -3733,7 +3883,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   if (onboard.enabled) {
     return (
       <Box width={terminalColumns} height={terminalRows} flexDirection="column" overflow="hidden" paddingX={1}>
-        <OnboardView state={onboard} />
+        <OnboardView state={onboard} onInput={handleOnboardInput} />
       </Box>
     );
   }
@@ -3841,7 +3991,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       onRowClick={openCollaborationOverlayRow}
     />
   ) : null;
-  const overviewSurface = shouldRenderRunBoard
+  const shouldShowObservatorySurface = shouldRenderRunBoard || teamReasoningExpanded;
+  const overviewSurface = shouldShowObservatorySurface
     ? (
       <Box flexDirection="column" width="100%">
         <RunBoardSurface
@@ -3869,6 +4020,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           onNextAction={handleRunBoardResultAction}
           decisionTrailExpanded={decisionTrailExpanded}
           onDecisionTrailToggle={toggleDecisionTrail}
+          teamReasoningExpanded={teamReasoningExpanded}
+          onTeamReasoningToggle={toggleTeamReasoning}
         />
       </Box>
       : <Box flexDirection="column" width="100%">
@@ -3877,6 +4030,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           density={screenDensity}
           decisionTrailExpanded={decisionTrailExpanded}
           onDecisionTrailToggle={toggleDecisionTrail}
+          teamReasoningExpanded={teamReasoningExpanded}
+          onTeamReasoningToggle={toggleTeamReasoning}
         />
       </Box>;
   const workbenchMetrics = swarmWorkbenchMetrics({
@@ -3975,6 +4130,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const workbenchFooterHint = mainPane === "board"
     ? "Reply or start the next task  Ctrl+O details"
     : chatFooterHint;
+  const guideTeamActive = busy || isActiveRunBoardPhase(displayedRunBoardPhase);
+  const guideTeamPlaceholder = guideTeamActive
+    ? "Guide the team: change focus, ask for status, or pause and explain"
+    : undefined;
+  const guideTeamPromptLabel = guideTeamActive ? "guide" : undefined;
   const workbenchSubtitle = mainPane === "board"
     ? caseWorkbenchSubtitle(selectedCase, caseWorkbench?.summary.inbox ?? 0, workBoardSurface.subtitle)
     : workbenchStatusSubtitle({
@@ -4018,9 +4178,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         onCompletionStateChange={setChatCompletion}
         controllerStateRef={chatInputState}
         extraCommands={extensionCommandCandidates}
-        promptLabel={mainPane === "board" ? "reply" : routeBadge(routeLabel).toLowerCase()}
+        promptLabel={mainPane === "board" ? "reply" : guideTeamPromptLabel ?? routeBadge(routeLabel).toLowerCase()}
         sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
-        placeholder={mainPane === "board" ? "Reply or start the next task" : undefined}
+        placeholder={mainPane === "board" ? "Reply or start the next task" : guideTeamPlaceholder}
         footerHint={workbenchFooterHint}
         footerActivityLabel={transcriptSearch.active ? "search" : undefined}
         footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
@@ -4119,6 +4279,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
                 onNextAction={handleRunBoardResultAction}
                 decisionTrailExpanded={decisionTrailExpanded}
                 onDecisionTrailToggle={toggleDecisionTrail}
+                teamReasoningExpanded={teamReasoningExpanded}
+                onTeamReasoningToggle={toggleTeamReasoning}
               />
             </Box>
           ) : messages.length === 0 ? (
@@ -4202,8 +4364,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
               onCompletionStateChange={setChatCompletion}
               controllerStateRef={chatInputState}
               extraCommands={extensionCommandCandidates}
-              promptLabel={routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase()}
+              promptLabel={guideTeamPromptLabel ?? (routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase())}
               sandboxLabel={runSandboxMode === "workspace-write" ? undefined : sandboxBadge(runSandboxMode).toLowerCase()}
+              placeholder={guideTeamPlaceholder}
               footerHint={workbenchMetrics.enabled ? workbenchFooterHint : bottomFooterHint}
               footerActivityLabel={transcriptSearch.active ? "search" : undefined}
               footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
@@ -4297,11 +4460,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           renderCenterBottom={renderConversationBottom}
           onNavigate={(id) => {
             if (mainPaneOrder.includes(id as MainPaneId)) {
+              recordTuiPaneOpened(id as MainPaneId, "navigation");
               setMainPane(id as MainPaneId);
             }
           }}
           onSelectSession={(id) => {
             setLastSessionId(id);
+            recordTuiPaneOpened("board", "session_select");
             setMainPane("board");
           }}
         />
@@ -4367,61 +4532,30 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       renderCenterBottom={renderWorkbenchBottom}
       onNavigate={(id) => {
         if (mainPaneOrder.includes(id as MainPaneId)) {
+          recordTuiPaneOpened(id as MainPaneId, "navigation");
           setMainPane(id as MainPaneId);
         }
       }}
       onSelectSession={(id) => {
         setLastSessionId(id);
+        recordTuiPaneOpened("board", "session_select");
         setMainPane("board");
       }}
     />
   );
 }
 
-async function prepareSlashToolOutput(
-  sessionId: string,
-  taskId: string,
-  result: ReturnType<typeof runLocalTool> extends Promise<infer T> ? T : never
-): Promise<{ detail: string; content?: string; outputRef?: string }> {
-  const detail = renderToolResultDetail(result);
-  const existingRef = result.outputRef;
-  const bytes = Buffer.byteLength(detail, "utf8");
-  if (existingRef || bytes <= SLASH_OUTPUT_INLINE_BYTES) {
-    return {
-      detail,
-      content: "content" in result && typeof result.content === "string" ? result.content : detail,
-      outputRef: existingRef
-    };
+function productMetricViewForPane(pane: MainPaneId): ProductMetricObservatoryView | undefined {
+  if (pane === "board" || pane === "sessions" || pane === "activity" || pane === "output" || pane === "automations") {
+    return "observatory";
   }
-  const ref = await writeTaskOutput({
-    sessionId,
-    taskId,
-    attempt: Date.now(),
-    content: detail
-  });
-  return {
-    detail,
-    content: truncateSlashOutput(detail, SLASH_OUTPUT_PREVIEW_BYTES, ref.path, ref.bytes, ref.lines),
-    outputRef: ref.path
-  };
-}
-
-function truncateSlashOutput(value: string, maxBytes: number, path: string, totalBytes: number, totalLines: number): string {
-  const buffer = Buffer.from(value, "utf8");
-  if (buffer.length <= maxBytes) {
-    return value;
+  if (pane === "workers") {
+    return "workers";
   }
-  const headBytes = Math.max(1000, Math.floor(maxBytes * 0.7));
-  const tailBytes = Math.max(1000, maxBytes - headBytes);
-  const head = buffer.subarray(0, headBytes).toString("utf8").replace(/\uFFFD$/u, "");
-  const tail = buffer.subarray(Math.max(headBytes, buffer.length - tailBytes)).toString("utf8").replace(/^\uFFFD/u, "");
-  return [
-    head.trimEnd(),
-    "",
-    `[... ${totalBytes - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8")} bytes omitted from ${totalLines} lines. Full output: ${path}]`,
-    "",
-    tail.trimStart()
-  ].join("\n");
+  if (pane === "trace") {
+    return "trace";
+  }
+  return undefined;
 }
 
 function detailPreview(detail: string | undefined): string | undefined {
@@ -4465,11 +4599,37 @@ function parseCustomProviderInput(provider: string): {
   return { id: provider.slice("custom:".length).trim(), protocol: "openai-chat-completions" };
 }
 
-function OnboardView({ state }: { state: OnboardState }): React.ReactElement {
+function OnboardView({
+  state,
+  onInput
+}: {
+  state: OnboardState;
+  onInput?: (
+    character: string | undefined,
+    key: { return?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean }
+  ) => boolean;
+}): React.ReactElement {
   const readiness = new OpenAIProvider().readiness();
   const visibleFields = state.custom || isCustomProviderInput(state.values.provider) ? customFieldOrder : fieldOrder;
+  const rendererInputProps = resolveTuiRendererMode() === "dom-renderer" && onInput
+    ? ({
+      focusable: true,
+      onKeydown: (event: {
+        input?: string;
+        key?: { return?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean };
+        preventDefault: () => void;
+      }) => {
+        if (event.key?.ctrl && event.input === "c") {
+          return;
+        }
+        if (onInput(event.input, event.key ?? {})) {
+          event.preventDefault();
+        }
+      }
+    } as never)
+    : {};
   return (
-    <Box flexDirection="column" width="100%">
+    <Box {...rendererInputProps} flexDirection="column" width="100%">
       <Box borderStyle="single" paddingX={1} width="100%">
         <Text color={visualTokenColor("brand.focus")}>Swarm Onboarding</Text>
         <Text color={mutedColor()}>  Enter/Tab next. Use a provider id, custom-openai:id, or custom-claude:id.</Text>
@@ -5387,6 +5547,45 @@ function compactResultCardLines(card: RuntimeResultCard): string[] {
     `review: ${card.review.status} - ${firstLine(card.review.summary, 120)}`,
     `next: ${next}`
   ];
+}
+
+function executionCompletionDetail(result: ExecutionResult, detail: string): string {
+  const card = result.result_card;
+  if (!card) {
+    return detail;
+  }
+  const findingLines = card.reviewFindings?.length
+    ? [
+        "Findings",
+        ...card.reviewFindings.map((finding) => [
+          `- ${finding.severity}: ${finding.title}`,
+          finding.file ? `  location: ${finding.file}${finding.line ? `:${finding.line}` : ""}` : undefined,
+          finding.recommendation ? `  fix: ${finding.recommendation}` : undefined,
+          finding.confidence ? `  confidence: ${finding.confidence}` : undefined,
+          finding.evidence?.length ? `  evidence: ${finding.evidence.join("; ")}` : undefined
+        ].filter((line): line is string => Boolean(line)).join("\n"))
+      ]
+    : [];
+  const evidenceLines = [
+    "Team Reasoning & Evidence",
+    `summary: ${card.summary}`,
+    `review: ${card.review.status} - ${card.review.summary}`,
+    card.changedFiles.length ? `changed: ${card.changedFiles.join(", ")}` : "changed: none",
+    card.checks.length
+      ? `verified: ${card.checks.map((check) => `${check.command} [${check.status}]`).join(", ")}`
+      : "verified: none",
+    card.artifacts.length ? `artifacts: ${card.artifacts.join(", ")}` : "artifacts: none",
+    card.risks.length ? `risks: ${card.risks.map((risk) => `${risk.level}: ${risk.message}`).join("; ")}` : "risks: low",
+    card.next.length ? `next: ${card.next.join(", ")}` : "next: none"
+  ];
+  return [
+    ...evidenceLines,
+    findingLines.length ? "" : undefined,
+    ...findingLines,
+    detail.trim() ? "" : undefined,
+    detail.trim() ? "Full Output" : undefined,
+    detail.trim() ? detail.trim() : undefined
+  ].filter((line): line is string => line !== undefined).join("\n");
 }
 
 function DetailView({ content, scroll, height, sessionId, route, source, title, density }: {

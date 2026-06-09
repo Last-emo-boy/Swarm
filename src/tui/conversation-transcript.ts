@@ -164,7 +164,7 @@ export function appendTranscriptMessage(
   return [...messages, message];
 }
 
-export function transcriptMessageSignature(message: ConversationMessage): string {
+function transcriptMessageSignature(message: ConversationMessage): string {
   return [
     message.role,
     message.kind ?? "message",

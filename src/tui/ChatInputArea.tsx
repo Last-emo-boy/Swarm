@@ -357,7 +357,7 @@ type FooterLayout = {
   compact: boolean;
 };
 
-export function ChatInputFooter({
+function ChatInputFooter({
   inputValue,
   footerHint,
   footerItems,

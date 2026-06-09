@@ -200,7 +200,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function defaultFakeWorkItem(): LocalWorkRecord {
+function defaultFakeWorkItem(): LocalWorkRecord {
   return {
     id: "fake-work-item-1",
     identifier: "FAKE-1",
@@ -247,7 +247,7 @@ function findMatchingItem(item: WorkItem, candidates: WorkItem[]): WorkItem | un
     candidates.find((candidate) => humanId && candidate.human_id === humanId);
 }
 
-export function isActiveWorkSourceItem(item: WorkItem, states: WorkSourceStates): boolean {
+function isActiveWorkSourceItem(item: WorkItem, states: WorkSourceStates): boolean {
   if (!item.state) {
     return true;
   }

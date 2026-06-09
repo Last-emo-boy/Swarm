@@ -201,7 +201,7 @@ export async function runTuiSmokeHarnessCli(argv = process.argv.slice(2)): Promi
   }
 }
 
-export function formatTuiSmokeHarnessResult(result: TuiSmokeHarnessResult): string {
+function formatTuiSmokeHarnessResult(result: TuiSmokeHarnessResult): string {
   return [
     `Swarm TUI global smoke: ${result.status}`,
     `created_at=${result.createdAt}`,

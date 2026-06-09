@@ -510,3 +510,85 @@ test("TuiRoot lets focused approval overlays claim decisions before prompt fallb
   assert.deepEqual(calls, ["approval:y", "approval:escape", "prompt:p"]);
   root.unmount();
 });
+
+test("TuiRoot routes live search footer cursor and detail branches through focused DOM ownership", () => {
+  const calls: string[] = [];
+  const root = createTuiRoot({ columns: 54, rows: 9 });
+
+  function Harness(): React.ReactElement {
+    useRendererInput((input, key) => {
+      calls.push(`fallback:${key.escape ? "escape" : input ?? ""}`);
+    });
+    return React.createElement(Box, { flexDirection: "column" },
+      React.createElement(Box, {
+        focusable: true,
+        onKeydown: (event: { input?: string; preventDefault: () => void }) => {
+          calls.push(`prompt:${event.input ?? ""}`);
+          event.preventDefault();
+        }
+      } as never, React.createElement(Text, null, "prompt")),
+      React.createElement(Box, {
+        focusable: true,
+        onKeydown: (event: { input?: string; key?: { escape?: boolean }; preventDefault: () => void }) => {
+          if (event.input === "/" || event.key?.escape) {
+            calls.push(`search:${event.key?.escape ? "escape" : event.input}`);
+            event.preventDefault();
+          }
+        }
+      } as never, React.createElement(Text, null, "transcript search")),
+      React.createElement(Box, {
+        focusable: true,
+        onKeydown: (event: { key?: { leftArrow?: boolean; rightArrow?: boolean }; preventDefault: () => void }) => {
+          if (event.key?.leftArrow || event.key?.rightArrow) {
+            calls.push(`footer:${event.key.leftArrow ? "left" : "right"}`);
+            event.preventDefault();
+          }
+        }
+      } as never, React.createElement(Text, null, "footer service pills")),
+      React.createElement(Box, {
+        focusable: true,
+        onKeydown: (event: { key?: { upArrow?: boolean; downArrow?: boolean }; preventDefault: () => void }) => {
+          if (event.key?.upArrow || event.key?.downArrow) {
+            calls.push(`message:${event.key.upArrow ? "up" : "down"}`);
+            event.preventDefault();
+          }
+        }
+      } as never, React.createElement(Text, null, "message cursor")),
+      React.createElement(Box, {
+        focusable: true,
+        onKeydown: (event: { input?: string; key?: { escape?: boolean; ctrl?: boolean }; preventDefault: () => void }) => {
+          if (event.key?.escape || (event.key?.ctrl && event.input === "o")) {
+            calls.push(`detail:${event.key.escape ? "escape" : "ctrl+o"}`);
+            event.preventDefault();
+          }
+        }
+      } as never, React.createElement(Text, null, "detail pane"))
+    );
+  }
+
+  root.render(React.createElement(Harness));
+  const shell = root.getDom().childNodes[0];
+  assert(shell && shell.nodeName !== "#text");
+  const search = shell.childNodes[1];
+  const footer = shell.childNodes[2];
+  const message = shell.childNodes[3];
+  const detail = shell.childNodes[4];
+  assert(search && search.nodeName !== "#text");
+  assert(footer && footer.nodeName !== "#text");
+  assert(message && message.nodeName !== "#text");
+  assert(detail && detail.nodeName !== "#text");
+
+  root.focusElement(search);
+  root.dispatchInput("/");
+  root.focusElement(footer);
+  root.dispatchInput(undefined, { leftArrow: true });
+  root.focusElement(message);
+  root.dispatchInput(undefined, { downArrow: true });
+  root.focusElement(detail);
+  root.dispatchInput(undefined, { escape: true });
+  root.getFocusManager().blur();
+  root.dispatchInput("z");
+
+  assert.deepEqual(calls, ["search:/", "footer:left", "message:down", "detail:escape", "fallback:z"]);
+  root.unmount();
+});

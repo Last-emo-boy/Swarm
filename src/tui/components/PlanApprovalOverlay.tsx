@@ -19,16 +19,20 @@ export function PlanApprovalOverlay(props: {
         {"─".repeat(OVERLAY_DIVIDER_WIDTH)}
       </Text>
       <Text color={visualTokenColor("status.pending")} bold wrap="truncate">
-        [?] {sectionLabel("Plan Approval")} <Text color={visualTokenColor("text.muted")}>{shortcutHint(["approval.approve_once", "approval.deny"])}</Text>
+        [?] {sectionLabel("Team Plan Check")} <Text color={visualTokenColor("text.muted")}>{shortcutHint(["approval.approve_once", "approval.deny"])}</Text>
       </Text>
       <Text wrap="truncate">
-        <Text color={visualTokenColor("role.gateway")}>{sectionLabel("Review")} </Text>
+        <Text color={visualTokenColor("status.pending")}>{sectionLabel("Needs you")} </Text>
+        <Text color={visualTokenColor("text.primary")}>The team has a plan and is waiting for your go-ahead before it starts work.</Text>
+      </Text>
+      <Text wrap="truncate">
+        <Text color={visualTokenColor("role.gateway")}>{sectionLabel("Plan")} </Text>
         <Text color={visualTokenColor("text.primary")}>{summary || "Review the generated plan before execution."}</Text>
         <Text color={visualTokenColor("text.muted")}>{taskSuffix}</Text>
       </Text>
       <Text wrap="truncate">
         <Text color={visualTokenColor("status.pending")}>[ASK]</Text>
-        <Text color={resolveTuiColor("text.muted")}> y approve · n cancel · Ctrl+O details</Text>
+        <Text color={resolveTuiColor("text.muted")}> y approve team plan · n send it back · Ctrl+O details</Text>
       </Text>
     </Box>
   );

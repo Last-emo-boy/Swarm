@@ -1,7 +1,7 @@
 {
   "name": "agent-swarm-cli",
   "version": "0.1.0",
-  "description": "A local Agent Swarm Protocol CLI/TUI runtime.",
+  "description": "A local agent workspace with result-first coding scenarios and an opt-in Swarm Observatory.",
   "type": "module",
   "files": [
     "dist",

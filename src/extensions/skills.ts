@@ -197,7 +197,7 @@ export class SkillProvider implements CapabilityProvider {
   }
 }
 
-export function skillCapabilityId(name: string): string {
+function skillCapabilityId(name: string): string {
   return `skill.${normalizeSkillName(name)}`;
 }
 

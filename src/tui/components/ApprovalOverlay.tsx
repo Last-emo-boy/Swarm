@@ -58,12 +58,13 @@ export function ApprovalOverlay(props: {
         target={request.target}
       />
       <ApprovalDetail label="Summary" value={request.summary} tone={riskToken.tone === "danger" ? "status.danger" : undefined} />
+      <ApprovalDetail label="Needs you" value={approvalNeedsYou(request)} tone="status.pending" strong />
       {attentionNote ? <ApprovalDetail label="Attention" value={attentionNote} tone="status.danger" strong /> : null}
-      <ApprovalDetail label="Review" value={reviewFocus} />
-      <ApprovalDetail label="Why" value={request.why_now} />
+      <ApprovalDetail label="Safety check" value={reviewFocus} />
+      <ApprovalDetail label="Why now" value={request.why_now} />
       {request.permission_reason ? (
         <ApprovalDetail
-          label="Permission"
+          label="Guardrail"
           value={`${request.permission_name ?? request.action} ${request.permission_decision ?? "ask"} | ${request.permission_reason}`}
         />
       ) : null}
@@ -136,6 +137,29 @@ function ApprovalDetail(props: {
       <Text color={resolveTuiColor(props.tone ?? (props.muted ? "text.muted" : undefined))} bold={props.strong}>{props.value}</Text>
     </Text>
   );
+}
+
+function approvalNeedsYou(request: ToolApprovalRequest): string {
+  const target = compactValue(request.target, 72);
+  if (request.risk_class === "r4") {
+    return `The team needs your explicit confirmation before this high-risk ${request.action} touches ${target}.`;
+  }
+  if (request.risk === "write") {
+    return `The team is ready to change ${target}; confirm the scope matches the current task.`;
+  }
+  if (request.risk === "shell") {
+    return `The team needs permission to run this local command for the current task: ${target}.`;
+  }
+  if (request.risk === "delegate") {
+    return `The team wants to bring in another worker; confirm the assignment and write scope.`;
+  }
+  if (request.risk === "web") {
+    return `The team wants to use the network; confirm the destination and data exposure are acceptable.`;
+  }
+  if (request.risk === "install") {
+    return `The team wants to install or run dependency tooling; confirm the package source and impact.`;
+  }
+  return "The team needs your confirmation before it continues this step.";
 }
 
 function approvalReviewFocus(request: ToolApprovalRequest): string {

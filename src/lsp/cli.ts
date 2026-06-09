@@ -59,7 +59,7 @@ export async function runLspCommand(values: string[]): Promise<void> {
   }
 }
 
-export function formatLspStatusReport(report: LspStatusReport): string {
+function formatLspStatusReport(report: LspStatusReport): string {
   const summary = lspStatusSummary(report);
   const lines = [
     "LSP",

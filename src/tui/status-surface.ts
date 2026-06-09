@@ -143,7 +143,7 @@ export function serviceClusterItem(input: {
   };
 }
 
-export function serviceClusterItems(input: {
+function serviceClusterItems(input: {
   cache?: PromptCacheRuntimeStatus;
   gatewayStatus?: string;
   gatewayLiveControl?: LiveControlProjection;
