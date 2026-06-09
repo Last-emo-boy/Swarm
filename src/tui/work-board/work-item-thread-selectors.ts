@@ -1,4 +1,5 @@
 import type { WorkBoardThreadView } from "./work-board-types.js";
+import { labelForRunBoardAction } from "../run-board/run-board-action-labels.js";
 import { selectWorkBoardSurface, type SelectWorkBoardSurfaceInput } from "./work-board-selectors.js";
 
 export function selectWorkItemThread(input: SelectWorkBoardSurfaceInput): WorkBoardThreadView | undefined {
@@ -19,7 +20,7 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
     thread.objective,
     ...planRows,
     ...evidenceRows,
-    ...prefixed("Next", thread.actions)
+    ...prefixed("Next", thread.actions.map(productActionLabel))
   ].slice(0, visibleRows);
 }
 
@@ -45,4 +46,8 @@ function prefixed(label: string, values: string[]): string[] {
     return [];
   }
   return values.slice(0, 3).map((value, index) => `${index === 0 ? `${label}: ` : "  "}${value}`);
+}
+
+function productActionLabel(action: string): string {
+  return action.trim().startsWith("/") ? labelForRunBoardAction(action) : action;
 }

@@ -39,6 +39,21 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   assert(!rows.some((line) => /ASP|protocol|heartbeat|claim owner/u.test(line)));
 });
 
+test("formatWorkItemThreadRows translates slash actions before rendering", () => {
+  const thread = selectWorkItemThread({ board: fixtureBoard(), selectedId: "task-review" });
+  assert(thread);
+
+  const rows = formatWorkItemThreadRows({
+    ...thread,
+    actions: ["/continue", "/debug latest", "/diff"]
+  }, 8);
+
+  assert(rows.some((line) => /^Next: Continue work$/u.test(line)));
+  assert(rows.some((line) => /^  Review latest issue$/u.test(line)));
+  assert(rows.some((line) => /^  Review changes$/u.test(line)));
+  assert(!rows.some((line) => /\/continue|\/debug latest|\/diff/u.test(line)));
+});
+
 test("formatWorkItemThreadRows shows delivery evidence only for decision states", () => {
   const thread = selectWorkItemThread({ board: fixtureBoard(), selectedId: "task-review" });
   assert(thread);
