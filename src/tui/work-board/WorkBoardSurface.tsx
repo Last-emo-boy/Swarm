@@ -55,11 +55,6 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
         <Text color={visualTokenColor("brand.focus")} bold>{fit("WORK", 16)}</Text>
         <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? EMPTY_WORK_PROMPT : view.subtitle), Math.max(10, columns - 18))}</Text>
       </Text>
-      {view.summary.activity[0] ? (
-        <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          activity: {fitToDisplayWidth(view.summary.activity[0], Math.max(10, columns - 10))}
-        </Text>
-      ) : null}
     </Box>
   );
 }
