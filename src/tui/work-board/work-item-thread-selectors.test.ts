@@ -31,7 +31,7 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   assert(!expandedRows.some((line) => /^Objective:/u.test(line)));
   assert(!expandedRows.some((line) => /^Status: running$/u.test(line)));
   assert(rows.some((line) => /Next: Continue/.test(line)));
-  assert(!expandedRows.some((line) => /^Plan:|^Why:/u.test(line)));
+  assert(!expandedRows.some((line) => /^Plan:|^Why:|^Need:/u.test(line)));
   assert(!expandedRows.some((line) => /^Actions:/u.test(line)));
   assert(!expandedRows.some((line) => /^Changed:|^Files:|^Checks:/u.test(line)));
   assert(!rows.some((line) => /^Timeline:/u.test(line)));
@@ -53,8 +53,8 @@ test("formatWorkItemThreadRows shows delivery evidence only for decision states"
 
   assert.equal(rows[0], "Needs attention");
   assert(!rows.some((line) => /Status:|Status: blocked/u.test(line)));
-  assert(rows.some((line) => /Why: Verify selected task thread/.test(line)));
-  assert(!rows.some((line) => /^Plan:/u.test(line)));
+  assert(rows.some((line) => /Need: Verify selected task thread/.test(line)));
+  assert(!rows.some((line) => /^Plan:|^Why:/u.test(line)));
   assert(rows.some((line) => /^Files: src\/tui\/work-board\/WorkItemThread\.tsx$/u.test(line)));
   assert(!rows.some((line) => /^Changed:/u.test(line)));
   assert(rows.some((line) => /^Verified: npm test \[failed\]$/u.test(line)));
