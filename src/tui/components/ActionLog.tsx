@@ -62,13 +62,13 @@ export function ActionLog(props: {
 
   const start = Math.max(0, lineCount - bodyHeight - clampedOffset);
   const visible = windowLines(displayLines, start, bodyHeight);
-  const bottomState = atBottom ? "following" : `${clampedOffset} lines from bottom`;
+  const positionLabel = atBottom ? "" : "Paused";
 
   return (
     <Box flexDirection="column" width="100%" height={height} overflow="hidden">
       <Text wrap="truncate">
-        <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Action Log")}</Text>
-        <Text color={visualTokenColor("text.muted")}>  {rows.length} actions | {lines.length} lines | {bottomState}</Text>
+        <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Activity")}</Text>
+        {positionLabel ? <Text color={visualTokenColor("text.muted")}>  {positionLabel}</Text> : null}
         {spinner ? <Text color={visualTokenColor("status.running")}> {spinner}</Text> : null}
         <Text color={visualTokenColor("text.muted")}> | {shortcutHint(["action.select", "action.details", "action.page"])}</Text>
       </Text>

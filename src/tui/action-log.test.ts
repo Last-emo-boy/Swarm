@@ -114,6 +114,37 @@ test("ActionLog hides routine run identifiers in default rows", () => {
   assert.doesNotMatch(text, /session=|task=|worker=worker-1|agent_spec=researcher|swarm\.work\.v1|runtime=|agent=|tool=code\.build|mode=call_subagent/);
 });
 
+test("ActionLog keeps the default header quiet", () => {
+  const rows = [
+    { id: "one", kind: "message:user", status: "pending" as const, title: "User request", summary: "Review auth", details: [] },
+    { id: "two", kind: "tool", status: "success" as const, title: "Checked files", summary: "2 files", details: ["done"] },
+    { id: "three", kind: "review", status: "running" as const, title: "Review running", summary: "Checking risks", details: ["working"] }
+  ];
+  const frame = renderTuiToFrame(React.createElement(ActionLog, {
+    rows,
+    height: 5,
+    columns: 100,
+    scrollOffset: 0,
+    onScrollOffsetChange: () => undefined
+  }), { columns: 100, rows: 5 });
+  const text = frameText(frame);
+
+  assert.match(text, /ACTIVITY/);
+  assert.doesNotMatch(text, /Action Log|\d+ actions|\d+ lines|following/);
+
+  const paused = renderTuiToFrame(React.createElement(ActionLog, {
+    rows,
+    height: 4,
+    columns: 100,
+    scrollOffset: 1,
+    onScrollOffsetChange: () => undefined
+  }), { columns: 100, rows: 4 });
+  const pausedText = frameText(paused);
+
+  assert.match(pausedText, /ACTIVITY\s+Paused/);
+  assert.doesNotMatch(pausedText, /lines from bottom|\d+ actions|\d+ lines/);
+});
+
 test("failed tool result action rows prioritize recovery before raw output", () => {
   const row = runtimeEventToActionRow({
     type: "tool_result",
