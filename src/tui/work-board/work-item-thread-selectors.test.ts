@@ -26,8 +26,9 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   const expandedRows = formatWorkItemThreadRows(thread, 10);
 
   assert.equal(rows.length, 5);
-  assert.match(rows[0] ?? "", /Objective:/);
+  assert.match(rows[0] ?? "", /Board-first Local Agent Workspace/);
   assert.doesNotMatch(rows[0] ?? "", /Assignee|Risk/);
+  assert(!expandedRows.some((line) => /^Objective:/u.test(line)));
   assert(!expandedRows.some((line) => /^Status: running$/u.test(line)));
   assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
   assert(rows.some((line) => /Next: Continue task/.test(line)));

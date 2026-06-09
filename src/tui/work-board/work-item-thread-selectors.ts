@@ -15,7 +15,7 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
     : [];
   return [
     ...statusRows(thread.status),
-    `Objective: ${thread.objective}`,
+    thread.objective,
     ...prefixed("Plan", thread.plan),
     ...evidenceRows,
     ...prefixed("Next", thread.actions)
