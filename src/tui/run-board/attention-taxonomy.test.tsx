@@ -21,8 +21,10 @@ test("AttentionPanel renders all exception taxonomy kinds with concise user-faci
   for (const item of items) {
     assert.match(text, new RegExp(item.title));
     assert.match(text, new RegExp(item.summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(text, new RegExp(item.evidence[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  assert.match(text, /Seen\s+evidence for failed/);
+  assert.match(text, /Seen\s+evidence for approval/);
+  assert.doesNotMatch(text, /Seen\s+evidence for slow|Seen\s+evidence for blocked|Seen\s+evidence for conflicted|Seen\s+evidence for uncertain/);
   assert.equal((text.match(/Next/g) ?? []).length, items.length);
   assert.doesNotMatch(text, /recommend:|activity:/);
   assert.match(text, /\[ASK\] Approval needed/);
