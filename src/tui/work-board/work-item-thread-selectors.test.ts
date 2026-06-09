@@ -25,13 +25,13 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   const rows = formatWorkItemThreadRows(thread, 5);
   const expandedRows = formatWorkItemThreadRows(thread, 10);
 
-  assert.equal(rows.length, 5);
+  assert.equal(rows.length, 2);
   assert.match(rows[0] ?? "", /Board-first Local Agent Workspace/);
   assert.doesNotMatch(rows[0] ?? "", /Assignee|Risk/);
   assert(!expandedRows.some((line) => /^Objective:/u.test(line)));
   assert(!expandedRows.some((line) => /^Status: running$/u.test(line)));
-  assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
   assert(rows.some((line) => /Next: Continue task/.test(line)));
+  assert(!expandedRows.some((line) => /^Plan:/u.test(line)));
   assert(!expandedRows.some((line) => /^Actions:/u.test(line)));
   assert(!expandedRows.some((line) => /^Changed:|^Checks:/u.test(line)));
   assert(!rows.some((line) => /^Timeline:/u.test(line)));
@@ -51,6 +51,7 @@ test("formatWorkItemThreadRows shows delivery evidence only for decision states"
   }, 10);
 
   assert.equal(rows[0], "Status: blocked");
+  assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
   assert(rows.some((line) => /^Changed: src\/tui\/work-board\/WorkItemThread\.tsx$/u.test(line)));
   assert(rows.some((line) => /^Checks: npm test \[failed\]$/u.test(line)));
 });

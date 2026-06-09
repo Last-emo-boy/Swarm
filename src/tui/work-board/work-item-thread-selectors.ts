@@ -13,10 +13,11 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
       ...prefixed("Checks", thread.checks)
     ]
     : [];
+  const planRows = shouldShowDecisionRows(thread.status) ? prefixed("Plan", thread.plan) : [];
   return [
     ...statusRows(thread.status),
     thread.objective,
-    ...prefixed("Plan", thread.plan),
+    ...planRows,
     ...evidenceRows,
     ...prefixed("Next", thread.actions)
   ].slice(0, visibleRows);

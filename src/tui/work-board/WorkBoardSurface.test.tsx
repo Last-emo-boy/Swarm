@@ -23,6 +23,7 @@ test("WorkBoardSurface renders board columns and selected task thread", () => {
   assert.doesNotMatch(text, /Objective:/);
   assert.match(text, /1 active task/);
   assert.doesNotMatch(text, /Status: running/);
+  assert.doesNotMatch(text, /Plan:/);
   assert.doesNotMatch(text, /Actions:/);
   assert.doesNotMatch(text, /1 helper/);
   assert.doesNotMatch(text, /Assignee:|Risk:/);
