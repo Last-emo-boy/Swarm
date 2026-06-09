@@ -5,7 +5,6 @@ import type { AttentionAction, AttentionItemView, RunBoardResultAction, RunBoard
 import { WorkerBoard } from "./WorkerBoard.js";
 import { AttentionPanel } from "./AttentionPanel.js";
 import { ResultPreview } from "./ResultPreview.js";
-import { summarizeRunBoardViewCounts } from "./run-board-surface-summary.js";
 
 export function RunBoardSurface(props: {
   view: RunBoardSurfaceView;
@@ -36,7 +35,6 @@ export function RunBoardSurface(props: {
         onAction={props.onAttentionAction}
       />
       <ResultPreview preview={view.resultPreview} onAction={props.onResultAction} />
-      <RunBoardFooter view={view} />
     </Box>
   );
 }
@@ -86,27 +84,4 @@ function phaseDisplayLabel(phase: RunBoardSurfaceView["phase"]): string {
     case "done": return "Done";
     case "failed": return "Failed";
   }
-}
-
-function RunBoardFooter(props: { view: RunBoardSurfaceView }): React.ReactElement {
-  const chips = runBoardFooterChips(props.view);
-  if (!chips.length) {
-    return <React.Fragment />;
-  }
-  return (
-    <Box flexDirection="row" width="100%" marginTop={0}>
-      <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {chips.join(" ")}
-      </Text>
-    </Box>
-  );
-}
-
-function runBoardFooterChips(view: RunBoardSurfaceView): string[] {
-  const counts = summarizeRunBoardViewCounts(view);
-  const chips = [
-    counts.stuck > 0 ? `[Stuck ${counts.stuck}]` : counts.blocked > 0 ? `[Blocked ${counts.blocked}]` : undefined,
-    counts.approvals > 0 ? `[Approvals ${counts.approvals}]` : undefined
-  ].filter((chip): chip is string => Boolean(chip));
-  return chips;
 }
