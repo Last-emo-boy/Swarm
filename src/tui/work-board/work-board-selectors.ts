@@ -202,7 +202,7 @@ function threadFromSession(session: WorkBoardSession, input: Parameters<typeof s
     changedFiles: input.changedFiles.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: session.next_action ? [session.next_action] : ["Continue work", "Review progress", "Check activity"]
+    actions: session.next_action ? [session.next_action] : ["Continue work"]
   };
 }
 
@@ -229,7 +229,7 @@ function threadFromTask(task: WorkBoardTask, input: Parameters<typeof selectThre
     changedFiles: task.file_scope.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: task.recovery ? [task.recovery] : ["Continue task", "Open result", "Review progress"]
+    actions: task.recovery ? [task.recovery] : ["Continue task"]
   };
 }
 

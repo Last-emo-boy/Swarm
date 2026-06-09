@@ -23,7 +23,7 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   assert.equal(view.selected?.title, "T-101");
   assert.match(view.selected?.objective ?? "", /Board-first/);
   assert(view.selected?.comments.some((line) => /Make Swarm/.test(line)));
-  assert.deepEqual(view.selected?.actions, ["Continue task", "Open result", "Review progress"]);
+  assert.deepEqual(view.selected?.actions, ["Continue task"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
   assert.doesNotMatch(view.subtitle, /workers|helpers/i);
   assert.doesNotMatch(view.selected?.actions.join("\n") ?? "", /teammate/i);
@@ -39,6 +39,17 @@ test("selectWorkBoardSurface provides an empty thread before work starts", () =>
   assert.deepEqual(view.selected?.actions, ["Review this workspace", "Plan a change"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
   assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /assign workers|view workers|automations/i);
+});
+
+test("selectWorkBoardSurface keeps default detail actions to one primary choice", () => {
+  const board = fixtureBoard();
+  board.tasks = [];
+  board.next_actions = [];
+  board.sessions = board.sessions.map(({ next_action: _nextAction, ...session }) => session);
+
+  const view = selectWorkBoardSurface({ board, selectedId: "session-101" });
+
+  assert.deepEqual(view.selected?.actions, ["Continue work"]);
 });
 
 function fixtureBoard(): WorkBoard {
