@@ -17,6 +17,7 @@ test("WorkBoardSurface renders board columns and selected task thread", () => {
   assert.doesNotMatch(text, /OBSERVATORY/);
   assert.match(text, /Running 1/);
   assert.match(text, /Blocked 1/);
+  assert.doesNotMatch(text, /\bBacklog\b|\bReview\b|\bDone\b/);
   assert.match(text, /T-101/);
   assert.match(text, /Objective: Build Board-first workspace/);
   assert.match(text, /1 active task/);

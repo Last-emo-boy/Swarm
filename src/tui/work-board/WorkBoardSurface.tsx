@@ -27,14 +27,15 @@ export function WorkBoardSurface({
     );
   }
   const compact = safeColumns < 92;
+  const visibleColumns = view.columns.filter((column) => column.items.length > 0);
   const boardRows = compact ? Math.max(4, Math.floor(safeRows * 0.46)) : Math.max(5, Math.floor(safeRows * 0.5));
   const threadRows = Math.max(4, safeRows - boardRows - 2);
   return (
     <Box flexDirection="column" width="100%" height={safeRows} overflow="hidden">
       <BoardHeader view={view} columns={safeColumns} />
       <Box width="100%" height={boardRows} flexDirection={compact ? "column" : "row"} overflow="hidden">
-        {view.columns.map((column) => (
-          <BoardColumn key={column.id} column={column} columns={compact ? safeColumns : Math.floor(safeColumns / view.columns.length) - 1} rows={compact ? 3 : boardRows} compact={compact} />
+        {visibleColumns.map((column) => (
+          <BoardColumn key={column.id} column={column} columns={compact ? safeColumns : Math.floor(safeColumns / visibleColumns.length) - 1} rows={compact ? 3 : boardRows} compact={compact} />
         ))}
       </Box>
       {view.selected ? <WorkItemThread thread={view.selected} columns={safeColumns} rows={threadRows} /> : null}
