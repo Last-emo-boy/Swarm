@@ -13,6 +13,8 @@ test("slash command registry includes required operator surface commands", () =>
 
   assert.equal(commands.get("kernel")?.group, "Kernel");
   assert.equal(commands.get("kernel")?.aliases?.includes("status"), true);
+  assert.equal(commands.get("kernel")?.description, "Review the full local status view.");
+  assert.equal(commands.get("doctor")?.description, "Check setup, permissions, saved work, and automation readiness.");
   assert.equal(commands.get("symphony")?.group, "Symphony");
   assert.equal(commands.get("approvals")?.group, "Kernel");
   assert.equal(commands.get("doctor")?.group, "Core");
@@ -41,8 +43,11 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[session_id\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug blackboard - Query shared facts\./);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug latest - Review the latest issue and supporting detail\./);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug trace - Review saved event detail\./);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug timeline \[actor:<id>\|task:<id>\|correlation:<id>\|category:<kind>\] - Review detailed activity by actor, task, or category\./);
   assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /Query blackboard facts|shared board facts/);
-  assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug timeline \[actor:<id>\|task:<id>\|correlation:<id>\|category:<kind>\]/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /persisted envelopes|shared protocol debug timeline|detail target, failures, cache, and artifacts/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/swarm/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <actor_id>/);
   assert.match(renderSlashHelp({ namespace: "ext" }), /\/capabilities \[kind\|provider\|query\|all\]/);
@@ -72,7 +77,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
-  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /coding-loop session|preflight summary|remembered session context/);
+  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
 });
 
 test("slash command candidates include required commands and aliases", () => {

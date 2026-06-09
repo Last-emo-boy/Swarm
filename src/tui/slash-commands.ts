@@ -38,7 +38,7 @@ const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Age
 
 export const slashCommands: SlashCommandSpec[] = [
   { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 90 },
-  { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight.", completionPriority: 20 },
+  { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Check setup, permissions, saved work, and automation readiness.", completionPriority: 20 },
   { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode.", completionPriority: 40 },
   { name: "review", group: "Core", usage: "/review [focus]", description: "Run a result-first Codebase Deep Review for a focused area.", aliases: ["rev"], completionPriority: 42 },
   { name: "density", group: "Core", usage: "/density [auto|compact|default|comfortable]", description: "Tune TUI information density without changing focus behavior.", completionPriority: 43 },
@@ -63,8 +63,8 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "web", group: "Tools", usage: "/web <query> [allow:domain] [block:domain]", description: "Search the web through the configured provider/search path." },
   { name: "diff", group: "Tools", usage: "/diff", description: "Review current changes." },
   { name: "output", group: "Tools", usage: "/output [task_id]", description: "Review recent output or the full output for one task.", completionPriority: 50 },
-  { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Show the unified Swarm, Work Kernel, and Symphony status view.", aliases: ["status"], completionPriority: 30 },
-  { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"], completionPriority: 80 },
+  { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Review the full local status view.", aliases: ["status"], completionPriority: 30 },
+  { name: "status", group: "Kernel", usage: "/status", description: "Alias for the full local status view.", aliases: ["kernel"], completionPriority: 80 },
   { name: "changes", group: "Kernel", usage: "/changes [session_id]", description: "Review workspace changes." },
   { name: "blackboard", group: "Kernel", usage: "/blackboard [session_id] [tag:<tag>|type:<type>|key:<prefix>|agent:<id>|task:<id>]", description: "Query shared facts." },
   { name: "session", group: "Kernel", usage: "/session [session_id|new]", description: "Review saved work or start a fresh chat state.", completionPriority: 60 },
@@ -75,8 +75,8 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "revert", group: "Kernel", usage: "/revert last|<checkpoint_id>", description: "Undo to the latest or named checkpoint." },
   { name: "replay", group: "Kernel", usage: "/replay <session_id>", description: "Replay a persisted session snapshot." },
   { name: "fork", group: "Kernel", usage: "/fork <session_id> [message]", description: "Create a new session from a previous session." },
-  { name: "trace", group: "Kernel", usage: "/trace <session_id>", description: "Show persisted envelopes for a session." },
-  { name: "span", group: "Kernel", usage: "/span <trace_id|span_id>", description: "Find trace envelopes and audit rows by trace/span id." },
+  { name: "trace", group: "Kernel", usage: "/trace <session_id>", description: "Review saved event detail for earlier work." },
+  { name: "span", group: "Kernel", usage: "/span <trace_id|span_id>", description: "Find saved detail by trace or span id." },
   { name: "attempts", group: "Kernel", usage: "/attempts [session_id]", description: "Review recent attempts and recovery notes.", completionPriority: 55 },
   { name: "leases", group: "Kernel", usage: "/leases [session_id|lease_id]", description: "Inspect workspace leases and write boundaries." },
   { name: "tasks", group: "Kernel", usage: "/tasks [session_id]", description: "Review planned work items." },
@@ -185,14 +185,14 @@ const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
     { name: "workers", group: "Agents", usage: "/work workers", description: "Review team activity.", completionPriority: 60 }
   ],
   debug: [
-    { name: "trace", group: "Kernel", usage: "/debug trace", description: "Show persisted envelopes.", completionPriority: 10 },
+    { name: "trace", group: "Kernel", usage: "/debug trace", description: "Review saved event detail.", completionPriority: 10 },
     { name: "blackboard", group: "Kernel", usage: "/debug blackboard", description: "Query shared facts.", completionPriority: 20 },
     { name: "audit", group: "Kernel", usage: "/debug audit", description: "List audit records.", completionPriority: 30 },
     { name: "usage", group: "Kernel", usage: "/debug usage", description: "Inspect usage counters.", completionPriority: 40 },
     { name: "cache", group: "Kernel", usage: "/debug cache", description: "Inspect prompt cache status.", completionPriority: 50 },
-    { name: "timeline", group: "Kernel", usage: "/debug timeline [actor:<id>|task:<id>|correlation:<id>|category:<kind>]", description: "Show the shared protocol debug timeline.", completionPriority: 15 },
+    { name: "timeline", group: "Kernel", usage: "/debug timeline [actor:<id>|task:<id>|correlation:<id>|category:<kind>]", description: "Review detailed activity by actor, task, or category.", completionPriority: 15 },
     { name: "events", group: "Kernel", usage: "/debug events", description: "Show recent runtime events.", completionPriority: 60 },
-    { name: "latest", group: "Kernel", usage: "/debug latest", description: "Diagnose the latest run, detail target, failures, cache, and artifacts.", completionPriority: 5 }
+    { name: "latest", group: "Kernel", usage: "/debug latest", description: "Review the latest issue and supporting detail.", completionPriority: 5 }
   ],
   ext: [
     { name: "capabilities", group: "Config", usage: "/ext capabilities", description: "Summarize capabilities.", completionPriority: 10 },
