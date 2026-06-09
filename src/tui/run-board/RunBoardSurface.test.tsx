@@ -205,7 +205,7 @@ test("RunBoardSurface uses product-facing overflow labels", () => {
   }), { columns: 100, rows: 28 });
   const text = frameText(frame);
 
-  assert.match(text, /More updates/);
+  assert.doesNotMatch(text, /More updates/);
   assert.match(text, /More requests/);
   assert.doesNotMatch(text, /\+\d/);
   assert.doesNotMatch(text, /more workers|more team activity|more attention items/i);
