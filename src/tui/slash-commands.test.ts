@@ -48,7 +48,7 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug trace - Review saved event detail\./);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug timeline \[actor:<id>\|task:<id>\|correlation:<id>\|category:<kind>\] - Review detailed activity by actor, task, or category\./);
   assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /Query blackboard facts|shared board facts/);
-  assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /session_id|persisted envelopes|shared protocol debug timeline|detail target, failures, cache, and artifacts/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /trace_id|span_id|lease_id|session_id|persisted envelopes|shared protocol debug timeline|detail target, failures, cache, and artifacts/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/swarm/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <agent>/);
   assert.doesNotMatch(renderSlashHelp({ namespace: "swarm" }), /actor_id|agent_spec_id|worker_id|handoff_id/);
@@ -79,7 +79,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(renderSlashHelp({ namespace: "work" }), /\/task <task> \[saved_work\]/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/checkpoint <list\|create\|revert>/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/work checks - Review verification results\./);
-  assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /task_id|session_id|\/work board \[session_id\]|work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /checkpoint_id|task_id|session_id|\/work board \[session_id\]|work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
   assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /approval_id|workflow_path|session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
