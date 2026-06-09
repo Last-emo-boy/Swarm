@@ -584,7 +584,7 @@ export function indentPreview(value: string, prefix: string): string {
 export function formatToolOutputPreview(result: CommandOutputPreviewRecord): string {
   const preview = commandOutputPreview(result.content, 4, 420);
   return [
-    `${result.task_id}${result.attempt ? `#${result.attempt}` : ""} ${result.action} [${result.status ?? "unknown"}]: ${result.summary}`,
+    `${result.action} ${result.status ?? "unknown"}: ${result.summary}`,
     result.recoverySuggestion ? `Next: ${result.recoverySuggestion}` : undefined,
     result.outputRef ? `Saved: ${result.outputRef}` : undefined,
     preview ? indentPreview(preview, "  ") : undefined

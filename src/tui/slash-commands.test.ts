@@ -216,7 +216,8 @@ test("tool output preview uses action-first recovery wording", () => {
     content: "first line\nsecond line"
   });
 
-  assert.match(preview, /^task-1#2 file\.edit \[failed\]: Replacement was ambiguous\./);
+  assert.match(preview, /^file\.edit failed: Replacement was ambiguous\./);
+  assert.doesNotMatch(preview, /^task-1#2/u);
   assert.match(preview, /Next: Search for a unique old text, then retry\./);
   assert.doesNotMatch(preview, /Recovery:/);
   assert.match(preview, /Saved: outputs\/task-1\.txt/);
