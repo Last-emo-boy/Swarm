@@ -15,7 +15,7 @@ export function labelForRunBoardAction(command: string): string {
     case "/continue":
       return "Continue work";
     case "/debug latest":
-      return "Inspect latest issue";
+      return "Review latest issue";
     case "/plan":
       return "Plan a change";
     default:

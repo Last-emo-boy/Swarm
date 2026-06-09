@@ -155,7 +155,7 @@ test("product result selector prioritizes the visible final action by outcome", 
 
   assert.deepEqual(selectProductResultCardView(success).nextActions.map((item) => item.command), ["/diff", "/commit", "/output"]);
   assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.command), ["/output", "/diff", "/debug latest"]);
-  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Review output", "Review changes", "Inspect latest issue"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Review output", "Review changes", "Review latest issue"]);
 });
 
 test("product result selector offers output review before debug-only recovery", () => {
@@ -179,7 +179,7 @@ test("product result selector offers output review before debug-only recovery", 
   ]);
 
   assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.command), ["/output", "/debug latest"]);
-  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Review output", "Inspect latest issue"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Review output", "Review latest issue"]);
 });
 
 test("product result selector keeps preview commands behind user-facing labels", () => {
