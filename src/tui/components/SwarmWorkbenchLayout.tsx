@@ -560,7 +560,10 @@ function normalizeHeaderCountSegment(value: string): string {
 function visibleCenterHeaderDetail(value: string | undefined): string | undefined {
   const detail = value?.trim();
   if (!detail) return undefined;
-  return /\b(reply below|open work stays here)\b/iu.test(detail) ? undefined : detail;
+  return /\b(reply below|open work stays here)\b/iu.test(detail)
+    || /^waiting\s+for\b.*\b(?:approval|confirmation|reviewer|review)\b/iu.test(detail)
+    ? undefined
+    : detail;
 }
 
 function RightRail({

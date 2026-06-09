@@ -203,6 +203,7 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
     version: "0.1.0",
     title: "Chat",
     subtitle: "Run: Waiting",
+    headerDetail: "Waiting for reviewer confirmation",
     workspace: { path: "E:/Playground/Swarm" },
     navigation: navigationFixture(),
     sessions: [],
@@ -227,7 +228,7 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
   assert.doesNotMatch(text, /Details/);
   assert.doesNotMatch(text, /Logs/);
   assert.doesNotMatch(text, /Chat \[1\]|Result \[2\]|Details \[3\]|Logs \[4\]/);
-  assert.doesNotMatch(text, /Navigation|Workspace -|Cases|\(none\)|View all cases|No checkpoint yet|Ready|Run: Waiting|Waiting/);
+  assert.doesNotMatch(text, /Navigation|Workspace -|Cases|\(none\)|View all cases|No checkpoint yet|Ready|Run: Waiting|Waiting for reviewer confirmation/);
 });
 
 test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facing notes", () => {
