@@ -229,7 +229,7 @@ function threadFromTask(task: WorkBoardTask, input: Parameters<typeof selectThre
     source: "task",
     plan: [
       session?.next_action,
-      task.dependencies.length ? `Waiting on: ${task.dependencies.join(", ")}` : undefined,
+      task.dependencies.length ? `Waiting on: ${dependencyLabels(task.dependencies, input.tasks).join(", ")}` : undefined,
       task.file_scope.length ? `Files: ${task.file_scope.slice(0, 3).map(shortPath).join(", ")}` : undefined,
       task.last_error,
     ].filter((value): value is string => Boolean(value)),
@@ -264,6 +264,14 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
     actions: worker.recovery ? [worker.recovery] : [defaultActionForWorker(worker)]
   };
+}
+
+function dependencyLabels(dependencies: string[], tasks: WorkBoardTask[]): string[] {
+  return dependencies.map((dependency) => {
+    const task = tasks.find((item) => item.task_id === dependency);
+    const title = firstLine(task?.title, 48);
+    return title || shortId(dependency);
+  });
 }
 
 function emptyThread(input: Pick<SelectWorkBoardSurfaceInput, "recentMessages">): WorkBoardThreadView {

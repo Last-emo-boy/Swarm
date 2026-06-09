@@ -79,10 +79,10 @@ test("selectWorkBoardSurface keeps thread detail labels product-facing", () => {
   const taskView = selectWorkBoardSurface({ board, selectedId: "task-blocked" });
   const sessionView = selectWorkBoardSurface({ board, selectedId: "session-101" });
 
-  assert(taskView.selected?.plan.some((line) => /^Waiting on: task-running$/u.test(line)));
+  assert(taskView.selected?.plan.some((line) => /^Waiting on: T-101$/u.test(line)));
   assert(taskView.selected?.plan.some((line) => /^Files: components\/SwarmWorkbenchLayout\.tsx$/u.test(line)));
   assert.deepEqual(taskView.selected?.actions, ["Resolve"]);
-  assert(!taskView.selected?.plan.some((line) => /Dependencies:|Scope:|check\(s\) recorded/u.test(line)));
+  assert(!taskView.selected?.plan.some((line) => /task-running|Dependencies:|Scope:|check\(s\) recorded/u.test(line)));
   assert(sessionView.selected?.timeline.some((line) => /^Output: review\/report\.md$/u.test(line)));
   assert(!sessionView.selected?.timeline.some((line) => /Artifact|Last artifact/u.test(line)));
 });
