@@ -10,7 +10,7 @@ test("ResultPreview keeps the empty state to one quiet line", () => {
   const frame = renderTuiToFrame(React.createElement(ResultPreview, { preview: emptyPreview() }), { columns: 80, rows: 8 });
   const text = frameText(frame);
 
-  assert.match(text, /RESULT/);
+  assert.doesNotMatch(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.match(text, /Ask Swarm to review or plan this workspace\./);
   assert.doesNotMatch(text, /explain this workspace/i);

@@ -11,6 +11,9 @@ export function ResultPreview(props: {
   onAction?: (action: RunBoardResultAction) => void;
 }): React.ReactElement {
   const preview = props.preview;
+  if (preview.status === "empty") {
+    return <Text color={visualTokenColor("text.muted")} wrap="truncate">{preview.summary}</Text>;
+  }
   const status = previewStatusLabel(preview.status);
   const blockers = visibleBlockers(preview);
   const checks = visibleChecks(preview.checks);

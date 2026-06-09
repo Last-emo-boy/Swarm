@@ -147,6 +147,7 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
 
   assert.match(text, /Ask Swarm to review or plan this workspace\./);
   assert.doesNotMatch(text, /WORK/);
+  assert.doesNotMatch(text, /RESULT/);
   assert.doesNotMatch(text, /explain this workspace/i);
   assert.doesNotMatch(text, /Phase\s+idle/);
   assert.doesNotMatch(text, /PROGRESS/);
