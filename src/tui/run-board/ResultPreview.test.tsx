@@ -28,6 +28,7 @@ test("ResultPreview hides successful check commands while preserving action comm
   assert.match(text, /RESULT/);
   assert.doesNotMatch(text, /RESULT PREVIEW/);
   assert.doesNotMatch(text, /ready\s+Patch ready for review/i);
+  assert.doesNotMatch(text, /working\s+Patch ready for review/i);
   assert.doesNotMatch(text, /Changed\s+src\/tui\/run-board\/ResultPreview\.tsx/);
   assert.doesNotMatch(text, /Verified\s+Passed|\[OK\] npm test -- result-preview|npm test -- result-preview/);
   assert.doesNotMatch(text, /Checks\s+npm test -- result-preview|npm test -- result-preview \[passed\]/);
@@ -86,6 +87,7 @@ test("ResultPreview hides checks that are still running", () => {
   }), { columns: 100, rows: 12 });
   const text = frameText(frame);
 
+  assert.doesNotMatch(text, /working\s+Patch ready for review/i);
   assert.doesNotMatch(text, /Verified\s+Passed|Verified\s+\[RUN\] npm test -- slow|npm test -- slow|\[OK\] npm run lint|npm run lint/);
 });
 

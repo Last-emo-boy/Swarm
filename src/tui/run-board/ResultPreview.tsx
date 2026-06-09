@@ -71,7 +71,7 @@ function previewChecksSummary(checks: ResultPreviewData["checks"]): string | und
 function previewStatusLabel(status: ResultPreviewData["status"]): string | undefined {
   switch (status) {
     case "empty": return undefined;
-    case "pending": return "working";
+    case "pending": return undefined;
     case "ready": return undefined;
     case "blocked": return "blocked";
     case "failed": return "failed";
