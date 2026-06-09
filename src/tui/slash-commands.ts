@@ -62,7 +62,7 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "shell", group: "Tools", usage: "/shell <command>", description: "Run a shell command with policy approval when required.", completionPriority: 100 },
   { name: "web", group: "Tools", usage: "/web <query> [allow:domain] [block:domain]", description: "Search the web through the configured provider/search path." },
   { name: "diff", group: "Tools", usage: "/diff", description: "Show the current git diff." },
-  { name: "output", group: "Tools", usage: "/output [task_id]", description: "Show recent tool output or the full output for one task.", completionPriority: 50 },
+  { name: "output", group: "Tools", usage: "/output [task_id]", description: "Review recent output or the full output for one task.", completionPriority: 50 },
   { name: "kernel", group: "Kernel", usage: "/kernel [workflow_path]", description: "Show the unified Swarm, Work Kernel, and Symphony status view.", aliases: ["status"], completionPriority: 30 },
   { name: "status", group: "Kernel", usage: "/status", description: "Alias for the current Kernel status view.", aliases: ["kernel"], completionPriority: 80 },
   { name: "changes", group: "Kernel", usage: "/changes [session_id]", description: "Show recorded workspace changes." },
@@ -179,7 +179,7 @@ const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
     { name: "board", group: "Kernel", usage: "/work board [session_id] [active|blocked|failed|resumable|changed-files|checks]", description: "Show the unified work board.", completionPriority: 5 },
     { name: "sessions", group: "Kernel", usage: "/work sessions", description: "List recent work sessions.", completionPriority: 10 },
     { name: "attempts", group: "Kernel", usage: "/work attempts", description: "List run attempts.", completionPriority: 20 },
-    { name: "output", group: "Tools", usage: "/work output", description: "Show recent tool output.", completionPriority: 30 },
+    { name: "output", group: "Tools", usage: "/work output", description: "Review recent output.", completionPriority: 30 },
     { name: "files", group: "Kernel", usage: "/work files", description: "Show changed files for a session.", completionPriority: 40 },
     { name: "checks", group: "Kernel", usage: "/work checks", description: "Show recorded checks for a session.", completionPriority: 50 },
     { name: "workers", group: "Agents", usage: "/work workers", description: "List worker agents.", completionPriority: 60 }
