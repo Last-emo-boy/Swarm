@@ -23,15 +23,32 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   assert(thread);
 
   const rows = formatWorkItemThreadRows(thread, 5);
+  const expandedRows = formatWorkItemThreadRows(thread, 10);
 
   assert.equal(rows.length, 5);
   assert.match(rows[0] ?? "", /Status: running/);
   assert.doesNotMatch(rows[0] ?? "", /Assignee|Risk/);
   assert.match(rows[1] ?? "", /Objective:/);
   assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
+  assert(!expandedRows.some((line) => /^Changed:|^Checks:/u.test(line)));
   assert(!rows.some((line) => /^Timeline:/u.test(line)));
   assert(!rows.some((line) => /^Comments:/u.test(line)));
   assert(!rows.some((line) => /ASP|protocol|heartbeat|claim owner/u.test(line)));
+});
+
+test("formatWorkItemThreadRows shows delivery evidence only for decision states", () => {
+  const thread = selectWorkItemThread({ board: fixtureBoard(), selectedId: "task-review" });
+  assert(thread);
+
+  const rows = formatWorkItemThreadRows({
+    ...thread,
+    status: "blocked",
+    changedFiles: ["src/tui/work-board/WorkItemThread.tsx"],
+    checks: ["npm test [failed]"]
+  }, 10);
+
+  assert(rows.some((line) => /^Changed: src\/tui\/work-board\/WorkItemThread\.tsx$/u.test(line)));
+  assert(rows.some((line) => /^Checks: npm test \[failed\]$/u.test(line)));
 });
 
 function fixtureBoard(): WorkBoard {
