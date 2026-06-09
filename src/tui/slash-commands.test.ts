@@ -29,10 +29,10 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("continue")?.description, "Continue the most recent work with a quick freshness check.");
   assert.equal(commands.get("evals")?.usage, "/evals [--release-gate|--cache-lab|--tui-replay]");
   assert.equal(commands.get("swarm")?.group, "Agents");
-  assert.equal(commands.get("swarm")?.usage, "/swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]");
+  assert.equal(commands.get("swarm")?.usage, "/swarm [summary|ownership|mailbox <agent>|agent <agent>]");
   assert.equal(commands.get("ownership")?.usage, "/ownership");
-  assert.equal(commands.get("mailbox")?.usage, "/mailbox <actor_id>");
-  assert.equal(commands.get("agent")?.usage, "/agent <actor_id|agent_spec_id>");
+  assert.equal(commands.get("mailbox")?.usage, "/mailbox <agent>");
+  assert.equal(commands.get("agent")?.usage, "/agent <agent>");
   assert.equal(commands.get("capabilities")?.group, "Config");
 });
 
@@ -50,7 +50,8 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
   assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /Query blackboard facts|shared board facts/);
   assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /session_id|persisted envelopes|shared protocol debug timeline|detail target, failures, cache, and artifacts/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/swarm/);
-  assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <actor_id>/);
+  assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <agent>/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "swarm" }), /actor_id|agent_spec_id|worker_id|handoff_id/);
   assert.match(renderSlashHelp({ namespace: "ext" }), /\/capabilities \[kind\|provider\|query\|all\]/);
 });
 
