@@ -22,7 +22,7 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("density")?.usage, "/density [auto|compact|default|comfortable]");
   assert.equal(commands.get("view")?.group, "Core");
   assert.equal(commands.get("plan")?.usage, "/plan [objective]");
-  assert.equal(commands.get("approve")?.usage, "/approve [approval_id] [message]");
+  assert.equal(commands.get("approve")?.usage, "/approve [approval] [message]");
   assert.equal(commands.get("blackboard")?.description, "Query shared facts.");
   assert.equal(commands.get("memory")?.usage, "/memory [saved_work]");
   assert.equal(commands.get("resume")?.usage, "/resume [saved_work] [note]");
@@ -81,7 +81,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /task_id|session_id|\/work board \[session_id\]|work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
-  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /workflow_path|session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
+  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /approval_id|workflow_path|session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
 });
 
 test("slash command candidates include required commands and aliases", () => {
