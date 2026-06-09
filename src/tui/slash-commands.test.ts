@@ -41,8 +41,9 @@ test("slash command help exposes Kernel, automation, and extension operator name
   const automationHelp = renderSlashHelp({ namespace: "symphony" });
   assert.match(automationHelp, /Automation commands/);
   assert.match(automationHelp, /\/symphony \[workspace\]/);
-  assert.match(automationHelp, /\/symphony-daemon \[daemon\]/);
-  assert.doesNotMatch(automationHelp, /Symphony|daemon_id/);
+  assert.match(automationHelp, /\/symphony-daemon \[loop\]/);
+  assert.match(automationHelp, /\/symphony-stop \[loop\|all\]/);
+  assert.doesNotMatch(automationHelp, /Symphony|daemon_id|\[daemon\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/trace <saved_work>/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[saved_work\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);
