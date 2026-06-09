@@ -130,7 +130,7 @@ test("SwarmWorkbenchLayout keeps attention-worthy status visible", () => {
   assert.doesNotMatch(text, /Status/);
   assert.match(text, /Blocked/);
   assert.doesNotMatch(text, /2 active · 1 blocked/);
-  assert.match(text, /\[RISK\s+\]/);
+  assert.doesNotMatch(text, /\[RISK\s+\]/);
   assert.doesNotMatch(text, /Reviewer is running/);
 });
 
@@ -454,6 +454,7 @@ test("SwarmWorkbenchLayout keeps attention-worthy access setup details visible",
 
   assert.match(text, /Access/);
   assert.match(text, /YOLO/);
+  assert.match(text, /\[RISK\s+\]/);
   assert.match(text, /Workspace/);
   assert.match(text, /Read Only/);
   assert.match(text, /Agent/);

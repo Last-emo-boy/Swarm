@@ -706,7 +706,8 @@ function isVisibleWorkbenchStatus(card: SwarmWorkbenchInfoCard): boolean {
 function visibleWorkbenchStatusCard(card: SwarmWorkbenchInfoCard): SwarmWorkbenchInfoCard {
   const title = visibleWorkbenchStatusTitle(card.title);
   const subtitle = visibleWorkbenchStatusSubtitle(card.subtitle);
-  return title === card.title && subtitle === card.subtitle ? card : { ...card, title, subtitle };
+  const badge = visibleWorkbenchStatusBadge(card.badge, title);
+  return title === card.title && subtitle === card.subtitle && badge === card.badge ? card : { ...card, title, subtitle, badge };
 }
 
 function visibleWorkbenchStatusTitle(value: string): string {
@@ -726,6 +727,14 @@ function visibleWorkbenchStatusSubtitle(value: string | undefined): string | und
   return /\b(?:planner|reviewer|worker|helper|agent)\b.*\bis running\b/iu.test(subtitle)
     ? undefined
     : subtitle;
+}
+
+function visibleWorkbenchStatusBadge(value: string | undefined, title: string): string | undefined {
+  const badge = value?.trim();
+  if (!badge) {
+    return undefined;
+  }
+  return /\bblocked\b/iu.test(title) && /^risk$/iu.test(badge) ? undefined : badge;
 }
 
 function hasAttentionWorkbenchStatus(token: string): boolean {
