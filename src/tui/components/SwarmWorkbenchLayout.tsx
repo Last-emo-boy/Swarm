@@ -340,7 +340,7 @@ function CaseRow({ session, width, onSelect }: { session: SwarmWorkbenchSessionI
   const showSecondary = Boolean(badge || subtitle);
   const inlineAttention = session.attention && !showSecondary ? attentionLabel(session.attention) : undefined;
   const secondaryAttention = session.attention && showSecondary ? attentionLabel(session.attention) : undefined;
-  const visibleAge = session.attention ? undefined : session.age;
+  const visibleAge = session.attention || session.active ? undefined : session.age;
   const ageWidth = visibleAge ? displayWidth(visibleAge) + 1 : 0;
   const attentionWidth = inlineAttention ? displayWidth(inlineAttention) + 1 : 0;
   const titleBudget = Math.max(8, width - ageWidth - attentionWidth - 6);

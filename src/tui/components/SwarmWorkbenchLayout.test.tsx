@@ -312,6 +312,7 @@ test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {
     navigation: navigationFixture(),
     sessions: [
       { id: "case-active", title: "Routine active case", age: "1m", badge: "active", subtitle: "Swarm", attention: 1, active: true },
+      { id: "case-current", title: "Current quiet case", age: "now", active: true },
       { id: "case-failed", title: "Broken release", age: "4m", badge: "failed", subtitle: "release workspace", tone: "status.danger" }
     ],
     mode: { title: "Plan & Execute" },
@@ -333,6 +334,8 @@ test("SwarmWorkbenchLayout keeps only attention-worthy case metadata", () => {
   assert.doesNotMatch(text, /needs 1/);
   assert.doesNotMatch(text, /!1/);
   assert.doesNotMatch(text, /active Swarm/);
+  assert.match(text, /Current quiet case/);
+  assert.doesNotMatch(text, /Current quiet case now/);
   assert.match(text, /Broken release 4m/);
   assert.match(text, /failed release workspace/);
 });
