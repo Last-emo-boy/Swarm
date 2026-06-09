@@ -158,15 +158,40 @@ function attentionHistoryView(items: AttentionItemView[]): ProductResultCardView
 }
 
 function finalNextActions(card: ResultCard): RunBoardResultAction[] {
-  const commands = uniqueCommands([
+  const commands = prioritizeFinalCommands(card, uniqueCommands([
     ...(card.checkpoint?.revertAvailable ? ["/revert last"] : []),
     ...card.next
-  ]);
+  ]));
   return commands.map((command) => ({
     command,
     label: labelForRunBoardAction(command),
     source: "final"
   }));
+}
+
+function prioritizeFinalCommands(card: ResultCard, commands: string[]): string[] {
+  if (!commands.length) {
+    return commands;
+  }
+  const priority = firstActionPriority(card);
+  if (!priority) {
+    return commands;
+  }
+  const index = commands.findIndex((command) => command.trim().toLowerCase() === priority);
+  if (index <= 0) {
+    return commands;
+  }
+  return [commands[index] as string, ...commands.slice(0, index), ...commands.slice(index + 1)];
+}
+
+function firstActionPriority(card: ResultCard): string | undefined {
+  if (card.checkpoint?.revertAvailable) {
+    return "/revert last";
+  }
+  if (card.status === "failed" || card.status === "stopped") {
+    return "/debug latest";
+  }
+  return "/diff";
 }
 
 function uniqueCommands(commands: string[]): string[] {

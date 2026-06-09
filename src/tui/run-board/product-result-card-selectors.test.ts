@@ -115,6 +115,49 @@ test("product result selector can disable decision trail for collaboration rollb
   assert.equal(selectProductResultCardView(state, { decisionTrailEnabled: false }).decisionTrail, undefined);
 });
 
+test("product result selector prioritizes the visible final action by outcome", () => {
+  const success = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
+    {
+      type: "result/final",
+      at: "2026-05-28T00:02:00.000Z",
+      card: {
+        status: "completed",
+        sessionId: "sess-success-actions",
+        route: "work",
+        summary: "Patch ready.",
+        changedFiles: ["src/runtime/session-row.ts"],
+        checks: [],
+        review: { status: "passed", summary: "review passed" },
+        risks: [],
+        artifacts: [],
+        next: ["/commit", "/output", "/diff"]
+      }
+    }
+  ]);
+  const failed = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
+    {
+      type: "result/final",
+      at: "2026-05-28T00:02:00.000Z",
+      card: {
+        status: "failed",
+        sessionId: "sess-failed-actions",
+        route: "work",
+        summary: "Verification failed.",
+        changedFiles: [],
+        checks: [{ command: "npm run check", status: "failed" }],
+        review: { status: "skipped", summary: "review not run" },
+        risks: [],
+        artifacts: [],
+        next: ["/diff", "/output", "/debug latest"]
+      }
+    }
+  ]);
+
+  assert.deepEqual(selectProductResultCardView(success).nextActions.map((item) => item.command), ["/diff", "/commit", "/output"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.command), ["/debug latest", "/diff", "/output"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Inspect latest issue", "Review changes", "Review output"]);
+});
+
 test("product result selector keeps preview commands behind user-facing labels", () => {
   const state = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
     {
