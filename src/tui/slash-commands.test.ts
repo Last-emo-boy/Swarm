@@ -50,17 +50,17 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(basicHelp, /Work/);
   assert.match(basicHelp, /Ask/);
   assert.match(basicHelp, /Setup/);
-  assert.match(basicHelp, /Recovery/);
   assert.match(basicHelp, /\/review \[focus\]/);
   assert.match(basicHelp, /\/work <board\|sessions\|attempts\|output\|files\|checks>/);
   assert.match(basicHelp, /\/plan \[objective\]/);
   assert.match(basicHelp, /\/approve \[approval_id\] \[message\]/);
   assert.match(basicHelp, /\/onboard/);
-  assert.match(basicHelp, /\/checkpoint <list\|create\|revert>/);
   assert.match(basicHelp, /\/help all/);
+  assert.doesNotMatch(basicHelp, /Recovery|\/checkpoint <list\|create\|revert>|\/revert last/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
   assert.doesNotMatch(basicHelp, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
   assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
+  assert.match(renderSlashHelp({ namespace: "work" }), /\/checkpoint <list\|create\|revert>/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
 });
@@ -85,6 +85,8 @@ test("slash command candidates keep the empty menu on the main path", () => {
   assert(names.includes("plan"));
   assert(names.includes("approve"));
   assert(names.includes("onboard"));
+  assert(!names.includes("checkpoint"));
+  assert(!names.includes("revert"));
   assert(!names.includes("debug"));
   assert(!names.includes("ext"));
   assert(!names.includes("symphony"));
