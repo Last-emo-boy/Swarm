@@ -202,12 +202,11 @@ function threadFromSession(session: WorkBoardSession, input: Parameters<typeof s
     risk: workers.some((worker) => worker.write_policy === "workspace_write") ? "Med" : undefined,
     source: session.source?.source ?? "user",
     plan: [
-      session.next_action,
-      checks.length ? `${checks.length} check(s) recorded` : undefined
+      session.next_action
     ].filter((value): value is string => Boolean(value)),
     timeline: [
       ...workers.slice(0, 4).map((worker) => `${worker.display_name}: ${worker.status} · ${firstLine(worker.objective, 70)}`),
-      ...artifacts.slice(0, 2).map((artifact) => `Artifact: ${shortPath(artifact.path)}`)
+      ...artifacts.slice(0, 2).map((artifact) => `Output: ${shortPath(artifact.path)}`)
     ],
     changedFiles: input.changedFiles.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
@@ -230,10 +229,9 @@ function threadFromTask(task: WorkBoardTask, input: Parameters<typeof selectThre
     source: "task",
     plan: [
       session?.next_action,
-      task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : undefined,
-      task.file_scope.length ? `Scope: ${task.file_scope.slice(0, 3).map(shortPath).join(", ")}` : undefined,
+      task.dependencies.length ? `Waiting on: ${task.dependencies.join(", ")}` : undefined,
+      task.file_scope.length ? `Files: ${task.file_scope.slice(0, 3).map(shortPath).join(", ")}` : undefined,
       task.last_error,
-      checks.length ? `${checks.length} check(s) recorded` : undefined
     ].filter((value): value is string => Boolean(value)),
     timeline: workers.slice(0, 4).map((worker) => `${worker.display_name}: ${worker.status} · ${firstLine(worker.objective, 70)}`),
     changedFiles: task.file_scope.slice(0, 5),
@@ -255,10 +253,10 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
     plan: [
       worker.recovery,
       worker.resume_command,
-      worker.file_scope.length ? `Scope: ${worker.file_scope.slice(0, 3).map(shortPath).join(", ")}` : undefined
+      worker.file_scope.length ? `Files: ${worker.file_scope.slice(0, 3).map(shortPath).join(", ")}` : undefined
     ].filter((value): value is string => Boolean(value)),
     timeline: [
-      worker.last_artifact ? `Last artifact: ${shortPath(worker.last_artifact)}` : undefined,
+      worker.last_artifact ? `Output: ${shortPath(worker.last_artifact)}` : undefined,
       worker.trajectory?.report ? firstLine(worker.trajectory.report, 88) : undefined
     ].filter((value): value is string => Boolean(value)),
     changedFiles: worker.trajectory?.changed_files.slice(0, 5) ?? worker.file_scope.slice(0, 5),

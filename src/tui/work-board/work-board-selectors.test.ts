@@ -63,6 +63,28 @@ test("selectWorkBoardSurface keeps default detail actions to one primary choice"
   assert.deepEqual(view.selected?.actions, ["Continue work"]);
 });
 
+test("selectWorkBoardSurface keeps thread detail labels product-facing", () => {
+  const board = fixtureBoard();
+  board.tasks = board.tasks.map((task) => task.task_id === "task-blocked"
+    ? { ...task, dependencies: ["task-running"] }
+    : task);
+  board.artifacts = [{
+    artifact_id: "artifact-1",
+    session_id: "session-101",
+    path: "E:/Playground/Swarm/.swarm/artifacts/review/report.md",
+    type: "report"
+  }];
+
+  const taskView = selectWorkBoardSurface({ board, selectedId: "task-blocked" });
+  const sessionView = selectWorkBoardSurface({ board, selectedId: "session-101" });
+
+  assert(taskView.selected?.plan.some((line) => /^Waiting on: task-running$/u.test(line)));
+  assert(taskView.selected?.plan.some((line) => /^Files: components\/SwarmWorkbenchLayout\.tsx$/u.test(line)));
+  assert(!taskView.selected?.plan.some((line) => /Dependencies:|Scope:|check\(s\) recorded/u.test(line)));
+  assert(sessionView.selected?.timeline.some((line) => /^Output: review\/report\.md$/u.test(line)));
+  assert(!sessionView.selected?.timeline.some((line) => /Artifact|Last artifact/u.test(line)));
+});
+
 function fixtureBoard(): WorkBoard {
   return {
     schema_version: "swarm.work_board.v1",
