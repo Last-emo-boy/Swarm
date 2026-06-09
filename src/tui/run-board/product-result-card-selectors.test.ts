@@ -154,8 +154,32 @@ test("product result selector prioritizes the visible final action by outcome", 
   ]);
 
   assert.deepEqual(selectProductResultCardView(success).nextActions.map((item) => item.command), ["/diff", "/commit", "/output"]);
-  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.command), ["/debug latest", "/diff", "/output"]);
-  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Inspect latest issue", "Review changes", "Review output"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.command), ["/output", "/diff", "/debug latest"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Review output", "Review changes", "Inspect latest issue"]);
+});
+
+test("product result selector offers output review before debug-only recovery", () => {
+  const failed = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
+    {
+      type: "result/final",
+      at: "2026-05-28T00:02:00.000Z",
+      card: {
+        status: "failed",
+        sessionId: "sess-debug-only",
+        route: "work",
+        summary: "Tool output needs review.",
+        changedFiles: [],
+        checks: [],
+        review: { status: "skipped", summary: "review not run" },
+        risks: [],
+        artifacts: [],
+        next: ["/debug latest"]
+      }
+    }
+  ]);
+
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.command), ["/output", "/debug latest"]);
+  assert.deepEqual(selectProductResultCardView(failed).nextActions.map((item) => item.label), ["Review output", "Inspect latest issue"]);
 });
 
 test("product result selector keeps preview commands behind user-facing labels", () => {

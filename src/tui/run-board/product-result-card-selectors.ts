@@ -160,6 +160,7 @@ function attentionHistoryView(items: AttentionItemView[]): ProductResultCardView
 function finalNextActions(card: ResultCard): RunBoardResultAction[] {
   const commands = prioritizeFinalCommands(card, uniqueCommands([
     ...(card.checkpoint?.revertAvailable ? ["/revert last"] : []),
+    ...(shouldOfferOutputReview(card) ? ["/output"] : []),
     ...card.next
   ]));
   return commands.map((command) => ({
@@ -189,9 +190,13 @@ function firstActionPriority(card: ResultCard): string | undefined {
     return "/revert last";
   }
   if (card.status === "failed" || card.status === "stopped") {
-    return "/debug latest";
+    return "/output";
   }
   return "/diff";
+}
+
+function shouldOfferOutputReview(card: ResultCard): boolean {
+  return card.status === "failed" || card.status === "stopped";
 }
 
 function uniqueCommands(commands: string[]): string[] {
