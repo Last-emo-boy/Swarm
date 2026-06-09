@@ -116,13 +116,14 @@ test("attention and result preview formatters keep next step visible", () => {
   };
 
   assert(formatAttentionItem(attention, 80).some((line) => /Next:/.test(line)));
-  assert(formatAttentionItem(attention, 80).some((line) => /Why:/.test(line)));
+  assert(formatAttentionItem(attention, 80).some((line) => /Seen:/.test(line)));
+  assert(formatAttentionItem(attention, 80).every((line) => !/Why:/.test(line)));
   assert(formatAttentionItem(attention, 80).every((line) => !/recommend:|evidence:/.test(line)));
   assert(formatAttentionItem({
     ...attention,
     summary: "Reviewer is waiting for Test Runner.",
     evidence: ["Reviewer is waiting for Test Runner."]
-  }, 80).every((line) => !/Why: Reviewer is waiting for Test Runner\./.test(line)));
+  }, 80).every((line) => !/Seen: Reviewer is waiting for Test Runner\.|Why: Reviewer is waiting for Test Runner\./.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => displayWidth(line) <= 80));
   assert(formatResultPreview(preview, 80).every((line) => !/Confidence/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Changed:|src\/tui\/run-board\/WorkerRow\.tsx/.test(line)));

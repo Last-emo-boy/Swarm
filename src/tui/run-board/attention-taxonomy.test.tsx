@@ -30,7 +30,7 @@ test("AttentionPanel renders all exception taxonomy kinds with concise user-faci
   assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP/);
 });
 
-test("AttentionPanel hides why evidence already covered by the summary", () => {
+test("AttentionPanel hides seen evidence already covered by the summary", () => {
   const item = attention("blocked", "Reviewer blocked", "Reviewer is waiting for Test Runner.");
   item.evidence = ["Reviewer is waiting for Test Runner."];
 
@@ -39,7 +39,7 @@ test("AttentionPanel hides why evidence already covered by the summary", () => {
 
   assert.match(text, /Reviewer blocked/);
   assert.match(text, /Next\s+recommended action for blocked/);
-  assert.doesNotMatch(text, /Why\s+Reviewer is waiting for Test Runner\./);
+  assert.doesNotMatch(text, /Seen\s+Reviewer is waiting for Test Runner\.|Why\s+Reviewer is waiting for Test Runner\./);
 });
 
 function attention(kind: AttentionItemView["kind"], title: string, summary: string): AttentionItemView {

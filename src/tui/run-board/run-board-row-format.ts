@@ -39,7 +39,7 @@ export function formatAttentionItem(item: AttentionItemView, columns = 100): str
   const first = clipDisplay(`${attentionBadge(item.kind)} ${item.title}: ${item.summary}`, width);
   const recommendation = clipDisplay(`  Next: ${item.recommendation}`, width);
   const visibleEvidence = visibleAttentionEvidence(item);
-  const evidence = visibleEvidence ? clipDisplay(`  Why: ${visibleEvidence}`, width) : undefined;
+  const evidence = visibleEvidence ? clipDisplay(`  Seen: ${visibleEvidence}`, width) : undefined;
   return [first, evidence, recommendation].filter((line): line is string => Boolean(line));
 }
 

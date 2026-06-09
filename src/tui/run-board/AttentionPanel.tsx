@@ -37,7 +37,7 @@ function AttentionItem(props: {
       <SemanticTextLine wrap="truncate" spans={attentionTitleSpans(item)} />
       {evidence ? (
         <SemanticTextLine wrap="truncate" spans={[
-          { text: "  Why  ", color: "text.muted" },
+          { text: "  Seen ", color: "text.muted" },
           { text: evidence, color: "text.primary" }
         ]} />
       ) : null}
