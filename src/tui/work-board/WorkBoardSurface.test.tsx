@@ -22,7 +22,7 @@ test("WorkBoardSurface renders board columns and selected task thread", () => {
   assert.match(text, /Objective: Build Board-first workspace/);
   assert.match(text, /1 active task/);
   assert.match(text, /1 helper/);
-  assert.doesNotMatch(text, /0 approvals|Backlog 0|Review 0|Done 0|\(empty\)|No active detail/i);
+  assert.doesNotMatch(text, /0 approvals|Backlog 0|Review 0|Done 0|\(empty\)|No active detail|1 automation/i);
   assert.doesNotMatch(text, /claim owner|protocol|ASP|heartbeat/u);
 });
 
@@ -51,7 +51,8 @@ test("WorkBoardSurface keeps the empty work view quiet", () => {
 
   assert.match(text, /WORK/);
   assert.doesNotMatch(text, /OBSERVATORY/);
-  assert.match(text, /Ask Swarm to review, plan, or explain this workspace\./);
+  assert.match(text, /Ask Swarm to review or plan this workspace\./);
+  assert.doesNotMatch(text, /explain this workspace/i);
   assert.doesNotMatch(text, /Nothing to review yet|Type an objective below|details appear here/i);
   assert.doesNotMatch(text, /0 active tasks|0 workers|0 approvals|team activity|blockers|checks|delivery evidence|activity:/i);
 });

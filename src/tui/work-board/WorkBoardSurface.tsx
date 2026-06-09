@@ -6,6 +6,8 @@ import type { WorkBoardColumnView, WorkBoardSurfaceView } from "./work-board-typ
 import { toneRefForWorkBoardItem } from "./work-board-types.js";
 import { WorkItemThread } from "./WorkItemThread.js";
 
+const EMPTY_WORK_PROMPT = "Ask Swarm to review or plan this workspace.";
+
 export function WorkBoardSurface({
   view,
   rows,
@@ -45,14 +47,13 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
     countLabel(view.summary.activeTasks, "active task"),
     countLabel(view.summary.workers, "helper"),
     countLabel(view.summary.approvals, "approval"),
-    countLabel(view.summary.blockers, "blocker"),
-    countLabel(view.summary.automations, "automation")
+    countLabel(view.summary.blockers, "blocker")
   ].filter((value): value is string => Boolean(value)).join(" · ");
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
       <Text wrap="truncate">
         <Text color={visualTokenColor("brand.focus")} bold>{fit("WORK", 16)}</Text>
-        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? "Ask Swarm to review, plan, or explain this workspace." : view.subtitle), Math.max(10, columns - 18))}</Text>
+        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? EMPTY_WORK_PROMPT : view.subtitle), Math.max(10, columns - 18))}</Text>
       </Text>
       {view.summary.activity[0] ? (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
