@@ -109,17 +109,18 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
 
   assert.match(expandedText, /Context/);
   assert.doesNotMatch(expandedText, /Details\s+Context/);
-  assert.match(expandedText, /checked passed: npm test -- session-row/);
-  assert.doesNotMatch(expandedText, /Detail\s+verification passed|verification passed/);
-  assert.match(expandedText, /changed: src\/runtime\/session-row\.ts/);
-  assert.doesNotMatch(expandedText, /changed file:/);
-  assert.match(expandedText, /output: artifacts\/session-context\.log/);
-  assert.doesNotMatch(expandedText, /artifact: artifacts\/session-context\.log/);
+  assert.match(expandedText, /Verified: npm test -- session-row/);
+  assert.doesNotMatch(expandedText, /checked passed:|Detail\s+verification passed|verification passed/);
+  assert.match(expandedText, /Changed src\/runtime\/session-row\.ts/);
+  assert.doesNotMatch(expandedText, /changed:|changed file:/);
+  assert.match(expandedText, /Saved artifacts\/session-context\.log/);
+  assert.doesNotMatch(expandedText, /output:|artifact: artifacts\/session-context\.log/);
   assert.match(expandedText, /TEAM/);
   assert.match(expandedText, /Code Worker implemented patch/);
   assert.match(expandedText, /Test Runner verified focused test/);
   assert.match(expandedText, /NOTES/);
   assert.match(expandedText, /waited; command completed successfully/);
+  assert.doesNotMatch(expandedText, /resolved:/);
   assert.doesNotMatch(expandedText, /\[OK\]\s+Code Worker|\[WARN\]\s+Test Runner/);
   assert.doesNotMatch(expandedText, /CONTRIBUTORS|REQUESTS|TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
 });
@@ -360,13 +361,16 @@ test("ProductResultCard renders review findings as result-first report rows", ()
       next: ["/review auth and permissions"]
     },
     preview: emptyPreview(),
-    attentionHistory: []
-  }), { columns: 180, rows: 20 });
+    attentionHistory: [],
+    teamReasoningExpanded: true
+  }), { columns: 180, rows: 28 });
   const text = frameText(frame);
 
   assert.match(text, /Finding\s+High: src\/auth\/permissions\.ts:42 Permission check can be bypassed/);
   assert.match(text, /Fix: Validate inherited roles before granting access/);
   assert.match(text, /Medium: src\/auth\/audit\.ts Audit trail misses denied requests/);
+  assert.match(text, /Reviewed: src\/auth\/permissions\.ts:42/);
+  assert.doesNotMatch(text, /finding evidence:/);
   assert.doesNotMatch(text, /Review\s+\[WARN\] 2 actionable findings\./);
   assert.doesNotMatch(text, /confidence=|fix=/);
   assert.doesNotMatch(text, /Changed\s+none/);
