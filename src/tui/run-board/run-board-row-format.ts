@@ -7,7 +7,7 @@ export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
   const elapsed = formatElapsed(row.elapsedMs);
   const visibleEvidence = visibleWorkerEvidence(row);
   const suffix = visibleEvidence ? ` · ${visibleEvidence}` : "";
-  const action = row.waitingOn && !visibleEvidence ? `${row.currentAction} (waiting on ${row.waitingOn})` : row.currentAction;
+  const action = row.currentAction;
   if (width < 92) {
     return clipDisplay(`${badge} ${padRight(clipDisplay(row.label, 16), 16)} ${clipDisplay(action, 32)} ${elapsed}`, width);
   }
@@ -23,7 +23,7 @@ function visibleWorkerEvidence(row: WorkerBoardRow): string | undefined {
   if (row.status !== "blocked" && row.status !== "stuck" && row.status !== "failed") {
     return undefined;
   }
-  const evidence = row.lastEvidence ?? (row.waitingOn ? `waits on ${row.waitingOn}` : undefined);
+  const evidence = row.lastEvidence ?? (row.waitingOn ? "waiting on another task" : undefined);
   if (!evidence) {
     return undefined;
   }

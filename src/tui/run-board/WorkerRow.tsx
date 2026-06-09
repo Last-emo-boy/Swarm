@@ -53,7 +53,7 @@ function visibleWorkerEvidence(row: WorkerBoardRowData): string | undefined {
   if (row.status !== "blocked" && row.status !== "stuck" && row.status !== "failed") {
     return undefined;
   }
-  const evidence = row.lastEvidence ?? (row.waitingOn ? `waiting on ${row.waitingOn}` : undefined);
+  const evidence = row.lastEvidence ?? (row.waitingOn ? "waiting on another task" : undefined);
   if (!evidence) {
     return undefined;
   }

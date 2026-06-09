@@ -86,6 +86,42 @@ test("worker row hides evidence that repeats the current action", () => {
   assert.equal((spanText.match(/running focused test/g) ?? []).length, 1);
 });
 
+test("worker row hides raw waiting target ids in default output", () => {
+  const active: WorkerBoardRow = {
+    id: "worker:active",
+    label: "Code Worker",
+    role: "code",
+    status: "active",
+    currentAction: "editing files",
+    waitingOn: "worker_internal_123",
+    elapsedMs: 1_000,
+    owns: [],
+    risk: "low",
+    canStop: true,
+    canRetry: false,
+    canTakeBack: false
+  };
+  const blocked: WorkerBoardRow = {
+    ...active,
+    id: "worker:blocked",
+    label: "Test Runner",
+    role: "test",
+    status: "blocked",
+    currentAction: "waiting for dependency",
+    risk: "medium",
+    canRetry: true
+  };
+
+  const activeText = formatWorkerRow(active, 120);
+  const blockedText = formatWorkerRow(blocked, 120);
+  const blockedSpanText = workerRowSpans(blocked).map((span) => span.text).join("");
+
+  assert.doesNotMatch(activeText, /worker_internal_123|waiting on another task/u);
+  assert.match(blockedText, /waiting on another task/);
+  assert.match(blockedSpanText, /waiting on another task/);
+  assert.doesNotMatch(`${blockedText}\n${blockedSpanText}`, /worker_internal_123/u);
+});
+
 test("attention and result preview formatters keep next step visible", () => {
   const attention: AttentionItemView = {
     id: "att-1",
