@@ -37,7 +37,7 @@ export type CommandOutputPreviewRecord = {
 const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Agents", "Symphony", "Config"];
 
 export const slashCommands: SlashCommandSpec[] = [
-  { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 10 },
+  { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 90 },
   { name: "doctor", group: "Core", usage: "/doctor [workflow_path]", description: "Diagnose model setup, permissions, Kernel stores, and Symphony preflight.", completionPriority: 20 },
   { name: "mode", group: "Core", usage: "/mode [auto|fast|swarm|chat]", description: "Show or change the execution route mode.", completionPriority: 40 },
   { name: "review", group: "Core", usage: "/review [focus]", description: "Run a result-first Codebase Deep Review for a focused area.", aliases: ["rev"], completionPriority: 42 },

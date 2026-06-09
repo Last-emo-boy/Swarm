@@ -83,6 +83,7 @@ test("slash command candidates include required commands and aliases", () => {
 test("slash command candidates keep the empty menu on the main path", () => {
   const names = commandCandidatesForInput("/", 1).map((command) => command.name);
 
+  assert.deepEqual(names.slice(0, 5), ["review", "plan", "approve", "onboard", "continue"]);
   assert(names.includes("review"));
   assert(names.includes("plan"));
   assert(names.includes("approve"));
