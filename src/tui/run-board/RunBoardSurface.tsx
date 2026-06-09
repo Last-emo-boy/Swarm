@@ -64,10 +64,7 @@ function HeaderObjectiveLine(props: { view: RunBoardSurfaceView }): React.ReactE
 }
 
 function shouldShowPhaseLine(view: RunBoardSurfaceView): boolean {
-  if (view.phase === "idle") {
-    return false;
-  }
-  return !(view.phase === "waiting-attention" && view.attention.length > 0);
+  return view.phase === "waiting-attention" && view.attention.length === 0;
 }
 
 function shouldShowFocusLine(view: RunBoardSurfaceView): boolean {

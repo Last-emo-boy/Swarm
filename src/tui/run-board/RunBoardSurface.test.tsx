@@ -158,6 +158,21 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
   assert.doesNotMatch(text, /\[Details Enter\]/);
 });
 
+test("RunBoardSurface hides routine phase labels", () => {
+  const frame = renderTuiToFrame(React.createElement(RunBoardSurface, {
+    view: {
+      ...fixtureView(),
+      phase: "working",
+      attention: []
+    }
+  }), { columns: 100, rows: 20 });
+  const text = frameText(frame);
+
+  assert.match(text, /Fix failing tests/);
+  assert.match(text, /PROGRESS/);
+  assert.doesNotMatch(text, /Status\s+Working/);
+});
+
 test("RunBoardSurface stays bounded across rollout viewports", () => {
   for (const columns of [80, 100, 120, 160]) {
     const frame = renderTuiToFrame(React.createElement(RunBoardSurface, { view: fixtureView() }), { columns, rows: 24 });
