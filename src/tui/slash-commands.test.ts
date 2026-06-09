@@ -64,6 +64,8 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/work <board\|sessions\|attempts\|output\|files\|checks\|workers>/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/checkpoint <list\|create\|revert>/);
+  assert.match(renderSlashHelp({ namespace: "work" }), /\/work checks - Review verification results\./);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
 });
