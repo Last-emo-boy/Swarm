@@ -290,10 +290,7 @@ function renderMainSlashHelp(): string {
     "  /onboard - Configure provider, API key, and model once.",
     "",
     "Advanced",
-    "  /help all - Show every command.",
-    "  /help debug - Show Debug detail commands.",
-    "  /help work - Show extra work evidence commands.",
-    "  /help ext - Show extension detail commands."
+    "  /help all - Show every command."
   ].join("\n");
 }
 

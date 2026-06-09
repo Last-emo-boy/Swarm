@@ -55,7 +55,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(basicHelp, /\/approve \[approval_id\] \[message\]/);
   assert.match(basicHelp, /\/onboard/);
   assert.match(basicHelp, /\/help all/);
-  assert.doesNotMatch(basicHelp, /Recovery|\/doctor \[workflow_path\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
+  assert.doesNotMatch(basicHelp, /Recovery|\/help debug|\/help work|\/help ext|\/doctor \[workflow_path\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
   assert.doesNotMatch(basicHelp, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
   assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
