@@ -173,6 +173,21 @@ test("RunBoardSurface hides routine phase labels", () => {
   assert.match(text, /Fix failing tests/);
   assert.match(text, /PROGRESS/);
   assert.doesNotMatch(text, /Status\s+Working/);
+
+  const waiting = renderTuiToFrame(React.createElement(RunBoardSurface, {
+    view: {
+      ...fixtureView(),
+      objective: undefined,
+      phase: "waiting-attention",
+      attention: [],
+      focus: "Test Runner"
+    }
+  }), { columns: 100, rows: 20 });
+  const waitingText = frameText(waiting);
+
+  assert.match(waitingText, /PROGRESS/);
+  assert.doesNotMatch(waitingText, /│ WORK\s+│/);
+  assert.doesNotMatch(waitingText, /Status\s+Needs you|Focus\s+Test Runner/);
 });
 
 test("RunBoardSurface stays bounded across rollout viewports", () => {
