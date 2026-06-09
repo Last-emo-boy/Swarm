@@ -364,10 +364,10 @@ function TeamReasoningLines(props: {
 function teamReasoningItems(view: ProductResultCardView): string[] {
   const items = [
     ...view.reviewFindings?.flatMap((finding) =>
-      (finding.evidence ?? []).slice(0, 2).map((evidence) => `${finding.severity} finding evidence: ${evidence}`)
+      (finding.evidence ?? []).slice(0, 2).map((evidence) => `finding evidence: ${evidence}`)
     ) ?? [],
-    ...view.checks.slice(0, 4).map((check) => `verification ${check.status}: ${check.command}`),
-    ...view.changedFiles.slice(0, 4).map((file) => `changed file: ${file}`),
+    ...view.checks.slice(0, 4).map((check) => `checked ${check.status}: ${check.command}`),
+    ...view.changedFiles.slice(0, 4).map((file) => `changed: ${file}`),
     ...view.workerSummary.slice(0, 4).map((worker) => `${worker.label}: ${worker.contribution}`),
     ...view.attentionHistory.slice(0, 3).map((item) => `${item.resolved ? "resolved" : "open"}: ${item.summary}${item.resolution ? `; ${item.resolution}` : ""}`),
     ...view.artifacts.slice(0, 3).map((artifact) => `output: ${artifact}`)
