@@ -7,7 +7,6 @@ import { toneRefForWorkBoardItem } from "./work-board-types.js";
 import { WorkItemThread } from "./WorkItemThread.js";
 
 const EMPTY_WORK_PROMPT = "Ask Swarm to review or plan this workspace.";
-const DEFAULT_EMPTY_STARTERS = ["Review this workspace", "Plan a change", "Continue previous work"];
 
 export function WorkBoardSurface({
   view,
@@ -24,7 +23,6 @@ export function WorkBoardSurface({
     return (
       <Box flexDirection="column" width="100%" height={safeRows} overflow="hidden">
         <BoardHeader view={view} columns={safeColumns} />
-        <EmptyWorkStarters actions={view.selected?.actions ?? DEFAULT_EMPTY_STARTERS} columns={safeColumns} />
       </Box>
     );
   }
@@ -57,18 +55,6 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
         <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary, Math.max(10, columns - 18))}</Text>
       </Text>
     </Box>
-  );
-}
-
-function EmptyWorkStarters({ actions, columns }: { actions: string[]; columns: number }): React.ReactElement | null {
-  const visible = actions.map((action) => action.trim()).filter(Boolean).slice(0, 3);
-  if (!visible.length) {
-    return null;
-  }
-  return (
-    <Text color={visualTokenColor("text.muted")} wrap="truncate">
-      {fitToDisplayWidth(`Start  ${visible.join("  ·  ")}`, Math.max(10, columns))}
-    </Text>
   );
 }
 
