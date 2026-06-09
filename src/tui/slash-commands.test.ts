@@ -62,6 +62,7 @@ test("slash command help exposes Kernel, automation, and extension operator name
 
 test("default slash help stays on the main path unless advanced help is requested", () => {
   const basicHelp = renderSlashHelp();
+  const advancedHelp = renderSlashHelp({ includeAdvanced: true });
 
   assert.match(basicHelp, /Start/);
   assert.match(basicHelp, /\/review \[area\]/);
@@ -86,8 +87,10 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(renderSlashHelp({ namespace: "work" }), /\/work checks - Review verification results\./);
   assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /checkpoint_id|task_id|session_id|\/work board \[session_id\]|work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
-  assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
-  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /server_id|plugin_id|capability_id|root_path|manifest diagnostics|MCP stdio|tool catalog|approval_id|workflow_path|session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
+  assert.match(advancedHelp, /\/symphony-start/);
+  assert.match(advancedHelp, /^Work$/m);
+  assert.doesNotMatch(advancedHelp, /^Kernel$/m);
+  assert.doesNotMatch(advancedHelp, /server_id|plugin_id|capability_id|root_path|manifest diagnostics|MCP stdio|tool catalog|approval_id|workflow_path|session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
 });
 
 test("slash command candidates include required commands and aliases", () => {

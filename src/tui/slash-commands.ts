@@ -266,12 +266,16 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?
         return "";
       }
       return [
-        group,
+        slashCommandGroupLabel(group),
         ...commands.map((command) => `  ${command.usage} - ${command.description}`)
       ].join("\n");
     })
     .filter(Boolean)
     .join("\n\n");
+}
+
+function slashCommandGroupLabel(group: SlashCommandGroup): string {
+  return group === "Kernel" ? "Work" : group === "Symphony" ? "Automation" : group;
 }
 
 function renderMainSlashHelp(): string {
