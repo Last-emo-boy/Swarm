@@ -16,13 +16,16 @@ export function RunBoardSurface(props: {
   onResultAction?: (action: RunBoardResultAction) => void;
 }): React.ReactElement {
   const view = props.view;
+  const showHeaderPanel = Boolean(view.objective) || shouldShowPhaseLine(view) || shouldShowFocusLine(view);
   return (
     <Box flexDirection="column" width="100%">
-      <RunBoardPanel title={view.title === "Swarm Board" ? "Work" : view.title}>
-        {view.objective ? <HeaderObjectiveLine view={view} /> : null}
-        {shouldShowPhaseLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Status     {phaseDisplayLabel(view.phase)}</Text> : null}
-        {shouldShowFocusLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
-      </RunBoardPanel>
+      {showHeaderPanel ? (
+        <RunBoardPanel title={view.title === "Swarm Board" ? "Work" : view.title}>
+          {view.objective ? <HeaderObjectiveLine view={view} /> : null}
+          {shouldShowPhaseLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Status     {phaseDisplayLabel(view.phase)}</Text> : null}
+          {shouldShowFocusLine(view) ? <Text color={visualTokenColor("text.muted")} wrap="truncate">Focus      {view.focus}</Text> : null}
+        </RunBoardPanel>
+      ) : null}
       <WorkerBoard
         rows={view.workers}
         limit={props.workerLimit}

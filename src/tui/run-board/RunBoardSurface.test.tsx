@@ -146,6 +146,7 @@ test("RunBoardSurface keeps the idle footer quiet", () => {
   const text = frameText(frame);
 
   assert.match(text, /Ask Swarm to review or plan this workspace\./);
+  assert.doesNotMatch(text, /WORK/);
   assert.doesNotMatch(text, /explain this workspace/i);
   assert.doesNotMatch(text, /Phase\s+idle/);
   assert.doesNotMatch(text, /PROGRESS/);
