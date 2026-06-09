@@ -277,15 +277,15 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?
 function renderMainSlashHelp(): string {
   return [
     "Work",
-    "  /plan [objective] - Draft or show the current implementation plan.",
-    "  /approve [approval_id] [message] - Approve the current plan or one pending approval.",
-    "  /continue [message] - Continue the latest local coding session.",
+    "  /plan [objective] - Plan the next change.",
+    "  /approve [approval_id] [message] - Approve pending work.",
+    "  /continue [message] - Continue latest work.",
     "",
     "Ask",
-    "  /review [focus] - Run a result-first Codebase Deep Review.",
+    "  /review [focus] - Review code and risks.",
     "",
     "Setup",
-    "  /onboard - Configure provider, API key, and model once.",
+    "  /onboard - Set up model access.",
     "",
     "More: /help all."
   ].join("\n");
