@@ -65,7 +65,7 @@ export function formatResultPreview(preview: ResultPreview, columns = 100): stri
   const lines = [
     `Result: ${preview.summary}`,
     checkSummary ? `Verified: ${checkSummary}` : undefined,
-    blockers.length ? `Blockers: ${blockers.slice(0, 2).join(", ")}` : undefined
+    blockers.length ? `Needs: ${blockers.slice(0, 2).join(", ")}` : undefined
   ];
   return lines.filter((line): line is string => Boolean(line)).map((line) => clipDisplay(line, width));
 }

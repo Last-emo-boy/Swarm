@@ -38,7 +38,7 @@ export function ResultPreview(props: {
           value={checkSummary}
         />
       ) : null}
-      {blockers.length ? <PreviewLine label="Blockers" value={blockers.slice(0, 2).join(", ")} /> : null}
+      {blockers.length ? <PreviewLine label="Needs" value={blockers.slice(0, 2).join(", ")} /> : null}
       {actions.length ? <ResultActions actions={actions} onAction={props.onAction} /> : null}
     </RunBoardPanel>
   );

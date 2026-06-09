@@ -290,7 +290,7 @@ test("RunBoardSurface dispatches worker row and result preview action clicks", (
 
   assert.deepEqual(clicked, ["worker:worker:test", "result:/diff"]);
   const text = frameText(root.getFrame()!);
-  assert.doesNotMatch(text, /Blockers\s+verification blocked/);
+  assert.doesNotMatch(text, /Blockers|Needs\s+verification blocked/);
   assert.doesNotMatch(text, /Artifacts/);
   root.unmount();
 });

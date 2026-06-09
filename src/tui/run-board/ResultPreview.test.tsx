@@ -59,7 +59,7 @@ test("ResultPreview keeps failed checks actionable", () => {
   assert.doesNotMatch(text, /\[OK\] npm test -- result-preview|npm test -- result-preview/);
 });
 
-test("ResultPreview hides blockers already covered by the summary", () => {
+test("ResultPreview shows only missing needs not blockers already covered by the summary", () => {
   const frame = renderTuiToFrame(React.createElement(ResultPreview, {
     preview: {
       ...previewFixture(),
@@ -70,8 +70,8 @@ test("ResultPreview hides blockers already covered by the summary", () => {
   }), { columns: 100, rows: 12 });
   const text = frameText(frame);
 
-  assert.match(text, /Blockers\s+approval pending/);
-  assert.doesNotMatch(text, /Blockers\s+verification blocked/);
+  assert.match(text, /Needs\s+approval pending/);
+  assert.doesNotMatch(text, /Blockers|Needs\s+verification blocked/);
 });
 
 test("ResultPreview hides checks that are still running", () => {

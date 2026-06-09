@@ -129,8 +129,8 @@ test("attention and result preview formatters keep next step visible", () => {
   assert(formatResultPreview(preview, 80).every((line) => !/Verified: Passed|\[RUN\] npm test|npm test|\[OK\] npm run lint|npm run lint/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Checks:|npm test \[running\]/.test(line)));
   assert(formatResultPreview(preview, 80).every((line) => !/Artifacts/.test(line)));
-  assert(formatResultPreview(preview, 80).some((line) => /Blockers: review needed/.test(line)));
-  assert(formatResultPreview(preview, 80).every((line) => !/Blockers: checks pending/.test(line)));
+  assert(formatResultPreview(preview, 80).some((line) => /Needs: review needed/.test(line)));
+  assert(formatResultPreview(preview, 80).every((line) => !/Blockers:|Needs: checks pending/.test(line)));
 });
 
 test("result preview formatter keeps empty state quiet", () => {
