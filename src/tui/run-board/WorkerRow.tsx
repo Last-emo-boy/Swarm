@@ -3,7 +3,7 @@ import { Box } from "../ui.js";
 import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
 import { collaborationRoleDescriptor, collaborationRoleForWorker } from "../collaboration-role.js";
 import type { WorkerBoardRow as WorkerBoardRowData } from "./run-board-types.js";
-import { formatElapsed, statusBadge } from "./run-board-row-format.js";
+import { statusBadge, workerElapsedLabel } from "./run-board-row-format.js";
 
 export function WorkerRow(props: {
   row: WorkerBoardRowData;
@@ -31,6 +31,7 @@ export function workerRowSpans(row: WorkerBoardRowData, selected = false): Seman
   const tone = statusToneForRow(row.status);
   const evidence = visibleWorkerEvidence(row);
   const role = collaborationRoleDescriptor(collaborationRoleForWorker(row));
+  const elapsed = workerElapsedLabel(row);
   return [
     { text: role.badge, color: role.color, bold: true },
     { text: " ", color: "text.muted" },
@@ -38,8 +39,12 @@ export function workerRowSpans(row: WorkerBoardRowData, selected = false): Seman
     { text: " ", color: "text.muted" },
     { text: `${row.label.padEnd(15, " ")} `, color: selected ? "brand.focus" : "text.primary", bold: selected },
     { text: row.currentAction, color: "text.primary" },
-    { text: "  ", color: "text.muted" },
-    { text: formatElapsed(row.elapsedMs), color: "text.muted" },
+    ...(elapsed
+      ? [
+        { text: "  ", color: "text.muted" as const },
+        { text: elapsed, color: "text.muted" as const }
+      ]
+      : []),
     ...(evidence
       ? [
         { text: "  ", color: "text.muted" as const },

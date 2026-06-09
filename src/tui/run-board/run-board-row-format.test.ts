@@ -25,10 +25,14 @@ test("worker row formatter respects terminal width budgets", () => {
     const line = formatWorkerRow(row, columns);
     assert(displayWidth(line) <= columns, `${columns}: ${line}`);
     assert.match(line, /Test Runner/);
-    assert.match(line, /01:12/);
-    assert(line.indexOf("running") < line.indexOf("01:12"), `${columns}: expected action before elapsed age`);
+    assert.doesNotMatch(line, /01:12/);
     assert.doesNotMatch(line, /\bactive\b/);
     assert.doesNotMatch(line, /npm test --/);
+
+    const blocked = formatWorkerRow({ ...row, status: "blocked", risk: "medium", canRetry: true }, columns);
+    assert(displayWidth(blocked) <= columns, `${columns}: ${blocked}`);
+    assert.match(blocked, /01:12/);
+    assert(blocked.indexOf("running") < blocked.indexOf("01:12"), `${columns}: expected action before elapsed age`);
   }
 });
 
@@ -117,7 +121,10 @@ test("worker row hides raw waiting target ids in default output", () => {
   const blockedSpanText = workerRowSpans(blocked).map((span) => span.text).join("");
 
   assert.doesNotMatch(activeText, /worker_internal_123|waiting on another task/u);
+  assert.doesNotMatch(activeText, /00:01/);
   assert.match(blockedText, /waiting on another task/);
+  assert.match(blockedText, /00:01/);
+  assert.match(blockedSpanText, /00:01/);
   assert.match(blockedSpanText, /waiting on another task/);
   assert.doesNotMatch(`${blockedText}\n${blockedSpanText}`, /worker_internal_123/u);
 });

@@ -4,19 +4,25 @@ import type { AttentionItemView, ResultPreview, WorkerBoardRow } from "./run-boa
 export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
   const width = Math.max(40, Math.floor(columns));
   const badge = statusBadge(row.status);
-  const elapsed = formatElapsed(row.elapsedMs);
+  const elapsed = workerElapsedLabel(row);
   const visibleEvidence = visibleWorkerEvidence(row);
   const suffix = visibleEvidence ? ` · ${visibleEvidence}` : "";
   const action = row.currentAction;
   if (width < 92) {
-    return clipDisplay(`${badge} ${padRight(clipDisplay(row.label, 16), 16)} ${clipDisplay(action, 32)} ${elapsed}`, width);
+    return clipDisplay(`${badge} ${padRight(clipDisplay(row.label, 16), 16)} ${clipDisplay(action, elapsed ? 32 : 40)}${elapsed ? ` ${elapsed}` : ""}`, width);
   }
   const label = padRight(clipDisplay(row.label, 18), 18);
-  const fixedWidth = displayWidth(`${badge} ${label} ${elapsed}`);
+  const fixedWidth = displayWidth(`${badge} ${label}${elapsed ? ` ${elapsed}` : ""}`);
   const evidenceBudget = width >= 120 ? 28 : 18;
   const actionBudget = Math.max(18, width - fixedWidth - evidenceBudget - 4);
   const evidence = suffix ? clipDisplay(suffix.replace(/^ · /, ""), evidenceBudget) : "";
-  return clipDisplay(`${badge} ${label} ${clipDisplay(action, actionBudget)} ${elapsed}${evidence ? `  ${evidence}` : ""}`, width);
+  return clipDisplay(`${badge} ${label} ${clipDisplay(action, actionBudget)}${elapsed ? ` ${elapsed}` : ""}${evidence ? `  ${evidence}` : ""}`, width);
+}
+
+export function workerElapsedLabel(row: Pick<WorkerBoardRow, "status" | "elapsedMs">): string | undefined {
+  return row.status === "waiting" || row.status === "blocked" || row.status === "stuck" || row.status === "failed"
+    ? formatElapsed(row.elapsedMs)
+    : undefined;
 }
 
 function visibleWorkerEvidence(row: WorkerBoardRow): string | undefined {
