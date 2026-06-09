@@ -402,11 +402,12 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   }), { columns: 180, rows: 20 });
   const text = frameText(frame);
 
-  assert.match(text, /Recovery\s+Tool action file\.edit failed\./);
+  assert.match(text, /Next\s+Run file\.grep for a unique oldText, then retry file\.edit\./);
   assert.match(text, /Risk\s+high: tool action failed/);
-  assert.match(text, /Next: Run file\.grep for a unique oldText, then retry file\.edit\./);
+  assert.doesNotMatch(text, /Recovery\s+Tool action file\.edit failed\.|Next:/);
   assert.doesNotMatch(text, /Try: file\.grep/);
-  assert.match(text, /Prompt cache prefix changed\./);
+  assert.doesNotMatch(text, /Prompt cache prefix changed\./);
+  assert.match(text, /Keep stable system text and tool schemas unchanged\./);
   assert.match(text, /Try: swarm doctor/);
   assert.doesNotMatch(text, /\[tool\/warning\/retry\]|\[cache\/info\/retry\]|Hint:/);
 
@@ -442,7 +443,8 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   }), { columns: 160, rows: 16 });
   const compactText = frameText(compact);
 
-  assert.match(compactText, /Recovery\s+Tool action file\.edit failed\./);
+  assert.match(compactText, /Next\s+Run file\.grep for a unique oldText, then retry file\.edit\./);
+  assert.doesNotMatch(compactText, /Recovery\s+Tool action file\.edit failed\.|Next:/);
   assert.match(compactText, /More steps/);
   assert.doesNotMatch(compactText, /\+1 more steps/);
   assert.doesNotMatch(compactText, /\[cache\/info\/retry\] Prompt cache prefix changed\./);

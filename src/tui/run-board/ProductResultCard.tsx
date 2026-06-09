@@ -234,7 +234,7 @@ function RecoveryLines(props: {
       {visible.map((advice, index) => (
         <ResultLine
           key={`recovery:${index}:${advice.category}:${advice.summary}`}
-          label={index === 0 ? "Recovery" : ""}
+          label={index === 0 ? "Next" : ""}
           value={formatProductRecovery(advice)}
           tone={recoveryTone(advice)}
         />
@@ -249,8 +249,7 @@ function RecoveryLines(props: {
 function formatProductRecovery(advice: RecoveryAdvice): string {
   const commandHint = visibleRecoveryCommandHint(advice);
   return [
-    advice.summary,
-    `Next: ${advice.nextAction}`,
+    advice.nextAction,
     commandHint ? `Try: ${commandHint}` : undefined
   ].filter(Boolean).join(" ");
 }
