@@ -98,7 +98,7 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
       checks: [{ command: "npm test -- session-row", status: "passed" }],
       review: { status: "passed", summary: "review passed" },
       risks: [],
-      artifacts: [],
+      artifacts: ["artifacts/session-context.log"],
       next: ["/diff", "/commit"]
     },
     preview,
@@ -112,6 +112,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.match(expandedText, /verification passed: npm test -- session-row/);
   assert.doesNotMatch(expandedText, /Detail\s+verification passed/);
   assert.match(expandedText, /changed file: src\/runtime\/session-row\.ts/);
+  assert.match(expandedText, /output: artifacts\/session-context\.log/);
+  assert.doesNotMatch(expandedText, /artifact: artifacts\/session-context\.log/);
   assert.match(expandedText, /CONTRIBUTORS/);
   assert.match(expandedText, /Code Worker implemented patch/);
   assert.match(expandedText, /Test Runner verified focused test/);

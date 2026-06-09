@@ -370,7 +370,7 @@ function teamReasoningItems(view: ProductResultCardView): string[] {
     ...view.changedFiles.slice(0, 4).map((file) => `changed file: ${file}`),
     ...view.workerSummary.slice(0, 4).map((worker) => `${worker.label}: ${worker.contribution}`),
     ...view.attentionHistory.slice(0, 3).map((item) => `${item.resolved ? "resolved" : "open"}: ${item.summary}${item.resolution ? `; ${item.resolution}` : ""}`),
-    ...view.artifacts.slice(0, 3).map((artifact) => `artifact: ${artifact}`)
+    ...view.artifacts.slice(0, 3).map((artifact) => `output: ${artifact}`)
   ];
   return Array.from(new Set(items.filter((item) => item.trim())));
 }
