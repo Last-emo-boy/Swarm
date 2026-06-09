@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "../ui.js";
 import { displayWidth, fitToDisplayWidth, padToDisplayWidth } from "../display-width.js";
 import { statusBadge, visualTokenColor } from "../theme.js";
-import type { WorkBoardColumnView, WorkBoardSurfaceView } from "./work-board-types.js";
+import type { WorkBoardColumnView, WorkBoardItemView, WorkBoardSurfaceView } from "./work-board-types.js";
 import { toneRefForWorkBoardItem } from "./work-board-types.js";
 import { WorkItemThread } from "./WorkItemThread.js";
 
@@ -82,15 +82,19 @@ function BoardColumn({
           <Text color={toneRefForWorkBoardItem(item.tone)} wrap="truncate">
             {fitToDisplayWidth(`${statusBadge(item.status)} ${item.title}`, width)}
           </Text>
-          {!compact && (
+          {!compact && boardItemDetail(item) ? (
             <Text color={visualTokenColor("text.muted")} wrap="truncate">
-              {fitToDisplayWidth([item.owner, item.subtitle, ...item.meta].filter(Boolean).join(" · "), width)}
+              {fitToDisplayWidth(boardItemDetail(item) ?? "", width)}
             </Text>
-          )}
+          ) : null}
         </Box>
       )) : null}
     </Box>
   );
+}
+
+function boardItemDetail(item: WorkBoardItemView): string | undefined {
+  return item.tone === "warning" || item.tone === "danger" ? item.subtitle : undefined;
 }
 
 function countLabel(count: number, label: string): string | undefined {
