@@ -273,11 +273,7 @@ function emptyThread(input: Pick<SelectWorkBoardSurfaceInput, "recentMessages">)
     status: "ready",
     objective: "Ask Swarm to review or plan this workspace.",
     source: "user",
-    plan: [
-      "Type an objective below.",
-      "Result reports show changes, checks, recovery, and next action.",
-      "Use chat any time for the full transcript."
-    ],
+    plan: [],
     timeline: [],
     changedFiles: [],
     checks: [],

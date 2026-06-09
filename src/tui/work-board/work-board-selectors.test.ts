@@ -36,9 +36,10 @@ test("selectWorkBoardSurface provides an empty thread before work starts", () =>
   assert.equal(view.selected?.id, "new-task");
   assert.equal(view.selected?.objective, "Ask Swarm to review or plan this workspace.");
   assert.doesNotMatch(view.selected?.objective ?? "", /inspect|edit|test|explain/i);
+  assert.deepEqual(view.selected?.plan, []);
   assert.deepEqual(view.selected?.actions, ["Review this workspace", "Plan a change"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
-  assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /assign workers|view workers|automations/i);
+  assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /Type an objective|Result reports|full transcript|assign workers|view workers|automations/i);
 });
 
 test("selectWorkBoardSurface keeps automation state out of default activity", () => {
