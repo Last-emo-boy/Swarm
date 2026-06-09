@@ -20,7 +20,7 @@ export function AttentionPanel(props: {
     <RunBoardPanel title="Needs You">
       {visible.map((item) => <AttentionItem key={item.id} item={item} onAction={props.onAction} />)}
       {props.items.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>More requests</Text>
+        <Text color={visualTokenColor("text.muted")}>More details</Text>
       ) : null}
     </RunBoardPanel>
   );
