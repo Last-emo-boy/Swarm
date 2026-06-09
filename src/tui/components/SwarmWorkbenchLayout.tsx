@@ -526,6 +526,9 @@ function isRoutineHeaderCountSegment(value: string): boolean {
 }
 
 function normalizeHeaderCountSegment(value: string): string {
+  if (/^1\s+active\s+tasks?$/iu.test(value.trim())) {
+    return "Working";
+  }
   return value
     .replace(/\b1(\s+active\s+)tasks\b/iu, "1$1task")
     .replace(/\b1(\s+)workers\b/iu, "1$1worker")
