@@ -22,7 +22,7 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   assert.equal(view.selected?.title, "T-101");
   assert.match(view.selected?.objective ?? "", /Board-first/);
   assert(view.selected?.comments.some((line) => /Make Swarm/.test(line)));
-  assert.deepEqual(view.selected?.actions, ["Continue task"]);
+  assert.deepEqual(view.selected?.actions, ["Continue"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
   assert.doesNotMatch(view.subtitle, /workers|helpers|0 approvals|0 blockers/i);
   assert.doesNotMatch(view.selected?.actions.join("\n") ?? "", /teammate/i);
@@ -61,7 +61,7 @@ test("selectWorkBoardSurface keeps default detail actions to one primary choice"
 
   const view = selectWorkBoardSurface({ board, selectedId: "session-101" });
 
-  assert.deepEqual(view.selected?.actions, ["Continue work"]);
+  assert.deepEqual(view.selected?.actions, ["Continue"]);
 });
 
 test("selectWorkBoardSurface keeps thread detail labels product-facing", () => {
