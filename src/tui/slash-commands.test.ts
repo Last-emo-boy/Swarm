@@ -37,8 +37,8 @@ test("slash command registry includes required operator surface commands", () =>
 });
 
 test("slash command help exposes Kernel, Symphony, and extension operator namespaces", () => {
-  assert.match(renderSlashHelp({ includeAdvanced: true }), /\/kernel \[workflow_path\]/);
-  assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony \[workflow_path\]/);
+  assert.match(renderSlashHelp({ includeAdvanced: true }), /\/kernel \[workspace\]/);
+  assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony \[workspace\]/);
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon_id\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/trace <saved_work>/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[saved_work\]/);
@@ -68,7 +68,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.doesNotMatch(basicHelp, /^Advanced$/m);
   assert.doesNotMatch(basicHelp, /^Work$|^Ask$|^Setup$/m);
   assert.doesNotMatch(basicHelp, /implementation plan|local coding session|result-first Codebase Deep Review|provider, API key, and model once|approval_id|objective|focus|message/);
-  assert.doesNotMatch(basicHelp, /Recovery|\/why|\/help debug|\/help work|\/help ext|\/doctor \[workflow_path\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
+  assert.doesNotMatch(basicHelp, /Recovery|\/why|\/help debug|\/help work|\/help ext|\/doctor \[workspace\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
   assert.doesNotMatch(basicHelp, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
   assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
@@ -81,7 +81,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /task_id|session_id|\/work board \[session_id\]|work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
-  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
+  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /workflow_path|session_id|coding-loop session|preflight summary|remembered session context|Kernel stores|Symphony preflight|unified Swarm, Work Kernel|current Kernel status view|trace envelopes and audit rows/);
 });
 
 test("slash command candidates include required commands and aliases", () => {
