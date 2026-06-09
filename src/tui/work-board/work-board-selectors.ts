@@ -61,7 +61,7 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
   const enabledSkillCount = enabledSkills(skills).length;
   return {
     title: "Board",
-    subtitle: `${activeTasks} active tasks · ${(board?.summary.workers ?? memoryWorkers.length)} workers · ${approvals.length} approvals`,
+    subtitle: `${activeTasks} active tasks · ${(board?.summary.workers ?? memoryWorkers.length)} helpers · ${approvals.length} approvals`,
     columns,
     selected,
     summary: {
@@ -193,7 +193,6 @@ function threadFromSession(session: WorkBoardSession, input: Parameters<typeof s
     source: session.source?.source ?? "user",
     plan: [
       session.next_action,
-      workers.length ? `${workers.length} worker(s) attached` : undefined,
       checks.length ? `${checks.length} check(s) recorded` : undefined
     ].filter((value): value is string => Boolean(value)),
     timeline: [
@@ -230,7 +229,7 @@ function threadFromTask(task: WorkBoardTask, input: Parameters<typeof selectThre
     changedFiles: task.file_scope.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: task.recovery ? [task.recovery] : ["Continue task", "Open result", "Review teammates"]
+    actions: task.recovery ? [task.recovery] : ["Continue task", "Open result", "Review progress"]
   };
 }
 
@@ -255,7 +254,7 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
     changedFiles: worker.trajectory?.changed_files.slice(0, 5) ?? worker.file_scope.slice(0, 5),
     checks: worker.trajectory?.checks.slice(0, 5) ?? [],
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: worker.recovery ? [worker.recovery] : [worker.resume_command ? "Continue teammate" : "Review teammate"]
+    actions: worker.recovery ? [worker.recovery] : [worker.resume_command ? "Continue work" : "Review result"]
   };
 }
 

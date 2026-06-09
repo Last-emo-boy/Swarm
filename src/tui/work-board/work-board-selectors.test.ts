@@ -23,8 +23,10 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   assert.equal(view.selected?.title, "T-101");
   assert.match(view.selected?.objective ?? "", /Board-first/);
   assert(view.selected?.comments.some((line) => /Make Swarm/.test(line)));
-  assert.deepEqual(view.selected?.actions, ["Continue task", "Open result", "Review teammates"]);
+  assert.deepEqual(view.selected?.actions, ["Continue task", "Open result", "Review progress"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
+  assert.doesNotMatch(view.subtitle, /workers/i);
+  assert.doesNotMatch(view.selected?.actions.join("\n") ?? "", /teammate/i);
 });
 
 test("selectWorkBoardSurface provides an empty thread before work starts", () => {
