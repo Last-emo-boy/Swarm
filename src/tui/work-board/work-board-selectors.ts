@@ -286,7 +286,7 @@ function emptyThread(input: Pick<SelectWorkBoardSurfaceInput, "recentMessages">)
     changedFiles: [],
     checks: [],
     comments: input.recentMessages?.slice(-3).map((message) => `${message.role}: ${message.brief}`) ?? [],
-    actions: ["Review this workspace", "Plan a change"]
+    actions: ["Review this workspace", "Plan a change", "Continue previous work"]
   };
 }
 
