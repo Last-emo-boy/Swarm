@@ -15,7 +15,7 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("kernel")?.aliases?.includes("status"), true);
   assert.equal(commands.get("kernel")?.description, "Review the full local status view.");
   assert.equal(commands.get("doctor")?.description, "Check setup, permissions, saved work, and automation readiness.");
-  assert.equal(commands.get("symphony")?.group, "Symphony");
+  assert.equal(commands.get("symphony")?.group, "Automation");
   assert.equal(commands.get("approvals")?.group, "Kernel");
   assert.equal(commands.get("doctor")?.group, "Core");
   assert.equal(commands.get("review")?.usage, "/review [focus]");
@@ -36,11 +36,13 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("capabilities")?.group, "Config");
 });
 
-test("slash command help exposes Kernel, Symphony, and extension operator namespaces", () => {
+test("slash command help exposes Kernel, automation, and extension operator namespaces", () => {
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/kernel \[workspace\]/);
-  assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony \[workspace\]/);
-  assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon\]/);
-  assert.doesNotMatch(renderSlashHelp({ namespace: "symphony" }), /daemon_id/);
+  const automationHelp = renderSlashHelp({ namespace: "symphony" });
+  assert.match(automationHelp, /Automation commands/);
+  assert.match(automationHelp, /\/symphony \[workspace\]/);
+  assert.match(automationHelp, /\/symphony-daemon \[daemon\]/);
+  assert.doesNotMatch(automationHelp, /Symphony|daemon_id/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/trace <saved_work>/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[saved_work\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);

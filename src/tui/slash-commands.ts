@@ -1,4 +1,4 @@
-export type SlashCommandGroup = "Core" | "Tools" | "Kernel" | "Agents" | "Symphony" | "Config";
+export type SlashCommandGroup = "Core" | "Tools" | "Kernel" | "Agents" | "Automation" | "Symphony" | "Config";
 
 export type SlashCommandSpec = {
   name: string;
@@ -34,7 +34,7 @@ export type CommandOutputPreviewRecord = {
   recoverySuggestion?: string;
 };
 
-const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Agents", "Symphony", "Config"];
+const slashCommandGroups: SlashCommandGroup[] = ["Core", "Tools", "Kernel", "Agents", "Automation", "Config"];
 
 export const slashCommands: SlashCommandSpec[] = [
   { name: "help", group: "Core", usage: "/help", description: "Show grouped slash command help.", completionPriority: 90 },
@@ -99,14 +99,14 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "handoffs", group: "Agents", usage: "/handoffs", description: "List handoff sessions." },
   { name: "handoff", group: "Agents", usage: "/handoff <handoff>", description: "Inspect one handoff." },
   { name: "takeback", group: "Agents", usage: "/takeback <handoff>", description: "Take back an active handoff." },
-  { name: "work-items", group: "Symphony", usage: "/work-items [workspace]", description: "Inspect local active and terminal Symphony work items." },
-  { name: "symphony", group: "Symphony", usage: "/symphony [workspace]", description: "Inspect Symphony scheduler/session status." },
-  { name: "symphony-tick", group: "Symphony", usage: "/symphony-tick [workspace] [--max-turns N]", description: "Dispatch one local Symphony scheduler tick." },
-  { name: "symphony-run-once", group: "Symphony", usage: "/symphony-run-once [workspace] [--max-turns N]", description: "Dispatch and execute one Symphony tick." },
-  { name: "symphony-daemon", group: "Symphony", usage: "/symphony-daemon [daemon]", description: "Inspect TUI-managed Symphony daemons." },
-  { name: "symphony-start", group: "Symphony", usage: "/symphony-start [workspace] [--execute] [--max-ticks N] [--max-turns N]", description: "Start a local Symphony polling loop in the TUI runtime." },
-  { name: "symphony-stop", group: "Symphony", usage: "/symphony-stop [daemon|all] [--cancel-running]", description: "Stop local TUI-managed Symphony daemon loops." },
-  { name: "symphony-cleanup", group: "Symphony", usage: "/symphony-cleanup [workspace] [--execute]", description: "Dry-run or execute terminal workspace cleanup." },
+  { name: "work-items", group: "Automation", usage: "/work-items [workspace]", description: "Inspect local active and finished automation work items." },
+  { name: "symphony", group: "Automation", usage: "/symphony [workspace]", description: "Inspect automation scheduler status." },
+  { name: "symphony-tick", group: "Automation", usage: "/symphony-tick [workspace] [--max-turns N]", description: "Dispatch one local automation tick." },
+  { name: "symphony-run-once", group: "Automation", usage: "/symphony-run-once [workspace] [--max-turns N]", description: "Dispatch and execute one automation tick." },
+  { name: "symphony-daemon", group: "Automation", usage: "/symphony-daemon [daemon]", description: "Inspect TUI-managed automation loops." },
+  { name: "symphony-start", group: "Automation", usage: "/symphony-start [workspace] [--execute] [--max-ticks N] [--max-turns N]", description: "Start a local automation polling loop." },
+  { name: "symphony-stop", group: "Automation", usage: "/symphony-stop [daemon|all] [--cancel-running]", description: "Stop local automation loops." },
+  { name: "symphony-cleanup", group: "Automation", usage: "/symphony-cleanup [workspace] [--execute]", description: "Preview or clean terminal automation workspaces." },
   { name: "provider", group: "Config", usage: "/provider [id]", description: "Show or change the default provider." },
   { name: "model", group: "Config", usage: "/model [planner|worker|aggregator] [provider/model]", description: "Show or update selected models.", completionPriority: 50 },
   { name: "models", group: "Config", usage: "/models [provider]", description: "List configured models." },
@@ -169,7 +169,7 @@ const SLASH_HELP_NAMESPACES: Record<string, { title: string; names: string[] }> 
     names: ["ext", "capabilities", "commands", "skills", "skill", "plugins", "mcp", "mcp-refresh", "mcp-resources", "mcp-read", "mcp-prompts", "mcp-prompt"]
   },
   symphony: {
-    title: "Symphony commands",
+    title: "Automation commands",
     names: ["symphony", "symphony-tick", "symphony-run-once", "symphony-start", "symphony-stop", "symphony-cleanup", "symphony-daemon", "work-items"]
   }
 };
@@ -202,12 +202,12 @@ const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
     { name: "mcp", group: "Config", usage: "/ext mcp", description: "Summarize MCP servers.", completionPriority: 50 }
   ],
   symphony: [
-    { name: "status", group: "Symphony", usage: "/symphony status", description: "Show Symphony status.", completionPriority: 10 },
-    { name: "tick", group: "Symphony", usage: "/symphony tick", description: "Dispatch one scheduler tick.", completionPriority: 20 },
-    { name: "run-once", group: "Symphony", usage: "/symphony run-once", description: "Dispatch and execute one tick.", completionPriority: 30 },
-    { name: "start", group: "Symphony", usage: "/symphony start", description: "Start TUI-managed daemon polling.", completionPriority: 40 },
-    { name: "stop", group: "Symphony", usage: "/symphony stop", description: "Stop daemon polling.", completionPriority: 50 },
-    { name: "cleanup", group: "Symphony", usage: "/symphony cleanup", description: "Clean terminal Symphony workspaces.", completionPriority: 60 }
+    { name: "status", group: "Automation", usage: "/symphony status", description: "Show automation status.", completionPriority: 10 },
+    { name: "tick", group: "Automation", usage: "/symphony tick", description: "Dispatch one scheduler tick.", completionPriority: 20 },
+    { name: "run-once", group: "Automation", usage: "/symphony run-once", description: "Dispatch and execute one tick.", completionPriority: 30 },
+    { name: "start", group: "Automation", usage: "/symphony start", description: "Start TUI-managed polling.", completionPriority: 40 },
+    { name: "stop", group: "Automation", usage: "/symphony stop", description: "Stop polling.", completionPriority: 50 },
+    { name: "cleanup", group: "Automation", usage: "/symphony cleanup", description: "Clean terminal automation workspaces.", completionPriority: 60 }
   ]
 };
 
