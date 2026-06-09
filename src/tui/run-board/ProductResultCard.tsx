@@ -51,8 +51,6 @@ export function ProductResultCard(props: {
             />
           : <Text color={visualTokenColor("text.muted")}>{view.summary || "Ask Swarm to review or plan this workspace."}</Text>}
       </RunBoardPanel>
-      {view.finished && props.teamReasoningExpanded ? <WorkerSummary view={view} density={props.density} /> : null}
-      {view.finished && props.teamReasoningExpanded ? <AttentionHistory view={view} density={props.density} /> : null}
       {view.finished ? <NextActions actions={view.nextActions} onAction={props.onNextAction} density={props.density} /> : null}
     </Box>
   );
@@ -431,46 +429,6 @@ function badgeColor(value: string): SemanticTextSpan["color"] | undefined {
     case "[--]": return "text.muted";
     default: return undefined;
   }
-}
-
-function WorkerSummary(props: { view: ProductResultCardView; density?: TuiDensity }): React.ReactElement | null {
-  if (!props.view.workerSummary.length) {
-    return null;
-  }
-  const limit = props.density === "compact" ? 2 : 4;
-  const visible = props.view.workerSummary.slice(0, limit);
-  return (
-    <RunBoardPanel title="Team">
-      {visible.map((contributor) => (
-        <Text key={contributor.workerId} color={visualTokenColor("text.primary")} wrap="truncate">
-          {contributor.label} {contributor.contribution}
-        </Text>
-      ))}
-      {props.view.workerSummary.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>{moreItemsLabel("contributions")}</Text>
-      ) : null}
-    </RunBoardPanel>
-  );
-}
-
-function AttentionHistory(props: { view: ProductResultCardView; density?: TuiDensity }): React.ReactElement | null {
-  if (!props.view.attentionHistory.length) {
-    return null;
-  }
-  const limit = props.density === "compact" ? 1 : 3;
-  const visible = props.view.attentionHistory.slice(0, limit);
-  return (
-    <RunBoardPanel title="Notes">
-      {visible.map((item) => (
-        <Text key={item.id} color={visualTokenColor(item.resolved ? "text.muted" : "status.warning")} wrap="truncate">
-          {item.summary}{item.resolution ? `; ${item.resolution}` : ""}
-        </Text>
-      ))}
-      {props.view.attentionHistory.length > visible.length ? (
-        <Text color={visualTokenColor("text.muted")}>{moreItemsLabel("requests")}</Text>
-      ) : null}
-    </RunBoardPanel>
-  );
 }
 
 function NextActions(props: {

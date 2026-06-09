@@ -113,13 +113,12 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(expandedText, /checked passed:|Detail\s+verification passed|verification passed/);
   assert.match(expandedText, /Changed src\/runtime\/session-row\.ts/);
   assert.doesNotMatch(expandedText, /changed:|changed file:/);
+  assert.match(expandedText, /Code Worker: implemented patch/);
+  assert.match(expandedText, /Test Runner: verified focused test/);
+  assert.match(expandedText, /Resolved: Test Runner had no output for 72s; waited; command completed successfully/);
   assert.match(expandedText, /Saved artifacts\/session-context\.log/);
   assert.doesNotMatch(expandedText, /output:|artifact: artifacts\/session-context\.log/);
-  assert.match(expandedText, /TEAM/);
-  assert.match(expandedText, /Code Worker implemented patch/);
-  assert.match(expandedText, /Test Runner verified focused test/);
-  assert.match(expandedText, /NOTES/);
-  assert.match(expandedText, /waited; command completed successfully/);
+  assert.doesNotMatch(expandedText, /TEAM|NOTES/);
   assert.doesNotMatch(expandedText, /resolved:/);
   assert.doesNotMatch(expandedText, /\[OK\]\s+Code Worker|\[WARN\]\s+Test Runner/);
   assert.doesNotMatch(expandedText, /CONTRIBUTORS|REQUESTS|TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
@@ -182,8 +181,8 @@ test("ProductResultCard uses product-facing overflow labels in expanded detail",
   }), { columns: 120, rows: 28 });
   const text = frameText(frame);
 
-  assert.match(text, /More contributions/);
-  assert.match(text, /More requests/);
+  assert.match(text, /More details/);
+  assert.doesNotMatch(text, /More contributions|More requests|TEAM|NOTES/);
   assert.doesNotMatch(text, /\+\d/);
   assert.doesNotMatch(text, /more workers|more attention items/i);
 });
