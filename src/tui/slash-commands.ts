@@ -144,7 +144,6 @@ const BASIC_SLASH_COMMAND_NAMES = new Set([
   "plan",
   "approve",
   "onboard",
-  "why",
   "continue"
 ]);
 
@@ -284,7 +283,6 @@ function renderMainSlashHelp(): string {
     "",
     "Ask",
     "  /review [focus] - Run a result-first Codebase Deep Review.",
-    "  /why - Explain recent decisions.",
     "",
     "Setup",
     "  /onboard - Configure provider, API key, and model once.",
