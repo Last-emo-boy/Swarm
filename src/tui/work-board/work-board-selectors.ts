@@ -60,7 +60,7 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
   const enabledSkillCount = enabledSkills(skills).length;
   return {
     title: "Board",
-    subtitle: `${activeTasks} active tasks · ${approvals.length} approvals`,
+    subtitle: workBoardSubtitle(activeTasks, approvals.length, blockers),
     columns,
     selected,
     summary: {
@@ -72,6 +72,23 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
     },
     empty: rows.length === 0 && blackboard.length === 0 && input.recentMessages?.length === 0
   };
+}
+
+function workBoardSubtitle(activeTasks: number, approvals: number, blockers: number): string {
+  const parts = [
+    countLabel(activeTasks, "active task"),
+    countLabel(approvals, "approval"),
+    countLabel(blockers, "blocker")
+  ].filter((value): value is string => Boolean(value));
+  return parts.length ? parts.join(" · ") : "Ready";
+}
+
+function countLabel(count: number, label: string): string | undefined {
+  const value = Math.max(0, Math.floor(count));
+  if (value === 0) {
+    return undefined;
+  }
+  return `${value} ${label}${value === 1 ? "" : "s"}`;
 }
 
 function buildColumns(items: WorkBoardItemView[], limit: number): WorkBoardColumnView[] {

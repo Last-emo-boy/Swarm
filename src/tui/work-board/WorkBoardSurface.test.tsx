@@ -69,7 +69,7 @@ test("WorkBoardSurface keeps the empty work view quiet", () => {
 function fixtureView(): WorkBoardSurfaceView {
   return {
     title: "Board",
-    subtitle: "1 active tasks · 1 workers · 0 approvals",
+    subtitle: "1 active task · 1 blocker",
     empty: false,
     summary: {
       activeTasks: 1,
@@ -116,7 +116,7 @@ function fixtureView(): WorkBoardSurfaceView {
 function emptyFixtureView(): WorkBoardSurfaceView {
   return {
     title: "Board",
-    subtitle: "0 active tasks · 0 workers · 0 approvals",
+    subtitle: "Ready",
     empty: true,
     summary: {
       activeTasks: 0,
