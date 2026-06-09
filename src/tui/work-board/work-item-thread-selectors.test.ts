@@ -30,6 +30,8 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   assert.doesNotMatch(rows[0] ?? "", /Assignee|Risk/);
   assert(!expandedRows.some((line) => /^Status: running$/u.test(line)));
   assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
+  assert(rows.some((line) => /Next: Continue task/.test(line)));
+  assert(!expandedRows.some((line) => /^Actions:/u.test(line)));
   assert(!expandedRows.some((line) => /^Changed:|^Checks:/u.test(line)));
   assert(!rows.some((line) => /^Timeline:/u.test(line)));
   assert(!rows.some((line) => /^Comments:/u.test(line)));

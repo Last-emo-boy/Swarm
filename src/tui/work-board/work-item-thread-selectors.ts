@@ -18,7 +18,7 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
     `Objective: ${thread.objective}`,
     ...prefixed("Plan", thread.plan),
     ...evidenceRows,
-    ...prefixed("Actions", thread.actions)
+    ...prefixed("Next", thread.actions)
   ].slice(0, visibleRows);
 }
 
