@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   commandCandidatesForInput,
+  formatToolOutputPreview,
   parseSlashCommandLine,
   renderSlashHelp,
   slashCommands
@@ -192,4 +193,22 @@ test("slash command parser preserves raw args for operator commands", () => {
     ],
     source: "/agent worker:surface-1"
   });
+});
+
+test("tool output preview uses action-first recovery wording", () => {
+  const preview = formatToolOutputPreview({
+    task_id: "task-1",
+    attempt: 2,
+    action: "file.edit",
+    status: "failed",
+    summary: "Replacement was ambiguous.",
+    recoverySuggestion: "Search for a unique old text, then retry.",
+    outputRef: "outputs/task-1.txt",
+    content: "first line\nsecond line"
+  });
+
+  assert.match(preview, /^task-1#2 file\.edit \[failed\]: Replacement was ambiguous\./);
+  assert.match(preview, /Next: Search for a unique old text, then retry\./);
+  assert.doesNotMatch(preview, /Recovery:/);
+  assert.match(preview, /Saved: outputs\/task-1\.txt/);
 });

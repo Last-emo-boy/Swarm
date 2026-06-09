@@ -585,7 +585,7 @@ export function formatToolOutputPreview(result: CommandOutputPreviewRecord): str
   const preview = commandOutputPreview(result.content, 4, 420);
   return [
     `${result.task_id}${result.attempt ? `#${result.attempt}` : ""} ${result.action} [${result.status ?? "unknown"}]: ${result.summary}`,
-    result.recoverySuggestion ? `Recovery: ${result.recoverySuggestion}` : undefined,
+    result.recoverySuggestion ? `Next: ${result.recoverySuggestion}` : undefined,
     result.outputRef ? `Saved: ${result.outputRef}` : undefined,
     preview ? indentPreview(preview, "  ") : undefined
   ].filter(Boolean).join("\n");
