@@ -83,6 +83,20 @@ function ProductResultBody(props: {
   const checkLimit = props.density === "compact" ? 2 : 4;
   const review = visibleReview(view);
   const checkSummary = productCheckSummary(view.checks, checkLimit, view.status);
+  const decisionTrailSections = resultDecisionTrailSections(view);
+  const teamReasoning = teamReasoningItems(view);
+  const canOpenDecisionTrail = decisionTrailSections.length > 0 && !props.decisionTrailExpanded && Boolean(props.onDecisionTrailToggle);
+  const canOpenTeamReasoning = teamReasoning.length > 0 && !props.teamReasoningExpanded && Boolean(props.onTeamReasoningToggle);
+  const openCollapsedDetails = canOpenDecisionTrail || canOpenTeamReasoning
+    ? () => {
+        if (canOpenDecisionTrail) {
+          props.onDecisionTrailToggle?.();
+        }
+        if (canOpenTeamReasoning) {
+          props.onTeamReasoningToggle?.();
+        }
+      }
+    : undefined;
   return (
     <Box flexDirection="column" width="100%">
       {view.status !== "success" ? (
@@ -101,14 +115,19 @@ function ProductResultBody(props: {
       <ReviewFindingLines view={view} density={props.density} />
       {review ? <ResultLine label="Review" value={`${statusBadge(review.status)} ${review.summary}`} badgeAware tone={checkStatusTone(review.status)} /> : null}
       <RecoveryLines view={view} density={props.density} />
+      <CollapsedDetailsLine
+        hasDecisionTrail={canOpenDecisionTrail}
+        hasTeamReasoning={canOpenTeamReasoning}
+        onOpen={openCollapsedDetails}
+      />
       <DecisionTrailLines
-        view={view}
+        sections={decisionTrailSections}
         density={props.density}
         expanded={Boolean(props.decisionTrailExpanded)}
         onToggle={props.onDecisionTrailToggle}
       />
       <TeamReasoningLines
-        view={view}
+        items={teamReasoning}
         density={props.density}
         expanded={Boolean(props.teamReasoningExpanded)}
         onToggle={props.onTeamReasoningToggle}
@@ -301,31 +320,59 @@ function recoveryTone(advice: RecoveryAdvice): SemanticTextSpan["color"] {
   return "text.primary";
 }
 
+function CollapsedDetailsLine(props: {
+  hasDecisionTrail: boolean;
+  hasTeamReasoning: boolean;
+  onOpen?: () => void;
+}): React.ReactElement | null {
+  if (!props.onOpen || (!props.hasDecisionTrail && !props.hasTeamReasoning)) {
+    return null;
+  }
+  return (
+    <ResultLine
+      label="Details"
+      value={collapsedDetailsLabel(props.hasDecisionTrail, props.hasTeamReasoning)}
+      tone="text.muted"
+      onClick={props.onOpen}
+    />
+  );
+}
+
+function collapsedDetailsLabel(hasDecisionTrail: boolean, hasTeamReasoning: boolean): string {
+  if (hasDecisionTrail && hasTeamReasoning) {
+    return "Evidence and decisions";
+  }
+  return hasDecisionTrail ? "Decisions" : "Evidence";
+}
+
+type DecisionTrailSection = {
+  section: "split" | "assign" | "verify" | "decide" | "risk";
+  items: string[];
+};
+
+function resultDecisionTrailSections(view: ProductResultCardView): DecisionTrailSection[] {
+  const trail = view.decisionTrail;
+  if (!trail) {
+    return [];
+  }
+  return (["split", "assign", "verify", "decide", "risk"] as const)
+    .map((section) => ({ section, items: trail[section] ?? [] }))
+    .filter((entry) => entry.items.length > 0);
+}
+
 function DecisionTrailLines(props: {
-  view: ProductResultCardView;
+  sections: DecisionTrailSection[];
   density?: TuiDensity;
   expanded: boolean;
   onToggle?: () => void;
 }): React.ReactElement | null {
-  const trail = props.view.decisionTrail;
-  if (!trail) {
+  if (!props.sections.length || !props.expanded) {
     return null;
   }
-  const sections = (["split", "assign", "verify", "decide", "risk"] as const)
-    .map((section) => ({ section, items: trail[section] ?? [] }))
-    .filter((entry) => entry.items.length > 0);
-  if (!sections.length) {
-    return null;
-  }
-  if (!props.expanded && !props.onToggle) {
-    return null;
-  }
-  const visibleSections = props.expanded ? sections : [];
   const itemLimit = props.density === "compact" ? 2 : 4;
   return (
     <React.Fragment>
-      <ResultLine label="Choices" value="Key decisions" onClick={props.onToggle} />
-      {visibleSections.map((entry) => (
+      {props.sections.map((entry) => (
         <ResultLine
           key={`trail:${entry.section}`}
           label={decisionTrailSectionLabel(entry.section)}
@@ -346,38 +393,27 @@ function decisionTrailSectionLabel(section: "split" | "assign" | "verify" | "dec
 }
 
 function TeamReasoningLines(props: {
-  view: ProductResultCardView;
+  items: string[];
   density?: TuiDensity;
   expanded: boolean;
   onToggle?: () => void;
 }): React.ReactElement | null {
-  const items = teamReasoningItems(props.view);
-  if (!items.length) {
+  if (!props.items.length || !props.expanded) {
     return null;
   }
-  if (!props.expanded && !props.onToggle) {
-    return null;
-  }
-  const visible = props.expanded
-    ? items.slice(0, props.density === "compact" ? 4 : 7)
-    : [];
+  const visible = props.items.slice(0, props.density === "compact" ? 4 : 7);
   return (
     <React.Fragment>
-      <ResultLine
-        label="Proof"
-        tone="text.muted"
-        onClick={props.onToggle}
-      />
       {visible.map((item, index) => (
         <ResultLine
           key={`reasoning:${index}:${item}`}
-          label=""
+          label={index === 0 ? "Evidence" : ""}
           value={item}
           tone="text.primary"
           onClick={props.onToggle}
         />
       ))}
-      {props.expanded && items.length > visible.length ? (
+      {props.items.length > visible.length ? (
         <ResultLine label="" value={moreItemsLabel("details")} tone="text.muted" onClick={props.onToggle} />
       ) : null}
     </React.Fragment>

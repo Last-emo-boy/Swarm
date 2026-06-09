@@ -85,8 +85,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const actionableText = frameText(actionable);
 
-  assert.match(actionableText, /Proof/);
-  assert.doesNotMatch(actionableText, /Context|Details\s+Proof/);
+  assert.match(actionableText, /Details\s+Evidence/);
+  assert.doesNotMatch(actionableText, /Proof|Choices|Context/);
 
   const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -107,9 +107,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Proof/);
-  assert.doesNotMatch(expandedText, /Context|Details\s+Proof/);
-  assert.match(expandedText, /Verified: npm test -- session-row/);
+  assert.match(expandedText, /Evidence\s+Verified: npm test -- session-row/);
+  assert.doesNotMatch(expandedText, /Proof|Choices|Context|Details\s+Proof/);
   assert.doesNotMatch(expandedText, /checked passed:|Detail\s+verification passed|verification passed/);
   assert.match(expandedText, /Changed src\/runtime\/session-row\.ts/);
   assert.doesNotMatch(expandedText, /changed:|changed file:/);
@@ -182,7 +181,7 @@ test("ProductResultCard uses product-facing overflow labels in expanded detail",
   const text = frameText(frame);
 
   assert.match(text, /More details/);
-  assert.doesNotMatch(text, /More contributions|More requests|TEAM|NOTES/);
+  assert.doesNotMatch(text, /Proof|Choices|More contributions|More requests|TEAM|NOTES/);
   assert.doesNotMatch(text, /\+\d/);
   assert.doesNotMatch(text, /more workers|more attention items/i);
 });
@@ -259,12 +258,12 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   const frame = root.getFrame();
   assert(frame);
   const text = frameText(frame);
-  assert.match(text, /Choices\s+Key decisions/);
+  assert.match(text, /Details\s+Decisions/);
   assert.doesNotMatch(text, /Objective adopted|Code Worker owns patch|focused test passed/);
   assert.doesNotMatch(text, /Ctrl\+O details|Trail\s+5 sections|split\s+Objective adopted/);
-  assert.doesNotMatch(text, /Why\s+Key choices/);
-  const target = findLastCell(frame, "Choices");
-  assert(target, "expected choices row to render");
+  assert.doesNotMatch(text, /Choices|Proof|Why\s+Key choices/);
+  const target = findLastCell(frame, "Details");
+  assert(target, "expected details row to render");
 
   root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
 
@@ -297,11 +296,10 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   }), { columns: 120, rows: 20 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Choices\s+Key decisions/);
   assert.match(expandedText, /Plan\s+Objective adopted/);
   assert.match(expandedText, /Owner\s+Code Worker owns patch/);
   assert.match(expandedText, /Check\s+focused test passed/);
-  assert.doesNotMatch(expandedText, /Why\s+Key choices|split\s+Objective adopted|assign\s+Code Worker owns patch|verify\s+focused test passed/);
+  assert.doesNotMatch(expandedText, /Choices|Proof|Why\s+Key choices|split\s+Objective adopted|assign\s+Code Worker owns patch|verify\s+focused test passed/);
 
   const inert = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -328,7 +326,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   }), { columns: 120, rows: 20 });
   const inertText = frameText(inert);
 
-  assert.doesNotMatch(inertText, /Choices\s+Key decisions|Why\s+Key choices/);
+  assert.doesNotMatch(inertText, /Details\s+Decisions|Choices\s+Key decisions|Proof|Why\s+Key choices/);
 });
 
 test("ProductResultCard renders review findings as result-first report rows", () => {
