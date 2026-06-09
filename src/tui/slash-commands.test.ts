@@ -21,6 +21,9 @@ test("slash command registry includes required operator surface commands", () =>
   assert.equal(commands.get("plan")?.usage, "/plan [objective]");
   assert.equal(commands.get("approve")?.usage, "/approve [approval_id] [message]");
   assert.equal(commands.get("blackboard")?.description, "Query shared facts.");
+  assert.equal(commands.get("memory")?.usage, "/memory [saved_work]");
+  assert.equal(commands.get("resume")?.usage, "/resume [saved_work] [note]");
+  assert.equal(commands.get("continue")?.description, "Continue the most recent work with a quick freshness check.");
   assert.equal(commands.get("evals")?.usage, "/evals [--release-gate|--cache-lab|--tui-replay]");
   assert.equal(commands.get("swarm")?.group, "Agents");
   assert.equal(commands.get("swarm")?.usage, "/swarm [summary|ownership|mailbox <actor_id>|agent <actor_id>]");
@@ -68,6 +71,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.doesNotMatch(renderSlashHelp({ namespace: "work" }), /work-session artifacts|unified work board|List recent work sessions|Show recorded checks|Show recorded workspace changes|Inspect sessions|List persisted task graph|Inspect the task graph|trace, audit, and usage|worker agents|List, create, or revert|Revert the latest/);
   assert.doesNotMatch(basicHelp, /\/symphony-start/);
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/symphony-start/);
+  assert.doesNotMatch(renderSlashHelp({ includeAdvanced: true }), /coding-loop session|preflight summary|remembered session context/);
 });
 
 test("slash command candidates include required commands and aliases", () => {
