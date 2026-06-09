@@ -55,7 +55,7 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "prd", group: "Core", usage: "/prd", description: "Show the local PRD." },
   { name: "reply", group: "Core", usage: "/reply <message>", description: "Guide the active team while it is running." },
   { name: "interrupt", group: "Core", usage: "/interrupt <message>", description: "Pause or redirect active work at the next safe boundary." },
-  { name: "onboard", group: "Core", usage: "/onboard", description: "Open provider/model onboarding.", completionPriority: 49 },
+  { name: "onboard", group: "Core", usage: "/onboard", description: "Open provider/model onboarding.", completionPriority: 85 },
   { name: "read", group: "Tools", usage: "/read <path> [start:end]", description: "Read a file from the workspace.", completionPriority: 80 },
   { name: "grep", group: "Tools", usage: "/grep <pattern> [root]", description: "Search workspace text.", completionPriority: 90 },
   { name: "glob", group: "Tools", usage: "/glob <pattern> [root]", description: "Find files by glob." },
