@@ -39,7 +39,8 @@ test("slash command registry includes required operator surface commands", () =>
 test("slash command help exposes Kernel, Symphony, and extension operator namespaces", () => {
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/kernel \[workspace\]/);
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony \[workspace\]/);
-  assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon_id\]/);
+  assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon\]/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "symphony" }), /daemon_id/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/trace <saved_work>/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[saved_work\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);
