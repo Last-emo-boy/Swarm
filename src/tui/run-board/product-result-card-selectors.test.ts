@@ -200,3 +200,21 @@ test("product result selector keeps preview commands behind user-facing labels",
   assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["preview:/diff", "preview:/commit", "preview:/output"]);
   assert.deepEqual(view.nextActions.map((item) => item.label), ["Review changes", "Commit when ready", "Review output"]);
 });
+
+test("product result selector hides unknown slash commands behind a generic action label", () => {
+  const state = reduceRunBoardActions(createInitialRunBoardState({ now: "2026-05-28T00:00:00.000Z" }), [
+    {
+      type: "result/preview",
+      at: "2026-05-28T00:00:01.000Z",
+      preview: {
+        summary: "Patch ready.",
+        nextActions: ["/checkpoint list"]
+      }
+    }
+  ]);
+
+  const view = selectProductResultCardView(state);
+
+  assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["preview:/checkpoint list"]);
+  assert.deepEqual(view.nextActions.map((item) => item.label), ["Next step"]);
+});

@@ -1,5 +1,6 @@
 export function labelForRunBoardAction(command: string): string {
-  const normalized = command.trim().toLowerCase();
+  const raw = command.trim();
+  const normalized = raw.toLowerCase();
   if (normalized === "/review" || normalized.startsWith("/review ")) {
     return "Review this workspace";
   }
@@ -19,6 +20,6 @@ export function labelForRunBoardAction(command: string): string {
     case "/plan":
       return "Plan a change";
     default:
-      return command;
+      return raw.startsWith("/") ? "Next step" : raw || "Next step";
   }
 }
