@@ -144,7 +144,6 @@ const BASIC_SLASH_COMMAND_NAMES = new Set([
   "review",
   "plan",
   "approve",
-  "work",
   "onboard",
   "why",
   "resume",
@@ -281,7 +280,6 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?
 function renderMainSlashHelp(): string {
   return [
     "Work",
-    "  /work <board|sessions|attempts|output|files|checks> - Inspect current work evidence.",
     "  /plan [objective] - Draft or show the current implementation plan.",
     "  /approve [approval_id] [message] - Approve the current plan or one pending approval.",
     "  /continue [message] - Continue the latest local coding session.",
