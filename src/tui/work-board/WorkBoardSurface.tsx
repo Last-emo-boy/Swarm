@@ -44,8 +44,7 @@ export function WorkBoardSurface({
 }
 
 function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: number }): React.ReactElement {
-  const summary = view.empty ? "" : [
-    countLabel(view.summary.activeTasks, "active task"),
+  const summary = view.empty ? EMPTY_WORK_PROMPT : [
     countLabel(view.summary.approvals, "approval"),
     countLabel(view.summary.blockers, "blocker")
   ].filter((value): value is string => Boolean(value)).join(" · ");
@@ -53,7 +52,7 @@ function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: n
     <Box flexDirection="column" width="100%" overflow="hidden">
       <Text wrap="truncate">
         <Text color={visualTokenColor("brand.focus")} bold>{fit("WORK", 16)}</Text>
-        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary || (view.empty ? EMPTY_WORK_PROMPT : view.subtitle), Math.max(10, columns - 18))}</Text>
+        <Text color={visualTokenColor("text.muted")}>  {fitToDisplayWidth(summary, Math.max(10, columns - 18))}</Text>
       </Text>
     </Box>
   );
