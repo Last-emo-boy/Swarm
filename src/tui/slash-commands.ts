@@ -176,7 +176,7 @@ const SLASH_HELP_NAMESPACES: Record<string, { title: string; names: string[] }> 
 
 const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
   work: [
-    { name: "board", group: "Kernel", usage: "/work board [session_id] [active|blocked|failed|resumable|changed-files|checks]", description: "Review the work board.", completionPriority: 5 },
+    { name: "board", group: "Kernel", usage: "/work board [saved_work] [active|blocked|failed|resumable|changed-files|checks]", description: "Review the work board.", completionPriority: 5 },
     { name: "sessions", group: "Kernel", usage: "/work sessions", description: "Review recent work.", completionPriority: 10 },
     { name: "attempts", group: "Kernel", usage: "/work attempts", description: "Review recent attempts.", completionPriority: 20 },
     { name: "output", group: "Tools", usage: "/work output", description: "Review recent output.", completionPriority: 30 },
