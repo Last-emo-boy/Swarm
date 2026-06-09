@@ -60,7 +60,7 @@ export function RunBoardPanel(props: {
 }
 
 function HeaderObjectiveLine(props: { view: RunBoardSurfaceView }): React.ReactElement {
-  return <Text color={visualTokenColor("text.muted")} wrap="truncate">Objective  {props.view.objective}</Text>;
+  return <Text color={visualTokenColor("text.muted")} wrap="truncate">{props.view.objective}</Text>;
 }
 
 function shouldShowPhaseLine(view: RunBoardSurfaceView): boolean {

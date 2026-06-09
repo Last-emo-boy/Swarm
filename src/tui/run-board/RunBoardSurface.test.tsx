@@ -80,6 +80,8 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   const text = frameText(frame);
 
   assert.match(text, /WORK/);
+  assert.match(text, /Fix failing tests/);
+  assert.doesNotMatch(text, /Objective\s+Fix failing tests/);
   assert.doesNotMatch(text, /SWARM OBSERVATORY/);
   assert.doesNotMatch(text, /workspace: Swarm/);
   assert.doesNotMatch(text, /mode: auto/);
