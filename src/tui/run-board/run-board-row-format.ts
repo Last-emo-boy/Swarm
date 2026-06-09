@@ -56,6 +56,9 @@ function visibleAttentionEvidence(item: AttentionItemView): string | undefined {
 
 export function formatResultPreview(preview: ResultPreview, columns = 100): string[] {
   const width = Math.max(40, Math.floor(columns));
+  if (preview.status === "empty") {
+    return [clipDisplay(preview.summary, width)];
+  }
   const blockers = visibleResultBlockers(preview);
   const checks = visibleResultChecks(preview);
   const checkSummary = resultCheckSummary(checks);
