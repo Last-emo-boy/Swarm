@@ -341,7 +341,7 @@ function TeamReasoningLines(props: {
   return (
     <React.Fragment>
       <ResultLine
-        label="Context"
+        label="Proof"
         tone="text.muted"
         onClick={props.onToggle}
       />

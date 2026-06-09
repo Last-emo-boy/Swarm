@@ -85,8 +85,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const actionableText = frameText(actionable);
 
-  assert.match(actionableText, /Context/);
-  assert.doesNotMatch(actionableText, /Details\s+Context/);
+  assert.match(actionableText, /Proof/);
+  assert.doesNotMatch(actionableText, /Context|Details\s+Proof/);
 
   const expanded = renderTuiToFrame(React.createElement(ProductResultCard, {
     card: {
@@ -107,8 +107,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   }), { columns: 120, rows: 26 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Context/);
-  assert.doesNotMatch(expandedText, /Details\s+Context/);
+  assert.match(expandedText, /Proof/);
+  assert.doesNotMatch(expandedText, /Context|Details\s+Proof/);
   assert.match(expandedText, /Verified: npm test -- session-row/);
   assert.doesNotMatch(expandedText, /checked passed:|Detail\s+verification passed|verification passed/);
   assert.match(expandedText, /Changed src\/runtime\/session-row\.ts/);
