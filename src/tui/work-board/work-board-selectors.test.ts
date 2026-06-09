@@ -81,9 +81,21 @@ test("selectWorkBoardSurface keeps thread detail labels product-facing", () => {
 
   assert(taskView.selected?.plan.some((line) => /^Waiting on: task-running$/u.test(line)));
   assert(taskView.selected?.plan.some((line) => /^Files: components\/SwarmWorkbenchLayout\.tsx$/u.test(line)));
+  assert.deepEqual(taskView.selected?.actions, ["Resolve"]);
   assert(!taskView.selected?.plan.some((line) => /Dependencies:|Scope:|check\(s\) recorded/u.test(line)));
   assert(sessionView.selected?.timeline.some((line) => /^Output: review\/report\.md$/u.test(line)));
   assert(!sessionView.selected?.timeline.some((line) => /Artifact|Last artifact/u.test(line)));
+});
+
+test("selectWorkBoardSurface maps failed detail actions to output review", () => {
+  const board = fixtureBoard();
+  board.tasks = board.tasks.map((task) => task.task_id === "task-blocked"
+    ? { ...task, status: "failed", last_error: "Verification failed" }
+    : task);
+
+  const view = selectWorkBoardSurface({ board, selectedId: "task-blocked" });
+
+  assert.deepEqual(view.selected?.actions, ["Review output"]);
 });
 
 function fixtureBoard(): WorkBoard {

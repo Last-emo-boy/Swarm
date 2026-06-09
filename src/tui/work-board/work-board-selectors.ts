@@ -211,7 +211,7 @@ function threadFromSession(session: WorkBoardSession, input: Parameters<typeof s
     changedFiles: input.changedFiles.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: session.next_action ? [session.next_action] : ["Continue"]
+    actions: session.next_action ? [session.next_action] : [defaultActionForStatus(session.status)]
   };
 }
 
@@ -237,7 +237,7 @@ function threadFromTask(task: WorkBoardTask, input: Parameters<typeof selectThre
     changedFiles: task.file_scope.slice(0, 5),
     checks: checks.map((check) => `${check.value} [${check.status}]`).slice(0, 5),
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: task.recovery ? [task.recovery] : ["Continue"]
+    actions: task.recovery ? [task.recovery] : [defaultActionForStatus(task.status)]
   };
 }
 
@@ -262,7 +262,7 @@ function threadFromWorker(worker: WorkBoardWorker, input: Parameters<typeof sele
     changedFiles: worker.trajectory?.changed_files.slice(0, 5) ?? worker.file_scope.slice(0, 5),
     checks: worker.trajectory?.checks.slice(0, 5) ?? [],
     comments: input.recentMessages.slice(-3).map((message) => `${message.role}: ${message.brief}`),
-    actions: worker.recovery ? [worker.recovery] : [worker.resume_command ? "Continue" : "Review result"]
+    actions: worker.recovery ? [worker.recovery] : [defaultActionForWorker(worker)]
   };
 }
 
@@ -289,6 +289,30 @@ function columnForStatus(status: string): WorkBoardColumnId {
   if (["reviewing", "aggregating", "verifying", "review"].includes(normalized)) return "review";
   if (["running", "started", "processing", "planning", "created"].includes(normalized)) return "running";
   return "backlog";
+}
+
+function defaultActionForStatus(status: string): string {
+  const normalized = status.toLowerCase();
+  if (["failed", "stopped", "cancelled", "timeout"].includes(normalized)) {
+    return "Review output";
+  }
+  if (columnForStatus(status) === "blocked") {
+    return "Resolve";
+  }
+  return "Continue";
+}
+
+function defaultActionForWorker(worker: WorkBoardWorker): string {
+  if (worker.resume_command) {
+    return "Continue";
+  }
+  if (["failed", "stopped", "cancelled", "timeout"].includes(worker.status.toLowerCase())) {
+    return "Review output";
+  }
+  if (columnForStatus(worker.status) === "blocked") {
+    return "Resolve";
+  }
+  return "Review result";
 }
 
 function toneForStatus(status: string): WorkBoardItemTone {

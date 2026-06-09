@@ -47,7 +47,8 @@ test("formatWorkItemThreadRows shows delivery evidence only for decision states"
     ...thread,
     status: "blocked",
     changedFiles: ["src/tui/work-board/WorkItemThread.tsx"],
-    checks: ["npm test [failed]"]
+    checks: ["npm test [failed]"],
+    actions: ["Resolve"]
   }, 10);
 
   assert.equal(rows[0], "Status: Needs attention");
@@ -55,6 +56,7 @@ test("formatWorkItemThreadRows shows delivery evidence only for decision states"
   assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
   assert(rows.some((line) => /^Changed: src\/tui\/work-board\/WorkItemThread\.tsx$/u.test(line)));
   assert(rows.some((line) => /^Verified: npm test \[failed\]$/u.test(line)));
+  assert(rows.some((line) => /^Next: Resolve$/u.test(line)));
   assert(!rows.some((line) => /^Checks:/u.test(line)));
 });
 
