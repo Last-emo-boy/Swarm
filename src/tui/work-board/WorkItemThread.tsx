@@ -20,7 +20,7 @@ export function WorkItemThread({
   return (
     <Box flexDirection="column" width="100%" height={visibleRows} overflow="hidden" marginTop={1}>
       <Text wrap="truncate">
-        <Text color={visualTokenColor("brand.focus")} bold>{fitToDisplayWidth(`# ${thread.title}`, safeColumns)}</Text>
+        <Text color={visualTokenColor("brand.focus")} bold>{fitToDisplayWidth(thread.title, safeColumns)}</Text>
       </Text>
       {detailRows.map((line, index) => (
         <Text key={`${thread.id}-${index}`} color={index < 2 ? visualTokenColor("text.primary") : visualTokenColor("text.muted")} wrap="truncate">
