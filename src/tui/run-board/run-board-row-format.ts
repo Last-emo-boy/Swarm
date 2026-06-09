@@ -20,6 +20,9 @@ export function formatWorkerRow(row: WorkerBoardRow, columns = 100): string {
 }
 
 function visibleWorkerEvidence(row: WorkerBoardRow): string | undefined {
+  if (row.status !== "blocked" && row.status !== "stuck" && row.status !== "failed") {
+    return undefined;
+  }
   const evidence = row.lastEvidence ?? (row.waitingOn ? `waits on ${row.waitingOn}` : undefined);
   if (!evidence) {
     return undefined;

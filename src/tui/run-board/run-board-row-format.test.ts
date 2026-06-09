@@ -28,7 +28,39 @@ test("worker row formatter respects terminal width budgets", () => {
     assert.match(line, /01:12/);
     assert(line.indexOf("running") < line.indexOf("01:12"), `${columns}: expected action before elapsed age`);
     assert.doesNotMatch(line, /\bactive\b/);
+    assert.doesNotMatch(line, /npm test --/);
   }
+});
+
+test("worker row formatter only shows evidence for blocked decision states", () => {
+  const active: WorkerBoardRow = {
+    id: "worker:active",
+    label: "Code Worker",
+    role: "code",
+    status: "active",
+    currentAction: "editing files",
+    lastEvidence: "opened src/tui/run-board/WorkerRow.tsx",
+    elapsedMs: 1_000,
+    owns: [],
+    risk: "low",
+    canStop: true,
+    canRetry: false,
+    canTakeBack: false
+  };
+  const blocked: WorkerBoardRow = {
+    ...active,
+    id: "worker:blocked",
+    label: "Test Runner",
+    role: "test",
+    status: "blocked",
+    currentAction: "waiting for output",
+    lastEvidence: "npm test produced no output",
+    risk: "medium",
+    canRetry: true
+  };
+
+  assert.doesNotMatch(formatWorkerRow(active, 120), /opened src\/tui\/run-board\/WorkerRow\.tsx/);
+  assert.match(formatWorkerRow(blocked, 120), /npm test produced no output/);
 });
 
 test("worker row hides evidence that repeats the current action", () => {
