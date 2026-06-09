@@ -13,7 +13,6 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
     ...prefixed("Plan", thread.plan),
     ...prefixed("Changed", thread.changedFiles),
     ...prefixed("Checks", thread.checks),
-    ...prefixed("Comments", thread.comments),
     ...prefixed("Actions", thread.actions)
   ].slice(0, visibleRows);
 }
