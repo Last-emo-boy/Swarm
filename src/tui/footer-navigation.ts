@@ -99,59 +99,59 @@ export function buildFooterPills(input: {
   return [
     {
       id: "tasks",
-      label: "tasks",
+      label: "work",
       value: `${Math.max(0, input.taskCompleted)}/${Math.max(0, input.taskTotal)}`,
       tone: input.taskTotal > 0 && input.taskCompleted < input.taskTotal ? "running" : "muted",
-      detailHint: "Task state"
+      detailHint: "Work progress"
     },
     {
       id: "approvals",
-      label: "approvals",
+      label: "asks",
       value: String(Math.max(0, input.pendingApprovals)),
       tone: input.pendingApprovals > 0 ? "pending" : "muted",
-      detailHint: "Approval queue"
+      detailHint: "Pending decisions"
     },
     {
       id: "cache",
-      label: "cache",
+      label: "memory",
       value: cache.value,
       tone: footerToneFromServiceCluster(cache),
-      detailHint: "Prompt cache"
+      detailHint: "Context reuse"
     },
     {
       id: "gateway",
-      label: "gateway",
+      label: "local",
       value: gateway.value,
       tone: footerToneFromServiceCluster(gateway),
-      detailHint: "Gateway surface"
+      detailHint: "Local connection"
     },
     {
       id: "mcp",
-      label: "mcp",
+      label: "tools",
       value: mcp.value,
       tone: footerToneFromServiceCluster(mcp),
-      detailHint: "MCP servers"
+      detailHint: "External tools"
     },
     {
       id: "skills",
       label: "skills",
       value: skills.value,
       tone: footerToneFromServiceCluster(skills),
-      detailHint: "Agent skills"
+      detailHint: "Skill library"
     },
     {
       id: "symphony",
-      label: "symphony",
+      label: "auto",
       value: symphony.value,
       tone: footerToneFromServiceCluster(symphony),
-      detailHint: "Symphony scheduler"
+      detailHint: "Automation"
     },
     {
       id: "lsp",
-      label: "lsp",
+      label: "code",
       value: lsp.value,
       tone: footerToneFromServiceCluster(lsp),
-      detailHint: "Language server"
+      detailHint: "Code intelligence"
     }
   ];
 }

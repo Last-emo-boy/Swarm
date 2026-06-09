@@ -31,11 +31,17 @@ test("footer navigation cycles compact service pills and opens the selected targ
   });
   let state = createFooterNavigationState();
 
-  assert.deepEqual(items.filter((item) => ["cache", "gateway", "symphony", "lsp"].includes(item.id)).map((item) => [item.id, item.value, item.tone]), [
-    ["cache", "MISS 0%", "muted"],
-    ["gateway", "LOCAL", "success"],
-    ["symphony", "1 run", "running"],
-    ["lsp", "READY", "success"]
+  assert.deepEqual(items.filter((item) => ["cache", "gateway", "symphony", "lsp"].includes(item.id)).map((item) => [item.id, item.label, item.value, item.tone, item.detailHint]), [
+    ["cache", "memory", "MISS 0%", "muted", "Context reuse"],
+    ["gateway", "local", "LOCAL", "success", "Local connection"],
+    ["symphony", "auto", "1 run", "running", "Automation"],
+    ["lsp", "code", "READY", "success", "Code intelligence"]
+  ]);
+  assert.doesNotMatch(items.map((item) => item.label).join(" "), /\b(tasks|approvals|gateway|mcp|symphony|lsp)\b/u);
+  assert.deepEqual(items.filter((item) => ["tasks", "approvals", "mcp"].includes(item.id)).map((item) => [item.id, item.label, item.detailHint]), [
+    ["tasks", "work", "Work progress"],
+    ["approvals", "asks", "Pending decisions"],
+    ["mcp", "tools", "External tools"]
   ]);
   assert.equal(selectedFooterPill(state, items), undefined);
   assert.deepEqual(footerNavigationReducer(state, { type: "open" }, items), state);
