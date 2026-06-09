@@ -15,7 +15,8 @@ test("WorkBoardSurface renders board columns and selected task thread", () => {
 
   assert.match(text, /WORK/);
   assert.doesNotMatch(text, /OBSERVATORY/);
-  assert.match(text, /Running 1/);
+  assert.match(text, /Working 1/);
+  assert.doesNotMatch(text, /Running 1/);
   assert.match(text, /Needs 1/);
   assert.doesNotMatch(text, /Blocked 1/);
   assert.doesNotMatch(text, /\bBacklog\b|\bReview\b|\bDone\b/);
@@ -85,7 +86,7 @@ function fixtureView(): WorkBoardSurfaceView {
       { id: "backlog", title: "Backlog", count: 0, items: [] },
       {
         id: "running",
-        title: "Running",
+        title: "Working",
         count: 1,
         items: [{ id: "T-101", title: "T-101", status: "running", subtitle: "Board-first workspace", owner: "Ada", meta: ["session-101"], tone: "running" }]
       },

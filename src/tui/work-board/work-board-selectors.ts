@@ -92,7 +92,7 @@ function countLabel(count: number, label: string): string | undefined {
 function buildColumns(items: WorkBoardItemView[], limit: number): WorkBoardColumnView[] {
   const specs: Array<{ id: WorkBoardColumnId; title: string }> = [
     { id: "backlog", title: "Backlog" },
-    { id: "running", title: "Running" },
+    { id: "running", title: "Working" },
     { id: "review", title: "Review" },
     { id: "done", title: "Done" },
     { id: "blocked", title: "Needs" }
