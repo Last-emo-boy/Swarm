@@ -66,12 +66,13 @@ test("default slash help stays on the main path unless advanced help is requeste
   const advancedHelp = renderSlashHelp({ includeAdvanced: true });
 
   assert.match(basicHelp, /Start/);
-  assert.match(basicHelp, /\/review \[area\]/);
-  assert.match(basicHelp, /\/plan \[task\]/);
-  assert.match(basicHelp, /\/approve \[id\]/);
-  assert.match(basicHelp, /\/continue \[note\]/);
+  assert.match(basicHelp, /\/review - Review code and risks\./);
+  assert.match(basicHelp, /\/plan - Plan the next change\./);
+  assert.match(basicHelp, /\/approve - Approve pending work\./);
+  assert.match(basicHelp, /\/continue - Continue latest work\./);
   assert.match(basicHelp, /\/onboard/);
-  assert.match(basicHelp, /\/review \[area\][\s\S]*\/plan \[task\][\s\S]*\/approve \[id\][\s\S]*\/continue \[note\][\s\S]*\/onboard/);
+  assert.match(basicHelp, /\/review[\s\S]*\/plan[\s\S]*\/approve[\s\S]*\/continue[\s\S]*\/onboard/);
+  assert.doesNotMatch(basicHelp, /\[(?:area|task|id|note)\]/);
   assert.doesNotMatch(basicHelp, /More:|\/help all/);
   assert.doesNotMatch(basicHelp, /^Advanced$/m);
   assert.doesNotMatch(basicHelp, /^Work$|^Ask$|^Setup$/m);

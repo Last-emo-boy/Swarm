@@ -289,10 +289,10 @@ function slashCommandGroupLabel(group: SlashCommandGroup): string {
 function renderMainSlashHelp(): string {
   return [
     "Start",
-    "  /review [area] - Review code and risks.",
-    "  /plan [task] - Plan the next change.",
-    "  /approve [id] - Approve pending work.",
-    "  /continue [note] - Continue latest work.",
+    "  /review - Review code and risks.",
+    "  /plan - Plan the next change.",
+    "  /approve - Approve pending work.",
+    "  /continue - Continue latest work.",
     "  /onboard - Set up model access."
   ].join("\n");
 }
