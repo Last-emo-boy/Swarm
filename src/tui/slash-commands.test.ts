@@ -85,6 +85,8 @@ test("slash command candidates keep the empty menu on the main path", () => {
   assert(names.includes("plan"));
   assert(names.includes("approve"));
   assert(names.includes("onboard"));
+  assert(names.includes("continue"));
+  assert(!names.includes("resume"));
   assert(!names.includes("work"));
   assert(!names.includes("checkpoint"));
   assert(!names.includes("revert"));
@@ -104,6 +106,7 @@ test("slash command candidates keep advanced commands behind explicit detail", (
   assert(!defaultNames.includes("debug"));
   assert(!defaultNames.includes("trace"));
   assert.equal(commandCandidatesForInput("/sw", 3, { includeAdvanced: true }).some((command) => command.name === "swarm"), true);
+  assert.equal(commandCandidatesForInput("/res", 4, { includeAdvanced: true }).some((command) => command.name === "resume"), true);
   assert.equal(commandCandidatesForInput("/symphony s", 11).some((command) => command.name === "status"), true);
 });
 

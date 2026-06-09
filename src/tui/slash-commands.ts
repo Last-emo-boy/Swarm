@@ -146,7 +146,6 @@ const BASIC_SLASH_COMMAND_NAMES = new Set([
   "approve",
   "onboard",
   "why",
-  "resume",
   "continue"
 ]);
 
