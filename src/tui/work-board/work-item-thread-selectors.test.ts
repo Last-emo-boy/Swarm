@@ -25,12 +25,13 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   const rows = formatWorkItemThreadRows(thread, 5);
   const expandedRows = formatWorkItemThreadRows(thread, 10);
 
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 1);
   assert.match(rows[0] ?? "", /Board-first Local Agent Workspace/);
   assert.doesNotMatch(rows[0] ?? "", /Assignee|Risk/);
   assert(!expandedRows.some((line) => /^Objective:/u.test(line)));
   assert(!expandedRows.some((line) => /^Status: running$/u.test(line)));
-  assert(rows.some((line) => /Next: Continue/.test(line)));
+  assert(!rows.some((line) => /Next: Continue/.test(line)));
+  assert(!expandedRows.some((line) => /^Next:/u.test(line)));
   assert(!expandedRows.some((line) => /^Plan:|^Why:|^Need:/u.test(line)));
   assert(!expandedRows.some((line) => /^Actions:/u.test(line)));
   assert(!expandedRows.some((line) => /^Changed:|^Files:|^Checks:/u.test(line)));
@@ -45,6 +46,10 @@ test("formatWorkItemThreadRows translates slash actions before rendering", () =>
 
   const rows = formatWorkItemThreadRows({
     ...thread,
+    status: "blocked",
+    plan: [],
+    changedFiles: [],
+    checks: [],
     actions: ["/continue", "/debug latest", "/diff"]
   }, 8);
 
