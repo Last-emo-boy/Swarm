@@ -445,11 +445,7 @@ function NavigationList({
 }
 
 function isVisibleWorkbenchNavigationItem(item: SwarmWorkbenchNavigationItem): boolean {
-  const label = item.label.trim().toLowerCase();
-  if (item.active) {
-    return true;
-  }
-  return label === "result";
+  return Boolean(item.active);
 }
 
 function NavigationRow({

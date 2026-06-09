@@ -57,7 +57,7 @@ test("SwarmWorkbenchLayout renders sidebar, conversation, inspector, and bottom 
   assert.doesNotMatch(text, /View all cases/);
   assert.match(text, /> Chat/);
   assert.equal(occurrences(text, "Chat"), 1);
-  assert.match(text, /Result/);
+  assert.doesNotMatch(text, /Result/);
   assert.doesNotMatch(text, /Details/);
   assert.doesNotMatch(text, /Logs/);
   assert.doesNotMatch(text, /Chat \[1\]|Result \[2\]|Details \[3\]|Logs \[4\]/);
@@ -221,7 +221,7 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
 
   assert.doesNotMatch(text, /Inbox/);
   assert.match(text, /> Chat/);
-  assert.match(text, /Result/);
+  assert.doesNotMatch(text, /Result/);
   assert.doesNotMatch(text, /Details/);
   assert.doesNotMatch(text, /Logs/);
   assert.doesNotMatch(text, /Chat \[1\]|Result \[2\]|Details \[3\]|Logs \[4\]/);
