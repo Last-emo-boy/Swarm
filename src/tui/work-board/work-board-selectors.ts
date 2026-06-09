@@ -57,7 +57,6 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
     ...memoryWorkers.filter((worker) => worker.status === "running").slice(0, 2).map((worker) => `${worker.display_name} is working on ${firstLine(worker.objective, 64)}`),
     ...activeDaemons(daemons).slice(0, 2).map((daemon) => `Automation ${shortId(daemon.daemon_id)} ${daemon.status}`)
   ].slice(0, 5);
-  const activeAutomationCount = activeDaemons(daemons).length;
   const enabledSkillCount = enabledSkills(skills).length;
   return {
     title: "Board",
@@ -66,12 +65,8 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
     selected,
     summary: {
       activeTasks,
-      workers: board?.summary.workers ?? memoryWorkers.length,
       approvals: approvals.length,
       blockers,
-      changedFiles: board?.summary.changed_files ?? 0,
-      checks: board?.summary.checks ?? 0,
-      automations: activeAutomationCount,
       skills: enabledSkillCount,
       activity
     },

@@ -14,9 +14,7 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
 
   assert.equal(view.title, "Board");
   assert.equal(view.summary.activeTasks, 1);
-  assert.equal(view.summary.workers, 1);
   assert.equal(view.summary.approvals, 1);
-  assert.equal(view.summary.automations, 1);
   assert.equal(view.summary.skills, 1);
   assert.equal(view.columns.find((column) => column.id === "running")?.items[0]?.title, "T-101");
   assert.equal(view.columns.find((column) => column.id === "blocked")?.items[0]?.title, "Fix TUI layout");

@@ -73,12 +73,8 @@ function fixtureView(): WorkBoardSurfaceView {
     empty: false,
     summary: {
       activeTasks: 1,
-      workers: 1,
       approvals: 0,
       blockers: 1,
-      changedFiles: 2,
-      checks: 1,
-      automations: 1,
       skills: 3,
       activity: ["task:T-102 Resolve layout decision"]
     },
@@ -124,12 +120,8 @@ function emptyFixtureView(): WorkBoardSurfaceView {
     empty: true,
     summary: {
       activeTasks: 0,
-      workers: 0,
       approvals: 0,
       blockers: 0,
-      changedFiles: 0,
-      checks: 0,
-      automations: 0,
       skills: 0,
       activity: []
     },

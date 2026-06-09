@@ -39,12 +39,8 @@ export type WorkBoardThreadView = {
 
 export type WorkBoardSummaryView = {
   activeTasks: number;
-  workers: number;
   approvals: number;
   blockers: number;
-  changedFiles: number;
-  checks: number;
-  automations: number;
   skills: number;
   activity: string[];
 };
