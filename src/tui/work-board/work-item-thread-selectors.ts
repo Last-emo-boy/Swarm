@@ -9,7 +9,7 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
   const visibleRows = Math.max(2, Math.floor(maxRows));
   const evidenceRows = shouldShowDecisionRows(thread.status)
     ? [
-      ...prefixed("Changed", thread.changedFiles),
+      ...prefixed("Files", thread.changedFiles),
       ...prefixed("Verified", thread.checks)
     ]
     : [];
