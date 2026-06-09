@@ -281,8 +281,6 @@ function renderMainSlashHelp(): string {
     "  /approve [approval_id] [message] - Approve pending work.",
     "  /continue [message] - Continue latest work.",
     "  /review [focus] - Review code and risks.",
-    "",
-    "Setup",
     "  /onboard - Set up model access.",
     "",
     "More: /help all."

@@ -48,14 +48,13 @@ test("default slash help stays on the main path unless advanced help is requeste
   const basicHelp = renderSlashHelp();
 
   assert.match(basicHelp, /Start/);
-  assert.match(basicHelp, /Setup/);
   assert.match(basicHelp, /\/review \[focus\]/);
   assert.match(basicHelp, /\/plan \[objective\]/);
   assert.match(basicHelp, /\/approve \[approval_id\] \[message\]/);
   assert.match(basicHelp, /\/onboard/);
   assert.match(basicHelp, /\/help all/);
   assert.doesNotMatch(basicHelp, /^Advanced$/m);
-  assert.doesNotMatch(basicHelp, /^Work$|^Ask$/m);
+  assert.doesNotMatch(basicHelp, /^Work$|^Ask$|^Setup$/m);
   assert.doesNotMatch(basicHelp, /implementation plan|local coding session|result-first Codebase Deep Review|provider, API key, and model once/);
   assert.doesNotMatch(basicHelp, /Recovery|\/why|\/help debug|\/help work|\/help ext|\/doctor \[workflow_path\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
