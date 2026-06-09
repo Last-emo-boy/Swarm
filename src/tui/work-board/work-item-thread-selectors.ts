@@ -8,7 +8,7 @@ export function selectWorkItemThread(input: SelectWorkBoardSurfaceInput): WorkBo
 export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: number): string[] {
   const visibleRows = Math.max(2, Math.floor(maxRows));
   return [
-    `Status: ${thread.status}${thread.assignee ? ` · Assignee: ${thread.assignee}` : ""}${thread.risk ? ` · Risk: ${thread.risk}` : ""}`,
+    `Status: ${thread.status}`,
     `Objective: ${thread.objective}`,
     ...prefixed("Plan", thread.plan),
     ...prefixed("Timeline", thread.timeline),
