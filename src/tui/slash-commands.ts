@@ -277,10 +277,10 @@ export function renderSlashHelp(options: { includeAdvanced?: boolean; namespace?
 function renderMainSlashHelp(): string {
   return [
     "Start",
-    "  /plan [objective] - Plan the next change.",
-    "  /approve [approval_id] [message] - Approve pending work.",
-    "  /continue [message] - Continue latest work.",
-    "  /review [focus] - Review code and risks.",
+    "  /plan [task] - Plan the next change.",
+    "  /approve [id] - Approve pending work.",
+    "  /continue [note] - Continue latest work.",
+    "  /review [area] - Review code and risks.",
     "  /onboard - Set up model access.",
     "",
     "More: /help all."
