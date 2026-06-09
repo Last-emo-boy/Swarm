@@ -122,7 +122,7 @@ test("product result selector keeps preview commands behind user-facing labels",
       at: "2026-05-28T00:00:01.000Z",
       preview: {
         summary: "Patch ready for inspection.",
-        nextActions: ["/diff", "/commit"]
+        nextActions: ["/diff", "/commit", "/output"]
       }
     }
   ]);
@@ -130,6 +130,6 @@ test("product result selector keeps preview commands behind user-facing labels",
   const view = selectProductResultCardView(state);
 
   assert.equal(view.status, "preview");
-  assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["preview:/diff", "preview:/commit"]);
-  assert.deepEqual(view.nextActions.map((item) => item.label), ["Review changes", "Commit when ready"]);
+  assert.deepEqual(view.nextActions.map((item) => `${item.source}:${item.command}`), ["preview:/diff", "preview:/commit", "preview:/output"]);
+  assert.deepEqual(view.nextActions.map((item) => item.label), ["Review changes", "Commit when ready", "Review output"]);
 });

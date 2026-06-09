@@ -11,7 +11,7 @@ export function labelForRunBoardAction(command: string): string {
     case "/commit":
       return "Commit when ready";
     case "/output":
-      return "Open output";
+      return "Review output";
     case "/continue":
       return "Continue work";
     case "/debug latest":
