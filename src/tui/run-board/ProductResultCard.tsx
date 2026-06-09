@@ -301,7 +301,7 @@ function DecisionTrailLines(props: {
   const itemLimit = props.density === "compact" ? 2 : 4;
   return (
     <React.Fragment>
-      <ResultLine label="Why" value="Decisions" onClick={props.onToggle} />
+      <ResultLine label="Why" value="Key choices" onClick={props.onToggle} />
       {visibleSections.map((entry) => (
         <ResultLine
           key={`trail:${entry.section}`}

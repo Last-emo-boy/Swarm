@@ -259,7 +259,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   const frame = root.getFrame();
   assert(frame);
   const text = frameText(frame);
-  assert.match(text, /Why\s+Decisions/);
+  assert.match(text, /Why\s+Key choices/);
   assert.doesNotMatch(text, /Objective adopted|Code Worker owns patch|focused test passed/);
   assert.doesNotMatch(text, /Ctrl\+O details|Trail\s+5 sections|split\s+Objective adopted/);
   const target = findLastCell(frame, "Why");
@@ -296,7 +296,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   }), { columns: 120, rows: 20 });
   const expandedText = frameText(expanded);
 
-  assert.match(expandedText, /Why\s+Decisions/);
+  assert.match(expandedText, /Why\s+Key choices/);
   assert.match(expandedText, /Plan\s+Objective adopted/);
   assert.match(expandedText, /Owner\s+Code Worker owns patch/);
   assert.match(expandedText, /Check\s+focused test passed/);
@@ -327,7 +327,7 @@ test("ProductResultCard renders decision trail from VM and toggles by click", ()
   }), { columns: 120, rows: 20 });
   const inertText = frameText(inert);
 
-  assert.doesNotMatch(inertText, /Why\s+Decisions/);
+  assert.doesNotMatch(inertText, /Why\s+Key choices/);
 });
 
 test("ProductResultCard renders review findings as result-first report rows", () => {
