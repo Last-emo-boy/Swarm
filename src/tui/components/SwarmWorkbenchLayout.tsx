@@ -704,8 +704,18 @@ function isVisibleWorkbenchStatus(card: SwarmWorkbenchInfoCard): boolean {
 }
 
 function visibleWorkbenchStatusCard(card: SwarmWorkbenchInfoCard): SwarmWorkbenchInfoCard {
+  const title = visibleWorkbenchStatusTitle(card.title);
   const subtitle = visibleWorkbenchStatusSubtitle(card.subtitle);
-  return subtitle === card.subtitle ? card : { ...card, subtitle };
+  return title === card.title && subtitle === card.subtitle ? card : { ...card, title, subtitle };
+}
+
+function visibleWorkbenchStatusTitle(value: string): string {
+  const title = value.trim();
+  const blocked = /\b([1-9]\d*)\s+blocked\b/iu.exec(title);
+  if (!blocked) {
+    return title;
+  }
+  return blocked[1] === "1" ? "Blocked" : `${blocked[1]} blocked`;
 }
 
 function visibleWorkbenchStatusSubtitle(value: string | undefined): string | undefined {

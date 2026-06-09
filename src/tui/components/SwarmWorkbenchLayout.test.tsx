@@ -128,7 +128,8 @@ test("SwarmWorkbenchLayout keeps attention-worthy status visible", () => {
   const text = frameText(frame);
 
   assert.doesNotMatch(text, /Status/);
-  assert.match(text, /2 active · 1 blocked/);
+  assert.match(text, /Blocked/);
+  assert.doesNotMatch(text, /2 active · 1 blocked/);
   assert.match(text, /\[RISK\s+\]/);
   assert.doesNotMatch(text, /Reviewer is running/);
 });
