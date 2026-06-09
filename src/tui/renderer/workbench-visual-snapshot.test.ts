@@ -39,6 +39,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     if (viewport.columns >= 132) {
       assert.match(text, /2 active · 1 blocked/);
       assert.doesNotMatch(text, /Status/);
+      assert.doesNotMatch(text, /Reviewer is running/);
       assert.doesNotMatch(text, /Active helpers/);
       assert.doesNotMatch(text, /Tools/);
       assert.match(text, /ACTION LOG/);

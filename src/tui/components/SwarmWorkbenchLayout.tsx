@@ -570,6 +570,7 @@ function RightRail({
 }): React.ReactElement {
   const compact = height < 36;
   const statusCard = activity ?? runtime ?? memory;
+  const visibleStatusCard = visibleWorkbenchStatusCard(statusCard);
   const visibleWorkers = workers.filter(isVisibleWorkbenchWorker);
   const visibleTools = tools.filter(isVisibleWorkbenchTool);
   return (
@@ -582,7 +583,7 @@ function RightRail({
       paddingX={1}
       overflow="hidden"
     >
-      {isVisibleWorkbenchStatus(statusCard) ? <InfoSection card={statusCard} width={width} compact={compact} /> : null}
+      {isVisibleWorkbenchStatus(visibleStatusCard) ? <InfoSection card={visibleStatusCard} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchMode(mode) ? <InfoSection title="Mode" card={mode} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchAccess(permission) ? <InfoSection title="Access" card={permission} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchSandbox(sandbox) ? <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} /> : null}
@@ -700,6 +701,21 @@ function isRoutineWorkbenchTool(name: string, status: string): boolean {
 function isVisibleWorkbenchStatus(card: SwarmWorkbenchInfoCard): boolean {
   const token = workbenchCardToken(card);
   return hasAttentionWorkbenchStatus(token) || !isRoutineWorkbenchStatus(card);
+}
+
+function visibleWorkbenchStatusCard(card: SwarmWorkbenchInfoCard): SwarmWorkbenchInfoCard {
+  const subtitle = visibleWorkbenchStatusSubtitle(card.subtitle);
+  return subtitle === card.subtitle ? card : { ...card, subtitle };
+}
+
+function visibleWorkbenchStatusSubtitle(value: string | undefined): string | undefined {
+  const subtitle = value?.trim();
+  if (!subtitle) {
+    return undefined;
+  }
+  return /\b(?:planner|reviewer|worker|helper|agent)\b.*\bis running\b/iu.test(subtitle)
+    ? undefined
+    : subtitle;
 }
 
 function hasAttentionWorkbenchStatus(token: string): boolean {

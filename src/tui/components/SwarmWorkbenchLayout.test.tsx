@@ -130,6 +130,7 @@ test("SwarmWorkbenchLayout keeps attention-worthy status visible", () => {
   assert.doesNotMatch(text, /Status/);
   assert.match(text, /2 active · 1 blocked/);
   assert.match(text, /\[RISK\s+\]/);
+  assert.doesNotMatch(text, /Reviewer is running/);
 });
 
 test("SwarmWorkbenchLayout hides routine tool activity but keeps pending work visible", () => {
