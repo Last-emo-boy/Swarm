@@ -45,7 +45,6 @@ export function WorkBoardSurface({
 function BoardHeader({ view, columns }: { view: WorkBoardSurfaceView; columns: number }): React.ReactElement {
   const summary = view.empty ? "" : [
     countLabel(view.summary.activeTasks, "active task"),
-    countLabel(view.summary.workers, "helper"),
     countLabel(view.summary.approvals, "approval"),
     countLabel(view.summary.blockers, "blocker")
   ].filter((value): value is string => Boolean(value)).join(" · ");
