@@ -5,7 +5,7 @@ import { buildProtocolTimelineActionRows, renderActionRowDetail, runtimeEventToA
 import { ActionLog } from "./components/ActionLog.js";
 import { nextMainPane } from "./main-panes.js";
 import type { TuiFrame } from "./renderer/frame.js";
-import { renderTuiToFrame } from "./renderer/testing.js";
+import { frameText, renderTuiToFrame } from "./renderer/testing.js";
 import { resolveTuiColor } from "./theme.js";
 
 test("tool result action rows keep successful output behind details", () => {
@@ -75,6 +75,43 @@ test("activity action rows show the running agent identity", () => {
   assert(row.details.includes("worker=worker-1"));
   assert(row.details.includes("agent_spec=researcher"));
   assert(row.details.includes("mode=call_subagent"));
+});
+
+test("ActionLog hides routine run identifiers in default rows", () => {
+  const row = runtimeEventToActionRow({
+    type: "loop_activity",
+    session_id: "worker-loop-1",
+    phase: "running_tool",
+    message: "running code build",
+    turn: 2,
+    tool: "code.build",
+    task_id: "task-1",
+    agent: {
+      worker_id: "worker-1",
+      display_name: "Ada",
+      role_title: "Diff Investigator",
+      agent_spec_id: "researcher",
+      invocation_mode: "call_subagent"
+    }
+  }, 0);
+
+  assert(row.details.includes("session=worker-loop-1"));
+  assert(row.details.includes("worker=worker-1"));
+  assert(row.details.includes("agent_spec=researcher"));
+  assert.match(renderActionRowDetail(row), /worker=worker-1/);
+
+  const frame = renderTuiToFrame(React.createElement(ActionLog, {
+    rows: [row],
+    height: 8,
+    columns: 120,
+    scrollOffset: 0,
+    onScrollOffsetChange: () => undefined,
+    selectedIndex: 0
+  }), { columns: 120, rows: 8 });
+  const text = frameText(frame);
+
+  assert.match(text, /Ada \/ Diff Investigator: running code build/);
+  assert.doesNotMatch(text, /session=|task=|worker=worker-1|agent_spec=researcher|swarm\.work\.v1|runtime=|agent=|tool=code\.build|mode=call_subagent/);
 });
 
 test("failed tool result action rows prioritize recovery before raw output", () => {

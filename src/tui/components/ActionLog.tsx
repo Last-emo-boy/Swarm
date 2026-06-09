@@ -113,6 +113,8 @@ function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: numbe
     const prefix = statusIconText(row.status, "badge");
     const kind = kindLabel(row.kind);
     const selected = rowIndex === selectedIndex;
+    const meta = visibleActionMeta(row.meta);
+    const details = visibleActionDetails(row.details);
     const lines: ActionLogLine[] = [{
       key: `${row.id}:head:${rowIndex}`,
       spans: trimSpans([
@@ -133,17 +135,17 @@ function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: numbe
       });
     }
 
-    if (row.meta) {
+    if (meta) {
       lines.push({
           key: `${row.id}:meta:${rowIndex}`,
           spans: trimSpans([
             { text: "     ", color: "text.muted" },
-          ...toolResponseLineSpans(row.meta, { defaultColor: "text.muted", valueColor: "text.muted", fallbackLabel: "meta" })
+          ...toolResponseLineSpans(meta, { defaultColor: "text.muted", valueColor: "text.muted", fallbackLabel: "meta" })
         ], contentWidth)
       });
     }
 
-    const visibleDetails = row.details.slice(0, detailLimit(row.status));
+    const visibleDetails = details.slice(0, detailLimit(row.status));
     visibleDetails.forEach((detail, detailIndex) => {
       lines.push({
           key: `${row.id}:detail:${detailIndex}`,
@@ -153,7 +155,7 @@ function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: numbe
         ], contentWidth)
       });
     });
-    const hidden = row.details.length - visibleDetails.length;
+    const hidden = details.length - visibleDetails.length;
     if (hidden > 0) {
       lines.push({
         key: `${row.id}:hidden:${rowIndex}`,
@@ -164,6 +166,76 @@ function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: numbe
 
     return lines;
   });
+}
+
+const ROUTINE_DETAIL_KEYS = new Set([
+  "actor",
+  "agent",
+  "agent_spec",
+  "approval",
+  "capability",
+  "correlation",
+  "envelope",
+  "governance",
+  "id",
+  "mode",
+  "parent",
+  "requested_by",
+  "runtime",
+  "session",
+  "session_id",
+  "source",
+  "task",
+  "tool",
+  "turn",
+  "worker",
+  "worker_session"
+]);
+
+function visibleActionMeta(meta: string | undefined): string | undefined {
+  if (!meta) {
+    return undefined;
+  }
+  const normalized = meta.trim().toLowerCase();
+  if (!normalized || normalized === "swarm.work.v1" || /^[a-z]+(?:_[a-z]+)*$/u.test(normalized)) {
+    return undefined;
+  }
+  return meta;
+}
+
+function visibleActionDetails(details: string[]): string[] {
+  return details
+    .map((detail) => visibleActionDetail(detail))
+    .filter((detail): detail is string => Boolean(detail));
+}
+
+function visibleActionDetail(detail: string): string | undefined {
+  const parsed = actionDetailKeyValue(detail);
+  if (!parsed) {
+    return detail;
+  }
+  const [key, value] = parsed;
+  if (ROUTINE_DETAIL_KEYS.has(key) || key === "recovery_detail") {
+    return undefined;
+  }
+  if (key === "diagnosis" && value === "/debug latest") {
+    return "Open latest diagnosis";
+  }
+  if (key === "recovery") {
+    return `Next: ${value}`;
+  }
+  if (key === "error") {
+    return `Error: ${value}`;
+  }
+  return detail;
+}
+
+function actionDetailKeyValue(detail: string): [string, string] | undefined {
+  const match = detail.match(/^([a-zA-Z0-9_.-]+)=(.*)$/u);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  return [match[1].toLowerCase(), match[2]?.trim() ?? ""];
 }
 
 function statusColor(status: TuiActionStatus): TuiColorRef {
