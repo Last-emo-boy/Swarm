@@ -109,7 +109,8 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
 
   assert.match(expandedText, /Context/);
   assert.doesNotMatch(expandedText, /Details\s+Context/);
-  assert.match(expandedText, /Detail\s+verification passed: npm test -- session-row/);
+  assert.match(expandedText, /verification passed: npm test -- session-row/);
+  assert.doesNotMatch(expandedText, /Detail\s+verification passed/);
   assert.match(expandedText, /changed file: src\/runtime\/session-row\.ts/);
   assert.match(expandedText, /CONTRIBUTORS/);
   assert.match(expandedText, /Code Worker implemented patch/);

@@ -348,7 +348,7 @@ function TeamReasoningLines(props: {
       {visible.map((item, index) => (
         <ResultLine
           key={`reasoning:${index}:${item}`}
-          label={index === 0 ? "Detail" : ""}
+          label=""
           value={item}
           tone="text.primary"
           onClick={props.onToggle}
