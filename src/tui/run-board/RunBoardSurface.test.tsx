@@ -5,6 +5,7 @@ import { createTuiRoot } from "../renderer/root.js";
 import { renderTuiToFrame, frameText } from "../renderer/testing.js";
 import { RunBoardSurface } from "./RunBoardSurface.js";
 import type { RunBoardSurfaceView } from "./run-board-types.js";
+import { workerRowSpans } from "./WorkerRow.js";
 
 test("RunBoardSurface renders worker board attention and result preview", () => {
   const view: RunBoardSurfaceView = {
@@ -24,6 +25,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
         role: "main",
         status: "waiting",
         currentAction: "waiting for test result",
+        lastEvidence: "routine background poll finished",
         elapsedMs: 52_000,
         owns: [],
         risk: "low",
@@ -85,6 +87,7 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.doesNotMatch(text, /Status\s+Needs you/);
   assert.doesNotMatch(text, /waiting-attention/);
   assert.doesNotMatch(text, /Focus\s+Test Runner/);
+  assert.doesNotMatch(text, /routine background poll finished/);
   assert.match(text, /PROGRESS/);
   assert.match(text, /Test Runner/);
   assert.match(text, /NEEDS YOU/);
@@ -100,6 +103,40 @@ test("RunBoardSurface renders worker board attention and result preview", () => 
   assert.doesNotMatch(text, /\[Details Enter\]/);
   assert.doesNotMatch(text, /Observatory Enter/);
   assert.doesNotMatch(text, /handoff contract id|lease participant|blackboard claim owner|ASP/);
+});
+
+test("WorkerRow hides routine evidence but keeps blocked evidence", () => {
+  const routine = workerRowSpans({
+    id: "worker:active",
+    label: "Code Worker",
+    role: "code",
+    status: "active",
+    currentAction: "editing files",
+    lastEvidence: "opened src/tui/run-board/WorkerRow.tsx",
+    elapsedMs: 1_000,
+    owns: [],
+    risk: "low",
+    canStop: true,
+    canRetry: false,
+    canTakeBack: false
+  }).map((span) => span.text).join("");
+  const blocked = workerRowSpans({
+    id: "worker:blocked",
+    label: "Test Runner",
+    role: "test",
+    status: "blocked",
+    currentAction: "waiting for output",
+    lastEvidence: "npm test produced no output",
+    elapsedMs: 1_000,
+    owns: [],
+    risk: "medium",
+    canStop: true,
+    canRetry: true,
+    canTakeBack: false
+  }).map((span) => span.text).join("");
+
+  assert.doesNotMatch(routine, /opened src\/tui\/run-board\/WorkerRow\.tsx/);
+  assert.match(blocked, /npm test produced no output/);
 });
 
 test("RunBoardSurface keeps the idle footer quiet", () => {

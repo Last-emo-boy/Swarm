@@ -50,6 +50,9 @@ export function workerRowSpans(row: WorkerBoardRowData, selected = false): Seman
 }
 
 function visibleWorkerEvidence(row: WorkerBoardRowData): string | undefined {
+  if (row.status !== "blocked" && row.status !== "stuck" && row.status !== "failed") {
+    return undefined;
+  }
   const evidence = row.lastEvidence ?? (row.waitingOn ? `waiting on ${row.waitingOn}` : undefined);
   if (!evidence) {
     return undefined;
