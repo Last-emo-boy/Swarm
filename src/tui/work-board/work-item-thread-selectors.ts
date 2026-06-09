@@ -7,14 +7,14 @@ export function selectWorkItemThread(input: SelectWorkBoardSurfaceInput): WorkBo
 
 export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: number): string[] {
   const visibleRows = Math.max(2, Math.floor(maxRows));
-  const evidenceRows = shouldShowEvidenceRows(thread.status)
+  const evidenceRows = shouldShowDecisionRows(thread.status)
     ? [
       ...prefixed("Changed", thread.changedFiles),
       ...prefixed("Checks", thread.checks)
     ]
     : [];
   return [
-    `Status: ${thread.status}`,
+    ...statusRows(thread.status),
     `Objective: ${thread.objective}`,
     ...prefixed("Plan", thread.plan),
     ...evidenceRows,
@@ -22,7 +22,11 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
   ].slice(0, visibleRows);
 }
 
-function shouldShowEvidenceRows(status: string): boolean {
+function statusRows(status: string): string[] {
+  return shouldShowDecisionRows(status) ? [`Status: ${status}`] : [];
+}
+
+function shouldShowDecisionRows(status: string): boolean {
   return ["blocked", "failed", "stopped", "stale", "timeout", "conflict", "review", "reviewing", "verifying"].includes(status.toLowerCase());
 }
 

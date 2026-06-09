@@ -26,9 +26,9 @@ test("formatWorkItemThreadRows keeps task thread evidence bounded and user-facin
   const expandedRows = formatWorkItemThreadRows(thread, 10);
 
   assert.equal(rows.length, 5);
-  assert.match(rows[0] ?? "", /Status: running/);
+  assert.match(rows[0] ?? "", /Objective:/);
   assert.doesNotMatch(rows[0] ?? "", /Assignee|Risk/);
-  assert.match(rows[1] ?? "", /Objective:/);
+  assert(!expandedRows.some((line) => /^Status: running$/u.test(line)));
   assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
   assert(!expandedRows.some((line) => /^Changed:|^Checks:/u.test(line)));
   assert(!rows.some((line) => /^Timeline:/u.test(line)));
@@ -47,6 +47,7 @@ test("formatWorkItemThreadRows shows delivery evidence only for decision states"
     checks: ["npm test [failed]"]
   }, 10);
 
+  assert.equal(rows[0], "Status: blocked");
   assert(rows.some((line) => /^Changed: src\/tui\/work-board\/WorkItemThread\.tsx$/u.test(line)));
   assert(rows.some((line) => /^Checks: npm test \[failed\]$/u.test(line)));
 });
