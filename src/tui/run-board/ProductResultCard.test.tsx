@@ -72,9 +72,9 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(text, /NEXT\s+Review changes\s+Commit when ready/);
   assert.doesNotMatch(text, /NEXT\s+\/diff\s+\/commit/);
   assert.doesNotMatch(text, /NEXT\s+Show details/);
-  assert.doesNotMatch(text, /CONTRIBUTORS/);
+  assert.doesNotMatch(text, /TEAM/);
   assert.doesNotMatch(text, /Code Worker implemented patch/);
-  assert.doesNotMatch(text, /REQUESTS/);
+  assert.doesNotMatch(text, /NOTES/);
   assert.doesNotMatch(text, /waited; command completed successfully/);
 
   const actionable = renderTuiToFrame(React.createElement(ProductResultCard, {
@@ -115,13 +115,13 @@ test("ProductResultCard keeps team reasoning optional until expanded", () => {
   assert.doesNotMatch(expandedText, /changed file:/);
   assert.match(expandedText, /output: artifacts\/session-context\.log/);
   assert.doesNotMatch(expandedText, /artifact: artifacts\/session-context\.log/);
-  assert.match(expandedText, /CONTRIBUTORS/);
+  assert.match(expandedText, /TEAM/);
   assert.match(expandedText, /Code Worker implemented patch/);
   assert.match(expandedText, /Test Runner verified focused test/);
-  assert.match(expandedText, /REQUESTS/);
+  assert.match(expandedText, /NOTES/);
   assert.match(expandedText, /waited; command completed successfully/);
   assert.doesNotMatch(expandedText, /\[OK\]\s+Code Worker|\[WARN\]\s+Test Runner/);
-  assert.doesNotMatch(expandedText, /TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
+  assert.doesNotMatch(expandedText, /CONTRIBUTORS|REQUESTS|TEAM SUMMARY|WORKER SUMMARY|REQUEST HISTORY|ATTENTION HISTORY/);
 });
 
 test("ProductResultCard keeps failed checks actionable without successful command noise", () => {

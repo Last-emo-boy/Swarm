@@ -430,7 +430,7 @@ function WorkerSummary(props: { view: ProductResultCardView; density?: TuiDensit
   const limit = props.density === "compact" ? 2 : 4;
   const visible = props.view.workerSummary.slice(0, limit);
   return (
-    <RunBoardPanel title="Contributors">
+    <RunBoardPanel title="Team">
       {visible.map((contributor) => (
         <Text key={contributor.workerId} color={visualTokenColor("text.primary")} wrap="truncate">
           {contributor.label} {contributor.contribution}
@@ -450,7 +450,7 @@ function AttentionHistory(props: { view: ProductResultCardView; density?: TuiDen
   const limit = props.density === "compact" ? 1 : 3;
   const visible = props.view.attentionHistory.slice(0, limit);
   return (
-    <RunBoardPanel title="Requests">
+    <RunBoardPanel title="Notes">
       {visible.map((item) => (
         <Text key={item.id} color={visualTokenColor(item.resolved ? "text.muted" : "status.warning")} wrap="truncate">
           {item.summary}{item.resolution ? `; ${item.resolution}` : ""}
