@@ -53,6 +53,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(basicHelp, /\/approve \[id\]/);
   assert.match(basicHelp, /\/continue \[note\]/);
   assert.match(basicHelp, /\/onboard/);
+  assert.match(basicHelp, /\/review \[area\][\s\S]*\/plan \[task\][\s\S]*\/approve \[id\][\s\S]*\/continue \[note\][\s\S]*\/onboard/);
   assert.match(basicHelp, /\/help all/);
   assert.doesNotMatch(basicHelp, /^Advanced$/m);
   assert.doesNotMatch(basicHelp, /^Work$|^Ask$|^Setup$/m);
