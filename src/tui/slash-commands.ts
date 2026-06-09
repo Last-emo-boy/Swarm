@@ -140,7 +140,6 @@ export const slashCommands: SlashCommandSpec[] = [
 
 const BASIC_SLASH_COMMAND_NAMES = new Set([
   "help",
-  "doctor",
   "review",
   "plan",
   "approve",
@@ -289,7 +288,6 @@ function renderMainSlashHelp(): string {
     "",
     "Setup",
     "  /onboard - Configure provider, API key, and model once.",
-    "  /doctor [workflow_path] - Check local setup readiness.",
     "",
     "Advanced",
     "  /help all - Show every command.",

@@ -55,7 +55,7 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(basicHelp, /\/approve \[approval_id\] \[message\]/);
   assert.match(basicHelp, /\/onboard/);
   assert.match(basicHelp, /\/help all/);
-  assert.doesNotMatch(basicHelp, /Recovery|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
+  assert.doesNotMatch(basicHelp, /Recovery|\/doctor \[workflow_path\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
   assert.doesNotMatch(basicHelp, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
   assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
@@ -86,6 +86,7 @@ test("slash command candidates keep the empty menu on the main path", () => {
   assert(names.includes("approve"));
   assert(names.includes("onboard"));
   assert(names.includes("continue"));
+  assert(!names.includes("doctor"));
   assert(!names.includes("resume"));
   assert(!names.includes("work"));
   assert(!names.includes("checkpoint"));
@@ -105,6 +106,7 @@ test("slash command candidates keep advanced commands behind explicit detail", (
   assert(!defaultNames.includes("symphony"));
   assert(!defaultNames.includes("debug"));
   assert(!defaultNames.includes("trace"));
+  assert.equal(commandCandidatesForInput("/doc", 4, { includeAdvanced: true }).some((command) => command.name === "doctor"), true);
   assert.equal(commandCandidatesForInput("/sw", 3, { includeAdvanced: true }).some((command) => command.name === "swarm"), true);
   assert.equal(commandCandidatesForInput("/res", 4, { includeAdvanced: true }).some((command) => command.name === "resume"), true);
   assert.equal(commandCandidatesForInput("/symphony s", 11).some((command) => command.name === "status"), true);
