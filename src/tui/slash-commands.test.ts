@@ -40,14 +40,15 @@ test("slash command help exposes Kernel, Symphony, and extension operator namesp
   assert.match(renderSlashHelp({ includeAdvanced: true }), /\/kernel \[workflow_path\]/);
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony \[workflow_path\]/);
   assert.match(renderSlashHelp({ namespace: "symphony" }), /\/symphony-daemon \[daemon_id\]/);
-  assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[session_id\]/);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/trace <saved_work>/);
+  assert.match(renderSlashHelp({ namespace: "debug" }), /\/approvals \[saved_work\]/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug <latest\|timeline\|trace\|blackboard\|audit\|usage\|cache\|events>/);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug blackboard - Query shared facts\./);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug latest - Review the latest issue and supporting detail\./);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug trace - Review saved event detail\./);
   assert.match(renderSlashHelp({ namespace: "debug" }), /\/debug timeline \[actor:<id>\|task:<id>\|correlation:<id>\|category:<kind>\] - Review detailed activity by actor, task, or category\./);
   assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /Query blackboard facts|shared board facts/);
-  assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /persisted envelopes|shared protocol debug timeline|detail target, failures, cache, and artifacts/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "debug" }), /session_id|persisted envelopes|shared protocol debug timeline|detail target, failures, cache, and artifacts/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/swarm/);
   assert.match(renderSlashHelp({ namespace: "swarm" }), /\/mailbox <actor_id>/);
   assert.match(renderSlashHelp({ namespace: "ext" }), /\/capabilities \[kind\|provider\|query\|all\]/);
