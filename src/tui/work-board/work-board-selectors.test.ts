@@ -41,6 +41,17 @@ test("selectWorkBoardSurface provides an empty thread before work starts", () =>
   assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /assign workers|view workers|automations/i);
 });
 
+test("selectWorkBoardSurface keeps automation state out of default activity", () => {
+  const view = selectWorkBoardSurface({
+    daemons: [{ daemon_id: "daily-health", status: "running", tick_count: 2, updated_at: "2026-05-29T00:00:00.000Z" } as never],
+    recentMessages: []
+  });
+
+  assert.equal(view.empty, true);
+  assert.deepEqual(view.summary.activity, []);
+  assert.doesNotMatch(view.subtitle, /automation|daemon/i);
+});
+
 test("selectWorkBoardSurface keeps default detail actions to one primary choice", () => {
   const board = fixtureBoard();
   board.tasks = [];

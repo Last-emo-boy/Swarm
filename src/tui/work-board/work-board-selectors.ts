@@ -27,7 +27,6 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
   const tasks = board?.tasks ?? [];
   const approvals = input.approvals ?? [];
   const memoryWorkers = input.memoryWorkers ?? [];
-  const daemons = input.daemons ?? [];
   const skills = input.skills ?? [];
   const blackboard = input.blackboard ?? [];
   const rows = [
@@ -54,8 +53,7 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
   const blockers = (board?.summary.blocked ?? 0) + (board?.summary.failed ?? 0);
   const activity = [
     ...((board?.next_actions ?? []).slice(0, 3).map((action) => `${action.source}:${shortId(action.id)} ${firstLine(action.action, 84)}`)),
-    ...memoryWorkers.filter((worker) => worker.status === "running").slice(0, 2).map((worker) => `${worker.display_name} is working on ${firstLine(worker.objective, 64)}`),
-    ...activeDaemons(daemons).slice(0, 2).map((daemon) => `Automation ${shortId(daemon.daemon_id)} ${daemon.status}`)
+    ...memoryWorkers.filter((worker) => worker.status === "running").slice(0, 2).map((worker) => `${worker.display_name} is working on ${firstLine(worker.objective, 64)}`)
   ].slice(0, 5);
   const enabledSkillCount = enabledSkills(skills).length;
   return {
@@ -309,10 +307,6 @@ function toneForStatus(status: string): WorkBoardItemTone {
 
 function isActiveStatus(status: string): boolean {
   return columnForStatus(status) === "running" || columnForStatus(status) === "review";
-}
-
-function activeDaemons(daemons: SymphonyDaemonRecord[]): SymphonyDaemonRecord[] {
-  return daemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping");
 }
 
 function enabledSkills(skills: SkillRecord[]): SkillRecord[] {
