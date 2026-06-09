@@ -48,6 +48,7 @@ test("workbench visual snapshot covers result approval inspector action log and 
     }
     assert.match(text, /Ask Swarm/);
     assert.doesNotMatch(text, /checkpoint before-tui-polish/);
+    assert.doesNotMatch(text, /Run: Executing|Helpers: 2|Files: 2|Approvals: 1/);
     assert.doesNotMatch(text, /Overview|Blackboard|Attempts|Active Tools|Model \/ Provider|TOPOLOGY|OWNERSHIP|Skills & Automations|Workers:|Automations/);
 
     assert.doesNotMatch(text, /Swarm >_/);

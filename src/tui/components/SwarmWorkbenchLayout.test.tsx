@@ -227,7 +227,7 @@ test("SwarmWorkbenchLayout keeps empty sidebar sections quiet", () => {
   assert.doesNotMatch(text, /Details/);
   assert.doesNotMatch(text, /Logs/);
   assert.doesNotMatch(text, /Chat \[1\]|Result \[2\]|Details \[3\]|Logs \[4\]/);
-  assert.doesNotMatch(text, /Navigation|Workspace -|Cases|\(none\)|View all cases|No checkpoint yet|Ready/);
+  assert.doesNotMatch(text, /Navigation|Workspace -|Cases|\(none\)|View all cases|No checkpoint yet|Ready|Run: Waiting|Waiting/);
 });
 
 test("SwarmWorkbenchLayout hides internal workspace meta but keeps product-facing notes", () => {

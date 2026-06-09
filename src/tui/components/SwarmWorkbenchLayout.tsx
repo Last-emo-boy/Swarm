@@ -509,12 +509,31 @@ function visibleCenterHeaderRows(subtitle: string | undefined, detail: string | 
 function visibleCenterHeaderSubtitle(value: string): string | undefined {
   const subtitle = value.trim();
   if (!subtitle) return undefined;
-  const segments = subtitle.split(/\s*·\s*/u);
-  const visibleSegments = segments
-    .filter((segment) => !isZeroCountHeaderSegment(segment))
-    .filter((segment) => !isRoutineHeaderCountSegment(segment))
-    .map(normalizeHeaderCountSegment);
+  const visibleSegments = centerHeaderSubtitleSegments(subtitle)
+    .map(normalizeHeaderSegment)
+    .filter((segment): segment is string => segment !== undefined);
   return visibleSegments.length ? visibleSegments.join(" · ") : undefined;
+}
+
+function centerHeaderSubtitleSegments(value: string): string[] {
+  return value.split(/\s*·\s*/u).flatMap((segment) => {
+    const parts = segment
+      .match(/\b(?:Run|Tasks|Workers|Helpers|Files|Approvals):\s*.*?(?=\s{2,}\b(?:Run|Tasks|Workers|Helpers|Files|Approvals):|$)/giu)
+      ?.map((part) => part.trim())
+      .filter(Boolean);
+    return parts?.length ? parts : [segment.trim()];
+  });
+}
+
+function normalizeHeaderSegment(value: string): string | undefined {
+  const segment = value.trim();
+  if (!segment || isZeroCountHeaderSegment(segment) || isRoutineHeaderCountSegment(segment)) return undefined;
+  const runStatus = /^run:\s*(.+)$/iu.exec(segment)?.[1]?.trim().toLowerCase();
+  if (runStatus) {
+    if (/^(executing|running|active|working)$/u.test(runStatus)) return "Working";
+    if (/^(waiting|ready|idle)$/u.test(runStatus)) return undefined;
+  }
+  return normalizeHeaderCountSegment(segment);
 }
 
 function isZeroCountHeaderSegment(value: string): boolean {
@@ -522,7 +541,8 @@ function isZeroCountHeaderSegment(value: string): boolean {
 }
 
 function isRoutineHeaderCountSegment(value: string): boolean {
-  return /^\d+\s+(workers?|helpers?)$/iu.test(value.trim());
+  return /^\d+\s+(workers?|helpers?)$/iu.test(value.trim())
+    || /^(?:workers?|helpers?|files?|approvals?):\s*[\d/]+\b/iu.test(value.trim());
 }
 
 function normalizeHeaderCountSegment(value: string): string {
