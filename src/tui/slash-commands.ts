@@ -285,9 +285,7 @@ function renderMainSlashHelp(): string {
     "  /plan [task] - Plan the next change.",
     "  /approve [id] - Approve pending work.",
     "  /continue [note] - Continue latest work.",
-    "  /onboard - Set up model access.",
-    "",
-    "More: /help all."
+    "  /onboard - Set up model access."
   ].join("\n");
 }
 

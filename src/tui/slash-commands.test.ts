@@ -72,14 +72,14 @@ test("default slash help stays on the main path unless advanced help is requeste
   assert.match(basicHelp, /\/continue \[note\]/);
   assert.match(basicHelp, /\/onboard/);
   assert.match(basicHelp, /\/review \[area\][\s\S]*\/plan \[task\][\s\S]*\/approve \[id\][\s\S]*\/continue \[note\][\s\S]*\/onboard/);
-  assert.match(basicHelp, /\/help all/);
+  assert.doesNotMatch(basicHelp, /More:|\/help all/);
   assert.doesNotMatch(basicHelp, /^Advanced$/m);
   assert.doesNotMatch(basicHelp, /^Work$|^Ask$|^Setup$/m);
   assert.doesNotMatch(basicHelp, /implementation plan|local coding session|result-first Codebase Deep Review|provider, API key, and model once|approval_id|objective|focus|message/);
   assert.doesNotMatch(basicHelp, /Recovery|\/why|\/help debug|\/help work|\/help ext|\/doctor \[workspace\]|\/work <board\|sessions\|attempts\|output\|files\|checks>|\/checkpoint <list\|create\|revert>|\/revert last/);
   assert.doesNotMatch(basicHelp, /Ctrl\+N|Ctrl\+P|pane switch/i);
   assert.doesNotMatch(basicHelp, /Kernel|Gateway|Symphony|MCP|LSP|full_swarm|route|planner|worker|aggregator/);
-  assert.match(renderSlashHelp({ namespace: "main" }), /\/help all/);
+  assert.doesNotMatch(renderSlashHelp({ namespace: "main" }), /More:|\/help all/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/work <board\|sessions\|attempts\|output\|files\|checks\|workers>/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/work board \[saved_work\]/);
   assert.match(renderSlashHelp({ namespace: "work" }), /\/session \[saved_work\|new\]/);
