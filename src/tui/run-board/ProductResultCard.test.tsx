@@ -418,7 +418,8 @@ test("ProductResultCard renders recovery next steps in the result report", () =>
   assert.doesNotMatch(text, /Try: file\.grep/);
   assert.doesNotMatch(text, /Prompt cache prefix changed\./);
   assert.match(text, /Keep stable system text and tool schemas unchanged\./);
-  assert.match(text, /Try: swarm doctor/);
+  assert.match(text, /Try: Run setup check/);
+  assert.doesNotMatch(text, /Try: swarm doctor/);
   assert.doesNotMatch(text, /\[tool\/warning\/retry\]|\[cache\/info\/retry\]|Hint:/);
 
   const compact = renderTuiToFrame(React.createElement(ProductResultCard, {

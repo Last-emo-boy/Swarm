@@ -259,7 +259,21 @@ function visibleRecoveryCommandHint(advice: RecoveryAdvice): string | undefined 
   }
   return normalizedRecoveryText(advice.nextAction).includes(normalizedRecoveryText(command))
     ? undefined
-    : command;
+    : productRecoveryCommandHint(command);
+}
+
+function productRecoveryCommandHint(command: string): string {
+  const normalized = normalizedRecoveryText(command);
+  if (normalized === "swarm doctor") {
+    return "Run setup check";
+  }
+  if (normalized.includes("--approval-mode wait")) {
+    return "Wait for approval";
+  }
+  if (/^file\.grep\b/u.test(normalized)) {
+    return "Search for exact text";
+  }
+  return command;
 }
 
 function normalizedRecoveryText(value: string): string {
