@@ -328,7 +328,7 @@ function previewAfterEvidence(previous: ResultPreview, evidence: RunBoardEvidenc
 export function emptyResultPreview(): ResultPreview {
   return {
     status: "empty",
-    summary: "Ask Swarm to review, plan, or explain this workspace.",
+    summary: "Ask Swarm to review or plan this workspace.",
     changedFiles: [],
     checks: [],
     artifacts: [],

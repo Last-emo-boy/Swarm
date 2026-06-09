@@ -49,7 +49,7 @@ export function ProductResultCard(props: {
               teamReasoningExpanded={Boolean(props.teamReasoningExpanded)}
               onTeamReasoningToggle={props.onTeamReasoningToggle}
             />
-          : <Text color={visualTokenColor("text.muted")}>{view.summary || "Ask Swarm to review, plan, or explain this workspace."}</Text>}
+          : <Text color={visualTokenColor("text.muted")}>{view.summary || "Ask Swarm to review or plan this workspace."}</Text>}
       </RunBoardPanel>
       {view.finished && props.teamReasoningExpanded ? <WorkerSummary view={view} density={props.density} /> : null}
       {view.finished && props.teamReasoningExpanded ? <AttentionHistory view={view} density={props.density} /> : null}
@@ -61,7 +61,7 @@ export function ProductResultCard(props: {
 function emptyPreview(): ResultPreview {
   return {
     status: "empty",
-    summary: "Ask Swarm to review, plan, or explain this workspace.",
+    summary: "Ask Swarm to review or plan this workspace.",
     changedFiles: [],
     checks: [],
     artifacts: [],

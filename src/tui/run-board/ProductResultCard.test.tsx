@@ -10,7 +10,8 @@ test("ProductResultCard keeps the empty state to one quiet line", () => {
   const frame = renderTuiToFrame(React.createElement(ProductResultCard, {}), { columns: 80, rows: 8 });
   const text = frameText(frame);
 
-  assert.match(text, /Ask Swarm to review, plan, or explain this workspace\./);
+  assert.match(text, /Ask Swarm to review or plan this workspace\./);
+  assert.doesNotMatch(text, /explain this workspace/i);
   assert.doesNotMatch(text, /No activity yet\./);
 });
 
