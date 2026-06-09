@@ -61,7 +61,7 @@ export function selectWorkBoardSurface(input: SelectWorkBoardSurfaceInput): Work
   const enabledSkillCount = enabledSkills(skills).length;
   return {
     title: "Board",
-    subtitle: `${activeTasks} active tasks · ${(board?.summary.workers ?? memoryWorkers.length)} helpers · ${approvals.length} approvals`,
+    subtitle: `${activeTasks} active tasks · ${approvals.length} approvals`,
     columns,
     selected,
     summary: {

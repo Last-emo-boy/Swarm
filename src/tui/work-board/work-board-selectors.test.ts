@@ -25,7 +25,7 @@ test("selectWorkBoardSurface groups WorkBoard data into product columns and task
   assert(view.selected?.comments.some((line) => /Make Swarm/.test(line)));
   assert.deepEqual(view.selected?.actions, ["Continue task", "Open result", "Review progress"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
-  assert.doesNotMatch(view.subtitle, /workers/i);
+  assert.doesNotMatch(view.subtitle, /workers|helpers/i);
   assert.doesNotMatch(view.selected?.actions.join("\n") ?? "", /teammate/i);
 });
 
