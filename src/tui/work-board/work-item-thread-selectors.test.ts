@@ -51,8 +51,8 @@ test("formatWorkItemThreadRows shows delivery evidence only for decision states"
     actions: ["Resolve"]
   }, 10);
 
-  assert.equal(rows[0], "Status: Needs attention");
-  assert(!rows.some((line) => /Status: blocked/u.test(line)));
+  assert.equal(rows[0], "Needs attention");
+  assert(!rows.some((line) => /Status:|Status: blocked/u.test(line)));
   assert(rows.some((line) => /Plan: Verify selected task thread/.test(line)));
   assert(rows.some((line) => /^Changed: src\/tui\/work-board\/WorkItemThread\.tsx$/u.test(line)));
   assert(rows.some((line) => /^Verified: npm test \[failed\]$/u.test(line)));

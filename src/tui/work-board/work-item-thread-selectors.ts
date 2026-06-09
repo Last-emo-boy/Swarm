@@ -24,7 +24,7 @@ export function formatWorkItemThreadRows(thread: WorkBoardThreadView, maxRows: n
 }
 
 function statusRows(status: string): string[] {
-  return shouldShowDecisionRows(status) ? [`Status: ${statusLabel(status)}`] : [];
+  return shouldShowDecisionRows(status) ? [statusLabel(status)] : [];
 }
 
 function shouldShowDecisionRows(status: string): boolean {
