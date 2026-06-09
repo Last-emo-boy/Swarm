@@ -147,6 +147,14 @@ const BASIC_SLASH_COMMAND_NAMES = new Set([
   "continue"
 ]);
 
+const EMPTY_MENU_SLASH_COMMAND_NAMES = new Set([
+  "review",
+  "plan",
+  "approve",
+  "onboard",
+  "continue"
+]);
+
 const SLASH_HELP_NAMESPACES: Record<string, { title: string; names: string[] }> = {
   main: {
     title: "Main commands",
@@ -309,7 +317,7 @@ export function commandCandidatesForInput(
   }
   const baseCommands = options.includeAdvanced
     ? slashCommands
-    : slashCommands.filter((command) => BASIC_SLASH_COMMAND_NAMES.has(command.name));
+    : slashCommands.filter((command) => (query ? BASIC_SLASH_COMMAND_NAMES : EMPTY_MENU_SLASH_COMMAND_NAMES).has(command.name));
   const commands = mergeSlashCommands(baseCommands, options.extraCommands ?? []);
   return commands
     .map((command) => ({ command, score: slashCommandScore(command, query) }))
