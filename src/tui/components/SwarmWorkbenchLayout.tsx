@@ -579,7 +579,7 @@ function RightRail({
       paddingX={1}
       overflow="hidden"
     >
-      {isVisibleWorkbenchStatus(statusCard) ? <InfoSection title="Status" card={statusCard} width={width} compact={compact} /> : null}
+      {isVisibleWorkbenchStatus(statusCard) ? <InfoSection card={statusCard} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchMode(mode) ? <InfoSection title="Mode" card={mode} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchAccess(permission) ? <InfoSection title="Access" card={permission} width={width} compact={compact} /> : null}
       {isVisibleWorkbenchSandbox(sandbox) ? <InfoSection title="Workspace" card={sandbox} width={width} compact={compact} /> : null}
@@ -628,7 +628,7 @@ function InfoSection({
   progress = false,
   compact = false
 }: {
-  title: string;
+  title?: string;
   card: SwarmWorkbenchInfoCard;
   width: number;
   progress?: boolean;
@@ -637,7 +637,7 @@ function InfoSection({
   const tag = card.badge ? fixedTag(card.badge) : "";
   const valueWidth = Math.max(8, width - STATUS_TAG_WIDTH - 8);
   return (
-    <SidebarSection title={title} width={width} marginTop={compact ? 0 : 1}>
+    <SidebarSection title={title} width={width} marginTop={title ? (compact ? 0 : 1) : 0}>
       <Text wrap="truncate">
         <Text color={resolveTuiColor(card.tone ?? "text.primary")} bold>{fitText(card.title, valueWidth)}</Text>
         {tag ? <Text color={resolveTuiColor(card.tone ?? "status.success")}>  {tag}</Text> : null}
@@ -765,14 +765,14 @@ function SidebarSection({
   children,
   marginTop = 1
 }: {
-  title: string;
+  title?: string;
   width: number;
   children: React.ReactNode;
   marginTop?: number;
 }): React.ReactElement {
   return (
     <Box width="100%" flexDirection="column" marginTop={marginTop} overflow="hidden">
-      <SectionHeader title={title} width={width} />
+      {title ? <SectionHeader title={title} width={width} /> : null}
       {children}
     </Box>
   );
