@@ -287,8 +287,7 @@ function renderMainSlashHelp(): string {
     "Setup",
     "  /onboard - Configure provider, API key, and model once.",
     "",
-    "Advanced",
-    "  /help all - Show every command."
+    "More: /help all."
   ].join("\n");
 }
 
