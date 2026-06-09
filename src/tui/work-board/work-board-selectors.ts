@@ -264,7 +264,7 @@ function emptyThread(input: Pick<SelectWorkBoardSurfaceInput, "recentMessages">)
     id: "new-task",
     title: "Start a task",
     status: "ready",
-    objective: "Ask Swarm to inspect, edit, test, or explain this workspace.",
+    objective: "Ask Swarm to review or plan this workspace.",
     source: "user",
     plan: [
       "Type an objective below.",

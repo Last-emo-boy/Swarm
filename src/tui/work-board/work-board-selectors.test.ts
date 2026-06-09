@@ -32,7 +32,8 @@ test("selectWorkBoardSurface provides an empty thread before work starts", () =>
 
   assert.equal(view.empty, true);
   assert.equal(view.selected?.id, "new-task");
-  assert.match(view.selected?.objective ?? "", /Ask Swarm/);
+  assert.equal(view.selected?.objective, "Ask Swarm to review or plan this workspace.");
+  assert.doesNotMatch(view.selected?.objective ?? "", /inspect|edit|test|explain/i);
   assert.deepEqual(view.selected?.actions, ["Review this workspace", "Plan a change"]);
   assert(!view.selected?.actions.some((action) => action.startsWith("/")));
   assert.doesNotMatch(view.selected?.plan.join("\n") ?? "", /assign workers|view workers|automations/i);
