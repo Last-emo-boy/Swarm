@@ -103,6 +103,7 @@ import {
 } from "./resume-report.js";
 import { buildReadRootPreflightReport } from "./permission-report.js";
 import { disposeGlobalLspManager } from "../lsp/manager.js";
+import { sanitizeKey, delay, isRecord, uniqueStrings, formatWorkspaceChangeForFreshness, parseJsonObject, firstLine, positiveLimit } from "./common-utilities.js";
 
 type McpResourceReadResult = {
   contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }>;
@@ -5334,14 +5335,6 @@ function blackboardEntryMatches(entry: BlackboardEntry, query: { type?: Blackboa
   return true;
 }
 
-function sanitizeKey(value: string): string {
-  return value.replace(/\\/g, "/").replace(/[^A-Za-z0-9._/-]+/g, "_").replace(/\//g, ".");
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function filterBlackboardSearch(entries: BlackboardEntry[], query: string | undefined): BlackboardEntry[] {
   const needle = query?.trim().toLowerCase();
   if (!needle) {
@@ -5428,22 +5421,6 @@ function formatReplayProtocolMailboxMessage(message: AgentMailboxMessage): strin
     message.intent,
     peer
   ].filter((part) => part !== "").join(" ");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function uniqueStrings(values: Array<string | undefined>): string[] {
-  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.trim().length > 0))].sort();
-}
-
-function formatWorkspaceChangeForFreshness(value: unknown): string {
-  const record = isRecord(value) ? value : {};
-  const operation = typeof record.operation === "string" ? record.operation : "change";
-  const path = typeof record.path === "string" ? record.path : "(unknown path)";
-  const afterHash = typeof record.afterHash === "string" ? record.afterHash.slice(0, 12) : undefined;
-  return afterHash ? `${operation} ${path}@${afterHash}` : `${operation} ${path}`;
 }
 
 function mcpMaterialPolicy(kind: "resource" | "prompt", artifact: { bytes: number; lines: number }): {
@@ -5584,33 +5561,6 @@ function isChildRuntimeEnvelope(envelope: SwarmEnvelope): boolean {
 
 function isChildProviderUsageMessage(value: unknown): value is { type: "provider_usage"; usage: ProviderUsageReport } {
   return isRecord(value) && value.type === "provider_usage" && isRecord(value.usage);
-}
-
-function parseJsonObject(text: string): Record<string, unknown> {
-  try {
-    return JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) {
-      return {};
-    }
-    try {
-      return JSON.parse(match[0]) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  }
-}
-
-function firstLine(value: string): string {
-  return value.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 240) ?? "";
-}
-
-function positiveLimit(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.max(1, Math.min(200, Math.floor(value)));
 }
 
 function compactWorkerRecord(worker: WorkerRecord): Record<string, unknown> {
