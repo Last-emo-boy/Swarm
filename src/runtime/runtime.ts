@@ -110,7 +110,14 @@ import { addUniqueResolvedPaths, renderActivatedSkillsForPrompt, chatPromptWithM
 import { normalizeAgentSpawnDecision, withWorkerIdentityFallback, stripEphemeralAgentDecision, stripEphemeralAgentPersona, normalizeWorkerIdentityFields, sanitizeWorkerIdentityText, sanitizeWorkerPersona } from "./worker-identity.js";
 import { hydrateToolResultForReport, toolOutputRefPath, outputRefPathFromRecord, truncateReportOutput, summarizeToolResultForReport, firstMeaningfulToolLine, isGenericReportHeading, reviewTextSuggestsFinding, verificationTextSuggestsGap, clipFirstLine } from "./tool-result-report.js";
 import { compactWorkerRecord, renderWorkerList, renderWorkerDetailForTool } from "./worker-display.js";
-import { blackboardEntryMatches, filterBlackboardSearch, normalizeLiveControlRequestId, isLiveControlDirectiveEntry, formatLiveControlDirective } from "./blackboard-live-control.js";
+import { blackboardEntryMatches, normalizeLiveControlRequestId, isLiveControlDirectiveEntry, formatLiveControlDirective } from "./blackboard-live-control.js";
+import {
+  writeBlackboardEvidence as writeBlackboardEvidenceImpl,
+  writeBlackboardViaEnvelope as writeBlackboardViaEnvelopeImpl,
+  readBlackboardViaEnvelope as readBlackboardViaEnvelopeImpl,
+  searchBlackboardViaEnvelope as searchBlackboardViaEnvelopeImpl,
+  listBlackboardViaEnvelope as listBlackboardViaEnvelopeImpl
+} from "./blackboard-envelope-operator.js";
 
 type McpResourceReadResult = {
   contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }>;
@@ -4258,136 +4265,23 @@ export class SwarmRuntime {
       task_id?: string;
     }
   ): BlackboardEntry {
-    const row = this.sessionStore.get(sessionId);
-    const entry = this.blackboardStore.write({
-      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
-      session_id: sessionId,
-      task_id: input.task_id,
-      key: input.key,
-      type: input.type,
-      value: input.value,
-      created_by: input.created_by,
-      tags: input.tags
-    });
-    this.events.emitEvent({ type: "blackboard", entry });
-    return entry;
+    return writeBlackboardEvidenceImpl(this, sessionId, input);
   }
 
   private async writeBlackboardViaEnvelope(action: BlackboardWriteAction, context: BlackboardToolContext): Promise<BlackboardEntry> {
-    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
-    if (!sessionId) {
-      throw new Error("BlackboardWrite requires a runtime session");
-    }
-    const row = this.sessionStore.get(sessionId);
-    const envelope = createEnvelope({
-      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
-      session_id: sessionId,
-      task_id: action.taskId ?? context.taskId,
-      attempt: context.attempt,
-      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
-      to: { agent_id: "blackboard", role: "blackboard" },
-      type: "blackboard.write",
-      intent: "blackboard.write",
-      payload: {
-        key: action.key,
-        type: action.entryType,
-        value: action.value,
-        visibility: action.visibility,
-        tags: action.tags,
-        task_id: action.taskId ?? context.taskId
-      },
-      correlation_id: `bb_write_${randomUUID()}`,
-    });
-    const response = await this.router.request<{ entry?: BlackboardEntry }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
-    const entry = response.payload.entry;
-    if (!entry) {
-      throw new Error("BlackboardWrite did not return an entry");
-    }
-    return entry;
+    return writeBlackboardViaEnvelopeImpl(this, action, context);
   }
 
   private async readBlackboardViaEnvelope(action: BlackboardReadAction, context: BlackboardToolContext): Promise<BlackboardEntry[]> {
-    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
-    if (!sessionId) {
-      throw new Error("BlackboardRead requires a runtime session");
-    }
-    const row = this.sessionStore.get(sessionId);
-    const envelope = createEnvelope({
-      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
-      session_id: sessionId,
-      task_id: context.taskId,
-      attempt: context.attempt,
-      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
-      to: { agent_id: "blackboard", role: "blackboard" },
-      type: "blackboard.read",
-      intent: "blackboard.read",
-      payload: {
-        entry_id: action.entryId,
-        key: action.key,
-        limit: action.limit
-      },
-      correlation_id: `bb_read_${randomUUID()}`
-    });
-    const response = await this.router.request<{ entries?: BlackboardEntry[] }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
-    return response.payload.entries ?? [];
+    return readBlackboardViaEnvelopeImpl(this, action, context);
   }
 
   private async searchBlackboardViaEnvelope(action: BlackboardSearchAction, context: BlackboardToolContext): Promise<BlackboardEntry[]> {
-    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
-    if (!sessionId) {
-      throw new Error("BlackboardSearch requires a runtime session");
-    }
-    const row = this.sessionStore.get(sessionId);
-    const envelope = createEnvelope({
-      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
-      session_id: sessionId,
-      task_id: context.taskId,
-      attempt: context.attempt,
-      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
-      to: { agent_id: "blackboard", role: "blackboard" },
-      type: "blackboard.read",
-      intent: "blackboard.search",
-      payload: {
-        type: action.entryType,
-        tag: action.tag,
-        key_prefix: action.keyPrefix,
-        task_id: action.taskId,
-        agent_id: action.agentId,
-        limit: action.limit
-      },
-      correlation_id: `bb_search_${randomUUID()}`
-    });
-    const response = await this.router.request<{ entries?: BlackboardEntry[] }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
-    return filterBlackboardSearch(response.payload.entries ?? [], action.query);
+    return searchBlackboardViaEnvelopeImpl(this, action, context);
   }
 
   private async listBlackboardViaEnvelope(action: BlackboardListAction, context: BlackboardToolContext): Promise<BlackboardEntry[]> {
-    const sessionId = action.sessionId ?? context.blackboardSessionId ?? context.sessionId;
-    if (!sessionId) {
-      throw new Error("BlackboardList requires a runtime session");
-    }
-    const row = this.sessionStore.get(sessionId);
-    const envelope = createEnvelope({
-      swarm_id: row?.swarm_id ?? `swarm_${sessionId}`,
-      session_id: sessionId,
-      task_id: context.taskId,
-      attempt: context.attempt,
-      from: context.agent ?? { agent_id: "runtime", role: "runtime" },
-      to: { agent_id: "blackboard", role: "blackboard" },
-      type: "blackboard.read",
-      intent: "blackboard.list",
-      payload: {
-        type: action.entryType,
-        tag: action.tag,
-        key_prefix: action.keyPrefix,
-        task_id: action.taskId,
-        agent_id: action.agentId,
-        limit: action.limit
-      },
-      correlation_id: `bb_list_${randomUUID()}`
-    });
-    const response = await this.router.request<{ entries?: BlackboardEntry[] }>(envelope, { expect: ["ack"], timeout_ms: 10_000 });
-    return response.payload.entries ?? [];
+    return listBlackboardViaEnvelopeImpl(this, action, context);
   }
 
   private async decideAgentSpawn(request: AgentInvocationRequest): Promise<AgentSpawnDecision> {
