@@ -234,6 +234,14 @@ export function resolveTuiThemeProfile(input: string | undefined = process.env.S
   return "swarm-dark";
 }
 
+// Phase-1 redesign flag: when on, the active-run view renders the new
+// conversation-result-first activity line instead of the dense Swarm Board.
+// Off (default) keeps the current board byte-identical.
+export function resolveNewActiveLayout(input: string | undefined = process.env.SWARM_TUI_NEW_ACTIVE_LAYOUT): boolean {
+  const normalized = input?.toLowerCase();
+  return normalized === "1" || normalized === "on" || normalized === "true";
+}
+
 export function withTuiThemeProfile<T>(profile: TuiThemeProfileName | string, run: () => T): T {
   const previous = process.env.SWARM_TUI_THEME;
   process.env.SWARM_TUI_THEME = profile;

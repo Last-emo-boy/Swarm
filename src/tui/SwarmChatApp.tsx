@@ -197,6 +197,11 @@ import { selectDebugRefsForRow, selectRunBoardSurface } from "./run-board/run-bo
 import { selectProductResultCardView } from "./run-board/product-result-card-selectors.js";
 import { runBoardAttentionActionForKey } from "./run-board/attention-key-routing.js";
 import { RunBoardSurface } from "./run-board/RunBoardSurface.js";
+import { ActivityLine } from "./run-board/ActivityLine.js";
+import { ProgressIndicator } from "./run-board/ProgressIndicator.js";
+import { CompactStatusLine } from "./run-board/CompactStatusLine.js";
+import { ActivityRail } from "./run-board/ActivityRail.js";
+import { resolveNewActiveLayout } from "./theme.js";
 import { ProductResultCard } from "./run-board/ProductResultCard.js";
 import { formatElapsed } from "./run-board/run-board-row-format.js";
 import type { AttentionAction, AttentionItemView, RunBoardPhase, RunBoardResultAction, RunBoardState, WorkerBoardRow } from "./run-board/run-board-types.js";
@@ -367,6 +372,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [runSandboxMode, setRunSandboxMode] = useState<RunSandboxMode>("workspace-write");
   const [tuiDensity, setTuiDensity] = useState<TuiDensityPreference>("auto");
   const [mainPane, setMainPane] = useState<MainPaneId>("chat");
+  // Phase-1 conversation-result-first layout: optional read-only worker rail (Ctrl+R).
+  const [showActivityRail, setShowActivityRail] = useState(false);
   const [conversationViewport, setConversationViewport] = useState<ConversationViewportState>(() => resetConversationViewport());
   const [actionLogScrollOffset, setActionLogScrollOffset] = useState(0);
   const [selectedActionIndex, setSelectedActionIndex] = useState(0);
@@ -787,6 +794,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
 
     if (handleRunBoardAttentionKey(character, key)) {
+      return;
+    }
+
+    if (key.ctrl && (character === "r" || character === "R") && busy && resolveNewActiveLayout()) {
+      setShowActivityRail((prev) => !prev);
       return;
     }
 
@@ -3436,14 +3448,23 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const overviewSurface = shouldRenderRunBoard
     ? (
       <Box flexDirection="column" width="100%">
-        <RunBoardSurface
-          view={runBoardView}
-          workerLimit={screenDensity === "compact" ? 4 : 6}
-          attentionLimit={screenDensity === "compact" ? 1 : 2}
-          onWorkerClick={openRunBoardWorkerDetail}
-          onAttentionAction={handleRunBoardAttentionAction}
-          onResultAction={handleRunBoardResultAction}
-        />
+        {resolveNewActiveLayout() ? (
+          <Box flexDirection="column" width="100%">
+            <ActivityLine view={runBoardView} compact={screenDensity === "compact"} />
+            {screenDensity === "compact" ? null : <ProgressIndicator view={runBoardView} />}
+            <CompactStatusLine view={runBoardView} />
+            <ActivityRail view={runBoardView} visible={showActivityRail} columns={terminalColumns} />
+          </Box>
+        ) : (
+          <RunBoardSurface
+            view={runBoardView}
+            workerLimit={screenDensity === "compact" ? 4 : 6}
+            attentionLimit={screenDensity === "compact" ? 1 : 2}
+            onWorkerClick={openRunBoardWorkerDetail}
+            onAttentionAction={handleRunBoardAttentionAction}
+            onResultAction={handleRunBoardResultAction}
+          />
+        )}
         <ActiveWorkSummary
           taskStates={taskStates}
           taskCompleted={taskCompleted}
