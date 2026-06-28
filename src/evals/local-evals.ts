@@ -12744,9 +12744,9 @@ function checkBlackboardToolSurfaceBehavior(root: string): EvalCaseResult {
   const noRawEnvelopeTool = !fileContains(root, "src/extensions/builtin-tools.ts", "EnvelopeWrite")
     && !fileContains(root, "src/extensions/builtin-tools.ts", "sendEnvelope")
     && !fileContains(root, "src/runtime/coding-agent-loop.ts", "EnvelopeWrite");
-  const childAllowsRuntimeTraffic = fileContains(root, "src/runtime/runtime.ts", "envelope.type === \"task.progress\"")
-    && fileContains(root, "src/runtime/runtime.ts", "envelope.type === \"blackboard.write\"")
-    && fileContains(root, "src/runtime/runtime.ts", "envelope.type === \"blackboard.read\"");
+  const childAllowsRuntimeTraffic = fileContains(root, "src/runtime/child-transport.ts", "envelope.type === \"task.progress\"")
+    && fileContains(root, "src/runtime/child-transport.ts", "envelope.type === \"blackboard.write\"")
+    && fileContains(root, "src/runtime/child-transport.ts", "envelope.type === \"blackboard.read\"");
   const ok = write.type === "blackboard.write"
     && write.entryType === "evidence"
     && search.type === "blackboard.search"
