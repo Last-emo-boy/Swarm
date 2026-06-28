@@ -109,6 +109,8 @@ import { createLocalPolicy, riskClassForActionName, mcpMaterialPolicy } from "./
 import { addUniqueResolvedPaths, renderActivatedSkillsForPrompt, chatPromptWithMemory, evaluateDelegationRoi, buildAgentTaskPacket, renderAgentRuntimeInstructions, renderAgentTaskPrompt, promptVisibleAgentTaskPacket, snapshotAgentPermissionContext, settingsForAgentTask } from "./agent-task-construction.js";
 import { normalizeAgentSpawnDecision, withWorkerIdentityFallback, stripEphemeralAgentDecision, stripEphemeralAgentPersona, normalizeWorkerIdentityFields, sanitizeWorkerIdentityText, sanitizeWorkerPersona } from "./worker-identity.js";
 import { hydrateToolResultForReport, toolOutputRefPath, outputRefPathFromRecord, truncateReportOutput, summarizeToolResultForReport, firstMeaningfulToolLine, isGenericReportHeading, reviewTextSuggestsFinding, verificationTextSuggestsGap, clipFirstLine } from "./tool-result-report.js";
+import { compactWorkerRecord, renderWorkerList, renderWorkerDetailForTool } from "./worker-display.js";
+import { blackboardEntryMatches, filterBlackboardSearch, normalizeLiveControlRequestId, isLiveControlDirectiveEntry, formatLiveControlDirective } from "./blackboard-live-control.js";
 
 type McpResourceReadResult = {
   contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }>;
@@ -4808,60 +4810,6 @@ function reviewFailureLooksOperational(review: ReviewResult, rawText = ""): bool
   return toolFailure && !substantiveFinding;
 }
 
-function blackboardEntryMatches(entry: BlackboardEntry, query: { type?: BlackboardEntry["type"]; tag?: string; keyPrefix?: string; taskId?: string; agentId?: string }): boolean {
-  if (query.type && entry.type !== query.type) return false;
-  if (query.taskId && entry.task_id !== query.taskId) return false;
-  if (query.keyPrefix && !entry.key.startsWith(query.keyPrefix)) return false;
-  if (query.tag && !(entry.tags ?? []).includes(query.tag)) return false;
-  if (query.agentId && entry.created_by.agent_id !== query.agentId) return false;
-  return true;
-}
-
-function filterBlackboardSearch(entries: BlackboardEntry[], query: string | undefined): BlackboardEntry[] {
-  const needle = query?.trim().toLowerCase();
-  if (!needle) {
-    return entries;
-  }
-  return entries.filter((entry) => {
-    const haystack = [
-      entry.key,
-      entry.type,
-      entry.tags?.join(" "),
-      JSON.stringify(entry.value)
-    ].filter(Boolean).join("\n").toLowerCase();
-    return haystack.includes(needle);
-  });
-}
-
-function normalizeLiveControlRequestId(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized.slice(0, 200) : undefined;
-}
-
-function isLiveControlDirectiveEntry(entry: BlackboardEntry): boolean {
-  return entry.key.startsWith("user.live_message.") || (entry.tags ?? []).includes("live-message");
-}
-
-function formatLiveControlDirective(entry: BlackboardEntry): string {
-  const value = isRecord(entry.value) ? entry.value : {};
-  const decision = isRecord(value.decision) ? value.decision : {};
-  const messageId = entry.key.startsWith("user.live_message.")
-    ? entry.key.slice("user.live_message.".length)
-    : entry.entry_id;
-  const createdAt = typeof value.created_at === "string" ? value.created_at : entry.created_at;
-  const action = typeof decision.action === "string" ? decision.action : "live_message";
-  const reason = typeof decision.reason === "string" ? firstLine(decision.reason) : "";
-  const instruction = typeof decision.instruction === "string" ? firstLine(decision.instruction) : "";
-  const content = typeof value.content === "string" ? firstLine(value.content) : "";
-  return [
-    `${createdAt} message_id=${messageId}`,
-    `action=${action}`,
-    reason ? `reason=${reason}` : undefined,
-    instruction ? `instruction=${instruction}` : undefined,
-    content ? `content=${content}` : undefined
-  ].filter(Boolean).join(" ");
-}
-
 function actorBelongsToReplaySession(store: AgentActorStore, actor: AgentActorRecord, sessionId: string): boolean {
   if (["main", "router", "blackboard", "symphony", "gateway"].includes(actor.kind)) {
     return true;
@@ -5001,64 +4949,5 @@ function isChildRuntimeEnvelope(envelope: SwarmEnvelope): boolean {
 
 function isChildProviderUsageMessage(value: unknown): value is { type: "provider_usage"; usage: ProviderUsageReport } {
   return isRecord(value) && value.type === "provider_usage" && isRecord(value.usage);
-}
-
-function compactWorkerRecord(worker: WorkerRecord): Record<string, unknown> {
-  return {
-    worker_id: worker.worker_id,
-    display_name: worker.display_name,
-    role_title: worker.role_title,
-    parent_session_id: worker.parent_session_id,
-    worker_session_id: worker.worker_session_id,
-    agent_spec_id: worker.agent_spec_id,
-    invocation_mode: worker.invocation_mode,
-    capability: worker.capability,
-    objective: worker.objective,
-    status: worker.status,
-    file_scope: worker.file_scope,
-    handoff_id: worker.handoff_id,
-    blocked_reason: worker.blocked_reason,
-    last_result: worker.last_result ? firstLine(worker.last_result) : undefined,
-    outcome: worker.outcome
-      ? {
-          changed_files: worker.outcome.changed_files,
-          tests_run: worker.outcome.tests_run,
-          intermediate_artifacts: worker.outcome.intermediate_artifacts,
-          final_summary: worker.outcome.final_summary
-        }
-      : undefined,
-    created_at: worker.created_at,
-    updated_at: worker.updated_at
-  };
-}
-
-function renderWorkerList(workers: WorkerRecord[]): string {
-  if (workers.length === 0) {
-    return "No workers found.";
-  }
-  return workers.map((worker) => {
-    const label = workerDisplayLabel(worker);
-    const result = worker.last_result ? ` - ${firstLine(worker.last_result)}` : "";
-    const scope = worker.file_scope.length ? ` scope=${worker.file_scope.slice(0, 4).join(",")}` : "";
-    return `${worker.worker_id} [${worker.status}] ${label}${scope}${result}`;
-  }).join("\n");
-}
-
-function renderWorkerDetailForTool(worker: WorkerRecord): string {
-  return [
-    `${worker.worker_id} [${worker.status}] ${workerDisplayLabel(worker)}`,
-    worker.agent_spec_id ? `Agent spec: ${worker.agent_spec_id}` : undefined,
-    worker.invocation_mode ? `Invocation mode: ${worker.invocation_mode}` : undefined,
-    `Capability: ${worker.capability}`,
-    `Parent session: ${worker.parent_session_id}`,
-    worker.worker_session_id ? `Worker session: ${worker.worker_session_id}` : undefined,
-    worker.handoff_id ? `Handoff: ${worker.handoff_id}` : undefined,
-    worker.file_scope.length ? `File scope: ${worker.file_scope.join(", ")}` : undefined,
-    worker.blocked_reason ? `Blocked: ${worker.blocked_reason}` : undefined,
-    worker.last_result ? `Last result: ${firstLine(worker.last_result)}` : undefined,
-    worker.outcome?.final_summary ? `Outcome: ${worker.outcome.final_summary}` : undefined,
-    `Objective: ${worker.objective}`,
-    `Updated: ${worker.updated_at}`
-  ].filter(Boolean).join("\n");
 }
 
