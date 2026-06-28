@@ -47,8 +47,7 @@ import { builtinAgents } from "./builtin-agents.js";
 import { RuntimeEvents, type SessionOutcome } from "./events.js";
 import { AgentRegistry } from "./registry.js";
 import { EnvelopeRouter } from "./router.js";
-import { AgentActorRuntime, emitLegacyDirectInvokeAdapterTelemetry } from "./agent-actor-runtime.js";
-import { MailboxDeliveryPump } from "./mailbox-delivery-pump.js";
+import { emitLegacyDirectInvokeAdapterTelemetry } from "./legacy-direct-invoke-telemetry.js";
 import { policyFromActor } from "./agent-autonomy-policy.js";
 import { auditLegacyDirectPaths } from "./legacy-direct-path-audit.js";
 import { PlanGenerator } from "./plan-generator.js";
@@ -185,8 +184,6 @@ export class SwarmRuntime {
   readonly envelopeDeliveryStore: EnvelopeDeliveryStore;
   readonly agentActorStore: AgentActorStore;
   readonly agentMemoryStore: AgentMemoryStore;
-  readonly agentActorRuntime: AgentActorRuntime;
-  readonly mailboxDeliveryPump: MailboxDeliveryPump;
   readonly workerStateStore: WorkerStateStore;
   readonly handoffStore: HandoffStore;
   readonly blackboardStore: BlackboardStore;
@@ -265,8 +262,6 @@ export class SwarmRuntime {
     this.registry = new AgentRegistry(this.events, agentActorStore);
     this.registerCoreActors(agentActorStore, this.registry);
     this.router = new EnvelopeRouter(this.registry, traceStore, this.events, blackboardStore, artifactStore, taskStateStore, envelopeDeliveryStore, agentActorStore, this.handoffStore);
-    this.agentActorRuntime = new AgentActorRuntime(agentActorStore, this.registry, this.events);
-    this.mailboxDeliveryPump = new MailboxDeliveryPump(envelopeDeliveryStore, traceStore, agentActorStore, this.events, (envelope) => this.router.receive(envelope));
     this.router.on("incoming", (envelope: SwarmEnvelope) => {
       if (envelope.from.agent_id === "router") {
         this.forwardToAddressedAgent(envelope);

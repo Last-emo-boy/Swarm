@@ -22,7 +22,7 @@ test("WorkSession facts project into WorkSnapshot and session view contracts", (
 
   try {
     const seeded = seedWorkSession(runtime, fixture);
-    runtime.agentActorRuntime.register({
+    runtime.agentActorStore.registerSystemActor({
       actor_id: "worker:policy-lifecycle",
       kind: "worker",
       name: "Policy Lifecycle Worker",
@@ -43,7 +43,7 @@ test("WorkSession facts project into WorkSnapshot and session view contracts", (
       },
       now: AT
     });
-    runtime.agentActorRuntime.heartbeat("worker:policy-lifecycle", {
+    runtime.agentActorStore.heartbeat("worker:policy-lifecycle", {
       current_session_id: seeded.sessionId,
       current_task_id: "task-write-test",
       now: AT
@@ -59,7 +59,7 @@ test("WorkSession facts project into WorkSnapshot and session view contracts", (
       source_envelope_id: "env-session-view-agent-memory",
       created_at: "2026-05-25T00:00:01.000Z"
     });
-    runtime.agentActorRuntime.register({
+    runtime.agentActorStore.registerSystemActor({
       actor_id: "worker:capability-unavailable-lifecycle",
       kind: "worker",
       name: "Capability Unavailable Worker",
@@ -322,7 +322,7 @@ test("session view projects squad topology from protocol replay", async () => {
 
   try {
     const seeded = seedWorkSession(runtime, fixture);
-    runtime.agentActorRuntime.register({
+    runtime.agentActorStore.registerSystemActor({
       actor_id: "worker:squad-session-lead",
       kind: "worker",
       name: "Squad Session Lead",
@@ -330,7 +330,7 @@ test("session view projects squad topology from protocol replay", async () => {
       capabilities: ["team.lead"],
       now: AT
     });
-    runtime.agentActorRuntime.register({
+    runtime.agentActorStore.registerSystemActor({
       actor_id: "worker:squad-session-coder",
       kind: "worker",
       name: "Squad Session Coder",
@@ -338,7 +338,7 @@ test("session view projects squad topology from protocol replay", async () => {
       capabilities: ["code.implement"],
       now: AT
     });
-    runtime.agentActorRuntime.register({
+    runtime.agentActorStore.registerSystemActor({
       actor_id: "worker:squad-session-reviewer",
       kind: "worker",
       name: "Squad Session Reviewer",
@@ -346,7 +346,7 @@ test("session view projects squad topology from protocol replay", async () => {
       capabilities: ["code.review"],
       now: AT
     });
-    runtime.agentActorRuntime.register({
+    runtime.agentActorStore.registerSystemActor({
       actor_id: "worker:squad-session-aggregator",
       kind: "worker",
       name: "Squad Session Aggregator",
