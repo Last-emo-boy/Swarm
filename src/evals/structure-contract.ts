@@ -273,7 +273,7 @@ export const STRUCTURE_CONTRACT: StructureCheck[] = [
   sc("src/storage/worker-state-store.ts", "role_title", "worker records persist a generated role title"),
   sc("src/runtime/agent-specs.ts", "persona_brief?: string", "agent spawn decisions support an ephemeral persona brief"),
   sc("src/runtime/runtime.ts", "display_name, role_title, persona_brief", "agent spawn prompt asks the LLM for generated worker identity fields"),
-  sc("src/runtime/runtime.ts", "stripEphemeralAgentPersona", "runtime strips ephemeral persona from durable worker records"),
+  sc("src/runtime/worker-identity.ts", "stripEphemeralAgentPersona", "runtime strips ephemeral persona from durable worker records"),
   sc("src/runtime/coding-agent-loop.ts", "sessionObjective", "worker loops can persist a durable session objective separate from the prompt"),
   sf("src/tui/ChatInputArea.tsx", "TUI chat input component is isolated"),
   sf("src/tui/chat-input-controller.ts", "TUI chat input controller is testable outside Ink"),
