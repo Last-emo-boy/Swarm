@@ -51,7 +51,6 @@ import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js
 import type { BlackboardEntry, GeneratedPlan, RunAttempt, SwarmSession, WorkItem, WorkspaceLease } from "../protocol/types.js";
 import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
-import { buildOfflineParityReleaseGate, runCacheLabReport, runLocalEvals, runTuiReplayReport } from "../evals/local-evals.js";
 import { buildDoctorReport } from "../doctor/report.js";
 import { restoreSessionFromRow } from "../sessions/session-row.js";
 import { getSymphonyStatus, type SymphonyStatus } from "../symphony/status.js";
@@ -2808,6 +2807,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
 
     if (command === "evals") {
+      // Lazy-loaded: the eval harness is large and only needed when `/evals` runs,
+      // so it is kept out of the default TUI startup import graph.
+      const { buildOfflineParityReleaseGate, runCacheLabReport, runLocalEvals, runTuiReplayReport } =
+        await import("../evals/local-evals.js");
       if (args.includes("--cache-lab")) {
         const detail = runCacheLabReport().join("\n");
         runtime?.events.emitEvent({
