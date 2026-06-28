@@ -7112,7 +7112,8 @@ function checkEphemeralWorkerPersonaPersistenceBehavior(root: string): EvalCaseR
 }
 
 function checkAgentContinuationFreshnessBehavior(root: string): EvalCaseResult {
-  const runtime = readFileSync(resolve(root, "src/runtime/runtime.ts"), "utf8");
+  const runtime = readFileSync(resolve(root, "src/runtime/runtime.ts"), "utf8")
+    + readFileSync(resolve(root, "src/runtime/agent-task-construction.ts"), "utf8");
   const tui = readFileSync(resolve(root, "src/tui/SwarmChatApp.tsx"), "utf8");
   const runtimeChecks = [
     "renderWorkspaceFreshnessContract",

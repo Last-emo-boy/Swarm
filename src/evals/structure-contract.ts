@@ -221,7 +221,7 @@ export const STRUCTURE_CONTRACT: StructureCheck[] = [
   sc("src/runtime/runtime.ts", "systemPrompt: options.systemPrompt", "runtime passes run custom prompt into coding loop"),
   sc("src/runtime/runtime.ts", "activateRunSkills", "runtime activates per-run skills"),
   sc("src/runtime/runtime.ts", "skill_activated", "runtime emits skill activation events"),
-  sc("src/runtime/runtime.ts", "renderActivatedSkillsForPrompt", "chat mode can inject activated skill instructions"),
+  sc("src/runtime/agent-task-construction.ts", "renderActivatedSkillsForPrompt", "chat mode can inject activated skill instructions"),
   sc("src/runtime/swarm-controller.ts", "executeRoute: (objective: string, route: ExecutionRoute, options: RunOptions)", "controller preserves run options through routing"),
   sc("src/runtime/execution-router.ts", "maxToolCalls?: number", "RunOptions includes coding-loop tool budget"),
   sc("src/runtime/execution-router.ts", "RunSandboxMode", "RunOptions includes sandbox mode"),
