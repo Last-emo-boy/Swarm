@@ -2,11 +2,26 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import React from "react";
 import { renderTuiToFrame, frameText } from "../renderer/testing.js";
+import type { TuiFrame } from "../renderer/frame.js";
+import { resolveTuiColor } from "../theme.js";
 import { ActivityLine } from "./ActivityLine.js";
 import { ProgressIndicator } from "./ProgressIndicator.js";
 import { CompactStatusLine } from "./CompactStatusLine.js";
 import { ActivityRail } from "./ActivityRail.js";
 import type { RunBoardSurfaceView, WorkerBoardRow } from "./run-board-types.js";
+
+// Color of the first non-blank cell of `needle` in the rendered frame.
+function colorAtText(frame: TuiFrame, needle: string): string | undefined {
+  for (const row of frame.screen.cells) {
+    const line = row.map((cell) => cell.char).join("");
+    const index = line.indexOf(needle);
+    if (index >= 0) {
+      const offset = [...needle].findIndex((char) => char.trim().length > 0);
+      return row[index + Math.max(0, offset)]?.style.color;
+    }
+  }
+  return undefined;
+}
 
 function worker(partial: Partial<WorkerBoardRow> & Pick<WorkerBoardRow, "id" | "role" | "status">): WorkerBoardRow {
   return {
@@ -117,4 +132,32 @@ test("ActivityLine fits one line at 80 cols", () => {
   assert.equal(lines.length, 1, `expected one line, got ${lines.length}`);
   assert.match(text, /\[RUN\]/);
   assert.match(text, /steps/);
+});
+
+test("ActivityLine progress bar color follows phase status, not a fixed hue", () => {
+  const failed = renderTuiToFrame(React.createElement(ActivityLine, { view: { ...fixtureView(), phase: "failed" } }), { columns: 100, rows: 4 });
+  assert.equal(colorAtText(failed, "[#"), resolveTuiColor("status.danger"));
+  const done = renderTuiToFrame(React.createElement(ActivityLine, { view: { ...fixtureView(), phase: "done" } }), { columns: 100, rows: 4 });
+  assert.equal(colorAtText(done, "[#"), resolveTuiColor("status.success"));
+});
+
+test("ProgressIndicator checks bar turns danger when a check fails", () => {
+  const view = fixtureView();
+  view.resultPreview.checks = [
+    { command: "npm test", status: "failed" },
+    { command: "npm run check", status: "passed" }
+  ];
+  const frame = renderTuiToFrame(React.createElement(ProgressIndicator, { view }), { columns: 100, rows: 4 });
+  assert.equal(colorAtText(frame, "[#"), resolveTuiColor("status.danger"));
+});
+
+test("ProgressIndicator workers bar turns success when all workers are done", () => {
+  const view = fixtureView();
+  view.resultPreview.checks = [];
+  view.workers = [
+    worker({ id: "a", role: "code", status: "done" }),
+    worker({ id: "b", role: "test", status: "done" })
+  ];
+  const frame = renderTuiToFrame(React.createElement(ProgressIndicator, { view }), { columns: 100, rows: 4 });
+  assert.equal(colorAtText(frame, "[#"), resolveTuiColor("status.success"));
 });

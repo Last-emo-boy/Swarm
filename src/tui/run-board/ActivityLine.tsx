@@ -36,7 +36,7 @@ export function ActivityLine(props: { view: RunBoardSurfaceView; compact?: boole
   const spans: SemanticTextSpan[] = [
     { text: badge, color: statusToken(badgeStatus), bold: true },
     { text: ` ${action}  `, color: "text.primary" },
-    { text: bar, color: "status.running" },
+    { text: bar, color: statusToken(badgeStatus) },
     { text: ` ${done}/${total} steps`, color: "text.muted" }
   ];
   return <SemanticTextLine wrap="truncate" spans={spans} />;
