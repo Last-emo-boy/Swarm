@@ -8,6 +8,7 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 .workflow/
+.brainstorming/
 
 Swarm.md
 Symphony.md
