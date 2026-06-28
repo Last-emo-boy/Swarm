@@ -3452,7 +3452,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           <Box flexDirection="column" width="100%">
             <ActivityLine view={runBoardView} compact={screenDensity === "compact"} />
             {screenDensity === "compact" ? null : <ProgressIndicator view={runBoardView} />}
-            <CompactStatusLine view={runBoardView} />
+            <CompactStatusLine view={runBoardView} compact={screenDensity === "compact"} columns={terminalColumns} />
             <ActivityRail view={runBoardView} visible={showActivityRail} columns={terminalColumns} />
           </Box>
         ) : (

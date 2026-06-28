@@ -238,8 +238,11 @@ export function resolveTuiThemeProfile(input: string | undefined = process.env.S
 // conversation-result-first activity line instead of the dense Swarm Board.
 // Off (default) keeps the current board byte-identical.
 export function resolveNewActiveLayout(input: string | undefined = process.env.SWARM_TUI_NEW_ACTIVE_LAYOUT): boolean {
-  const normalized = input?.toLowerCase();
-  return normalized === "1" || normalized === "on" || normalized === "true";
+  // Phase 2: the conversation-result-first active layout is the default.
+  // Set SWARM_TUI_NEW_ACTIVE_LAYOUT=0 (or off/false) to fall back to the Swarm Board.
+  if (input === undefined) return true;
+  const normalized = input.toLowerCase();
+  return !(normalized === "0" || normalized === "off" || normalized === "false");
 }
 
 export function withTuiThemeProfile<T>(profile: TuiThemeProfileName | string, run: () => T): T {

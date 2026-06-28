@@ -1,13 +1,32 @@
 // Ultra-compact footer status line for the active layout. Aggregates the run
-// board into one row: "N workers • [OK] code • [WARN] test • F files • [ASK] A
-// approvals • MM:SS". NO_COLOR-safe via bracketed badges.
+// board into ONE line (truncated, never wrapped): at wide widths it spells roles
+// out ("4 workers • [OK] code • …"); at narrow widths it abbreviates
+// ("4w • [OK]C • [WARN]T • 2f • [ASK]1"). NO_COLOR-safe via bracketed badges.
 import React from "react";
-import { Box, Text } from "../ui.js";
-import { statusBadge, visualTokenColor } from "../theme.js";
+import { statusBadge } from "../theme.js";
+import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
 import type { RunBoardSurfaceView, WorkerBoardRole } from "./run-board-types.js";
 import { workerBadgeStatus, statusToken, formatElapsed } from "./activity-format.js";
 
 const ROLE_ORDER: WorkerBoardRole[] = ["main", "code", "test", "review", "research", "memory", "custom"];
+const ROLE_ABBREV: Record<WorkerBoardRole, string> = {
+  main: "M",
+  code: "C",
+  test: "T",
+  review: "R",
+  research: "Re",
+  memory: "Me",
+  custom: "?"
+};
+
+type StatusLayout = "full" | "narrow" | "tight";
+
+function resolveLayout(columns: number | undefined, compact: boolean | undefined): StatusLayout {
+  const cols = columns ?? 120;
+  if (compact || cols < 100) return "tight";
+  if (cols < 120) return "narrow";
+  return "full";
+}
 
 // Worst-status-wins per role so a stuck/failed worker is never hidden.
 function roleBadgeStatus(statuses: string[]): string {
@@ -19,47 +38,47 @@ function roleBadgeStatus(statuses: string[]): string {
   return "info";
 }
 
-export function CompactStatusLine(props: { view: RunBoardSurfaceView; elapsedMs?: number }): React.ReactElement {
+export function CompactStatusLine(props: {
+  view: RunBoardSurfaceView;
+  elapsedMs?: number;
+  compact?: boolean;
+  columns?: number;
+}): React.ReactElement {
   const { view } = props;
-  const muted = visualTokenColor("text.muted");
-  const cells: React.ReactElement[] = [];
-  let key = 0;
-  const sep = () => <Text key={`sep-${key++}`} color={muted}> • </Text>;
+  const layout = resolveLayout(props.columns, props.compact);
+  const abbrev = layout !== "full";
+  const spans: SemanticTextSpan[] = [];
+  const sep = () => spans.push({ text: " • ", color: "text.muted" });
 
-  cells.push(
-    <Text key={`w-${key++}`} color={visualTokenColor("text.primary")}>{view.workers.length} workers</Text>
-  );
+  spans.push({ text: abbrev ? `${view.workers.length}w` : `${view.workers.length} workers`, color: "text.primary" });
 
   for (const role of ROLE_ORDER) {
     const roleWorkers = view.workers.filter((w) => w.role === role);
     if (roleWorkers.length === 0) continue;
     const status = roleBadgeStatus(roleWorkers.map((w) => workerBadgeStatus(w.status)));
     if (status === "info") continue;
-    cells.push(sep());
-    cells.push(<Text key={`b-${key++}`} color={visualTokenColor(statusToken(status))} bold>{statusBadge(status)}</Text>);
-    cells.push(<Text key={`r-${key++}`} color={muted}> {role}</Text>);
+    sep();
+    spans.push({ text: statusBadge(status), color: statusToken(status), bold: true });
+    spans.push({ text: abbrev ? ROLE_ABBREV[role] : ` ${role}`, color: "text.muted" });
   }
 
   const fileCount = view.resultPreview.changedFiles.length;
   if (fileCount > 0) {
-    cells.push(sep());
-    cells.push(<Text key={`f-${key++}`} color={muted}>{fileCount} files</Text>);
+    sep();
+    spans.push({ text: abbrev ? `${fileCount}f` : `${fileCount} files`, color: "text.muted" });
   }
 
   const approvals = view.attention.filter((a) => a.kind === "approval").length;
   if (approvals > 0) {
-    cells.push(sep());
-    cells.push(<Text key={`a-${key++}`} color={visualTokenColor("status.pending")} bold>[ASK] {approvals} approvals</Text>);
+    sep();
+    spans.push({ text: abbrev ? `[ASK]${approvals}` : `[ASK] ${approvals} approvals`, color: "status.pending", bold: true });
   }
 
-  if (props.elapsedMs && props.elapsedMs > 0) {
-    cells.push(sep());
-    cells.push(<Text key={`t-${key++}`} color={muted}>{formatElapsed(props.elapsedMs)}</Text>);
+  // Elapsed time is dropped on the tightest terminals to keep one line.
+  if (props.elapsedMs && props.elapsedMs > 0 && layout !== "tight") {
+    sep();
+    spans.push({ text: formatElapsed(props.elapsedMs), color: "text.muted" });
   }
 
-  return (
-    <Box flexDirection="row" width="100%" paddingX={1}>
-      {cells}
-    </Box>
-  );
+  return <SemanticTextLine wrap="truncate" spans={spans} />;
 }

@@ -100,3 +100,21 @@ test("ActivityRail is hidden by default and lists workers when toggled", () => {
   assert.match(shown, /Main Swarm/);
   assert.match(shown, /Test Runner/);
 });
+
+test("CompactStatusLine fits one line at 80 cols with abbreviations", () => {
+  const text = frameText(renderTuiToFrame(React.createElement(CompactStatusLine, { view: fixtureView(), elapsedMs: 108_000, columns: 80 }), { columns: 80, rows: 3 }));
+  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(lines.length, 1, `expected one line, got ${lines.length}: ${JSON.stringify(lines)}`);
+  assert(lines[0].length <= 80, `expected <=80 cols, got ${lines[0].length}`);
+  assert.match(text, /4w/);
+  assert.match(text, /\[ASK\]1/);
+});
+
+test("ActivityLine fits one line at 80 cols", () => {
+  const longFocus = { ...fixtureView(), focus: "Running a very long verification step description that should be clipped" };
+  const text = frameText(renderTuiToFrame(React.createElement(ActivityLine, { view: longFocus, compact: true }), { columns: 80, rows: 2 }));
+  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(lines.length, 1, `expected one line, got ${lines.length}`);
+  assert.match(text, /\[RUN\]/);
+  assert.match(text, /steps/);
+});
