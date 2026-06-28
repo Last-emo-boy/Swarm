@@ -2,7 +2,6 @@ import React from "react";
 import { Box, Text, resolveTuiRendererMode } from "../ui.js";
 import type { ToolApprovalRequest } from "../../tools/types.js";
 import { approvalInputDecision, type ApprovalInputKey } from "../approval-input.js";
-import { shortcutHint } from "../shortcuts.js";
 import { approvalRiskToken, compactValue, resolveTuiColor, sectionLabel, toneColor, visualTokenColor, type TuiColorRef } from "../theme.js";
 import { StatusIcon } from "./StatusIcon.js";
 
@@ -47,8 +46,8 @@ export function ApprovalOverlay(props: {
       <ApprovalOverlayHeader tone={riskToken.tone} />
       <Text wrap="truncate">
         <StatusIcon status="pending" label="badge" withSpace />
-        <Text color={resolveTuiColor("status.pending")} bold>{sectionLabel("Decision")} </Text>
-        <Text color={visualTokenColor("text.muted")}>{shortcutHint(["approval.approve_once", "approval.allow_target", "approval.deny", "approval.cancel"])}</Text>
+        <Text color={resolveTuiColor("status.pending")} bold>{sectionLabel("Decision Menu")} </Text>
+        <Text color={visualTokenColor("text.muted")}>Y approve once · S allow same target · N deny · Esc cancel</Text>
       </Text>
       <ApprovalRiskRow
         badge={riskToken.badge}
@@ -59,11 +58,11 @@ export function ApprovalOverlay(props: {
       />
       <ApprovalDetail label="Summary" value={request.summary} tone={riskToken.tone === "danger" ? "status.danger" : undefined} />
       {attentionNote ? <ApprovalDetail label="Attention" value={attentionNote} tone="status.danger" strong /> : null}
-      <ApprovalDetail label="Review" value={reviewFocus} />
-      <ApprovalDetail label="Why" value={request.why_now} />
+      <ApprovalDetail label="Review focus:" value={reviewFocus} />
+      <ApprovalDetail label="Why now" value={request.why_now} />
       {request.permission_reason ? (
         <ApprovalDetail
-          label="Permission"
+          label="Permission:"
           value={`${request.permission_name ?? request.action} ${request.permission_decision ?? "ask"} | ${request.permission_reason}`}
         />
       ) : null}

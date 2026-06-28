@@ -16,13 +16,14 @@ test("ApprovalOverlay puts decision controls before high-risk detail", async () 
     request: approvalFixture()
   })));
 
-  const decisionIndex = plain.indexOf("DECISION Y approve once");
+  const decisionIndex = plain.indexOf("DECISION MENU");
   const riskIndex = plain.indexOf("[HIGH] R4/SHELL shell.exec · TARGET Remove-Item -Recurse build");
   const summaryIndex = plain.indexOf("SUMMARY Delete generated files under the workspace.");
   const impactIndex = plain.indexOf("IMPACT Deletes generated output.");
   const rollbackIndex = plain.indexOf("ROLLBACK Restore from checkpoint or rebuild artifacts.");
 
   assert(decisionIndex >= 0);
+  assert.match(plain, /Y approve once . S allow same target . N deny . Esc cancel/);
   assert(riskIndex > decisionIndex);
   assert(summaryIndex > riskIndex);
   assert(impactIndex > summaryIndex);
