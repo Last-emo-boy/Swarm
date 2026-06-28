@@ -231,7 +231,7 @@ export const STRUCTURE_CONTRACT: StructureCheck[] = [
   sc("src/runtime/sandbox-policy.ts", "Read-only sandbox denied tool action", "read-only sandbox blocks mutating tool actions"),
   sc("src/runtime/coding-agent-loop.ts", "assertToolActionAllowedBySandbox", "coding loop enforces sandbox through shared policy decisions"),
   snc("src/runtime/coding-agent-loop.ts", "function assertActionAllowedByWritePolicy", "coding loop does not own duplicated sandbox tool policy"),
-  sc("src/runtime/runtime.ts", "hasRunSandboxPolicy", "runtime routes read-only sandbox runs through coding loop enforcement"),
+  sc("src/runtime/run-options.ts", "hasRunSandboxPolicy", "run-options validators include the read-only sandbox policy check"),
   sc("src/runtime/coding-agent-loop.ts", "isParallelReadOnlyDelegateAction", "coding loop classifies explicit read-only parallel delegates as concurrent"),
   sc("src/runtime/coding-agent-loop.ts", "delegate_parallel", "coding loop can classify disjoint scoped-write delegates as a concurrent batch"),
   sc("src/runtime/coding-agent-loop.ts", "maxParallel: this.options.settings.runtime.maxParallelTasks", "coding loop caps concurrent tool batches by runtime parallel budget"),

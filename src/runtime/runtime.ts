@@ -104,6 +104,7 @@ import {
 import { buildReadRootPreflightReport } from "./permission-report.js";
 import { disposeGlobalLspManager } from "../lsp/manager.js";
 import { sanitizeKey, delay, isRecord, uniqueStrings, formatWorkspaceChangeForFreshness, parseJsonObject, firstLine, positiveLimit } from "./common-utilities.js";
+import { hasRunToolPolicy, hasRunWorkspaceReadPolicy, hasRunPromptCustomization, hasRunSkillActivation, hasRunSandboxPolicy, normalizeAttemptStatus, isAgentInvocationMode, slashCommandRunMode, slashCommandSandboxMode, positiveRunIntegerArg, toolStatusFromExecutionStatus, governanceAuditDecision } from "./run-options.js";
 
 type McpResourceReadResult = {
   contents: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }>;
@@ -4683,26 +4684,6 @@ function addUniqueResolvedPaths(existing: string[], additions: string[] | undefi
   return [...values].sort();
 }
 
-function hasRunToolPolicy(options: RunOptions): boolean {
-  return Boolean(options.allowedTools?.length || options.disallowedTools?.length);
-}
-
-function hasRunWorkspaceReadPolicy(options: RunOptions): boolean {
-  return Boolean(options.additionalReadDirectories?.length);
-}
-
-function hasRunPromptCustomization(options: RunOptions): boolean {
-  return Boolean(options.systemPrompt !== undefined || options.appendSystemPrompt !== undefined);
-}
-
-function hasRunSkillActivation(options: RunOptions): boolean {
-  return Boolean(options.skills?.length);
-}
-
-function hasRunSandboxPolicy(options: RunOptions): boolean {
-  return options.sandboxMode === "read-only";
-}
-
 function renderActivatedSkillsForPrompt(skills: ActivatedSkill[]): string {
   return [
     "Activated skills for this run:",
@@ -4995,14 +4976,6 @@ function sanitizeWorkerPersona(value: unknown): string | undefined {
     .slice(0, 280)
     .trim();
   return cleaned.length >= 12 ? cleaned : undefined;
-}
-
-function normalizeAttemptStatus(status: "started" | "completed" | "failed"): RunAttemptStatus {
-  return status === "started" ? "started" : status === "failed" ? "failed" : "completed";
-}
-
-function isAgentInvocationMode(value: string): value is AgentInvocationMode {
-  return value === "call_subagent" || value === "handoff" || value === "parallel";
 }
 
 export function postChangeExecutionStatus(input: {
@@ -5622,37 +5595,3 @@ function renderWorkerDetailForTool(worker: WorkerRecord): string {
   ].filter(Boolean).join("\n");
 }
 
-function slashCommandRunMode(args: Record<string, unknown>): RunOptions["mode"] {
-  const value = args.mode ?? args.runMode ?? args.run_mode;
-  return value === "chat" || value === "coding_loop" || value === "full_swarm" || value === "auto" ? value : "auto";
-}
-
-function slashCommandSandboxMode(args: Record<string, unknown>): RunOptions["sandboxMode"] {
-  const value = args.sandboxMode ?? args.sandbox_mode ?? args.sandbox;
-  return value === "read-only" || value === "workspace-write" ? value : undefined;
-}
-
-function positiveRunIntegerArg(value: unknown): number | undefined {
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
-}
-
-function toolStatusFromExecutionStatus(status: ExecutionResult["status"]): ToolResult["status"] {
-  if (status === "failed") {
-    return "failed";
-  }
-  if (status === "stopped") {
-    return "partial";
-  }
-  return "success";
-}
-
-function governanceAuditDecision(status: "requested" | "granted" | "denied" | "evidence"): "requested" | "approved" | "denied" | "executed" {
-  if (status === "granted") {
-    return "approved";
-  }
-  if (status === "evidence") {
-    return "executed";
-  }
-  return status;
-}
