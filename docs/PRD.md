@@ -44,10 +44,8 @@ Swarm is not a report generator by default. For coding and project work, the fin
 
 ## Current Implementation Status
 
-The current Agent OS implementation status is tracked in
-`.workflow/specs/work-kernel-docs-coverage-matrix.md`.
-The current release-readiness audit is
-`.workflow/scratch/20260512-plan-P7-productization-continuous-iteration/release-readiness-audit.md`.
+The current implementation status is gated by the offline release gate
+(`npm run release:gate`), which must pass without paid provider calls.
 
 The product surface is CLI/TUI first. Headless CLI, Gateway, Symphony, and ASP
 are supporting automation, background intake, and protocol surfaces. They should

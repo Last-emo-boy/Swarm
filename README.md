@@ -23,10 +23,10 @@ surfaces available only when they help.
 
 ## Current Product Status
 
-The release-readiness source of truth is
-`.workflow/specs/work-kernel-docs-coverage-matrix.md`, with the current product
-audit in
-`.workflow/scratch/20260512-plan-P7-productization-continuous-iteration/release-readiness-audit.md`.
+The release-readiness source of truth is the offline release gate
+(`npm run release:gate`), which must pass without paid provider calls. An
+implemented claim is only considered backed when it has both a source anchor and
+a focused test anchor.
 
 Current verified surface:
 

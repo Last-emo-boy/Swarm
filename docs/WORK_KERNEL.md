@@ -24,9 +24,7 @@ Current release-readiness is intentionally local and evidence-bounded:
   protocol fixtures, and external provider dogfood remain deferred or optional
   boundaries, not completed Work Kernel claims.
 
-The coverage source of truth is
-`.workflow/specs/work-kernel-docs-coverage-matrix.md`; the current product audit
-is `.workflow/scratch/20260512-plan-P7-productization-continuous-iteration/release-readiness-audit.md`.
+The coverage source of truth is the offline release gate (`npm run release:gate`).
 
 ## One Model, Multiple Entrypoints
 
@@ -613,12 +611,10 @@ driven and does not imply an IDE replacement surface.
 ## Traceability
 
 The current implementation, test coverage, partial areas, and deferred items are
-tracked in `.workflow/specs/work-kernel-docs-coverage-matrix.md`. Treat that
-matrix as the release-gate companion to this narrative: an implemented claim is
-only considered fully backed when it has both a source anchor and a focused test
-anchor. Rows marked `implemented-unverified`, `implemented+partial-test`,
-`partial`, or `deferred` should drive the next Maestro iteration before the docs
-claim stronger completion.
+gated by the offline release gate (`npm run release:gate`). An implemented claim
+is only considered fully backed when it has both a source anchor and a focused
+test anchor; partial or deferred areas should drive the next iteration before the
+docs claim stronger completion.
 
 The CAND-PROD-059 row is the claim gate for evidence-backed local Swarm v2
 collaboration. It anchors the local actor/mailbox/ownership/blackboard/source
