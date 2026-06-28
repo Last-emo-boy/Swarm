@@ -10,6 +10,7 @@ import {
 } from "../runtime/gateway-event-stream.js";
 import type { WorkProtocolRecord } from "../runtime/work-protocol.js";
 import type { WorkerRecord } from "../storage/worker-state-store.js";
+import { delay, gatewayErrorMessage, recordValue, resolveGatewayUrl, stringValue } from "../server/gateway-client-utils.js";
 
 const WORKER_WATCH_JSONL_VERSION = "swarm.workers.watch.v1";
 const WORKER_STATUS_POLL_MS = 500;
@@ -350,15 +351,6 @@ function isTerminalWorkerStatus(value: WorkerRecord["status"]): boolean {
   return value === "completed" || value === "failed" || value === "stopped";
 }
 
-function resolveGatewayUrl(value?: string): string {
-  const fallback = process.env.SWARM_GATEWAY_URL?.trim() || "http://127.0.0.1:38171";
-  const resolved = (value?.trim() || fallback).replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(resolved)) {
-    throw new Error(`Invalid gateway URL: ${resolved}`);
-  }
-  return resolved;
-}
-
 async function readGatewayWorkerRecord(
   gatewayUrl: string,
   workerId: string,
@@ -418,26 +410,3 @@ async function readGatewayBody(response: Response): Promise<unknown> {
   }
 }
 
-function gatewayErrorMessage(payload: unknown, status: number): string {
-  const record = recordValue(payload);
-  const nested = recordValue(record?.error);
-  return stringValue(nested?.message)
-    ?? stringValue(record?.message)
-    ?? `Swarm Gateway request failed with HTTP ${status}.`;
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim()
-    ? value.trim()
-    : undefined;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

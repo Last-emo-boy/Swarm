@@ -4,10 +4,10 @@ import {
   listGatewayRunRecords,
   listRunsViaGateway,
   readGatewayRunRecord,
-  resolveGatewayUrl,
   showRunViaGateway,
   type GatewayRunRecord
 } from "./gateway-report.js";
+import { resolveGatewayUrl } from "../server/gateway-client-utils.js";
 
 const GATEWAY_URL = "http://127.0.0.1:38171";
 

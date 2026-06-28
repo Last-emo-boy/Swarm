@@ -10,9 +10,9 @@ import {
 import {
   readGatewayRunRecord,
   resolveGatewayRunRecord,
-  resolveGatewayUrl,
   type GatewayRunRecord
 } from "./gateway-report.js";
+import { delay, resolveGatewayUrl } from "../server/gateway-client-utils.js";
 
 const RUN_WATCH_JSONL_VERSION = "swarm.runs.watch.v1";
 const RUN_STATUS_POLL_MS = 500;
@@ -330,6 +330,3 @@ function pollIntervalMs(value: number | undefined): number {
     : RUN_STATUS_POLL_MS;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

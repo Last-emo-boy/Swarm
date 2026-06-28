@@ -1,5 +1,6 @@
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
+import { delay } from "../server/gateway-client-utils.js";
 
 export type HeadlessApprovalMode = "fail" | "wait";
 
@@ -52,10 +53,6 @@ export function createHeadlessApprovalHandler(
     }
     throw new Error(`Timed out waiting for approval ${request.id}. Use \`${command}\` or \`${denyCommand}\` before retrying.`);
   };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function quoteCommandArg(value: string): string {

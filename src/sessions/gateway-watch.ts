@@ -8,6 +8,7 @@ import {
   parseGatewayWatchProtocol,
   type GatewayWatchProtocol
 } from "../runtime/gateway-event-stream.js";
+import { resolveGatewayUrl } from "../server/gateway-client-utils.js";
 
 const SESSION_WATCH_JSONL_VERSION = "swarm.sessions.watch.v1";
 
@@ -168,11 +169,3 @@ function emitWatchEnd(
   writeLine(`watch ended: status=${finalStatus ?? "open"} events=${events}${interrupted ? " interrupted=true" : ""}`);
 }
 
-function resolveGatewayUrl(value?: string): string {
-  const fallback = process.env.SWARM_GATEWAY_URL?.trim() || "http://127.0.0.1:38171";
-  const resolved = (value?.trim() || fallback).replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(resolved)) {
-    throw new Error(`Invalid gateway URL: ${resolved}`);
-  }
-  return resolved;
-}

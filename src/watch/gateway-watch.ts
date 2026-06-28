@@ -9,6 +9,7 @@ import {
   type GatewayWatchProtocol
 } from "../runtime/gateway-event-stream.js";
 import type { WorkProtocolRecord } from "../runtime/work-protocol.js";
+import { resolveGatewayUrl } from "../server/gateway-client-utils.js";
 
 const WATCH_JSONL_VERSION = "swarm.watch.v1";
 
@@ -174,11 +175,3 @@ function workRecordTaskId(record: WorkProtocolRecord | undefined): string | unde
     : undefined;
 }
 
-function resolveGatewayUrl(value?: string): string {
-  const fallback = process.env.SWARM_GATEWAY_URL?.trim() || "http://127.0.0.1:38171";
-  const resolved = (value?.trim() || fallback).replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(resolved)) {
-    throw new Error(`Invalid gateway URL: ${resolved}`);
-  }
-  return resolved;
-}
