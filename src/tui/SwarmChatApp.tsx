@@ -197,12 +197,8 @@ import { selectDebugRefsForRow, selectRunBoardSurface } from "./run-board/run-bo
 import { selectProductResultCardView } from "./run-board/product-result-card-selectors.js";
 import { runBoardAttentionActionForKey } from "./run-board/attention-key-routing.js";
 import { RunBoardSurface } from "./run-board/RunBoardSurface.js";
-import { ActivityLine } from "./run-board/ActivityLine.js";
-import { ProgressIndicator } from "./run-board/ProgressIndicator.js";
-import { CompactStatusLine } from "./run-board/CompactStatusLine.js";
+import { RunStatusLine } from "./run-board/RunStatusLine.js";
 import { ActivityRail } from "./run-board/ActivityRail.js";
-import { RailHint } from "./run-board/RailHint.js";
-import { InlineResultBlock } from "./run-board/InlineResultBlock.js";
 import { resolveNewActiveLayout } from "./theme.js";
 import { ProductResultCard } from "./run-board/ProductResultCard.js";
 import { formatElapsed } from "./run-board/run-board-row-format.js";
@@ -3439,7 +3435,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     hasRunBoard: shouldRenderRunBoard,
     density: tuiDensity
   });
-  const showCurrentAction = screenMode.showCurrentAction;
+  // The new active layout already shows focus/progress in the RunStatusLine, so
+  // suppress the duplicate CurrentActionRow ("now …") while it's on screen.
+  const showCurrentAction = screenMode.showCurrentAction && !(shouldRenderRunBoard && resolveNewActiveLayout());
+  const runBoardElapsedMs = runBoardState.startedAt ? Math.max(0, Date.now() - Date.parse(runBoardState.startedAt)) : 0;
   const needYou = approval
     ? `Approve ${approval.summary}`
     : pendingPlan
@@ -3465,14 +3464,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       <Box flexDirection="column" width="100%">
         {resolveNewActiveLayout() ? (
           <Box flexDirection="column" width="100%">
-            <ActivityLine view={runBoardView} compact={screenDensity === "compact"} />
-            {screenDensity === "compact" ? null : <ProgressIndicator view={runBoardView} />}
-            {screenDensity !== "compact" && (runBoardView.resultPreview.changedFiles.length > 0 || runBoardView.resultPreview.checks.length > 0)
-              ? <InlineResultBlock view={runBoardView} columns={terminalColumns} />
-              : null}
-            <CompactStatusLine view={runBoardView} compact={screenDensity === "compact"} columns={terminalColumns} />
+            <RunStatusLine
+              view={runBoardView}
+              columns={terminalColumns}
+              compact={screenDensity === "compact"}
+              elapsedMs={runBoardElapsedMs}
+            />
             <ActivityRail view={runBoardView} visible={showActivityRail} columns={terminalColumns} />
-            <RailHint visible={busy && !showActivityRail} />
           </Box>
         ) : (
           <RunBoardSurface
