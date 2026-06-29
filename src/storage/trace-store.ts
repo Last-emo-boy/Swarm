@@ -48,7 +48,9 @@ export class TraceStore {
 
   list(sessionId: string): SwarmEnvelope[] {
     const rows = this.database.db
-      .prepare("SELECT * FROM envelopes WHERE session_id = ? ORDER BY created_at ASC")
+      // Tie-break equal millisecond created_at by insertion order (rowid) so the
+      // replayed trace order is deterministic (mirrors blackboard-store list()).
+      .prepare("SELECT * FROM envelopes WHERE session_id = ? ORDER BY created_at ASC, rowid ASC")
       .all(sessionId) as TraceEnvelopeRow[];
 
     return rows.map(fromRow);
