@@ -327,6 +327,7 @@ export function runLocalEvals(root = process.cwd()): EvalCaseResult[] {
     checkFileToolInputValidationBehavior(root),
     checkLintFailureAggregationBehavior(),
     checkCodeLintSkipsMissingNodeConfigBehavior(root),
+    checkCodeLintMalformedPackageJsonBehavior(root),
     checkWebFetchHttpFailureMetadataBehavior(),
     checkCodingLoopFailedToolFinalStatusBehavior(),
     checkCodingLoopPersistenceStatusBehavior(),
@@ -15291,6 +15292,48 @@ try {
     ? { name: "code.lint skips Node projects without lint configuration", status: "pass", message: "package.json alone no longer triggers a speculative npx eslint failure" }
     : {
         name: "code.lint skips Node projects without lint configuration",
+        status: "fail",
+        message: `exit=${result.status} stdout=${result.stdout.trim()} stderr=${result.stderr.trim()} parsed=${JSON.stringify(parsed)}`
+      };
+}
+
+function checkCodeLintMalformedPackageJsonBehavior(root: string): EvalCaseResult {
+  const script = `
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { defaultSwarmSettings } from "./dist/config/settings.js";
+import { runLocalTool } from "./dist/tools/local-tools.js";
+
+const workspace = mkdtempSync(join(tmpdir(), "swarm-lint-malformed-eval-"));
+try {
+  // Trailing comma -> not valid JSON; must degrade gracefully, not abort lint.
+  writeFileSync(join(workspace, "package.json"), '{"name":"x","scripts":{"build":"tsc"},}', "utf8");
+  const result = await runLocalTool({ type: "code.lint", root: "." }, { workspace, settings: defaultSwarmSettings() });
+  console.log(JSON.stringify({ status: result.status, summary: result.summary }));
+} finally {
+  rmSync(workspace, { recursive: true, force: true });
+}
+`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 10_000
+  });
+  const output = result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+  let parsed: { status?: string; summary?: string } = {};
+  try {
+    parsed = JSON.parse(output) as typeof parsed;
+  } catch {
+    // Keep raw output in failure below.
+  }
+  const ok = result.status === 0
+    && parsed.status === "success"
+    && parsed.summary === "no recognized linter configuration found";
+  return ok
+    ? { name: "code.lint degrades on malformed package.json", status: "pass", message: "a malformed package.json no longer aborts lint before the cargo/fallback branches" }
+    : {
+        name: "code.lint degrades on malformed package.json",
         status: "fail",
         message: `exit=${result.status} stdout=${result.stdout.trim()} stderr=${result.stderr.trim()} parsed=${JSON.stringify(parsed)}`
       };

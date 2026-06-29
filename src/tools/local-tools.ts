@@ -2954,10 +2954,18 @@ async function executeCodeLint(action: Extract<ToolAction, { type: "code.lint" }
   const pkgJsonExists = await stat(resolve(root, "package.json")).then(() => true).catch(() => false);
   if (pkgJsonExists) {
     const raw = await readFile(resolve(root, "package.json"), "utf8");
-    const pkg = JSON.parse(raw) as { scripts?: Record<string, string>; eslintConfig?: unknown };
-    if (pkg.scripts?.lint) {
+    // A malformed/BOM-prefixed package.json must not abort linting: strip a
+    // leading BOM, parse defensively, and on failure fall through to the eslint
+    // probe + cargo + fallback instead of throwing past them.
+    let pkg: { scripts?: Record<string, string>; eslintConfig?: unknown } | undefined;
+    try {
+      pkg = JSON.parse(raw.replace(/^\uFEFF/, "")) as { scripts?: Record<string, string>; eslintConfig?: unknown };
+    } catch {
+      pkg = undefined;
+    }
+    if (pkg?.scripts?.lint) {
       commands.push(`npm run lint`);
-    } else if (pkg.eslintConfig || await hasEslintConfig(root)) {
+    } else if (pkg?.eslintConfig || await hasEslintConfig(root)) {
       commands.push(`npx eslint .`);
     }
   }
