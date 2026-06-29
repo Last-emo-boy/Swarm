@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { lspFallbackFactForFailure } from "./capabilities.js";
 import { detectLspWorkspaceRoot } from "./root-detection.js";
-import { TypeScriptSemanticProvider } from "./typescript-provider.js";
+import type { TypeScriptSemanticProvider } from "./typescript-provider.js";
 import type { LspOperationResult, LspRange, LspToolAction, SemanticEvidence } from "./types.js";
 import type { LocalToolContext, ToolResult } from "../tools/types.js";
 import { displayPath, resolveReadablePath } from "../tools/permissions.js";
@@ -98,6 +98,9 @@ async function getTypeScriptProvider(root: string): Promise<TypeScriptSemanticPr
     cached.expiresAt = Date.now() + PROVIDER_TTL_MS;
     return cached.provider;
   }
+  // Lazy-load the provider (and through it the ~8.7MB TypeScript compiler) only
+  // when a semantic tool actually runs, instead of eagerly at CLI startup.
+  const { TypeScriptSemanticProvider } = await import("./typescript-provider.js");
   const provider = await TypeScriptSemanticProvider.create(key);
   providers.set(key, { provider, expiresAt: Date.now() + PROVIDER_TTL_MS });
   return provider;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { lspFallbackFactForFailure } from "./capabilities.js";
 import { detectLspWorkspaceRoot } from "./root-detection.js";
-import { TypeScriptSemanticProvider } from "./typescript-provider.js";
+import type { TypeScriptSemanticProvider } from "./typescript-provider.js";
 import type {
   LspDiagnostic,
   LspOperationResult,
@@ -115,6 +115,9 @@ export async function buildLspSemanticTaskPlan(input: LspSemanticPlanningInput):
   }
 
   try {
+    // Lazy-load the TypeScript compiler (~8.7MB) only when semantic planning
+    // actually runs, keeping it off every CLI command's cold-start path.
+    const { TypeScriptSemanticProvider } = await import("./typescript-provider.js");
     const provider = await TypeScriptSemanticProvider.create(detection.workspaceRoot);
     const query = semanticQuery(input);
     const symbolResult = await provider.workspaceSymbols({
