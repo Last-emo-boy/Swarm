@@ -1165,16 +1165,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleRunBoardAttentionKey(character: string | undefined, key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean }): boolean {
+    if (onboard.enabled) {
+      return false;
+    }
     if (key.ctrl || key.meta || key.return || key.escape) {
       return false;
     }
     if (chatInputState.current.input.value.length > 0) {
       return false;
     }
+    // Resolve the route from early-declared state only: `routeLabel` is a const
+    // defined far later in the component body and is in the temporal dead zone
+    // when this input handler fires during an early-return render (onboarding /
+    // no-model), which previously crashed on the first keypress.
+    const mode = latestResultCard?.route ?? lastRoute?.mode ?? (runMode === "chat" ? "ask" : runMode === "full_swarm" ? "team" : "work");
     const item = selectRunBoardSurface(runBoardState, {
       now: new Date().toISOString(),
       repo: "Swarm",
-      mode: routeLabel,
+      mode,
       risk: runSandboxMode,
       session: latestResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
     }).attention[0];
