@@ -1,6 +1,11 @@
 import { normalizeToolAction } from "../tools/local-tools.js";
 import type { ToolAction } from "../tools/types.js";
 import { isReadOnlySandboxAction, type SandboxWritePolicy } from "./sandbox-policy.js";
+import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-scope.js";
+
+// Re-export the dependency-free scope/policy helpers so existing importers keep
+// working; the definitions live in tool-task-scope.js to stay off the eager path.
+export { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-scope.js";
 
 export function sandboxedToolTaskInputs(inputs: Record<string, unknown>, capability: string): Record<string, unknown> {
   let action: ToolAction;
@@ -22,39 +27,6 @@ export function sandboxedToolTaskInputs(inputs: Record<string, unknown>, capabil
     ...(writePolicy ? { write_policy: writePolicy } : {}),
     ...(fileScope?.length ? { file_scope: fileScope } : {})
   };
-}
-
-export function declaredToolTaskWritePolicy(inputs: Record<string, unknown>): SandboxWritePolicy | undefined {
-  if (inputs.read_only === true || inputs.readOnly === true) {
-    return "read_only";
-  }
-  const value = [inputs.write_policy, inputs.writePolicy, inputs.sandbox_mode, inputs.sandboxMode, inputs.sandbox]
-    .find((item) => typeof item === "string" && item.trim().length > 0);
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  if (value === "workspace_write" || value === "workspace-write") {
-    return "workspace_write";
-  }
-  if (value === "scoped_write" || value === "scoped-write") {
-    return "scoped_write";
-  }
-  if (value === "read_only" || value === "read-only" || value === "readonly") {
-    return "read_only";
-  }
-  return undefined;
-}
-
-export function declaredToolTaskFileScope(inputs: Record<string, unknown>): string[] | undefined {
-  const value = inputs.file_scope ?? inputs.fileScope;
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const normalized = value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return normalized.length ? normalized : undefined;
 }
 
 export function taskContractForToolAction(

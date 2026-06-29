@@ -23,7 +23,7 @@ import {
 } from "./prompt-cache-status.js";
 import { redactSensitive } from "./recovery.js";
 import { buildWorkRecordFromRuntimeEvent, buildWorkRunRecord, type WorkProtocolRecord } from "./work-protocol.js";
-import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-sandbox.js";
+import { declaredToolTaskFileScope, declaredToolTaskWritePolicy } from "./tool-task-scope.js";
 import { buildProtocolDebugTimeline, type ProtocolTimelineSummary } from "./protocol-debug-timeline.js";
 import type { ProtocolReplayDiff } from "./protocol-replay.js";
 
