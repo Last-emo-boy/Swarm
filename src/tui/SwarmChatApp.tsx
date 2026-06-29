@@ -202,6 +202,7 @@ import { ProgressIndicator } from "./run-board/ProgressIndicator.js";
 import { CompactStatusLine } from "./run-board/CompactStatusLine.js";
 import { ActivityRail } from "./run-board/ActivityRail.js";
 import { RailHint } from "./run-board/RailHint.js";
+import { InlineResultBlock } from "./run-board/InlineResultBlock.js";
 import { resolveNewActiveLayout } from "./theme.js";
 import { ProductResultCard } from "./run-board/ProductResultCard.js";
 import { formatElapsed } from "./run-board/run-board-row-format.js";
@@ -3458,6 +3459,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           <Box flexDirection="column" width="100%">
             <ActivityLine view={runBoardView} compact={screenDensity === "compact"} />
             {screenDensity === "compact" ? null : <ProgressIndicator view={runBoardView} />}
+            {screenDensity !== "compact" && (runBoardView.resultPreview.changedFiles.length > 0 || runBoardView.resultPreview.checks.length > 0)
+              ? <InlineResultBlock view={runBoardView} columns={terminalColumns} />
+              : null}
             <CompactStatusLine view={runBoardView} compact={screenDensity === "compact"} columns={terminalColumns} />
             <ActivityRail view={runBoardView} visible={showActivityRail} columns={terminalColumns} />
             <RailHint visible={busy && !showActivityRail} />
