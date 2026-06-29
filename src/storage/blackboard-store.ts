@@ -637,7 +637,10 @@ export class BlackboardStore {
 
   list(sessionId: string): BlackboardEntry[] {
     const rows = this.database.db
-      .prepare("SELECT * FROM blackboard_entries WHERE session_id = ? ORDER BY created_at ASC")
+      // Tie-break equal millisecond timestamps by insertion order (rowid) so
+      // list()/query()/getActiveClaim() are deterministic when several entries
+      // are written in the same millisecond (e.g. expire-then-reclaim flows).
+      .prepare("SELECT * FROM blackboard_entries WHERE session_id = ? ORDER BY created_at ASC, rowid ASC")
       .all(sessionId) as BlackboardRow[];
     return rows.map(fromRow);
   }
