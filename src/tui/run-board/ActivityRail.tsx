@@ -3,7 +3,7 @@
 // worker list. Never claims focus.
 import React from "react";
 import { Box, Text } from "../ui.js";
-import { statusBadge, visualTokenColor } from "../theme.js";
+import { statusBadge, statusMarker, visualTokenColor } from "../theme.js";
 import type { RunBoardSurfaceView } from "./run-board-types.js";
 import { workerBadgeStatus, statusToken } from "./activity-format.js";
 
@@ -24,12 +24,18 @@ export function ActivityRail(props: { view: RunBoardSurfaceView; visible: boolea
       {workers.map((worker) => {
         const status = workerBadgeStatus(worker.status);
         const flagged = attentionWorkerIds.has(worker.id);
+        // NO_COLOR-safe attention marker: a glyph, not just a color, so flagged
+        // workers stay distinguishable under the monochrome theme. Reserve the
+        // same width on every row to keep labels aligned.
+        const marker = flagged ? statusMarker("warning") : " ";
+        const labelColor = visualTokenColor(flagged ? "status.warning" : "text.primary");
         const label = (worker.label || worker.role).slice(0, 14).padEnd(14);
-        const action = (worker.currentAction || "").slice(0, Math.max(0, width - 24));
+        const action = (worker.currentAction || "").slice(0, Math.max(0, width - 26));
         return (
           <Box key={worker.id} flexDirection="row" width="100%">
             <Text color={visualTokenColor(statusToken(status))} bold>{statusBadge(status)}</Text>
-            <Text color={visualTokenColor(flagged ? "status.warning" : "text.primary")}> {label}</Text>
+            <Text color={labelColor} bold> {marker}</Text>
+            <Text color={labelColor}> {label}</Text>
             <Text color={visualTokenColor("text.muted")}> {action}</Text>
           </Box>
         );

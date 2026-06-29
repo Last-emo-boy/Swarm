@@ -3,7 +3,7 @@ import test from "node:test";
 import React from "react";
 import { renderTuiToFrame, frameText } from "../renderer/testing.js";
 import type { TuiFrame } from "../renderer/frame.js";
-import { resolveTuiColor } from "../theme.js";
+import { resolveTuiColor, withTuiThemeProfile } from "../theme.js";
 import { ActivityLine } from "./ActivityLine.js";
 import { ProgressIndicator } from "./ProgressIndicator.js";
 import { CompactStatusLine } from "./CompactStatusLine.js";
@@ -161,6 +161,19 @@ test("ProgressIndicator workers bar turns success when all workers are done", ()
   ];
   const frame = renderTuiToFrame(React.createElement(ProgressIndicator, { view }), { columns: 100, rows: 4 });
   assert.equal(colorAtText(frame, "[#"), resolveTuiColor("status.success"));
+});
+
+test("ActivityRail flags attention workers with a marker visible under monochrome", () => {
+  // Under swarm-monochrome all token colors strip to undefined, so the flagged
+  // worker must be distinguishable by a text glyph, not color alone.
+  const text = withTuiThemeProfile("swarm-monochrome", () =>
+    frameText(renderTuiToFrame(React.createElement(ActivityRail, { view: fixtureView(), visible: true, columns: 60 }), { columns: 100, rows: 12 }))
+  );
+  const lines = text.split("\n");
+  const flaggedRow = lines.find((l) => l.includes("Test Runner"));
+  const normalRow = lines.find((l) => l.includes("Main Swarm"));
+  assert.ok(flaggedRow?.includes("!"), `flagged worker row should carry the marker: ${flaggedRow}`);
+  assert.ok(normalRow && !normalRow.includes("!"), `non-flagged worker row should not carry the marker: ${normalRow}`);
 });
 
 test("RailHint surfaces the worker rail shortcut when the rail is hidden", () => {
