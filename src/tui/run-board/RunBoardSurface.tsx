@@ -1,7 +1,8 @@
 import React from "react";
 import { Box, Text } from "../ui.js";
-import { sectionLabel, visualTokenColor } from "../theme.js";
+import { visualTokenColor } from "../theme.js";
 import type { AttentionAction, AttentionItemView, RunBoardResultAction, RunBoardSurfaceView, WorkerBoardRow } from "./run-board-types.js";
+import { RunBoardPanel } from "./RunBoardPanel.js";
 import { WorkerBoard } from "./WorkerBoard.js";
 import { AttentionPanel } from "./AttentionPanel.js";
 import { ResultPreview } from "./ResultPreview.js";
@@ -37,24 +38,6 @@ export function RunBoardSurface(props: {
       />
       <ResultPreview preview={view.resultPreview} onAction={props.onResultAction} />
       <RunBoardFooter view={view} />
-    </Box>
-  );
-}
-
-export function RunBoardPanel(props: {
-  title: string;
-  children?: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <Box
-      flexDirection="column"
-      width="100%"
-      borderStyle="round"
-      borderColor={visualTokenColor("surface.line")}
-      paddingX={1}
-    >
-      <Text color={visualTokenColor("text.primary")} bold>{sectionLabel(props.title)}</Text>
-      {props.children}
     </Box>
   );
 }

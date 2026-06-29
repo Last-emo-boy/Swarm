@@ -4,7 +4,7 @@ import { visualTokenColor } from "../theme.js";
 import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
 import type { AttentionAction, AttentionItemView } from "./run-board-types.js";
 import { attentionBadge } from "./run-board-row-format.js";
-import { RunBoardPanel } from "./RunBoardSurface.js";
+import { RunBoardPanel } from "./RunBoardPanel.js";
 
 export function AttentionPanel(props: {
   items: AttentionItemView[];

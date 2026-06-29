@@ -10,7 +10,7 @@ import {
 } from "../theme.js";
 import type { ResultCard } from "../../runtime/result-card.js";
 import type { TuiDensity } from "../conversation-layout.js";
-import { RunBoardPanel } from "./RunBoardSurface.js";
+import { RunBoardPanel } from "./RunBoardPanel.js";
 import { SemanticTextLine, type SemanticTextSpan } from "../components/SemanticTextLine.js";
 import {
   productResultCardViewFromParts,

@@ -3,7 +3,7 @@ import { Box, Text } from "../ui.js";
 import { visualTokenColor } from "../theme.js";
 import type { WorkerBoardRow as WorkerBoardRowData } from "./run-board-types.js";
 import { WorkerRow, WorkerRowEmpty } from "./WorkerRow.js";
-import { RunBoardPanel } from "./RunBoardSurface.js";
+import { RunBoardPanel } from "./RunBoardPanel.js";
 
 export function WorkerBoard(props: {
   rows: WorkerBoardRowData[];

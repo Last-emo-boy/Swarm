@@ -3,7 +3,7 @@ import { Box, Text } from "../ui.js";
 import { visualTokenColor } from "../theme.js";
 import { SemanticTextLine } from "../components/SemanticTextLine.js";
 import type { ResultPreview as ResultPreviewData, RunBoardResultAction } from "./run-board-types.js";
-import { RunBoardPanel } from "./RunBoardSurface.js";
+import { RunBoardPanel } from "./RunBoardPanel.js";
 
 export function ResultPreview(props: {
   preview: ResultPreviewData;
