@@ -332,4 +332,13 @@ function reportRecoverableError(error: unknown): void {
   }
 }
 
+// Coalesce multiple synchronous setState calls made outside React's own event
+// dispatch (e.g. runtime EventEmitter callbacks) into a single commit/paint.
+// In LegacyRoot mode this flushes synchronously when `fn` returns, so the
+// "frame is readable synchronously after render" contract is preserved while
+// the redundant intermediate paints are eliminated.
+export function batchedUpdates(fn: () => void): void {
+  reconciler.batchedUpdates(fn, undefined);
+}
+
 export default reconciler;

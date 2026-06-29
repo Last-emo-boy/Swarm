@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "./ui.js";
+import { Box, Text, batch, useApp, useInput, useStdout } from "./ui.js";
 import {
   addPermissionAdditionalDirectory,
   addCustomProvider,
@@ -439,6 +439,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
     symphonyDaemonManager.current = new SymphonyDaemonManager(runtime);
     const unsubscribe = runtime.events.onEvent((event) => {
+      // Coalesce this event's many setState calls into a single reconcile+paint;
+      // an EventEmitter callback runs outside React's batching, so without this
+      // each setState would drive the whole render pipeline independently.
+      batch(() => {
       setEvents((previous) => appendTuiRuntimeEvent(previous, event));
       setRunBoardState((previous) => {
         const workerId = runBoardWorkerIdFromRuntimeEvent(event);
@@ -536,6 +540,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           return next;
         });
       }
+      });
     });
     return () => {
       unsubscribe();

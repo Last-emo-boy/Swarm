@@ -8,6 +8,10 @@ import { terminalPatchToString } from "./renderer/output.js";
 import { createTuiRoot } from "./renderer/root.js";
 import { detectTuiTerminalCapabilities } from "./renderer/terminal-capabilities.js";
 
+// Coalesce several synchronous setState calls (made outside React's own event
+// dispatch) into a single commit + paint. See reconciler.batchedUpdates.
+export { batchedUpdates as batch } from "./renderer/reconciler.js";
+
 export type TuiRendererMode = "dom-renderer";
 export type TuiRendererModeInput = TuiRendererMode | "legacy" | "auto";
 export type BoxProps = RendererBoxProps & Record<string, unknown>;
