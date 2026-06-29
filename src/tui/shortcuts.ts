@@ -18,7 +18,8 @@ export type TuiShortcutId =
   | "approval.cancel"
   | "action.select"
   | "action.details"
-  | "action.page";
+  | "action.page"
+  | "run-board.toggle_rail";
 
 export type TuiShortcut = {
   id: TuiShortcutId;
@@ -147,6 +148,12 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
     keys: ["PgUp", "PgDn"],
     label: "PgUp/PgDn",
     scope: "action"
+  },
+  "run-board.toggle_rail": {
+    id: "run-board.toggle_rail",
+    keys: ["Ctrl+R"],
+    label: "Ctrl+R workers",
+    scope: "global"
   }
 });
 

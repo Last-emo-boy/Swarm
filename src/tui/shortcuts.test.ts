@@ -5,7 +5,9 @@ import {
   detailOpenHint,
   detailShortcutPhrase,
   shortcutHint,
-  transcriptSearchHint
+  shortcutLabel,
+  transcriptSearchHint,
+  TUI_SHORTCUTS
 } from "./shortcuts.js";
 
 test("TUI shortcut registry formats detail and modal hints consistently", () => {
@@ -16,5 +18,12 @@ test("TUI shortcut registry formats detail and modal hints consistently", () => 
   assert.equal(appendDetailShortcut("Continue started", "preflight"), "Continue started. Ctrl+O for preflight.");
   assert.equal(detailOpenHint(), "Ctrl+O opens the latest detail.");
   assert.equal(transcriptSearchHint("2/4 matches"), "2/4 matches | Enter jump | Esc close");
+});
+
+test("worker rail toggle is registered with a discoverable Ctrl+R label", () => {
+  const railToggle = TUI_SHORTCUTS["run-board.toggle_rail"];
+  assert.deepEqual(railToggle.keys, ["Ctrl+R"]);
+  assert.match(shortcutLabel("run-board.toggle_rail"), /Ctrl\+R/);
+  assert.equal(shortcutHint(["run-board.toggle_rail"]), "Ctrl+R workers");
 });
 

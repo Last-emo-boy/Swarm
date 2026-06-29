@@ -8,6 +8,7 @@ import { ActivityLine } from "./ActivityLine.js";
 import { ProgressIndicator } from "./ProgressIndicator.js";
 import { CompactStatusLine } from "./CompactStatusLine.js";
 import { ActivityRail } from "./ActivityRail.js";
+import { RailHint } from "./RailHint.js";
 import type { RunBoardSurfaceView, WorkerBoardRow } from "./run-board-types.js";
 
 // Color of the first non-blank cell of `needle` in the rendered frame.
@@ -160,4 +161,13 @@ test("ProgressIndicator workers bar turns success when all workers are done", ()
   ];
   const frame = renderTuiToFrame(React.createElement(ProgressIndicator, { view }), { columns: 100, rows: 4 });
   assert.equal(colorAtText(frame, "[#"), resolveTuiColor("status.success"));
+});
+
+test("RailHint surfaces the worker rail shortcut when the rail is hidden", () => {
+  const shown = frameText(renderTuiToFrame(React.createElement(RailHint, { visible: true }), { columns: 80, rows: 2 }));
+  const lines = shown.split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(lines.length, 1, `expected one hint line, got ${lines.length}`);
+  assert.match(shown, /Ctrl\+R/);
+  const hidden = frameText(renderTuiToFrame(React.createElement(RailHint, { visible: false }), { columns: 80, rows: 2 }));
+  assert.doesNotMatch(hidden, /Ctrl\+R/);
 });
