@@ -108,6 +108,7 @@ export class SymphonyScheduler {
   private readonly running = new Map<string, RunningRecord>();
   private readonly retrying = new Map<string, RetryRecord>();
   private readonly completed = new Set<string>();
+  private tickChain: Promise<unknown> = Promise.resolve();
   private readonly source: WorkSource;
 
   constructor(
@@ -136,6 +137,17 @@ export class SymphonyScheduler {
   }
 
   async tick(): Promise<SymphonyTickResult> {
+    // Serialize overlapping tick() calls on this scheduler instance: two
+    // concurrent operator submits must not both clear the max_concurrent gate
+    // before either records its running session (which would over-provision
+    // agents). Each caller awaits its own runTick result; the chain tail only
+    // swallows rejections so one failure can't poison later ticks.
+    const run = this.tickChain.then(() => this.runTick());
+    this.tickChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async runTick(): Promise<SymphonyTickResult> {
     const workflow = loadWorkflow(this.input.workflowPath);
     this.syncParticipant(workflow.ok ? "busy" : "degraded", {
       workflow_path: workflow.ok ? workflow.workflow.path : this.input.workflowPath,
