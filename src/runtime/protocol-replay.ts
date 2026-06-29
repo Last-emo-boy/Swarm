@@ -469,19 +469,6 @@ export function diffProtocolReplaySnapshots(input: ProtocolReplayDiffInput): Pro
   };
 }
 
-export function diffProtocolReplay(input: ProtocolReplayInput & {
-  live: ProtocolReplaySnapshot;
-  replay?: ProtocolReplaySnapshot;
-}): ProtocolReplayDiff {
-  const replay = input.replay ?? buildProtocolReplay(input);
-  return diffProtocolReplaySnapshots({
-    live: input.live,
-    replay,
-    generatedAt: input.generatedAt,
-    sessionId: input.sessionId
-  });
-}
-
 export function auditProtocolMigration(input: ProtocolMigrationAuditInput): ProtocolMigrationAudit {
   const replay = input.replay ?? buildProtocolReplay(input);
   const issues: ProtocolMigrationAuditIssue[] = [];

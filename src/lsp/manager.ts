@@ -2,7 +2,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { getSwarmPaths } from "../config/settings.js";
@@ -936,8 +935,4 @@ export async function disposeGlobalLspManager(workspace?: string): Promise<void>
   const managers = [...globalManagers.values()];
   globalManagers.clear();
   await Promise.all(managers.map((manager) => manager.dispose()));
-}
-
-export function lspTempWorkspace(): string {
-  return join(tmpdir(), "swarm-lsp");
 }

@@ -1,6 +1,6 @@
 import React from "react";
 import { createInitialTuiAppState, type TuiAppState } from "./TuiAppState.js";
-import { createTuiStore, useTuiStoreSelector, type TuiStore, type TuiStoreEquality } from "./store.js";
+import { createTuiStore, type TuiStore } from "./store.js";
 
 const TuiAppStateContext = React.createContext<TuiStore<TuiAppState> | undefined>(undefined);
 
@@ -28,12 +28,5 @@ export function useTuiAppStateStore(): TuiStore<TuiAppState> {
     throw new Error("useTuiAppStateStore must be used within TuiAppStateProvider.");
   }
   return store;
-}
-
-export function useTuiAppStateSelector<TSelected>(
-  selector: (state: TuiAppState) => TSelected,
-  equality?: TuiStoreEquality<TSelected>
-): TSelected {
-  return useTuiStoreSelector(useTuiAppStateStore(), selector, equality);
 }
 

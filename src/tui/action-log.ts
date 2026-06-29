@@ -55,16 +55,6 @@ export type TuiActionRow = {
   copySummary?: string;
 };
 
-export function buildActionLogRows(input: {
-  messages: ActionLogMessage[];
-  events: RuntimeEvent[];
-}): TuiActionRow[] {
-  return [
-    ...input.messages.map(messageToActionRow),
-    ...input.events.map(runtimeEventToActionRow)
-  ];
-}
-
 export function buildProtocolTimelineActionRows(input: {
   events: RuntimeEvent[];
   filter?: ProtocolTimelineFilter;

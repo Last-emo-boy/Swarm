@@ -76,19 +76,6 @@ export function createContentReplacementState(input: {
   return state;
 }
 
-export function cloneContentReplacementState(
-  state: ContentReplacementState,
-  input: { sessionId?: string; scopeKind?: ToolContentReplacementScopeKind; scopeId?: string } = {}
-): ContentReplacementState {
-  return {
-    scopeKind: input.scopeKind ?? state.scopeKind,
-    scopeId: input.scopeId ?? state.scopeId,
-    sessionId: input.sessionId ?? state.sessionId,
-    seenIds: new Set(state.seenIds),
-    replacements: new Map([...state.replacements.entries()].map(([key, value]) => [key, { ...value }]))
-  };
-}
-
 export async function applyToolResultBudget<T extends ToolResultBudgetItem>(
   items: T[],
   options: ToolResultBudgetOptions

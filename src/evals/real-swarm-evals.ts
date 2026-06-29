@@ -186,10 +186,6 @@ export function runOfflineRealSwarmEvalSuite(
   return runRealSwarmEvalSuite(fixtures, "fake-provider");
 }
 
-export function runRealProviderDogfoodEvalSuite(fixtures: RealSwarmEvalScenarioFixture[]): RealSwarmEvalSuiteReport {
-  return runRealSwarmEvalSuite(fixtures, "real-provider");
-}
-
 export function buildRealProviderDogfoodEvalPlan(): RealSwarmRealProviderDogfoodPlan {
   return {
     schema_version: "swarm.real_swarm_provider_dogfood_plan.v1",

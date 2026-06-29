@@ -287,19 +287,6 @@ export function shouldRecordGovernanceEvidence(request: ToolApprovalRequest): bo
     request.risk_class === "r4";
 }
 
-export function formatApprovalGovernanceSummary(governance: ApprovalGovernanceEvidence | undefined): string | undefined {
-  if (!governance) {
-    return undefined;
-  }
-  return [
-    `actor=${governance.actor_binding.actor_id}`,
-    `scope=${governance.scope.actions.join(",")}@${governance.scope.target}`,
-    `ttl=${governance.ttl_ms}ms`,
-    `expires=${governance.expires_at}`,
-    `source=${governance.decision_source}`
-  ].join(" ");
-}
-
 function addMsIso(iso: string, ms: number): string {
   return new Date(Date.parse(iso) + ms).toISOString();
 }

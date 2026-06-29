@@ -286,39 +286,6 @@ export function visualTokenColor(token: TuiVisualToken): TuiResolvedColor {
   return THEME_PROFILES[resolveTuiThemeProfile()].tokens[token];
 }
 
-export function defaultVisualTokenColor(token: TuiVisualToken): TuiColor {
-  switch (token) {
-    case "text.primary": return "white";
-    case "text.muted": return "gray";
-    case "surface.line": return "gray";
-    case "surface.user": return "gray";
-    case "surface.user.hover": return "gray";
-    case "surface.shell": return "magenta";
-    case "surface.service": return "blue";
-    case "surface.selection": return "blue";
-    case "surface.searchMatch": return "yellow";
-    case "brand.focus": return "cyan";
-    case "role.user": return "green";
-    case "role.assistant": return "white";
-    case "role.tool": return "magenta";
-    case "role.gateway": return "blue";
-    case "role.swarm": return "yellow";
-    case "status.success": return "green";
-    case "status.running": return "cyan";
-    case "status.pending": return "yellow";
-    case "status.warning": return "yellow";
-    case "status.danger": return "red";
-    case "diff.added": return "green";
-    case "diff.removed": return "red";
-    case "diff.added.bg": return "green";
-    case "diff.removed.bg": return "red";
-    case "service.cache": return "green";
-    case "service.lsp": return "blue";
-    case "service.gateway": return "blue";
-    case "service.symphony": return "yellow";
-  }
-}
-
 export function resolveTuiColor(value: TuiColorRef | undefined): TuiResolvedColor {
   if (!value) {
     return undefined;
@@ -608,16 +575,6 @@ export function sectionLabel(label: string): string {
 
 export function compactId(value: string | undefined, maxLength = 10): string {
   return compactValue(value ?? "-", maxLength);
-}
-
-export function attentionRankForStatus(status: string | undefined): number {
-  const tone = statusTone(status);
-  if (tone === "danger") return 0;
-  if (tone === "warning") return 1;
-  if (tone === "pending") return 2;
-  if (tone === "running") return 3;
-  if (tone === "success") return 5;
-  return 4;
 }
 
 export function compactKernelRow(input: {

@@ -552,19 +552,6 @@ export function conversationViewportAfterScroll(input: {
     : { ...input.state, scrollOffset };
 }
 
-export function conversationRoleLabel(role: ConversationMessage["role"]): string {
-  if (role === "user") {
-    return "user";
-  }
-  if (role === "assistant") {
-    return "assistant";
-  }
-  if (role === "system") {
-    return "system";
-  }
-  return "";
-}
-
 export function conversationMessageFoldKey(message: ConversationMessage, index: number): string {
   return [
     index,

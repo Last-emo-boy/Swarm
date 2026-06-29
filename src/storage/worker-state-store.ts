@@ -279,14 +279,6 @@ function fromRow(row: WorkerRow): WorkerRecord {
   };
 }
 
-export function makeWorkerDisplayName(input: {
-  worker_id: string;
-  agent_spec_id?: string | null;
-  capability?: string | null;
-}): string {
-  return workerDisplayLabel(makeWorkerIdentity(input));
-}
-
 export function makeWorkerIdentity(input: {
   worker_id: string;
   agent_spec_id?: string | null;

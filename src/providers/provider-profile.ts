@@ -89,28 +89,6 @@ export function buildProviderProfiles(input: {
     .sort((left, right) => left.providerId.localeCompare(right.providerId));
 }
 
-export function routeModelPolicy(input: {
-  policy?: ModelPolicy;
-  providerId: string;
-  model: string;
-  fallbackModel?: string;
-  cacheExpected?: boolean;
-  risk?: "low" | "medium" | "high";
-  cooldownUntil?: string;
-  reason?: string;
-}): ModelRouteDecision {
-  const policy = input.policy ?? "default";
-  return {
-    policy,
-    chosen_model: input.model,
-    fallback_model: input.fallbackModel,
-    reason: input.reason ?? defaultPolicyReason(policy, input.providerId, input.model, input.fallbackModel),
-    risk: input.risk ?? defaultPolicyRisk(policy),
-    cache_expected: input.cacheExpected ?? (policy === "cache-friendly" || policy === "offline-test"),
-    cooldown_until: input.cooldownUntil
-  };
-}
-
 export function explainProviderProbeError(input: {
   statusCode?: number;
   message?: string;

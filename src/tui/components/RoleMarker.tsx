@@ -26,7 +26,3 @@ export function RoleMarker({ role, withSpace = false, label = false }: RoleMarke
   );
 }
 
-export function roleMarkerText(role: TuiRole, label = false): string {
-  const config = ROLE_CONFIG[role];
-  return label ? config.label : config.marker;
-}

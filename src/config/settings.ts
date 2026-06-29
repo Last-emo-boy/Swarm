@@ -669,17 +669,6 @@ export function loadSwarmSettings(workspace = process.cwd()): SwarmSettings {
   return normalizeSwarmSettings(expandSettings(merged));
 }
 
-export function listEnabledProviders(settings = loadSwarmSettings()): ProviderDefinition[] {
-  const disabled = new Set(settings.disabledProviders);
-  const enabled = new Set(settings.enabledProviders);
-  return Object.values(settings.providers).filter((provider) => {
-    if (disabled.has(provider.id)) {
-      return false;
-    }
-    return enabled.size === 0 || enabled.has(provider.id);
-  });
-}
-
 export function resolveModelRef(
   modelRef: string,
   settings = loadSwarmSettings()
@@ -816,10 +805,6 @@ export function getSelectedModelReadiness(
       role
     };
   });
-}
-
-export function hasUsableModelConfiguration(settings = loadSwarmSettings(), config = loadSwarmConfig()): boolean {
-  return getSelectedModelReadiness(settings, config).every((readiness) => readiness.configured);
 }
 
 function loadUserSwarmSettings(paths: SwarmPaths): SwarmSettings {

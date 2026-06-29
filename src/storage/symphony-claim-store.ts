@@ -215,10 +215,6 @@ export class SymphonyClaimStore {
   }
 }
 
-export function symphonyClaimKey(workflowPath: string, workItemKey: string): string {
-  return claimKeyFor(workflowPath, workItemKey);
-}
-
 function claimKeyFor(workflowPath: string, workItemKey: string): string {
   return `${sanitize(workflowPath)}:${sanitize(workItemKey)}`;
 }
