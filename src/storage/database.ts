@@ -11,6 +11,11 @@ export class SwarmDatabase {
     mkdirSync(dirname(this.path), { recursive: true });
     this.db = new DatabaseSync(this.path);
     this.db.exec("PRAGMA journal_mode = WAL;");
+    // Wait briefly for a contended write lock instead of failing immediately
+    // with SQLITE_BUSY ("database is locked"); WAL allows concurrent readers
+    // but writers still serialize, so a short busy timeout absorbs the transient
+    // contention seen under concurrent gateway/TUI access and parallel tests.
+    this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.migrate();
   }
