@@ -2645,6 +2645,14 @@ export class SwarmRuntime {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.debug?.warn("runtime", `failed to persist runtime event ${event.type}: ${message}`);
+      // this.debug is null without SWARM_DEBUG, so the warn above is a no-op in
+      // production. Emit a visible log event so a dropped persistence (e.g. a
+      // final outcome lost to SQLITE_BUSY) is observable in the TUI/gateway.
+      this.events.emitEvent({
+        type: "log",
+        level: "warn",
+        message: `failed to persist runtime event ${event.type}: ${message}`
+      });
     }
   }
 
