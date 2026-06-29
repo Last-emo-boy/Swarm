@@ -128,7 +128,7 @@ export async function startBackgroundProcess(input: BackgroundProcessStartInput)
       void updateTerminalRecord(processId, {
         status: "failed",
         lastError: error.message
-      });
+      }).catch(() => undefined);
     });
     child.on("exit", (exitCode, signal) => {
       const current = activeProcesses.get(processId);
@@ -319,7 +319,7 @@ function startTimeout(record: BackgroundProcessRecord, child: ChildProcess, time
     void updateTerminalRecord(record.processId, {
       status: "failed",
       lastError: `Process timed out after ${timeoutMs}ms`
-    }, record.sessionId);
+    }, record.sessionId).catch(() => undefined);
   }, timeoutMs);
   timeout.unref();
   return timeout;
@@ -336,7 +336,7 @@ function startSizeWatchdog(record: BackgroundProcessRecord): NodeJS.Timeout {
       void updateTerminalRecord(record.processId, {
         status: "failed",
         lastError: `Log exceeded ${record.maxLogBytes} bytes`
-      }, record.sessionId);
+      }, record.sessionId).catch(() => undefined);
     }).catch(() => undefined);
   }, PROCESS_POLL_INTERVAL_MS);
   timer.unref();
