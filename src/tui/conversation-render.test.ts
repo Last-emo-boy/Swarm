@@ -1133,3 +1133,14 @@ function terminalRows(value: string): string[] {
   }
   return rows;
 }
+
+test("wrapped transcript rows with inline formatting keep every word", () => {
+  const brief = "Filed as a ticket request (847d0f52). A worker takes it in its own directory; replies appear here. Started the ticket host in this TUI; it stops when you quit, or run `swarm superagent run` to keep one going, and **bold** text wraps too.";
+  for (const columns of [60, 80, 110]) {
+    const frame = renderTuiToFrame(React.createElement(ConversationFirstPane, { messages: [{ role: "system", brief }], rows: 10, columns: columns - 4 }), { columns, rows: 10 });
+    const rows = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).filter(Boolean);
+    const shown = rows.join(" ").replace(/^·\s+system\s+/u, "").replace(/\s+/gu, " ");
+    const expected = brief.replace(/[`*]/gu, "").replace(/\s+/gu, " ");
+    assert.equal(shown.trim(), expected, `at ${columns} columns`);
+  }
+});
