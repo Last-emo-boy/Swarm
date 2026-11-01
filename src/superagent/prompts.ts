@@ -31,7 +31,7 @@ const section = (heading: string, text: string): string => `## ${heading}\n\n${t
 /** How Swarm's host delivers what a worker reports, which replaces upstream's relay through the main Session. */
 const SWARM_DELIVERY = [
   "In Swarm, the host delivers what you report: there is no separate orchestrator turn that rewrites it.",
-  "When ticket_report has state ready, a human_action question, or reply_to_trigger_id, also give `message`: the one short message the person reads, written as the Communication section says, in the language of the source conversation.",
+  "When mcp__ticket__report has state ready, a human_action question, or reply_to_trigger_id, also give `message`: the one short message the person reads, written as the Communication section says, in the language of the source conversation.",
   "The host posts it as the ticket's result, its question or its answer, in the conversation the replies section names, and refuses a message the rules do not allow.",
   "Without `message`, a ready report posts nothing and a question posts the question itself.",
   "Progress, blocked and failed reports without a question stay internal."

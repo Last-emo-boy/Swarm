@@ -104,6 +104,9 @@ if (!command) {
 } else if (command === "lsp") {
   const { runLspCommand } = await import("./lsp/cli.js");
   await runLspCommand(args);
+} else if (command === "superagent") {
+  const { runSuperagentCommand } = await import("./superagent/cli.js");
+  await runSuperagentCommand(args);
 } else if (command === "tui-artifact") {
   const { runCcGradeVisualArtifactCli } = await import("./tui/renderer/cc-grade-visual-artifact.js");
   runCcGradeVisualArtifactCli(args);
@@ -3439,6 +3442,7 @@ Commands:
   skills     List, inspect, and activate discovered Agent Skills
   mcp        List, inspect, refresh, and read configured MCP servers, resources, and prompts
   lsp        Inspect local Language Server Protocol providers and logs
+  superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
   tui-artifact
              Generate cc-grade TUI plain/ANSI/profile-diff visual artifacts
   tui-smoke  Run local-only TUI smoke and capture ANSI/log/checklist evidence
