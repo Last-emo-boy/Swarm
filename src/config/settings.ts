@@ -51,6 +51,8 @@ export type McpServerSettings = {
   headers?: Record<string, string>;
   trust: "user" | "project" | "workspace";
   exposeTools?: boolean;
+  /** Load this server's tools into every turn instead of deferring them behind tool search. */
+  alwaysLoad?: boolean;
   exposeResources?: boolean;
   exposePrompts?: boolean;
   toolRiskOverrides?: Record<string, "r0" | "r1" | "r2" | "r3" | "r4">;
@@ -1081,6 +1083,7 @@ function normalizeMcpServers(servers: Record<string, McpServerSettings>): Record
           toolRiskOverrides: normalizeMcpToolRiskOverrides(server.toolRiskOverrides),
           trust: server.trust === "project" || server.trust === "workspace" ? server.trust : "user",
           exposeTools: server.exposeTools !== false,
+          alwaysLoad: server.alwaysLoad === true,
           exposeResources: server.exposeResources === true,
           exposePrompts: server.exposePrompts === true,
           timeoutMs: positiveInteger(server.timeoutMs, 30_000)
