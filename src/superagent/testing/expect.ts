@@ -69,9 +69,18 @@ function readPath(value: unknown, path: string | readonly (string | number)[]): 
 }
 
 export type Mock<Args extends unknown[] = any[], Result = any> = ((...args: Args) => Result) & {
-  mock: { calls: Args[]; results: { type: "return" | "throw"; value: unknown }[] };
+  mock: { calls: Args[]; results: { type: "return" | "throw"; value: unknown }[]; readonly lastCall: Args | undefined };
   mockClear(): Mock<Args, Result>;
+  mockReset(): Mock<Args, Result>;
+  mockRestore(): void;
   mockImplementation(next: (...args: Args) => Result): Mock<Args, Result>;
+  mockImplementationOnce(next: (...args: Args) => Result): Mock<Args, Result>;
+  mockReturnValue(value: Result): Mock<Args, Result>;
+  mockReturnValueOnce(value: Result): Mock<Args, Result>;
+  mockResolvedValue(value: Awaited<Result>): Mock<Args, Result>;
+  mockResolvedValueOnce(value: Awaited<Result>): Mock<Args, Result>;
+  mockRejectedValue(error: unknown): Mock<Args, Result>;
+  mockRejectedValueOnce(error: unknown): Mock<Args, Result>;
 };
 
 function isMock(value: unknown): value is Mock {
@@ -177,7 +186,26 @@ function matchers(actual: unknown, negated: boolean): Matchers {
   };
 }
 
-type Expect = ((actual: unknown) => Matchers & { not: Matchers }) & {
+type AsyncMatchers = { [K in keyof Matchers]: (...args: Parameters<Matchers[K]>) => Promise<void> };
+type Expectation = Matchers & { not: Matchers; rejects: AsyncMatchers & { not: AsyncMatchers }; resolves: AsyncMatchers & { not: AsyncMatchers } };
+
+/** `expect(promise).rejects` and `.resolves`: settle the promise, then match its error (a rejection) or value. */
+function settled(actual: unknown, want: "rejects" | "resolves", negated: boolean): AsyncMatchers {
+  const names = Object.keys(matchers(undefined, false)) as (keyof Matchers)[];
+  return Object.fromEntries(names.map((name) => [name, async (...args: unknown[]) => {
+    let value: unknown;
+    let rejected = false;
+    try { value = await actual; } catch (error) { value = error; rejected = true; }
+    if (rejected !== (want === "rejects")) {
+      assert.fail(want === "rejects" ? `Expected the promise to reject, it resolved ${show(value)}` : `Expected the promise to resolve, it rejected ${show(value)}`);
+    }
+    // A rejection's toThrow matches the error itself, so wrap it in a function that throws it again.
+    const subject = name === "toThrow" ? () => { throw value; } : value;
+    (matchers(subject, negated)[name] as (...values: unknown[]) => void)(...args);
+  }])) as AsyncMatchers;
+}
+
+type Expect = ((actual: unknown) => Expectation) & {
   objectContaining(expected: Record<string, unknown>): any;
   arrayContaining(expected: readonly unknown[]): any;
   stringContaining(expected: string): any;
@@ -187,7 +215,11 @@ type Expect = ((actual: unknown) => Matchers & { not: Matchers }) & {
 };
 
 export const expect: Expect = Object.assign(
-  (actual: unknown) => Object.assign(matchers(actual, false), { not: matchers(actual, true) }),
+  (actual: unknown) => Object.assign(matchers(actual, false), {
+    not: matchers(actual, true),
+    rejects: Object.assign(settled(actual, "rejects", false), { not: settled(actual, "rejects", true) }),
+    resolves: Object.assign(settled(actual, "resolves", false), { not: settled(actual, "resolves", true) })
+  }),
   {
     objectContaining: (expected: Record<string, unknown>) => asymmetric(`objectContaining ${show(expected)}`,
       (value) => isPlainRecord(value) && equals(value, expected, true)),
@@ -209,12 +241,16 @@ export const expect: Expect = Object.assign(
   },
 );
 
+const spies = new Set<() => void>();
+
 function fn<Args extends unknown[] = any[], Result = any>(implementation?: (...args: Args) => Result): Mock<Args, Result> {
   let current = implementation;
+  const once: ((...args: Args) => Result)[] = [];
   const mock = ((...args: Args) => {
     mock.mock.calls.push(args);
     try {
-      const value = current?.(...args) as Result;
+      const next = once.shift() ?? current;
+      const value = next?.(...args) as Result;
       mock.mock.results.push({ type: "return", value });
       return value;
     } catch (error) {
@@ -222,24 +258,67 @@ function fn<Args extends unknown[] = any[], Result = any>(implementation?: (...a
       throw error;
     }
   }) as Mock<Args, Result>;
-  mock.mock = { calls: [], results: [] };
+  mock.mock = { calls: [], results: [], get lastCall() { return this.calls.at(-1); } };
   mock.mockClear = () => { mock.mock.calls = []; mock.mock.results = []; return mock; };
+  mock.mockReset = () => { mock.mockClear(); once.length = 0; current = undefined; return mock; };
+  mock.mockRestore = () => { mock.mockReset(); };
   mock.mockImplementation = (next) => { current = next; return mock; };
+  mock.mockImplementationOnce = (next) => { once.push(next); return mock; };
+  mock.mockReturnValue = (value) => mock.mockImplementation(() => value);
+  mock.mockReturnValueOnce = (value) => mock.mockImplementationOnce(() => value);
+  mock.mockResolvedValue = (value) => mock.mockImplementation(() => Promise.resolve(value) as Result);
+  mock.mockResolvedValueOnce = (value) => mock.mockImplementationOnce(() => Promise.resolve(value) as Result);
+  mock.mockRejectedValue = (error) => mock.mockImplementation(() => Promise.reject(error) as Result);
+  mock.mockRejectedValueOnce = (error) => mock.mockImplementationOnce(() => Promise.reject(error) as Result);
   return mock;
+}
+
+/** Replace `object[name]` with a mock that calls the original until given another implementation; `mockRestore` puts it back. */
+function spyOn<T extends object, K extends keyof T>(object: T, name: K): Mock {
+  const original = object[name] as unknown as (...args: unknown[]) => unknown;
+  const spy = fn((...args: unknown[]) => original.apply(object, args));
+  const restore = () => { object[name] = original as T[K]; spies.delete(restore); };
+  const reset = spy.mockReset;
+  spy.mockRestore = () => { reset(); restore(); };
+  object[name] = spy as T[K];
+  spies.add(restore);
+  return spy;
+}
+
+/** Retry `check` until it stops throwing or `timeout` passes, then return its value or throw its last error. */
+async function waitFor<T>(check: () => T | Promise<T>, options: number | { timeout?: number; interval?: number } = {}): Promise<T> {
+  const { timeout = 1000, interval = 20 } = typeof options === "number" ? { timeout: options } : options;
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    try {
+      return await check();
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+  }
 }
 
 export const vi = {
   fn,
+  spyOn,
+  waitFor,
   mocked: <T>(value: T): T & Mock => value as T & Mock,
+  restoreAllMocks: (): void => { for (const restore of [...spies]) restore(); },
 };
 
-/** vitest's `it.each(rows)(name, fn)`: one test per row, with `%s` in the name replaced by the row's values in order. */
-export function each(rows: readonly (readonly unknown[])[]) {
+/**
+ * vitest's `it.each(rows)(name, fn)`: one test per row. An array row is spread into `fn`, with `%s` in the name replaced by
+ * its values in order; an object row is passed whole, with `$key` in the name replaced by its values.
+ */
+export function each(rows: readonly unknown[]) {
   return (name: string, run: (...args: any[]) => unknown): void => {
     for (const row of rows) {
+      const values = Array.isArray(row) ? row : [row];
       let index = 0;
-      const title = name.replace(/%[sdj]/g, () => String(row[index++]));
-      it(title, async () => { await run(...row); });
+      const title = name.replace(/%[sdj]/g, () => String(values[index++]))
+        .replace(/\$([A-Za-z_]\w*)/g, (match, key: string) => isPlainRecord(row) && key in row ? String((row as Record<string, unknown>)[key]) : match);
+      it(title, async () => { await run(...values); });
     }
   };
 }

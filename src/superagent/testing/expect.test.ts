@@ -45,3 +45,24 @@ test("not inverts and mocks record calls", () => {
   expect({ a: { b: [1] } }).toHaveProperty("a.b", [1]);
   assert.throws(() => expect({ a: {} }).toHaveProperty("a.b"));
 });
+
+test("spyOn records calls, mocks values and restores the original", async () => {
+  const target = { value: (x: number) => x + 1 };
+  const spy = vi.spyOn(target, "value");
+  assert.equal(target.value(1), 2);
+  spy.mockReturnValueOnce(10);
+  assert.equal(target.value(1), 10);
+  assert.equal(target.value(1), 2);
+  expect(spy).toHaveBeenCalledTimes(3);
+  vi.restoreAllMocks();
+  assert.equal("mock" in target.value, false);
+});
+
+test("rejects and resolves settle the promise before matching", async () => {
+  await expect(Promise.reject(new Error("nope"))).rejects.toThrow("nope");
+  await expect(Promise.resolve({ a: 1 })).resolves.toEqual({ a: 1 });
+  await assert.rejects(expect(Promise.resolve(1)).rejects.toThrow());
+  await assert.rejects(expect(Promise.reject(new Error("x"))).resolves.toBe(1));
+  let tries = 0;
+  assert.equal(await vi.waitFor(() => { if (++tries < 3) throw new Error("not yet"); return tries; }, { interval: 1 }), 3);
+});
