@@ -157,7 +157,7 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
     },
     {
       name: "report",
-      description: "Report progress, ready, blocked, failed or dropped, as the Work and Handoff sections say. With ready, a human_action question or reply_to_trigger_id, `message` is the one short message the person reads.",
+      description: "Report progress, ready, blocked, failed or dropped, as the Work and Handoff sections say. This tool is the only report: your final JSON reaches nobody. With ready, a human_action question or reply_to_trigger_id, `message_for_person` is the one short message the person reads.",
       input: {
         state: z.enum(["progress", "ready", "blocked", "failed", "dropped"]),
         summary: z.string().min(1),
@@ -165,47 +165,70 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
         question_for_trigger_id: z.string().optional().describe("With human_action: the human message that raised the question, which is asked where that person wrote."),
         pr_number: z.number().int().positive().nullish().describe("The ticket's PR: its source PR, or one by the agent account from a branch named after this ticket (SWARM_TICKET_NAME)."),
         reply_to_trigger_id: z.string().optional().describe("The explicit human question this report answers; never for ordinary progress."),
-        message: z.string().trim().min(1).optional().describe(`What the person reads, at most ${IM_WORDS} words, in the language of the source conversation.`)
+        message_for_person: z.string().trim().min(1).optional().describe(`What the person reads, at most ${IM_WORDS} words, in the language of the source conversation.`)
       },
       readOnly: false,
-      run: async (args) => {
-        const current = ticket();
-        if (!liveTicket(current)) throw new Error("Ticket ended (its PR closed or the work finished); do not resume it");
-        const message = typeof args.message === "string" ? checkedImText(args.message) : undefined;
-        const prNumber = typeof args.pr_number === "number" ? args.pr_number : undefined;
-        const github = prNumber ? sourceContextOf({
-          store: client.store, outbox: client.outbox, engine: client.engine, commands: client.commands, sources: client.sources,
-          get deployment() { return client.deployment(); }, ready: Promise.resolve(), configured: () => true, receive: (trigger) => client.engine.receive(trigger)
-        }, githubKind) : undefined;
-        const pull = github && prNumber ? await readPull(github, prNumber) : undefined;
-        const question = args.human_action === null ? null : typeof args.human_action === "string" ? args.human_action : undefined;
-        return client.store.atomic(() => {
-          const refused = github && pull && claimPull(github, ticketId, pull);
-          if (refused) throw new Error(refused);
-          const report = {
-            state: args.state as "progress" | "ready" | "blocked" | "failed" | "dropped", summary: String(args.summary),
-            ...(question !== undefined ? { question } : {}),
-            ...(typeof args.question_for_trigger_id === "string" ? { askedBy: args.question_for_trigger_id } : {}),
-            ...(typeof args.reply_to_trigger_id === "string" ? { answers: args.reply_to_trigger_id } : {})
-          };
-          const updated = client.engine.report(ticketId, report);
-          const posted: string[] = [];
-          if (report.question && updated.attention) {
-            client.engine.reply({ purpose: "attention", ticketId, question: updated.attention.question, text: message ?? updated.attention.question });
-            posted.push("attention");
-          } else if (report.state === "ready" && message) {
-            client.engine.reply({ purpose: "result", ticketId, text: message });
-            posted.push("result");
-          }
-          if (report.answers && message && !report.question) {
-            client.engine.reply({ purpose: "answer", ticketId, triggerId: report.answers, text: message });
-            posted.push("answer");
-          }
-          return { reported: true, posted, ...(updated.attention ? { attention: updated.attention } : {}), ended: !liveTicket(updated) };
-        });
-      }
+      run: async (args) => fileReport(client, ticketId, {
+        state: args.state as ReportArgs["state"],
+        summary: String(args.summary),
+        ...(args.human_action === null ? { human_action: null } : typeof args.human_action === "string" ? { human_action: args.human_action } : {}),
+        ...(typeof args.question_for_trigger_id === "string" ? { question_for_trigger_id: args.question_for_trigger_id } : {}),
+        ...(typeof args.pr_number === "number" ? { pr_number: args.pr_number } : {}),
+        ...(typeof args.reply_to_trigger_id === "string" ? { reply_to_trigger_id: args.reply_to_trigger_id } : {}),
+        ...(typeof args.message_for_person === "string" ? { message_for_person: args.message_for_person } : {})
+      })
     }
   ];
+}
+
+export interface ReportArgs {
+  state: "progress" | "ready" | "blocked" | "failed" | "dropped";
+  summary: string;
+  /** A question for a person; null clears an open one, absent keeps it. */
+  human_action?: string | null;
+  question_for_trigger_id?: string;
+  pr_number?: number;
+  reply_to_trigger_id?: string;
+  message_for_person?: string;
+}
+
+/**
+ * Files a worker's report and posts what it says to the person: its question, its ready result or its answer, each under
+ * the Engine's reply rules. The report tool and the worker's fallback for an unreported turn both file through it.
+ */
+export async function fileReport(client: SuperagentClient, ticketId: string, args: ReportArgs) {
+  const current = client.store.tickets.get(ticketId);
+  if (!current || !liveTicket(current)) throw new Error("Ticket ended (its PR closed or the work finished); do not resume it");
+  const message = args.message_for_person ? checkedImText(args.message_for_person) : undefined;
+  const github = args.pr_number ? sourceContextOf({
+    store: client.store, outbox: client.outbox, engine: client.engine, commands: client.commands, sources: client.sources,
+    get deployment() { return client.deployment(); }, ready: Promise.resolve(), configured: () => true, receive: (trigger) => client.engine.receive(trigger)
+  }, githubKind) : undefined;
+  const pull = github && args.pr_number ? await readPull(github, args.pr_number) : undefined;
+  return client.store.atomic(() => {
+    const refused = github && pull && claimPull(github, ticketId, pull);
+    if (refused) throw new Error(refused);
+    const report = {
+      state: args.state, summary: args.summary,
+      ...(args.human_action !== undefined ? { question: args.human_action } : {}),
+      ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
+      ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {})
+    };
+    const updated = client.engine.report(ticketId, report);
+    const posted: string[] = [];
+    if (report.question && updated.attention) {
+      client.engine.reply({ purpose: "attention", ticketId, question: updated.attention.question, text: message ?? updated.attention.question });
+      posted.push("attention");
+    } else if (report.state === "ready" && message) {
+      client.engine.reply({ purpose: "result", ticketId, text: message });
+      posted.push("result");
+    }
+    if (report.answers && message && !report.question) {
+      client.engine.reply({ purpose: "answer", ticketId, triggerId: report.answers, text: message });
+      posted.push("answer");
+    }
+    return { reported: true, posted, ...(updated.attention ? { attention: updated.attention } : {}), ended: !liveTicket(updated) };
+  });
 }
 
 /** Serves the ticket tools over stdio MCP until the worker's runtime closes the connection. */

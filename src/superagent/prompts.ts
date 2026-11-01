@@ -31,11 +31,11 @@ const section = (heading: string, text: string): string => `## ${heading}\n\n${t
 /** How Swarm's host delivers what a worker reports, which replaces upstream's relay through the main Session. */
 const SWARM_DELIVERY = [
   "In Swarm, the host delivers what you report: there is no separate orchestrator turn that rewrites it.",
-  "When mcp__ticket__report has state ready, a human_action question, or reply_to_trigger_id, also give `message`: the one short message the person reads, written as the Communication section says, in the language of the source conversation.",
+  "When mcp__ticket__report has state ready, a human_action question, or reply_to_trigger_id, also give `message_for_person`: the one short message the person reads, written as the Communication section says, in the language of the source conversation.",
   "The host posts it as the ticket's result, its question or its answer, in the conversation the replies section names, and refuses a message the rules do not allow.",
-  "Without `message`, a ready report posts nothing and a question posts the question itself.",
+  "Without `message_for_person`, a ready report posts nothing and a question posts the question itself.",
   "Progress, blocked and failed reports without a question stay internal.",
-  "Only mcp__ticket__report tells anyone what happened: returning status=completed ends your turn and reports nothing. Call mcp__ticket__report as a tool_call before you return completed.",
+  "Only the mcp__ticket__report tool tells anyone what happened. Your final JSON (status, summary, message) is not a report and reaches nobody, whatever it says: call mcp__ticket__report in tool_calls first, and return status=completed only after its result shows reported:true.",
   "`.swarm/` in the ticket directory is Swarm's local state: never commit it."
 ].join("\n");
 
@@ -43,7 +43,7 @@ const SWARM_DELIVERY = [
 const LOCAL_DELIVERY = [
   "This deployment has no GitHub repository: the deliverable of a code change is a commit on this ticket's branch in its directory, not a pull request.",
   "Commit with the repository's own git identity; do not set or invent another author.",
-  "Report ready once the commit is made and verified, naming the branch and the commit in `message`; do not report blocked because no pull request can be opened."
+  "Report ready once the commit is made and verified, naming the branch and the commit in `message_for_person`; do not report blocked because no pull request can be opened."
 ].join("\n");
 
 export interface WorkerPromptInput {

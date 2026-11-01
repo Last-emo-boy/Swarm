@@ -53,6 +53,14 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
     : stage.stage === "idle" ? "idle" : action === "queued" ? "queued" : "working";
   const pr = pullOf(ticket);
   const report = latestReport(ticket);
+  // A question the person already answered waits for the worker, not for the person: it leaves "needs you".
+  const answered = !!ticket.attention && !ticket.ended && ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context
+    && input.at >= (report?.at ?? ""));
+  if (answered && group === "person" && STAGE_LABELS[key] === "Awaiting answer") {
+    return { id: ticket.id, short: ticket.id.slice(0, 8), title: ticket.title, group: "working", label: "Working on your answer",
+      source: origin?.source ?? "unknown", ...(origin?.url ? { url: origin.url } : {}), ...(pr ? { pr } : {}),
+      ...(report?.summary ? { summary: report.summary } : {}), updatedAt: ticket.updatedAt ?? ticket.createdAt };
+  }
   return {
     id: ticket.id,
     short: ticket.id.slice(0, 8),

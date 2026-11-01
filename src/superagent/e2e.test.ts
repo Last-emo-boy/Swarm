@@ -21,20 +21,30 @@ const loop = (result: Record<string, unknown>) => JSON.stringify({ files_touched
 const reported = (request: ModelRequest) => request.user.includes("\"reported\":true") || request.user.includes("\\\"reported\\\":true");
 /** The coding loop's answers, by ticket and by how many tool results the ticket's turn has seen. */
 function answer(request: ModelRequest): string {
+  if (request.system.includes("ended its turn twice without calling its report tool")) {
+    return JSON.stringify({ state: "ready", summary: "Bumped the version to 0.2.0 and committed.", message_for_person: "The version is bumped to 0.2.0." });
+  }
   if (request.system.includes("You route requests for Swarm's ticket host")) {
+    if (request.user.includes("bump the version")) {
+      return JSON.stringify({ kind: "accept", title: "Bump the version", worktree_name: "bump-version", acknowledgement: "On it: bumping the version." });
+    }
     if (request.user.includes("changelog")) {
       return JSON.stringify({ kind: "accept", title: "Update the changelog", worktree_name: "update-changelog", acknowledgement: "On it: updating the changelog." });
     }
     return JSON.stringify({ kind: "accept", title: "Create hello.txt", worktree_name: "create-hello", acknowledgement: "On it: creating hello.txt." });
   }
+  // The version ticket's worker never reports, even when reminded, as a real model did in a live trial.
+  if (request.system.includes("bump-version-")) {
+    return loop({ status: "completed", summary: "Bumped the version; reporting ready now.", message: "" });
+  }
   // The changelog ticket's worker ends its first turn without a report, as a real model did in a live trial.
   if (request.system.includes("update-changelog-")) {
-    if (!request.user.includes("Your turn ended without mcp__ticket__report")) {
+    if (!request.user.includes("Your turn ended without calling the mcp__ticket__report tool")) {
       return loop({ status: "completed", summary: "Done — reporting the ticket result now.", message: "Done — reporting the ticket result now." });
     }
     if (!reported(request)) {
       return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
-        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Nothing to change in the changelog.", message: "The changelog is up to date." } }
+        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Nothing to change in the changelog.", message_for_person: "The changelog is up to date." } }
       ] });
     }
     return loop({ status: "completed", summary: "Reported", message: "Reported." });
@@ -49,7 +59,7 @@ function answer(request: ModelRequest): string {
   if (!reported(request)) {
     return loop({ status: "continue", summary: "Verify and report", message: "Checking the file and reporting.", tool_calls: [
       { id: "check", action: "Bash", inputs: { command: "cat hello.txt" } },
-      { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Wrote hello.txt; cat shows hi.", message: "hello.txt is ready." } }
+      { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Wrote hello.txt; cat shows hi.", message_for_person: "hello.txt is ready." } }
     ] });
   }
   return loop({ status: "completed", summary: "Done", message: "hello.txt is written and reported.", files_touched: ["hello.txt"] });
@@ -116,8 +126,27 @@ test("a worker whose turn ends without a report is reminded once, and its report
     ticket = find();
   }
   assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)}`);
-  const reminders = model.requests.filter((request) => request.system.includes("update-changelog-") && request.user.includes("Your turn ended without mcp__ticket__report"));
+  const reminders = model.requests.filter((request) => request.system.includes("update-changelog-") && request.user.includes("Your turn ended without calling the mcp__ticket__report tool"));
   assert.ok(reminders.length >= 1, "the worker was reminded");
   const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
   assert.ok(replies.some((reply) => reply.text === "The changelog is up to date."));
+});
+
+test("a worker that stays silent after the reminder gets its report written from its last words", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  client.request("bump the version to 0.2.0");
+  const deadline = Date.now() + 100_000;
+  const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Bump the version");
+  let ticket = find();
+  while (Date.now() < deadline && !ticket?.ended) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ticket = find();
+  }
+  assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)}`);
+  assert.match(ticket?.assignments.at(-1)?.report?.summary ?? "", /Reported by the host from the worker's last words/);
+  const conclusion = model.requests.find((request) => request.system.includes("ended its turn twice without calling its report tool"));
+  assert.ok(conclusion, "the host asked for the conclusion");
+  assert.match(conclusion.user, /reporting ready now/, "from the worker's last words");
+  const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
+  assert.ok(replies.some((reply) => reply.text === "The version is bumped to 0.2.0."));
 });

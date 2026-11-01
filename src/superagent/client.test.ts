@@ -79,3 +79,17 @@ test("an invalid settings file keeps the last valid settings and reports why", (
   assert.equal(client.settings().eval.mode, "auto");
   assert.match(client.settingsError() ?? "", /settings\.json/);
 });
+
+test("a question the person answered leaves needs-you and shows the ticket working on the answer", async () => {
+  const { ticketRow } = await import("./views.js");
+  const { triggerId } = client.request("choose a separator");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Separator option", scope: "x", reason: "asked", name: "separator-option", evalId: candidate.evalId });
+  client.engine.assignmentStarted(ticketId!, client.store.tickets.get(ticketId!)!.assignments[0]!.id);
+  client.engine.report(ticketId!, { state: "progress", summary: "Need the default", question: "Dash or underscore?" });
+  assert.deepEqual([ticketRow(client, client.store.tickets.get(ticketId!)!).group, ticketRow(client, client.store.tickets.get(ticketId!)!).label], ["person", "Awaiting answer"]);
+  client.message(ticketId!, "dash");
+  const row = ticketRow(client, client.store.tickets.get(ticketId!)!);
+  assert.deepEqual([row.group, row.label, row.question], ["working", "Working on your answer", undefined]);
+});
