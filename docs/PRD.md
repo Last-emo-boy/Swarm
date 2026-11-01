@@ -41,6 +41,7 @@ Swarm is not a report generator by default. For coding and project work, the fin
 - Artifact store for intermediate material: long tool output, worker drafts, trace snapshots, temporary patch candidates, and compacted context.
 - Trace and debug logs for user input, control decisions, LLM calls, tool calls, workers, blackboard writes, permissions, review, and final output.
 - Self-iteration loop: inspect recent logs/traces/artifacts, classify failure modes, generate a plan, edit Swarm, run checks, and summarize verification.
+- Tickets (`swarm superagent`, adapted from dsh-superagent): requests from GitHub, Feishu and the TUI pass a deterministic sender gate, become tickets with an immutable mandate, and run in background workers with their own directories; replies go back where the request was made. Proactive work starts in observe mode. See `docs/SUPERAGENT.md`; image reads during assessments and a web panel are not implemented.
 
 ## Current Implementation Status
 

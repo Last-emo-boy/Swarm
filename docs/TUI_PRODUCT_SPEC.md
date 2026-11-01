@@ -42,10 +42,22 @@ The default dark profile must show at least four distinct semantic foreground co
 
 The first viewport must contain:
 
+- A one-line header with the model, the workspace, and the mode, permission and sandbox.
 - A visible prompt row with `Ask Swarm` or current input.
 - A conversation transcript area that can render the startup logo, user rows, assistant rows, tool rows, result rows, and progress rows.
-- A footer service cluster with mode, permission, sandbox, Gateway, Skills, Cache, LSP, Symphony, Tasks, Approvals, and MCP when space allows.
+- A footer service cluster with mode, permission, sandbox, Tickets, Gateway, Skills, Cache, LSP, Symphony, Tasks, Approvals, and MCP when space allows.
 - A shortcut hint on wide terminals when the user is not typing.
+
+The chat pane stays the conversation in every state. While work runs, one status line above the prompt shows the
+current activity, elapsed time and running workers; after a run, the result is a compact line at the end of the
+transcript, with the full card one detail key away. Approval and plan overlays replace the prompt chrome without
+replacing the transcript. The operator surface (Overview, Trace, Output, Sessions, Attempts, Activity, Blackboard) is
+in the other panes.
+
+When a superagent ticket waits for a person, a "needs you" strip sits above the status line: a heading, then one line
+per ticket with its marker (`?` a question, `!` a result to review, `×` blocked or failed), its handle, title, what it
+needs and the command that answers it, cut to the terminal width with the command kept visible. Nothing waiting means
+no strip. `/tickets` opens the tickets pane, grouped by what each ticket waits for.
 
 Acceptance:
 
