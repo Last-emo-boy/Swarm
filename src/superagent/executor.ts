@@ -19,6 +19,11 @@ const exec = promisify(execFile);
 const PREPARE_TIMEOUT_MS = 10 * 60_000;
 /** How long a stop waits for a worker process to exit before killing it. */
 const STOP_GRACE_MS = 10_000;
+/**
+ * A worker's foreground command moves to a background process after this long, so a person's message reaches the worker
+ * at its next step instead of waiting for a long build or test run (upstream moved shell commands after 5 seconds).
+ */
+const WORKER_SHELL_AUTO_BACKGROUND_MS = 30_000;
 
 /** True when an input comes from a person: a human Trigger that is not context only, or text such as a status request. */
 const fromPerson = (ticket: Ticket): boolean => ticket.undelivered.some((id) => {
@@ -141,7 +146,8 @@ export class SwarmExecutor {
       ...this.host.environment(ticket),
       SWARM_SUPERAGENT_HOME: client.stateDir,
       SWARM_SUPERAGENT_DEPLOYMENT: JSON.stringify(this.host.deployment()),
-      SWARM_PERMISSION_MODE: client.settings().executor.permissionMode
+      SWARM_PERMISSION_MODE: client.settings().executor.permissionMode,
+      SWARM_SHELL_AUTO_BACKGROUND_MS: String(WORKER_SHELL_AUTO_BACKGROUND_MS)
     });
     const child = spawn(program!, [...prefix, "superagent", "worker", "--ticket", ticketId, "--assignment", assignmentId],
       { cwd: ticket.execution!.directory, env, stdio: ["ignore", "ignore", "pipe"] });

@@ -7,7 +7,7 @@
 import { createLocalPolicy } from "../runtime/policy-configuration.js";
 import type { SwarmSession } from "../protocol/types.js";
 import type { ExecutionResult } from "../runtime/orchestrator.js";
-import { listBackgroundProcesses } from "../tools/background-processes.js";
+import { listBackgroundProcesses, stopBackgroundProcess } from "../tools/background-processes.js";
 import { latestReport, liveTicket, runningAssignment, waitsForPerson, type Ticket } from "./core/index.js";
 import { SuperagentClient } from "./client.js";
 import { batchLine, batchOf, inputMessage, inputResource, mandateInstructions, sourceTrigger, transient, triggerMessage,
@@ -183,7 +183,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       // Background processes the turn left running hold the ticket's slot until they end, for at most the limit.
       const ended = await settleBackground(sessionId, () => stopping || !current());
       if (stopping || !current()) break;
-      if (ended.length) retryNote = `Your background processes ended: ${ended.join(", ")}. Read their output with the process tools.`;
+      if (ended.length) retryNote = `Your background processes ended: ${ended.join(", ")}. Read their output with process.tail.`;
       client.engine.turnEnded(ticketId, assignmentId);
       const next = current()!;
       if (retryNote || waiting(next, new Set()).length) continue;
@@ -205,7 +205,10 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
   return exitCode;
 }
 
-/** Waits until the session's background processes end, for at most the limit; returns the ones that ended meanwhile. */
+/**
+ * Waits until the session's background processes end, for at most the limit, and stops those still running then; returns
+ * what ended meanwhile and what it stopped, for the worker's next turn.
+ */
 async function settleBackground(sessionId: string, stopped: () => boolean): Promise<string[]> {
   const running = async () => (await listBackgroundProcesses({ sessionId }).catch(() => [])).filter((process) => process.status === "running");
   const first = await running();
@@ -215,6 +218,13 @@ async function settleBackground(sessionId: string, stopped: () => boolean): Prom
     await sleep(5000);
     if (!(await running()).length) break;
   }
-  const still = new Set((await running()).map((process) => process.processId));
-  return first.filter((process) => !still.has(process.processId)).map((process) => `${process.processId} (${process.command.slice(0, 60)})`);
+  if (stopped()) return [];
+  const still = await running();
+  for (const process of still) await stopBackgroundProcess(process.processId, sessionId).catch(() => undefined);
+  const left = new Set(still.map((process) => process.processId));
+  const label = (process: { processId: string; command: string }) => `${process.processId} (${process.command.slice(0, 60)})`;
+  return [
+    ...first.filter((process) => !left.has(process.processId)).map(label),
+    ...still.map((process) => `${label(process)}, stopped after ${BACKGROUND_LIMIT_MS / 60_000} minutes`)
+  ];
 }

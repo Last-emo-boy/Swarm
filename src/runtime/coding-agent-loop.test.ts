@@ -909,3 +909,19 @@ function workspaceIndexRecentFiles(
     mtimeMs: file.mtimeMs ?? index + 1
   }));
 }
+
+test("a worker's human_action question reaches its outcome, and the main role's is ignored", async () => {
+  const answer = () => Promise.resolve(JSON.stringify({
+    status: "completed",
+    summary: "Two config keys conflict",
+    message: "Found two keys for the same setting; which one should win is a product decision.",
+    files_touched: [],
+    next_actions: [],
+    tool_calls: [],
+    human_action: "Should SWARM_MODEL or settings.models.planner win when both are set?"
+  }));
+  const worker = await runCodingLoopWithFakeProvider(answer, { role: "worker", workerId: "worker_question" });
+  assert.equal(worker.outcome?.human_action, "Should SWARM_MODEL or settings.models.planner win when both are set?");
+  const main = await runCodingLoopWithFakeProvider(answer, { role: "main" });
+  assert.equal(main.outcome?.human_action, undefined);
+});

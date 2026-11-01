@@ -3667,8 +3667,10 @@ export class SwarmRuntime {
       ? `Artifacts: ${outcome.intermediate_artifacts.slice(0, 8).join(", ")}${outcome.intermediate_artifacts.length > 8 ? `, +${outcome.intermediate_artifacts.length - 8}` : ""}`
       : undefined;
     const summary = firstLine(outcome?.final_summary ?? input.content) || `${input.specId} ${input.status}`;
+    const question = outcome?.human_action ? `Needs the user's decision: ${outcome.human_action}` : undefined;
     const content = [
       `Worker ${input.workerId} (${input.specId}) ${input.status}: ${summary}`,
+      question,
       `Worker session: ${input.workerSessionId}`,
       changed,
       tests,
