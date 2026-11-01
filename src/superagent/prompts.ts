@@ -34,7 +34,16 @@ const SWARM_DELIVERY = [
   "When mcp__ticket__report has state ready, a human_action question, or reply_to_trigger_id, also give `message`: the one short message the person reads, written as the Communication section says, in the language of the source conversation.",
   "The host posts it as the ticket's result, its question or its answer, in the conversation the replies section names, and refuses a message the rules do not allow.",
   "Without `message`, a ready report posts nothing and a question posts the question itself.",
-  "Progress, blocked and failed reports without a question stay internal."
+  "Progress, blocked and failed reports without a question stay internal.",
+  "Only mcp__ticket__report tells anyone what happened: returning status=completed ends your turn and reports nothing. Call mcp__ticket__report as a tool_call before you return completed.",
+  "`.swarm/` in the ticket directory is Swarm's local state: never commit it."
+].join("\n");
+
+/** What a code change delivers where the deployment has no GitHub repository: a commit on the ticket's branch. */
+const LOCAL_DELIVERY = [
+  "This deployment has no GitHub repository: the deliverable of a code change is a commit on this ticket's branch in its directory, not a pull request.",
+  "Commit with the repository's own git identity; do not set or invent another author.",
+  "Report ready once the commit is made and verified, naming the branch and the commit in `message`; do not report blocked because no pull request can be opened."
 ].join("\n");
 
 export interface WorkerPromptInput {
@@ -45,6 +54,8 @@ export interface WorkerPromptInput {
   mandate: string;
   /** Sources the ticket can involve, which select the GitHub and Feishu sections. */
   sources: readonly string[];
+  /** Whether the deployment has a GitHub repository and account, which decides what a code change delivers. */
+  github: boolean;
 }
 
 /** The instructions appended to Swarm's coding-loop prompt for a ticket's worker. */
@@ -57,7 +68,7 @@ export function workerPrompt(input: WorkerPromptInput): string {
     section("Replies", BUILT_IN.replies),
     section("Work", BUILT_IN.work),
     section("Handoff", `${BUILT_IN.handoff}\n${BUILT_IN.handoffWorker}`),
-    section("Delivery in Swarm", SWARM_DELIVERY),
+    section("Delivery in Swarm", input.github ? SWARM_DELIVERY : `${SWARM_DELIVERY}\n${LOCAL_DELIVERY}`),
     section("CLI", BUILT_IN.cli),
     ...(input.sources.includes("github") ? [section("GitHub", BUILT_IN.github)] : []),
     ...(input.sources.includes("feishu") ? [section("Feishu", BUILT_IN.feishu)] : []),

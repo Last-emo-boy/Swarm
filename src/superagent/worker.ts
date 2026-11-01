@@ -22,6 +22,13 @@ const TRANSIENT_TRIES = 3, TRANSIENT_BACKOFF_MS = 15_000;
 /** How long a worker's background processes may run on after its turn ended before it reports waiting. */
 const BACKGROUND_LIMIT_MS = 30 * 60_000;
 const RETRIED = "A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.";
+/** A ticket worker's budget per turn of the host: upstream set none, and Swarm's interactive defaults (12 turns) stop mid-ticket. */
+const WORKER_MAX_TURNS = 60, WORKER_MAX_TOOL_CALLS = 200;
+/**
+ * The one reminder a worker gets when a turn ends without any report: upstream's main Session asked an idle worker for its
+ * status; here the host asks once, and records the worker's last words as waiting if it still does not report.
+ */
+const UNREPORTED = "Your turn ended without mcp__ticket__report, so nobody knows what happened. Call mcp__ticket__report now: ready with `message` if the work is done and verified, progress if you wait for something such as CI or a review (say what), blocked or failed with what stops you, or dropped if there is nothing to do.";
 
 export interface WorkerOptions {
   ticketId: string;
@@ -59,7 +66,8 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
   const origin = sourceTrigger({ store: client.store }, start);
   const variables = ticketVariables({ deployment: options.deployment, sources: client.sources, settings, ticket: start, ...(origin ? { trigger: origin } : {}) });
   const sources = [...new Set([origin?.source, ...start.channels.map((channel) => channel.source)].filter((value): value is string => !!value))];
-  const appendSystemPrompt = workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(start.mandate), sources });
+  const appendSystemPrompt = workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(start.mandate), sources,
+    github: !!options.deployment.github });
 
   const [node, ...entry] = options.entry;
   const { SwarmRuntime } = await import("../runtime/runtime.js");
@@ -139,6 +147,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
   let exitCode = 0;
   let tries = 0;
   let retryNote: string | undefined;
+  let reminded = false;
   try {
     for (;;) {
       const ticket = current();
@@ -150,6 +159,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       retryNote = undefined;
       const delivered = new Set(inputs.map((input) => input.id));
       client.engine.inputsDelivered(ticketId, assignmentId, [...delivered]);
+      const reportedBefore = latestReport(current()!)?.at;
       let result: ExecutionResult | undefined;
       const live = setInterval(() => {
         const now = current();
@@ -162,7 +172,8 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
         }
       }, DELIVERY_POLL_MS);
       try {
-        result = await runtime.executeWorkSession({ session_id: sessionId, prompt, workspace_path: directory, appendSystemPrompt });
+        result = await runtime.executeWorkSession({ session_id: sessionId, prompt, workspace_path: directory, appendSystemPrompt,
+          maxTurns: WORKER_MAX_TURNS, maxToolCalls: WORKER_MAX_TOOL_CALLS });
         tries = 0;
       } catch (error) {
         if (transient(error) && tries < TRANSIENT_TRIES && !stopping) {
@@ -180,6 +191,11 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       if (stopping || !current()) break;
       const after = current()!;
       if (handedOff(after)) { client.engine.turnEnded(ticketId, assignmentId); break; }
+      if (!reminded && latestReport(after)?.at === reportedBefore) {
+        reminded = true;
+        retryNote = UNREPORTED;
+        continue;
+      }
       // Background processes the turn left running hold the ticket's slot until they end, for at most the limit.
       const ended = await settleBackground(sessionId, () => stopping || !current());
       if (stopping || !current()) break;

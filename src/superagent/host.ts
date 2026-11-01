@@ -222,6 +222,8 @@ export class SuperagentHost {
       const running = this.watchers.get(instance.id);
       if (!kind?.watch || !instance.enabled) {
         if (running) { running.controller.abort(); this.watchers.delete(instance.id); }
+        // A Source that is off is healthy: it says so instead of staying "starting".
+        if (kind) for (const entry of this.client.sources.healthEntries(kind.health).values()) entry.set({ state: "paused", detail: "Off" });
         continue;
       }
       if (running) continue;

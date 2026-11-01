@@ -67,8 +67,9 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
       console.log(status.running ? `Host running (pid ${status.pid})` : `No host running. Start one with: swarm superagent run`);
       const { person, working, queued, idle } = status.counts;
       console.log(`Tickets: ${person} need you, ${working} working, ${queued} queued, ${idle} idle`);
-      for (const [name, health] of Object.entries(status.health)) {
-        if (health.state !== "ready") console.log(`  ${name}: ${health.state} ${health.detail}`);
+      // A stopped host's last snapshot says nothing about now.
+      for (const [name, health] of Object.entries(status.running ? status.health : {})) {
+        if (health.state === "error" || health.state === "starting") console.log(`  ${name}: ${health.state} ${health.detail}`.trimEnd());
       }
       const error = client.settingsError();
       if (error) console.log(`Settings: ${error}`);

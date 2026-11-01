@@ -18,10 +18,26 @@ let model: Awaited<ReturnType<typeof startFakeModel>>;
 let host: Host;
 
 const loop = (result: Record<string, unknown>) => JSON.stringify({ files_touched: [], next_actions: [], tool_calls: [], ...result });
-/** The coding loop's answers, by how many tool results the ticket's turn has seen. */
+const reported = (request: ModelRequest) => request.user.includes("\"reported\":true") || request.user.includes("\\\"reported\\\":true");
+/** The coding loop's answers, by ticket and by how many tool results the ticket's turn has seen. */
 function answer(request: ModelRequest): string {
   if (request.system.includes("You route requests for Swarm's ticket host")) {
+    if (request.user.includes("changelog")) {
+      return JSON.stringify({ kind: "accept", title: "Update the changelog", worktree_name: "update-changelog", acknowledgement: "On it: updating the changelog." });
+    }
     return JSON.stringify({ kind: "accept", title: "Create hello.txt", worktree_name: "create-hello", acknowledgement: "On it: creating hello.txt." });
+  }
+  // The changelog ticket's worker ends its first turn without a report, as a real model did in a live trial.
+  if (request.system.includes("update-changelog-")) {
+    if (!request.user.includes("Your turn ended without mcp__ticket__report")) {
+      return loop({ status: "completed", summary: "Done — reporting the ticket result now.", message: "Done — reporting the ticket result now." });
+    }
+    if (!reported(request)) {
+      return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
+        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Nothing to change in the changelog.", message: "The changelog is up to date." } }
+      ] });
+    }
+    return loop({ status: "completed", summary: "Reported", message: "Reported." });
   }
   const trigger = /trigger_id\\?":\\?"([0-9a-f]{32})/.exec(request.user)?.[1] ?? "";
   if (!request.user.includes("hello.txt was written") && !/"action":\s*"Write"[\s\S]*"status":\s*"success"/.test(request.user)) {
@@ -30,7 +46,7 @@ function answer(request: ModelRequest): string {
       { id: "write", action: "Write", inputs: { file_path: "hello.txt", content: "hi\n" } }
     ] });
   }
-  if (!request.user.includes("\"reported\":true") && !request.user.includes("\\\"reported\\\":true")) {
+  if (!reported(request)) {
     return loop({ status: "continue", summary: "Verify and report", message: "Checking the file and reporting.", tool_calls: [
       { id: "check", action: "Bash", inputs: { command: "cat hello.txt" } },
       { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Wrote hello.txt; cat shows hi.", message: "hello.txt is ready." } }
@@ -87,4 +103,21 @@ test("a local request runs to a completed ticket: routed, worked in its own dire
   ]);
   const workerCalls = model.requests.filter((request) => request.system.includes("## Swarm superagent"));
   assert.ok(workerCalls.length >= 2, "the worker ran Swarm's coding loop with the superagent instructions");
+});
+
+test("a worker whose turn ends without a report is reminded once, and its report then ends the ticket", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  client.request("update the changelog for the release");
+  const deadline = Date.now() + 100_000;
+  const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Update the changelog");
+  let ticket = find();
+  while (Date.now() < deadline && !ticket?.ended) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ticket = find();
+  }
+  assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)}`);
+  const reminders = model.requests.filter((request) => request.system.includes("update-changelog-") && request.user.includes("Your turn ended without mcp__ticket__report"));
+  assert.ok(reminders.length >= 1, "the worker was reminded");
+  const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
+  assert.ok(replies.some((reply) => reply.text === "The changelog is up to date."));
 });
