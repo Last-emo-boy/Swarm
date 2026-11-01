@@ -1618,10 +1618,11 @@ export function tuiScreenMode(input: {
     pane: input.pane,
     columns: input.columns
   });
-  const needsRunBoardSurface = input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasResult) || Boolean(input.hasRunBoard);
+  // The chat pane stays the conversation while work runs, waits for approval, and after a result: the transcript is
+  // never replaced by the operator surface, which the other panes still show.
   const primarySurface = input.pane === "log"
     ? "trace"
-    : input.pane === "chat" && !needsRunBoardSurface
+    : input.pane === "chat"
       ? "conversation"
       : "operator";
   return {

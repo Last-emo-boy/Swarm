@@ -1,6 +1,6 @@
-export type MainPaneId = "chat" | "log" | "overview" | "output" | "sessions" | "attempts" | "agents" | "blackboard";
+export type MainPaneId = "chat" | "log" | "overview" | "output" | "sessions" | "attempts" | "agents" | "blackboard" | "tickets";
 
-export const mainPaneOrder: MainPaneId[] = ["chat", "log", "overview", "output", "sessions", "attempts", "agents", "blackboard"];
+export const mainPaneOrder: MainPaneId[] = ["chat", "log", "overview", "output", "sessions", "attempts", "agents", "blackboard", "tickets"];
 
 export const mainPaneLabels: Record<MainPaneId, string> = {
   chat: "Chat",
@@ -10,7 +10,8 @@ export const mainPaneLabels: Record<MainPaneId, string> = {
   sessions: "Sessions",
   attempts: "Attempts",
   agents: "Activity",
-  blackboard: "Blackboard"
+  blackboard: "Blackboard",
+  tickets: "Tickets"
 };
 
 export const mainPaneShortLabels: Record<MainPaneId, string> = {
@@ -21,7 +22,8 @@ export const mainPaneShortLabels: Record<MainPaneId, string> = {
   sessions: "Ses",
   attempts: "Att",
   agents: "Act",
-  blackboard: "Blk"
+  blackboard: "Blk",
+  tickets: "Tix"
 };
 
 export function nextMainPane(current: MainPaneId, direction: 1 | -1): MainPaneId {

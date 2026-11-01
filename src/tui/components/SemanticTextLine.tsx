@@ -1,5 +1,6 @@
 import React from "react";
 import { Text } from "../ui.js";
+import { displayWidth, sliceByDisplayWidth } from "../display-width.js";
 import {
   resolveTuiColor,
   type TuiColorRef
@@ -48,6 +49,37 @@ export function SemanticTextLine({
       ))}
     </Text>
   );
+}
+
+/**
+ * Cuts spans to `maxWidth` terminal cells, ending with `…` when anything was cut, so a line of several styled spans stays
+ * one row: the renderer truncates a single text node, not a run of nested ones.
+ */
+export function truncateSpans(spans: readonly SemanticTextSpan[], maxWidth: number): SemanticTextSpan[] {
+  const total = spans.reduce((sum, span) => sum + displayWidth(span.text), 0);
+  if (total <= maxWidth) return [...spans];
+  const room = Math.max(0, maxWidth - 1);
+  const result: SemanticTextSpan[] = [];
+  let used = 0;
+  for (const span of spans) {
+    const width = displayWidth(span.text);
+    if (used + width <= room) {
+      result.push(span);
+      used += width;
+      continue;
+    }
+    const head = sliceByDisplayWidth(span.text, room - used).head;
+    if (head) result.push({ ...span, text: head });
+    result.push({ text: "…", color: span.color, dim: span.dim });
+    return result;
+  }
+  return result;
+}
+
+/** Cuts `text` to `maxWidth` cells, ending with `…` when it was cut. */
+export function truncateText(text: string, maxWidth: number): string {
+  if (displayWidth(text) <= maxWidth) return text;
+  return `${sliceByDisplayWidth(text, Math.max(0, maxWidth - 1)).head}…`;
 }
 
 export function semanticToolLineSpans(value: string, options: {

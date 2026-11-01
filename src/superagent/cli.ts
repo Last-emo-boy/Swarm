@@ -130,15 +130,8 @@ export function selfCommand(): string[] {
 
 async function runHost(): Promise<void> {
   const { SuperagentHost } = await import("./host.js");
-  const { OpenAIProvider } = await import("../providers/openai-provider.js");
-  const provider = new OpenAIProvider();
-  const host = new SuperagentHost({
-    workerCommand: selfCommand(),
-    complete: ({ purpose, system, user, model }) => provider.generateText({
-      model: model ?? provider.workerModel, system: [{ text: system, cache: true }], user,
-      responseFormat: "json_object", maxOutputTokens: 4000, usage: { purpose }
-    })
-  });
+  const { providerComplete } = await import("./provider.js");
+  const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete() });
   await host.start();
   console.log(`Superagent host running for ${host.stateDir} (pid ${process.pid}). Ctrl+C stops it.`);
   if (host.problem) console.log(`Setup: ${host.problem.detail}`);

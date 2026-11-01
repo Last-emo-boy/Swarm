@@ -1,7 +1,7 @@
 import { compactValue } from "./theme.js";
 import { serviceClusterItem, type ServiceClusterItem } from "./status-surface.js";
 
-export type FooterPillId = "tasks" | "approvals" | "cache" | "gateway" | "mcp" | "skills" | "symphony" | "lsp";
+export type FooterPillId = "tickets" | "tasks" | "approvals" | "cache" | "gateway" | "mcp" | "skills" | "symphony" | "lsp";
 
 export type FooterPillTone = "neutral" | "running" | "pending" | "success" | "warning" | "danger" | "muted";
 
@@ -85,6 +85,8 @@ export function buildFooterPills(input: {
   symphonyRunning: number;
   symphonyRetrying: number;
   lspStatus?: string;
+  /** The tickets' summary, such as "1 need you · 2 working"; no pill without one. */
+  tickets?: { value: string; waiting: number };
 }): FooterPill[] {
   const cache = serviceClusterItem({ service: "cache", status: input.cacheStatus, hitRate: input.cacheHitRate });
   const gateway = serviceClusterItem({ service: "gateway", status: input.gatewayStatus ?? "local" });
@@ -98,6 +100,13 @@ export function buildFooterPills(input: {
   });
   const lsp = serviceClusterItem({ service: "lsp", status: input.lspStatus ?? "unknown" });
   return [
+    ...(input.tickets ? [{
+      id: "tickets" as const,
+      label: "tickets",
+      value: input.tickets.value,
+      tone: input.tickets.waiting > 0 ? "pending" as const : "muted" as const,
+      detailHint: "Tickets"
+    }] : []),
     {
       id: "tasks",
       label: "tasks",

@@ -523,6 +523,8 @@ function normalizeFooterLabel(label: string, density: TuiDensity): string {
 
 function prioritizedFooterItemPills(items: FooterPill[], selectedFooterItem: FooterPillId | undefined): FooterDisplayPill[] {
   const priority = new Map<FooterPillId, number>([
+    // Tickets that wait for a person lead: the footer is where the conversation shows them besides the strip.
+    ["tickets", -1],
     ["approvals", 0],
     ["cache", 1],
     ["lsp", 2],

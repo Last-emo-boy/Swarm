@@ -1078,7 +1078,7 @@ test("screen mode keeps the default TUI conversation-first", () => {
     compactStatus: true,
     showCurrentAction: true,
     showInspector: false,
-    primarySurface: "operator"
+    primarySurface: "conversation"
   });
 
   assert.deepEqual(tuiScreenMode({
@@ -1093,7 +1093,7 @@ test("screen mode keeps the default TUI conversation-first", () => {
     compactStatus: true,
     showCurrentAction: false,
     showInspector: false,
-    primarySurface: "operator"
+    primarySurface: "conversation"
   });
 
   assert.deepEqual(tuiScreenMode({
@@ -1108,7 +1108,7 @@ test("screen mode keeps the default TUI conversation-first", () => {
     compactStatus: true,
     showCurrentAction: true,
     showInspector: false,
-    primarySurface: "operator"
+    primarySurface: "conversation"
   });
 
   assert.deepEqual(tuiScreenMode({

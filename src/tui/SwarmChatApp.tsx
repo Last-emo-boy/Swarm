@@ -95,6 +95,12 @@ import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
 import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
+import { ConversationHeader } from "./components/ConversationHeader.js";
+import { NeedsYouStrip } from "./components/NeedsYouStrip.js";
+import { TicketsPane } from "./components/TicketsPane.js";
+import { TuiTickets, type TicketSnapshot } from "./tickets/controller.js";
+import { runTicketCommand } from "./tickets/commands.js";
+import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPillValue } from "./tickets/view-model.js";
 import {
   compactValue,
   policyBadge,
@@ -388,6 +394,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const lastActionLogEventSignatureRef = useRef<string | undefined>(undefined);
   const previousActionLogLengthRef = useRef(actionLogRows.length);
   const [motionTick, setMotionTick] = useState(0);
+  const ticketsRef = useRef<TuiTickets | undefined>(undefined);
+  const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | undefined>(undefined);
+  const ticketSignatureRef = useRef("");
+  const busySinceRef = useRef<number | undefined>(undefined);
+  const [ticketSelection, setTicketSelection] = useState(0);
 
   const terminalRows = stdoutRows || 32;
   const terminalColumns = stdoutColumns || 100;
@@ -564,6 +575,21 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }, [runtime]);
 
   useEffect(() => {
+    busySinceRef.current = busy ? Date.now() : undefined;
+  }, [busy]);
+
+  // Tickets: their state every two seconds, and replies to tickets filed here appended to the transcript.
+  useEffect(() => {
+    const timer = setInterval(refreshTickets, 2_000);
+    timer.unref?.();
+    refreshTickets();
+    return () => {
+      clearInterval(timer);
+      void ticketsRef.current?.close();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!runtime) {
       lspStatusReportSignatureRef.current = undefined;
       setLspStatusReport(undefined);
@@ -647,6 +673,79 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       symphonyDaemonRecordsSignatureRef.current = signature;
       setSymphonyDaemons(next);
     }
+  }
+
+  function ticketsController(): TuiTickets {
+    ticketsRef.current ??= new TuiTickets({ log: (message) => runtimeRef.current?.debug?.warn("superagent", message) });
+    return ticketsRef.current;
+  }
+
+  function refreshTickets(): void {
+    void (async () => {
+      const tickets = ticketsController();
+      const snapshot = await tickets.snapshot();
+      const signature = snapshot
+        ? JSON.stringify([snapshot.status.running, snapshot.status.counts, snapshot.rows.map((row) => [row.id, row.label, row.updatedAt, row.question])])
+        : "";
+      if (signature !== ticketSignatureRef.current) {
+        ticketSignatureRef.current = signature;
+        setTicketSnapshot(snapshot);
+      }
+      for (const reply of await tickets.newReplies()) {
+        appendChatTranscriptMessage({
+          role: "assistant",
+          kind: "message",
+          title: `ticket ${reply.ticketId?.slice(0, 8) ?? ""}`.trim(),
+          brief: `ticket ${reply.ticketId?.slice(0, 8) ?? "?"} · ${reply.text}`
+        });
+      }
+    })().catch((error: unknown) => {
+      runtimeRef.current?.debug?.warn("superagent", `ticket refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
+  /** The tickets pane's keys: select, open, stop, retry, and back to the conversation. */
+  function handleTicketsPaneInput(character: string | undefined, key: { upArrow?: boolean; downArrow?: boolean; return?: boolean; escape?: boolean; ctrl?: boolean }): boolean {
+    if (key.ctrl) return false;
+    const rows = paneOrder(ticketSnapshot?.rows ?? []);
+    if (key.escape || character === "q") {
+      setMainPane("chat");
+      return true;
+    }
+    if (key.upArrow || character === "k") {
+      setTicketSelection((index) => Math.max(0, index - 1));
+      return true;
+    }
+    if (key.downArrow || character === "j") {
+      setTicketSelection((index) => Math.min(Math.max(0, rows.length - 1), index + 1));
+      return true;
+    }
+    const row = rows[Math.min(ticketSelection, rows.length - 1)];
+    if (!row) return true;
+    const tickets = ticketsController();
+    if (key.return) {
+      void tickets.messages(row.id).then((messages) => {
+        recordCommandDetail(ticketDetailText(row, messages));
+        setDetailOpen(true);
+      }, pushError);
+      return true;
+    }
+    if (character === "s" && row.group !== "ended") {
+      void tickets.stop(row.id).then(() => {
+        appendChatMessage({ role: "system", brief: `Stopped ticket ${row.short}: ${row.title}.` });
+        refreshTickets();
+      }, pushError);
+      return true;
+    }
+    if (character === "r") {
+      void tickets.retry(row.id).then(async () => {
+        appendChatMessage({ role: "system", brief: `Retrying ticket ${row.short}: ${row.title}.` });
+        await tickets.ensureHost();
+        refreshTickets();
+      }).catch(pushError);
+      return true;
+    }
+    return true;
   }
 
   function appendChatMessage(message: ChatMessage): void {
@@ -793,6 +892,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         return;
       }
       handleDetailInput(key);
+      return;
+    }
+
+    if (mainPane === "tickets" && !onboard.enabled && handleTicketsPaneInput(character, key)) {
       return;
     }
 
@@ -1427,9 +1530,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
   function conversationBottomRows(): number {
     return conversationBottomRowsForTerminal({
-      terminalRows,
-      contentRows: conversationPromptRows(0) + completionRows + conversationBottomStatusRows({
-        busy: false,
+      terminalRows: terminalRows - CONVERSATION_HEADER_ROWS,
+      contentRows: conversationPromptRows(0) + completionRows + needsYouRows(needsYouItems(ticketSnapshot?.rows ?? [])) + conversationBottomStatusRows({
+        busy,
         hasResult: false
       }),
       approval: Boolean(approval),
@@ -1472,6 +1575,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   async function openFooterDetail(id: FooterPillId): Promise<void> {
+    if (id === "tickets") {
+      setTicketSelection(0);
+      setMainPane("tickets");
+      return;
+    }
     setFooterNavigation((state) => footerNavigationReducer(state, { type: "select", id }, footerItems));
     try {
       const detail = await renderFooterDetail(id);
@@ -1719,6 +1827,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   async function runSlashCommand(command: string, args: string[], parsed?: ReturnType<typeof parseSlashCommandLine>): Promise<SlashCommandResult> {
+    if (command === "ticket" || command === "tickets") {
+      const result = await runTicketCommand(ticketsController(), command, args);
+      if (result.openPane) {
+        setTicketSelection(0);
+        setMainPane("tickets");
+      }
+      refreshTickets();
+      return result.detail ? { brief: appendDetailShortcut(result.brief), detail: result.detail } : { brief: result.brief };
+    }
     if (command === "help") {
       const includeAdvanced = hasAdvancedSurfaceFlag(args);
       const namespace = stripAdvancedSurfaceFlags(args)[0]?.toLowerCase();
@@ -3383,6 +3500,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     );
   }
 
+  if (mainPane === "tickets") {
+    return (
+      <TicketsPane
+        rows={paneOrder(ticketSnapshot?.rows ?? [])}
+        selected={ticketSelection}
+        columns={terminalColumns}
+        height={terminalRows}
+        summary={ticketsPillValue(ticketSnapshot?.status)}
+        hosting={ticketsRef.current?.hosting() ?? false}
+      />
+    );
+  }
+
   const latestSnapshot = runtime && lastSessionId ? safeWorkSnapshot(runtime, lastSessionId) : undefined;
   const displayedResultCard = latestResultCard
     ?? (latestSnapshot?.final_outcome ? buildResultCardFromSnapshot(latestSnapshot) : undefined);
@@ -3537,12 +3667,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     skillStatus: skillRuntimeSummary?.state,
     symphonyRunning: symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length,
     symphonyRetrying: 0,
-    lspStatus: lspHealthStatus
+    lspStatus: lspHealthStatus,
+    ...(ticketSnapshot ? { tickets: { value: ticketsFooterValue(ticketSnapshot.status), waiting: ticketSnapshot.status.counts.person } } : {})
   });
   const selectedFooterItem = selectedFooterPill(footerNavigation, footerItems)?.id;
   if (screenMode.primarySurface === "conversation") {
     const bottomRows = conversationBottomRows();
-    const conversationRows = fullscreenConversationRows(terminalRows, bottomRows);
+    const conversationRows = fullscreenConversationRows(terminalRows - CONVERSATION_HEADER_ROWS, bottomRows);
+    const waiting = needsYouItems(ticketSnapshot?.rows ?? []);
+    const runningWorkers = [...workers.values()].filter((worker) => worker.status === "running").length;
     const inputCapacity = chatInputCapacity();
     const bottom = approval ? (
       <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
@@ -3553,8 +3686,18 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         busy={busy}
         activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
         motionFrame={shouldAnimate ? motionTick : undefined}
-        resultCard={displayedResultCard}
         detailAvailable={latestDetailSource !== "none"}
+        notice={<NeedsYouStrip items={waiting} columns={terminalColumns} />}
+        status={
+          <Box paddingX={1}>
+            <ConversationStatusLine
+              message={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : "Starting"}
+              motionFrame={shouldAnimate ? motionTick : undefined}
+              elapsedMs={busySinceRef.current ? Date.now() - busySinceRef.current : undefined}
+              extra={[runningWorkers ? `${runningWorkers} workers` : "", "Ctrl+C interrupts"].filter(Boolean).join(" · ")}
+            />
+          </Box>
+        }
         input={
           <ChatInputArea
             onSubmit={submitObjective}
@@ -3609,6 +3752,19 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         columns={terminalColumns}
         rows={terminalRows}
         bottomRows={bottomRows}
+        headerRows={CONVERSATION_HEADER_ROWS}
+        header={
+          <ConversationHeader
+            columns={terminalColumns}
+            model={settingsSnapshot.models.worker || settingsSnapshot.models.planner || "no model"}
+            workspace={displayWorkspace(process.cwd())}
+            right={[
+              { text: routeBadge(routeLabel).toLowerCase(), color: "brand.focus" },
+              { text: ` · ${policyBadge(settingsSnapshot.permissions.defaultMode).toLowerCase()}`, color: "text.muted" },
+              { text: ` · ${sandboxBadge(runSandboxMode).toLowerCase()}`, color: "text.muted" }
+            ]}
+          />
+        }
         completionOverlay={completionOverlay}
         completionOverlayRows={chatCompletionOverlayRows(terminalRows, bottomRows)}
         scrollable={
@@ -3623,12 +3779,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             selectedMessageIndex={messageCursor.selectedIndex}
             searchMatchMessageIndex={activeSearchMatch?.messageIndex}
             searchMatchQuery={transcriptSearch.query}
-            tailRows={conversationTailRows({ busy, hasResult: Boolean(displayedResultCard) })}
+            tailRows={conversationTailRows({ busy: false, hasResult: !busy && Boolean(displayedResultCard) })}
             tail={conversationTail({
-              busy,
+              busy: false,
               activity: loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined,
               motionFrame: shouldAnimate ? motionTick : undefined,
-              resultCard: displayedResultCard,
+              resultCard: busy ? undefined : displayedResultCard,
               detailAvailable: latestDetailSource !== "none"
             })}
           />
@@ -3988,6 +4144,15 @@ function PaneSection({
   );
 }
 
+/** The conversation header's height. */
+const CONVERSATION_HEADER_ROWS = 1;
+
+/** A workspace path as the header shows it, with the home directory as `~`. */
+function displayWorkspace(path: string): string {
+  const home = process.env.HOME;
+  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
+}
+
 function paneAccentToken(pane: MainPaneId): TuiColorRef {
   switch (pane) {
     case "output": return "role.tool";
@@ -3998,6 +4163,7 @@ function paneAccentToken(pane: MainPaneId): TuiColorRef {
     case "overview": return "brand.focus";
     case "chat": return "text.primary";
     case "log": return "text.primary";
+    case "tickets": return "status.pending";
   }
 }
 
