@@ -1013,6 +1013,10 @@ function workflowText(workspaceRoot: string): string {
     `  root: \"${workspaceRoot.replace(/\\/g, "/")}\"`,
     "agent:",
     "  max_concurrent_agents: 2",
+    // WORKFLOW.md sits in the Gateway workspace root, so the runtime system loop would
+    // otherwise tick it shortly after startup and dispatch sessions under the route assertions.
+    "system_loop:",
+    "  enabled: false",
     "---",
     "Implement {{issue.identifier}}: {{issue.title}}"
   ].join("\n");
@@ -1039,6 +1043,8 @@ function previewWorkflowText(workItemsPath: string, workspaceRoot: string): stri
     `  root: \"${workspaceRoot.replace(/\\/g, "/")}\"`,
     "agent:",
     "  max_concurrent_agents: 2",
+    "system_loop:",
+    "  enabled: false",
     "---",
     "Preview {{ issue.identifier }} | {{ issue.title }} | state={{ issue.state }} | source={{ issue.source_id }}"
   ].join("\n");
