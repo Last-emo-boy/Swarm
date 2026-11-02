@@ -72,6 +72,8 @@ export type WorkSessionOutcome = {
   intermediate_artifacts: string[];
   tests_run: string[];
   final_summary: string;
+  /** A worker's one concrete question for the user, which the main Swarm asks; absent when the worker needs no decision. */
+  human_action?: string;
 };
 
 export type SwarmMessageType =

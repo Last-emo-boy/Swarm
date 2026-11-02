@@ -19,6 +19,7 @@ import {
   resolveWritablePath
 } from "./permissions.js";
 import { ensureWorkspaceIndex } from "../runtime/workspace-index.js";
+import { shellAutoBackgroundMs } from "../config/settings.js";
 import type { LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
 import {
   GREP_FALLBACK_MAX_DEPTH,
@@ -2056,6 +2057,10 @@ async function executeShell(action: Extract<ToolAction, { type: "shell.exec" }>,
     });
     return backgroundProcessToolResult(action.type, processRecord, context);
   }
+  const autoBackgroundMs = shellAutoBackgroundMs(context.settings);
+  if (autoBackgroundMs !== undefined && autoBackgroundMs < timeoutMs) {
+    return executeShellWithAutoBackground(action, context, cwd, maxOutputBytes, autoBackgroundMs);
+  }
   const result = await runShellCommand(action.command, { cwd, timeoutMs, maxOutputBytes });
 
   if (result.error) {
@@ -2259,6 +2264,61 @@ async function executeProcessStop(action: Extract<ToolAction, { type: "process.s
     summary: `process ${record.processId} ${record.status}`,
     content: renderProcessRecord(record, context),
     data: { process: record }
+  };
+}
+
+/**
+ * Runs a foreground shell command as a background process from the start and waits up to `autoBackgroundMs`: one that ends
+ * in time returns its output as a foreground command does; one still running stays a background process, which the turn
+ * can check with process.status and process.tail instead of blocking until a timeout.
+ */
+async function executeShellWithAutoBackground(
+  action: Extract<ToolAction, { type: "shell.exec" }>,
+  context: LocalToolContext,
+  cwd: string,
+  maxOutputBytes: number,
+  autoBackgroundMs: number
+): Promise<ToolResult> {
+  const started = await startBackgroundProcess({
+    command: action.command,
+    cwd,
+    sessionId: context.sessionId,
+    taskId: context.taskId,
+    description: action.description,
+    maxLogBytes: action.maxLogBytes
+  });
+  let record = started;
+  const deadline = Date.now() + autoBackgroundMs;
+  while (record.status === "running" && Date.now() < deadline) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(100, Math.max(1, deadline - Date.now()))));
+    record = await getBackgroundProcess(started.processId, started.sessionId);
+  }
+  if (record.status === "running") {
+    const result = backgroundProcessToolResult(action.type, record, context);
+    return {
+      ...result,
+      summary: `command still running after ${autoBackgroundMs}ms; it continues as background process ${record.processId}`,
+      metadata: { cwd: displayPath(cwd, context.workspace), autoBackgrounded: true, autoBackgroundMs }
+    };
+  }
+  const tail = await readBackgroundProcessTail({ processId: record.processId, sessionId: record.sessionId, maxBytes: maxOutputBytes, lines: 100_000 });
+  const output = tail.content.split(/\r?\n/).filter((line) => !line.startsWith("[swarm] ")).join("\n").trim();
+  const succeeded = record.status === "completed" && record.exitCode === 0;
+  const content = [`$ ${action.command}`, output].filter(Boolean).join("\n").trim();
+  return {
+    action: action.type,
+    status: succeeded ? "success" : "failed",
+    summary: `command exited ${record.exitCode ?? record.signal ?? record.status}`,
+    content,
+    errorCode: succeeded ? undefined : classifyProcessError({ exitCode: record.exitCode ?? null, signal: record.signal ?? null, timedOut: false, error: record.lastError }),
+    recoverable: succeeded ? undefined : true,
+    metadata: {
+      cwd: displayPath(cwd, context.workspace),
+      exitCode: record.exitCode,
+      signal: record.signal,
+      truncated: tail.truncated,
+      autoBackgroundMs
+    }
   };
 }
 

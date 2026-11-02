@@ -348,7 +348,7 @@ function formatChecklist(result: TuiSmokeHarnessResult): string {
   ].join("\n");
 }
 
-function terminalScreenText(value: string): string {
+export function terminalScreenText(value: string): string {
   const rows: string[][] = [];
   let cursorRow = 0;
   let cursorColumn = 0;

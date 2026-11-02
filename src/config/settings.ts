@@ -51,6 +51,8 @@ export type McpServerSettings = {
   headers?: Record<string, string>;
   trust: "user" | "project" | "workspace";
   exposeTools?: boolean;
+  /** Load this server's tools into every turn instead of deferring them behind tool search. */
+  alwaysLoad?: boolean;
   exposeResources?: boolean;
   exposePrompts?: boolean;
   toolRiskOverrides?: Record<string, "r0" | "r1" | "r2" | "r3" | "r4">;
@@ -79,6 +81,11 @@ export type SwarmSettings = {
     taskTimeoutMs: number;
     databasePath: string;
     projectArtifactDir: string;
+    /**
+     * When set, a foreground shell command still running after this many milliseconds keeps running as a background
+     * process instead of blocking the turn until its timeout; unset keeps the foreground behaviour.
+     */
+    shellAutoBackgroundMs?: number;
   };
   tools: {
     webSearch: boolean;
@@ -968,7 +975,8 @@ function expandSettings(settings: SwarmSettings): SwarmSettings {
     ...settings,
     runtime: {
       ...settings.runtime,
-      databasePath: expandPath(settings.runtime.databasePath)
+      databasePath: expandPath(settings.runtime.databasePath),
+      shellAutoBackgroundMs: positiveIntegerOrUndefined(settings.runtime.shellAutoBackgroundMs)
     },
     models: {
       ...settings.models,
@@ -1081,6 +1089,7 @@ function normalizeMcpServers(servers: Record<string, McpServerSettings>): Record
           toolRiskOverrides: normalizeMcpToolRiskOverrides(server.toolRiskOverrides),
           trust: server.trust === "project" || server.trust === "workspace" ? server.trust : "user",
           exposeTools: server.exposeTools !== false,
+          alwaysLoad: server.alwaysLoad === true,
           exposeResources: server.exposeResources === true,
           exposePrompts: server.exposePrompts === true,
           timeoutMs: positiveInteger(server.timeoutMs, 30_000)
@@ -1524,4 +1533,14 @@ export function defaultProviderRegistry(): Record<string, ProviderDefinition> {
       models: {}
     }
   };
+}
+
+function positiveIntegerOrUndefined(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+/** The shell auto-background threshold: `SWARM_SHELL_AUTO_BACKGROUND_MS` when set, else the runtime setting. */
+export function shellAutoBackgroundMs(settings: Pick<SwarmSettings, "runtime">): number | undefined {
+  return positiveIntegerOrUndefined(process.env.SWARM_SHELL_AUTO_BACKGROUND_MS) ?? settings.runtime.shellAutoBackgroundMs;
 }

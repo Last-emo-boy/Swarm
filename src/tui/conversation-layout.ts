@@ -1082,9 +1082,12 @@ function wrapConversationLine(line: ConversationLine, columns: number | undefine
     : hardWrapConversationText(line.text, width, continuationPrefix);
   let offset = 0;
   return chunks.map((text, index) => {
-    const chunkOffset = line.text.indexOf(text.trimStart(), offset);
+    // A continuation row starts with its indent, which is not part of the line's text: the next search starts where this
+    // row's own text ends, or a styled row after it would lose as many characters as the indent is wide.
+    const content = text.trimStart();
+    const chunkOffset = line.text.indexOf(content, offset);
     const start = chunkOffset >= 0 ? chunkOffset : offset;
-    offset = start + text.length;
+    offset = start + content.length;
     return {
       ...line,
       key: index === 0 ? line.key : `${line.key}:wrap:${index}`,
@@ -1618,10 +1621,11 @@ export function tuiScreenMode(input: {
     pane: input.pane,
     columns: input.columns
   });
-  const needsRunBoardSurface = input.busy || input.hasApproval || input.hasPendingPlan || Boolean(input.hasResult) || Boolean(input.hasRunBoard);
+  // The chat pane stays the conversation while work runs, waits for approval, and after a result: the transcript is
+  // never replaced by the operator surface, which the other panes still show.
   const primarySurface = input.pane === "log"
     ? "trace"
-    : input.pane === "chat" && !needsRunBoardSurface
+    : input.pane === "chat"
       ? "conversation"
       : "operator";
   return {

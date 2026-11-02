@@ -16,9 +16,13 @@ export function ConversationFullscreenLayout(props: {
   completionOverlay?: React.ReactNode;
   completionOverlayRows?: number;
   bottomRows: number;
+  /** A line above the transcript, such as the conversation header; `headerRows` is its height. */
+  header?: React.ReactNode;
+  headerRows?: number;
 }): React.ReactElement {
+  const headerRows = props.header ? Math.max(0, props.headerRows ?? 1) : 0;
   const contract = conversationRendererContract({
-    rows: props.rows,
+    rows: props.rows - headerRows,
     columns: props.columns,
     bottomRows: props.bottomRows,
     completionOverlayRows: props.completionOverlay ? props.completionOverlayRows ?? 1 : undefined
@@ -27,7 +31,12 @@ export function ConversationFullscreenLayout(props: {
   const bottomRows = contract.zones.bottomChrome.height;
   const completionOverlay = contract.zones.completionOverlay;
   return (
-    <Box width={contract.columns} height={contract.rows} flexDirection="column" overflow="hidden">
+    <Box width={contract.columns} height={contract.rows + headerRows} flexDirection="column" overflow="hidden">
+      {headerRows > 0 && (
+        <Box flexShrink={0} width="100%" height={headerRows} overflow="hidden" flexDirection="column">
+          {props.header}
+        </Box>
+      )}
       <Box
         flexGrow={1}
         flexShrink={1}
@@ -85,10 +94,16 @@ export function ConversationBottomChrome(props: {
   motionFrame?: number;
   resultCard?: RuntimeResultCard;
   detailAvailable?: boolean;
+  /** What waits for a person, above the status and the prompt; nothing while nothing waits. */
+  notice?: React.ReactNode;
+  /** The run's status while busy, in place of the one-line activity. */
+  status?: React.ReactNode;
 }): React.ReactElement {
   return (
     <Box flexDirection="column" width="100%">
-      {props.busy && (
+      {props.notice}
+      {props.busy && props.status}
+      {props.busy && !props.status && (
         <ConversationStatusLine
           message={props.activity ?? "Starting..."}
           motionFrame={props.motionFrame}
@@ -108,16 +123,28 @@ export function ConversationBottomChrome(props: {
 export function ConversationStatusLine(props: {
   message: string;
   motionFrame?: number;
+  /** How long the run has taken, shown after the activity. */
+  elapsedMs?: number;
+  /** Counts and a key hint, such as "2 workers · Ctrl+C interrupts", shown last. */
+  extra?: string;
 }): React.ReactElement {
   const spinner = typeof props.motionFrame === "number"
     ? SPINNER_FRAMES[props.motionFrame % SPINNER_FRAMES.length]
     : "*";
+  const elapsed = props.elapsedMs !== undefined ? ` · ${formatStatusElapsed(props.elapsedMs)}` : "";
   return (
     <Text color={visualTokenColor("text.muted")} wrap="truncate">
       <Text color={visualTokenColor("status.running")}>{spinner} </Text>
       {stripActivityPrefix(props.message)}
+      {elapsed}
+      {props.extra ? <Text color={visualTokenColor("text.muted")} dimColor>{`  ${props.extra}`}</Text> : null}
     </Text>
   );
+}
+
+function formatStatusElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 export function ConversationResultLine(props: {

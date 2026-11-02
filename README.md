@@ -20,6 +20,7 @@ surfaces available only when they help.
 | Delegation | The main Swarm owns worker spawning, continuation, stop, and handoff. |
 | Extensions | Built-in tools, MCP, skills, slash commands, agent specs, and plugins share one capability plane. |
 | Automation | Gateway and Symphony are local automation entrypoints, not separate product UIs. |
+| Tickets | `swarm superagent` turns requests from GitHub, Feishu and the TUI into tickets; each runs in a background worker with its own directory and answers where it was asked. |
 
 ## Current Product Status
 
@@ -150,6 +151,7 @@ Commands:
   init       Create ~/.swarm with user-level settings and state folders
   serve      Start the local Swarm Gateway HTTP/event-stream server
   symphony   Run local work-source automation commands
+  superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
@@ -517,8 +519,14 @@ visible instead of silently trusted.
 
 ### Layout
 
-When idle, the TUI main pane acts as the Kernel operator surface while keeping
-the conversation and pinned prompt ready for the next objective.
+The chat pane is conversation-first in every state: while work runs, while an
+approval or plan waits, and after a result, the transcript stays on screen. A
+one-line header names the model, workspace, mode, permission and sandbox; while
+busy, one status line shows the current activity, elapsed time and running
+workers; the latest result is a compact line at the end of the transcript. A
+"needs you" strip appears above the prompt only when a ticket waits for a
+person, each line naming the command that answers it.
+The operator surface lives in the other panes.
 Use `/view` for focused Kernel panes such as Trace, Overview, Output, Sessions,
 Attempts, Activity, and Blackboard. Overview keeps the prompt surface quiet; the
 Activity pane summarizes workers, approvals, and background work without making
@@ -758,6 +766,42 @@ system_loop:
 the workflow should run local work items through the same coding-loop runner
 without a separate `symphony run-once` or daemon command.
 
+## Tickets
+
+`swarm superagent` is a proactive team agent for one repository, adapted from
+[dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype). A
+person who is allowed to ask for work mentions the agent on GitHub, messages its
+Feishu bot, or types `/ticket <request>` in the TUI. A deterministic gate checks
+who sent it before any model sees it; a model routes the request to a new
+ticket, an existing one, a stop or nothing. Each ticket gets a worker process
+running Swarm's coding loop in its own directory (usually a git worktree made
+by a prepare command), and the worker answers in the conversation where it was
+asked. Later messages on that conversation go straight to the ticket's worker.
+
+```bash
+swarm superagent config init      # write ~/.swarm/superagent/settings.json
+swarm superagent run              # run the host: Sources, routing, workers, replies
+swarm superagent request "fix the typo in README"
+swarm superagent tickets          # what waits for a person first
+swarm superagent say <id> "use build.sh"
+swarm superagent stop <id>
+swarm superagent retry <id>
+```
+
+In the TUI, `/ticket <request>` files work, `/ticket <id>` shows a ticket,
+`/ticket say|stop|retry <id>` acts on one, and `/tickets` opens the tickets pane
+(arrows select, Enter opens, `s` stops, `r` retries, Esc returns). When no host
+runs, the TUI starts one that stops when it quits.
+
+Proactive work, such as an unaddressed comment that matches a team rule, starts
+in `observe` mode: the assessment is recorded as "would accept" and nothing runs
+until `eval.mode` is `auto`. GitHub and Feishu stay off until they are set up
+with an agent account and a bot. Workers run as your OS user in `full-auto`
+permission mode; the `gh`/`lark-cli` wrappers and blocked commands are defaults,
+not a security boundary, and messages on a ticket's threads reach its worker as
+context, so use a dedicated OS account for repositories where strangers comment.
+Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
+
 ## Architecture
 
 ```text
@@ -852,6 +896,8 @@ Key environment variables:
 | `SWARM_LSP_TYPESCRIPT_COMMAND` | Override the TypeScript LSP command for `swarm lsp` and stdio-backed LSP tools. |
 | `SWARM_LSP_PYTHON_COMMAND` / `SWARM_LSP_RUST_COMMAND` / `SWARM_LSP_GO_COMMAND` | Enable narrow stdio LSP providers for non-TypeScript workspaces. |
 | `SWARM_TASK_TIMEOUT_MS` | Per-task timeout in ms. |
+| `SWARM_SHELL_AUTO_BACKGROUND_MS` | Move a foreground shell command that is still running after this many ms to a background process (also `runtime.shellAutoBackgroundMs`; unset keeps foreground commands). |
+| `SWARM_SUPERAGENT_HOME` | Override the ticket host's state directory (`~/.swarm/superagent`). |
 | `OPENAI_API_KEY` | Environment key source for the OpenAI provider. |
 
 ## Development
@@ -901,4 +947,6 @@ and upload report, telemetry, and trajectory artifacts.
 
 ## License
 
-AGPL-3.0. See [LICENSE](./LICENSE).
+AGPL-3.0. See [LICENSE](./LICENSE). `src/superagent/` includes code adapted from
+dsh-superagent-prototype under the MIT License; see
+`src/superagent/LICENSE.dsh-superagent`.

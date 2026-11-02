@@ -145,3 +145,46 @@ function context(workspace: string): LocalToolContext {
   settings.permissions.defaultMode = "full-auto";
   return { workspace, settings };
 }
+
+test("shell.exec waits for a quick command and returns its output when auto-backgrounding is on", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-shell-auto-"));
+  const swarmHome = process.env.SWARM_HOME;
+  process.env.SWARM_HOME = workspace;
+  try {
+    const tools = context(workspace);
+    tools.settings.runtime.shellAutoBackgroundMs = 5_000;
+    tools.sessionId = "auto_bg_quick";
+    const result = await runLocalTool({ type: "shell.exec", command: "printf 'one\\ntwo\\n'; exit 3" }, tools);
+    assert.equal(result.status, "failed");
+    assert.equal(result.errorCode, "EXIT_3");
+    assert.match(result.content ?? "", /one\ntwo/);
+    assert.doesNotMatch(result.content ?? "", /\[swarm\]/);
+  } finally {
+    if (swarmHome === undefined) delete process.env.SWARM_HOME;
+    else process.env.SWARM_HOME = swarmHome;
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("shell.exec moves a command still running at the threshold to a background process instead of blocking", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "swarm-shell-auto-"));
+  const swarmHome = process.env.SWARM_HOME;
+  process.env.SWARM_HOME = workspace;
+  try {
+    const tools = context(workspace);
+    tools.settings.runtime.shellAutoBackgroundMs = 300;
+    tools.sessionId = "auto_bg_slow";
+    const started = Date.now();
+    const result = await runLocalTool({ type: "shell.exec", command: "sleep 2; echo late" }, tools);
+    assert.ok(Date.now() - started < 1500, "the turn does not wait for the command");
+    assert.equal(result.status, "success");
+    assert.match(result.summary, /continues as background process proc_/);
+    const processId = (result.data as { process: { processId: string } }).process.processId;
+    const stop = await runLocalTool({ type: "process.stop", processId }, tools);
+    assert.equal(stop.status, "success");
+  } finally {
+    if (swarmHome === undefined) delete process.env.SWARM_HOME;
+    else process.env.SWARM_HOME = swarmHome;
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

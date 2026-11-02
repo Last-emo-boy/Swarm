@@ -53,6 +53,8 @@ type CodingLoopModelResult = {
   tool_calls: CodingLoopToolCall[];
   files_touched: string[];
   next_actions: string[];
+  /** A worker's one concrete question for the user (see the worker protocol line); ignored for the main role. */
+  human_action?: string;
 };
 
 type CodingLoopToolResult = {
@@ -885,7 +887,8 @@ export class CodingAgentLoop {
       changed_files: [...changedFiles],
       intermediate_artifacts: [...intermediateArtifacts],
       tests_run: [...testsRun],
-      final_summary: finalStatus.summary
+      final_summary: finalStatus.summary,
+      ...(this.options.role === "worker" && lastResult.human_action ? { human_action: lastResult.human_action } : {})
     };
     if (this.options.emitFinal !== false) {
       this.options.events.emitEvent({ type: "final", session_id: sessionId, content, outcome, status: finalStatus.status, checkpoint: this.options.checkpoint });
@@ -1608,6 +1611,9 @@ function codingLoopSystemPrompt(input: {
     "A failed tool result is feedback, not a global stop. Read the error, adjust inputs or command, and continue unless the task is truly blocked.",
     "If a shell command times out, retry with a narrower command or a larger timeoutMs when the command is still necessary.",
     "Use status=failed only when you cannot recover or continue after inspecting the latest tool results.",
+    input.role === "worker"
+      ? "When you cannot continue without one concrete decision from the user, add the key human_action with that single question and return status=completed with the work done so far; the main Swarm asks it. Never use human_action for routine choices you can make yourself."
+      : undefined,
     `Allowed tools: ${tools}.`,
     "Some MCP tools are deferred to reduce prompt churn. Use ToolSearch to discover them first; discovered MCP schemas become available on the next turn.",
     renderHostEnvironmentPrompt(input.workspace, input.additionalReadDirectories),
@@ -2842,7 +2848,8 @@ function parseCodingLoopModelResult(text: string): CodingLoopModelResult {
     summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim().slice(0, 240) : firstLine(message),
     tool_calls: parseToolCalls(parsed.tool_calls),
     files_touched: Array.isArray(parsed.files_touched) ? parsed.files_touched.map(String) : [],
-    next_actions: Array.isArray(parsed.next_actions) ? parsed.next_actions.map(String) : []
+    next_actions: Array.isArray(parsed.next_actions) ? parsed.next_actions.map(String) : [],
+    ...(typeof parsed.human_action === "string" && parsed.human_action.trim() ? { human_action: parsed.human_action.trim().slice(0, 1000) } : {})
   };
 }
 
