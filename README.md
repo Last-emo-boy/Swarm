@@ -152,6 +152,8 @@ Commands:
   serve      Start the local Swarm Gateway HTTP/event-stream server
   symphony   Run local work-source automation commands
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
+  mesh       Pair this device with other Swarm devices and see them
+  node       Run this device's node: the ticket host and the mesh server peers call
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
@@ -801,6 +803,24 @@ permission mode; the `gh`/`lark-cli` wrappers and blocked commands are defaults,
 not a security boundary, and messages on a ticket's threads reach its worker as
 context, so use a dedicated OS account for repositories where strangers comment.
 Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
+
+## Mesh
+
+Swarm devices link into a mesh: a laptop, an always-on server and a GPU box each run a node, pair once, and then
+reach each other directly. A node is `swarm node run`: the ticket host plus a small mesh server. Pairing is
+explicit: one device prints a one-time code, the other joins with it, and each side issues the other its own
+token, which `swarm mesh remove` revokes on both.
+
+```bash
+swarm mesh listen 100.101.102.103:38172   # bind this device's tailnet address
+swarm node run                             # on every device
+swarm mesh invite                          # on one device: prints a code valid once for 15 minutes
+swarm mesh join swarm-mesh:…               # on the other
+swarm mesh status                          # this node and its peers: reachable, abilities, load
+```
+
+The mesh speaks plain HTTP and relies on a private network such as Tailscale to encrypt it; do not expose its port
+publicly. Seeing and steering other devices' tickets, borrowing their tools, and placing work on them build on this.
 
 ## Architecture
 
