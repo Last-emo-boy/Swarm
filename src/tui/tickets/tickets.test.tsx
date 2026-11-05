@@ -16,7 +16,7 @@ import { runTicketCommand } from "./commands.js";
 import { TuiTickets } from "./controller.js";
 import type { TicketRow } from "../../superagent/views.js";
 import { KV } from "../../superagent/kv.js";
-import { savePeer } from "../../mesh/state.js";
+import { newPairKey, savePeer } from "../../mesh/state.js";
 
 const row = (overrides: Partial<TicketRow>): TicketRow => ({
   id: "a1b2c3d4e5f6a7b8", short: "a1b2c3d4", title: "Fix the flaky retry test", group: "working", label: "Working", source: "github",
@@ -135,7 +135,7 @@ test("ticket commands file a request, show and answer a ticket, and do not start
 test("/ticket --on files a request here whose worker runs on a paired node, and says when no mesh node runs to place it", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "swarm-tui-tickets-"));
   const meshHome = mkdtempSync(join(tmpdir(), "swarm-tui-mesh-"));
-  savePeer({ id: "gpu-node", name: "gpu", url: "http://127.0.0.1:9", token: "a-token-gpu-issued-us", tokenHash: "0".repeat(64), pairedAt: new Date().toISOString() }, meshHome);
+  savePeer({ id: "gpu-node", name: "gpu", key: newPairKey(), addresses: ["127.0.0.1:9"], pairedAt: new Date().toISOString() }, meshHome);
   const tickets = new TuiTickets({ stateDir, meshHome, log: () => {} });
   try {
     const filed = await runTicketCommand(tickets, "ticket", ["--on", "gpu", "retrain", "the", "model"]);

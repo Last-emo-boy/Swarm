@@ -3449,7 +3449,7 @@ Commands:
   mcp        List, inspect, refresh, and read configured MCP servers, resources, and prompts
   lsp        Inspect local Language Server Protocol providers and logs
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
-  mesh       Pair this device with other Swarm devices and see them
+  mesh       Join devices into a swarm with a pairing code, and see them
   node       Run this device's node: the ticket host and the mesh server peers call
   tui-artifact
              Generate cc-grade TUI plain/ANSI/profile-diff visual artifacts

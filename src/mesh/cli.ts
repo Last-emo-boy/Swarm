@@ -4,23 +4,33 @@
  */
 import { mcpToolName } from "../extensions/mcp.js";
 import type { TicketRow } from "../superagent/views.js";
-import { DEFAULT_MESH_PORT, createInvite, findPeer, meshHome, readMesh, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
-import { advertisedUrl, detectAbilities, nodeCard, tailnetAddress, type NodeCard, type NodeLoad } from "./card.js";
-import { joinMesh, meshFetch, peerHealth, unpair } from "./client.js";
+import { connect } from "node:net";
+import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, hostPort, meshHome, readMesh, relayOf, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
+import { advertisedAddresses, detectAbilities, nodeCard, type NodeCard, type NodeLoad } from "./card.js";
+import { closePeerLinks, peerHealth, removeFromSwarm } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
 import { parseListen } from "./listen.js";
+import { inviteWithCode, joinWithCode } from "./pair.js";
+import { RelayServer } from "./relay.js";
 import { MeshServer } from "./server.js";
 
 const USAGE = `Usage: swarm mesh <command>
 
 Commands:
-  status [--json]            This node and its peers: reachable, version, abilities, load
-  invite [--minutes N]       Print a one-time code that another device joins with
-  join <code>                Pair with the device that printed the code
-  remove <peer>              Unpair; the peer forgets this node too
+  invite [--minutes N]       Print a pairing code such as K7QM-4ZX2 and wait: each device that joins with it is
+                             paired with this node and every member of its swarm
+  invite --direct [--minutes N]
+                             Print a long one-time code with this node's address, for when there is no relay
+  join <code>                Join the swarm of the device that printed the code
+  status [--json]            This node and its peers: how each is reached, version, abilities, load
+  remove <peer>              Remove a device from the swarm: every member forgets it
   name <name>                Rename this node
-  listen <host:port>         Where this node's mesh server binds; tailnet:38172 binds its Tailscale address
-  advertise <url>|--clear    The URL peers call this node at; derived from Tailscale or the hostname when unset
+  relay [<url>|on|off]       Where devices meet when they cannot reach each other directly; alone, shows it
+  relay serve [--listen <host:port>]
+                             Run a relay (put it behind a TLS proxy for wss://)
+  listen <host:port>         Where this node takes direct links (0.0.0.0:38172 by default)
+  advertise <host:port>|--clear
+                             An address peers try first, such as a forwarded port
   lend [shell|files <dir>…]  Lend paired peers a shell or file access in these folders; alone, shows what is lent
   lend --stop shell|files [<dir>…]
                              Stop lending in these folders, or in all of them
@@ -30,13 +40,14 @@ Commands:
                              only work of these repositories when given; alone, shows the setting
   offer on|off               Whether paired nodes that pull may take this node's waiting work (on by default)
 
-Run \`swarm node run\` on each device so peers can reach it. Pair over a private network such as Tailscale:
-the mesh speaks plain HTTP and relies on the network to encrypt it. State lives in ${meshHome()}.`;
+Run \`swarm node run\` on a device so its peers can reach it; a device without it still reaches them. Each pair
+of devices shares a key that encrypts everything between them: direct on a shared network, through the relay
+otherwise, which passes the bytes on without reading them. State lives in ${meshHome()}.`;
 
 const NODE_USAGE = `Usage: swarm node run [--no-host]
 
 Runs this device's node: the superagent host (tickets, Sources, workers) and the mesh server peers call,
-which also serves the tools this node lends (swarm mesh lend).
+directly and through the relay, which also serves the tools this node lends (swarm mesh lend).
 --no-host serves the mesh only, for a device that runs its ticket host elsewhere.`;
 
 function flag(args: string[], name: string): boolean {
@@ -52,12 +63,15 @@ function value(args: string[], name: string): string | undefined {
   return found;
 }
 
-const loopback = (host: string): boolean => host === "localhost" || host === "::1" || host.startsWith("127.");
-/** Where this machine reaches its own mesh server, whatever address it binds. */
-async function localUrl(listen: string): Promise<string> {
+/** Whether a node runs here: something takes connections on the port this node's mesh server binds. */
+function serving(listen: string): Promise<boolean> {
   const { host, port } = parseListen(listen);
-  const reach = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host === "tailnet" ? await tailnetAddress() ?? "127.0.0.1" : host;
-  return `http://${reach.includes(":") ? `[${reach}]` : reach}:${port}`;
+  return new Promise((resolve) => {
+    const socket = connect({ host: host === "0.0.0.0" || host === "::" || host === "tailnet" ? "127.0.0.1" : host, port });
+    socket.setTimeout(1500, () => { socket.destroy(); resolve(false); });
+    socket.once("connect", () => { socket.destroy(); resolve(true); });
+    socket.once("error", () => resolve(false));
+  });
 }
 
 const cardLine = (card: NodeCard): string => {
@@ -74,6 +88,14 @@ const pullLines = (pull: Pull): string[] => [
 ];
 
 export async function runMeshCommand(input: string[]): Promise<void> {
+  try {
+    await meshCommand(input);
+  } finally {
+    closePeerLinks();
+  }
+}
+
+async function meshCommand(input: string[]): Promise<void> {
   const args = [...input];
   const command = args.shift();
   if (!command || command === "help" || command === "--help") {
@@ -81,22 +103,24 @@ export async function runMeshCommand(input: string[]): Promise<void> {
     return;
   }
   if (command === "status" || command === "peers") return status(flag(args, "json"));
-  if (command === "invite") return invite(Number(value(args, "minutes") ?? 15));
+  if (command === "invite") {
+    const direct = flag(args, "direct");
+    return invite(Number(value(args, "minutes") ?? INVITE_MINUTES), direct);
+  }
   if (command === "join") {
-    const code = args[0];
+    const code = args.join(" ").trim();
     if (!code) throw new Error("Usage: swarm mesh join <code>");
-    const peer = await joinMesh(code);
-    console.log(`Paired with ${peer.name} at ${peer.url}.`);
-    return;
+    return join(code);
   }
   if (command === "remove") {
     const handle = args[0];
     if (!handle) throw new Error("Usage: swarm mesh remove <peer>");
     const peer = findPeer(readMesh(), handle);
-    const told = await unpair(peer);
-    console.log(told ? `Unpaired from ${peer.name}; it forgot this node too.` : `Forgot ${peer.name}. It was unreachable, so it still lists this node until you remove it there; its token here no longer works.`);
+    const { missed } = await removeFromSwarm(peer);
+    console.log(`Removed ${peer.name} from the swarm.${missed.length ? ` ${missed.join(", ")} did not hear now and will still know it until removed there; ${peer.name}'s key here no longer works.` : " Every member forgot it."}`);
     return;
   }
+  if (command === "relay") return relay(args);
   if (command === "name") {
     const name = args.join(" ").trim();
     if (!name) throw new Error("Usage: swarm mesh name <name>");
@@ -114,13 +138,14 @@ export async function runMeshCommand(input: string[]): Promise<void> {
   }
   if (command === "advertise") {
     const clear = flag(args, "clear");
-    const url = args[0];
-    if (!clear && !url) throw new Error("Usage: swarm mesh advertise <url>|--clear");
+    const address = args[0];
+    if (!clear && !address) throw new Error("Usage: swarm mesh advertise <host:port>|--clear");
+    if (address) parseListen(hostPort(address));
     updateMesh((state) => {
       const { advertise: _dropped, ...node } = state.node;
-      return { ...state, node: clear ? node : { ...node, advertise: new URL(url!).toString().replace(/\/$/, "") } };
+      return { ...state, node: clear ? node : { ...node, advertise: hostPort(address!) } };
     });
-    console.log(clear ? "Peers will reach this node at its tailnet or host name." : `Peers will reach this node at ${url}.`);
+    console.log(clear ? "Peers will try the addresses this node detects, then the relay." : `Peers will try ${hostPort(address!)} first.`);
     return;
   }
   if (command === "lend") return lend(args);
@@ -216,38 +241,84 @@ async function pulledWork(name: string, hosts: Peer[]): Promise<TicketRow[]> {
 async function status(json: boolean): Promise<void> {
   const state = readMesh();
   const { node } = state;
-  const url = await advertisedUrl(node);
-  const serving = await meshFetch<{ id: string }>(await localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then((answer) => answer.id === node.id, () => false);
+  const addresses = await advertisedAddresses(node);
+  const relay = relayOf(node);
+  const running = await serving(node.listen);
   const peers = await peerHealth();
   const hosts = state.peers.filter((peer) => peers.some((item) => item.peer.id === peer.id && item.card?.load));
   const pulled = await pulledWork(node.name, hosts);
   if (json) {
-    console.log(JSON.stringify({ node: { id: node.id, name: node.name, listen: node.listen, url, serving, pull: node.pull }, peers, pulled }, null, 2));
+    console.log(JSON.stringify({ node: { id: node.id, name: node.name, listen: node.listen, addresses, relay: relay ?? null, serving: running, pull: node.pull }, peers, pulled }, null, 2));
     return;
   }
-  console.log(`${node.name}  ${url}  ${serving ? "serving" : `not serving: start swarm node run (binds ${node.listen})`}`);
+  console.log(`${node.name}  ${running ? "running" : "not running: start swarm node run so peers can reach it"}`);
+  console.log(`  direct at ${addresses.join(", ") || "no address peers can reach"}; relay ${relay ?? "off"}`);
   for (const line of pullLines(node.pull)) console.log(`  ${line}`);
   if (!peers.length) console.log("No peers yet: run swarm mesh invite here and swarm mesh join <code> on the other device.");
   for (const item of peers) {
     console.log(item.reachable && item.card
-      ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${cardLine(item.card)}`
+      ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${item.path}  ${cardLine(item.card)}`
       : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}`);
   }
   if (pulled.length) console.log(`Pulled work:\n${pulled.map((row) => `  ${row.short}  ${row.label.padEnd(22)} ${row.title}  (pulled by ${row.pulledBy})`).join("\n")}`);
 }
 
-async function invite(minutes: number): Promise<void> {
-  if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) throw new Error("--minutes takes 1 to 1440");
+async function invite(minutes: number, direct: boolean): Promise<void> {
+  if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 60) throw new Error("--minutes takes 1 to 60");
   const { node } = readMesh();
-  const url = await advertisedUrl(node);
-  const code = createInvite(url, minutes);
-  console.log(code);
-  console.log(`\nOn the other device: swarm mesh join <the code above>. It works once, for ${minutes} minutes, and reaches this node at ${url}.`);
-  if (loopback(parseListen(node.listen).host)) {
-    console.log(`This node binds ${node.listen}, which other devices cannot reach: run swarm mesh listen <tailnet-ip>:${parseListen(node.listen).port || DEFAULT_MESH_PORT} first.`);
+  if (direct) {
+    const addresses = await advertisedAddresses(node);
+    if (!addresses.length) throw new Error("This node has no address another device can reach; use a pairing code, or swarm mesh advertise <host:port>");
+    console.log(createInvite(addresses, minutes));
+    console.log(`\nOn the other device: swarm mesh join <the code above>. It works once, for ${minutes} minutes, at ${addresses.join(" or ")}.`);
+    if (!await serving(node.listen)) console.log("No node runs here yet: start swarm node run, or the join fails.");
+    return;
   }
-  const serving = await meshFetch(await localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then(() => true, () => false);
-  if (!serving) console.log("No mesh server runs here yet: start swarm node run, or the join fails.");
+  const invitation = await inviteWithCode({
+    minutes,
+    onJoin: (peer) => console.log(`${peer.name} joined.`),
+    onRefused: (left) => console.log(`Someone tried a wrong code; ${left} more wrong ${left === 1 ? "try cancels" : "tries cancel"} it.`)
+  });
+  console.log(`Pairing code: ${invitation.code}`);
+  console.log(`\nOn each device to add: swarm mesh join ${invitation.code}\nIt works for ${minutes} minutes, for any number of devices. Ctrl+C ends it sooner.`);
+  process.once("SIGINT", () => invitation.close());
+  console.log(await invitation.ended);
+}
+
+async function join(code: string): Promise<void> {
+  const { inviter, members } = await joinWithCode(code);
+  console.log(`Joined ${inviter.name}'s swarm${members.length ? `, with ${members.map((member) => member.name).join(", ")}` : ""}.`);
+  // Each member takes this node's introduction on first contact, so reach them all now.
+  for (const item of await peerHealth(undefined, 10_000)) {
+    console.log(`  ${item.peer.name.padEnd(16)} ${item.reachable ? item.path : `not reachable now; it links up once both are online (${item.error})`}`);
+  }
+}
+
+async function relay(args: string[]): Promise<void> {
+  if (args[0] === "serve") {
+    const listen = value(args, "listen") ?? "0.0.0.0:8443";
+    const server = new RelayServer((message) => process.stderr.write(`${message}\n`));
+    const { url } = await server.start(listen);
+    console.log(`Swarm relay listening at ${url} (on ${listen}). Nodes use it with swarm mesh relay <its wss:// URL>. Ctrl+C stops it.`);
+    await new Promise<void>((resolve) => {
+      const stop = () => { void server.stop().then(resolve); };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+    return;
+  }
+  const setting = args[0];
+  if (setting) {
+    const relay = setting === "on" ? undefined : setting === "off" ? "off" : setting.includes("://") ? setting.replace(/\/$/, "") : `wss://${setting}`;
+    if (relay && relay !== "off" && !/^wss?:\/\//.test(relay)) throw new Error("Usage: swarm mesh relay [<wss:// URL>|on|off]");
+    updateMesh((state) => {
+      const { relay: _dropped, ...node } = state.node;
+      return { ...state, node: relay ? { ...node, relay } : node };
+    });
+  }
+  const current = relayOf(readMesh().node);
+  console.log(current ? `Devices meet at ${current}${current === DEFAULT_RELAY ? " (the default relay)" : ""} when they cannot reach each other directly.` : "The relay is off: devices link up only directly, and pairing takes a direct code (swarm mesh invite --direct).");
+  if (setting) console.log("A node run with swarm node run uses it from its next start.");
 }
 
 export async function runNodeCommand(input: string[]): Promise<void> {
@@ -286,8 +357,16 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   serveHost(server);
   registerLending(server);
   const { node } = readMesh(home);
-  const { url } = await server.start(node.listen);
-  console.log(`Swarm node "${node.name}" serving the mesh at ${url}${withHost ? " with its superagent host" : ""}. Peers reach it at ${await advertisedUrl(node)}. Ctrl+C stops it.`);
+  const relay = relayOf(node);
+  await server.start(node.listen, relay ? { relay } : {});
+  const addresses = await advertisedAddresses(node);
+  console.log(`Swarm node "${node.name}" is up${withHost ? " with its superagent host" : ""}: direct links on ${node.listen}${addresses.length ? ` (${addresses.join(", ")})` : ""}, ${relay ? `and at the relay ${relay}` : "relay off"}. Ctrl+C stops it.`);
+  if (relay) {
+    setTimeout(() => {
+      const at = server.relayStatus();
+      if (at && !at.listening) console.log(`Not listening at the relay yet: ${at.error ?? "no answer"}. It keeps trying.`);
+    }, 10_000).unref();
+  }
   await new Promise<void>((resolve) => {
     const stop = () => { void server.stop().then(stopHost).then(resolve); };
     process.once("SIGINT", stop);

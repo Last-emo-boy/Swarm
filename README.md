@@ -806,21 +806,36 @@ Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
 
 ## Mesh
 
-Swarm devices link into a mesh: a laptop, an always-on server and a GPU box each run a node, pair once, and then
-reach each other directly. A node is `swarm node run`: the ticket host plus a small mesh server. Pairing is
-explicit: one device prints a one-time code, the other joins with it, and each side issues the other its own
-token, which `swarm mesh remove` revokes on both.
+Swarm devices link into a swarm: a laptop, an always-on server and a GPU box join with a short pairing code and then
+reach each other wherever they are. One device shows a code, every other device joins with it, and each one that
+joins is paired with every member, not just the one that showed the code.
 
 ```bash
-swarm mesh listen tailnet:38172           # bind this device's Tailscale address
-swarm node run                             # on every device
-swarm mesh invite                          # on one device: prints a code valid once for 15 minutes
-swarm mesh join swarm-mesh:…               # on the other
-swarm mesh status                          # this node and its peers: reachable, abilities, load
+swarm mesh invite                          # on any member: prints a code such as K7QM-4ZX2 and waits
+swarm mesh join K7QM-4ZX2                  # on each device to add (or /mesh join K7QM-4ZX2 in the TUI)
+swarm node run                             # on devices that others should reach: the ticket host and mesh server
+swarm mesh status                          # this node and its peers: how each is reached, abilities, load
+swarm mesh remove gpu                      # take a device out of the swarm: every member forgets it
 ```
 
-The mesh speaks plain HTTP and relies on a private network such as Tailscale to encrypt it; do not expose its port
-publicly.
+A code works for 15 minutes for any number of devices, and three wrong tries cancel it. In the TUI, `/mesh invite`
+opens one while the TUI runs and `/mesh` lists the swarm.
+
+Each pair of devices shares a key, agreed during pairing with a password-authenticated key exchange (CPace): the code
+proves both devices saw it, without the code or the key ever crossing the network. Every connection between two
+devices is TLS keyed with their shared key, so only the two of them can read it or finish its handshake, and the key
+tells a node which peer is calling. Devices connect directly when one reaches the other (a LAN, a tailnet, a
+forwarded port set with `swarm mesh advertise`) and through the relay otherwise; the first link to finish its
+handshake wins. The relay (`wss://swarm-relay.w33d.xyz` unless `swarm mesh relay <url>` names another, or
+`swarm mesh relay off` turns it off) only joins streams: it sees which device names connect, when and how much,
+never what they say. `swarm mesh relay serve` runs one; a code made on a device using another relay names it
+(`K7QM-4ZX2@relay.example`), so joining needs no setting. Without a relay, `swarm mesh invite --direct` prints a long
+one-time code with this node's addresses.
+
+A device joining through a member is introduced to the others by vouchers: the member seals the new pair's key for
+each other member with the key it shares with that member, and the new device's first connection to a member shows
+it. A device removed with `swarm mesh remove` is forgotten by every member that hears of it, and its old
+introductions are refused.
 
 Paired devices' tickets appear beside this node's in the TUI (`/tickets`, the needs-you strip) and in
 `swarm superagent tickets --all-devices`, addressed as `<device>:<id>`. Answering, stopping and retrying one goes to
@@ -833,7 +848,7 @@ still reach anything this user can), and `swarm mesh lend files ~/data` lends li
 inside it, refusing paths that lead out, symlinks included. `swarm mesh lend` shows what is lent and
 `swarm mesh lend --stop shell` takes it back. On the other devices `swarm mesh tools` lists what each peer lends, and
 every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_file` and so on, served by the peer's
-`swarm node run` over Streamable HTTP with its pairing token. Borrowed tools count as remote, so in `ask` mode each
+`swarm node run` over Streamable HTTP on the link to that peer. Borrowed tools count as remote, so in `ask` mode each
 call waits for approval; a peer that does not answer is skipped.
 
 A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>`

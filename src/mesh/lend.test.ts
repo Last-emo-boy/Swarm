@@ -5,13 +5,18 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { meshMcpUrl } from "./borrow.js";
+import { peerFetch } from "./link.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
 import { nodeCard, type NodeCard } from "./card.js";
-import { callPeer, joinMesh, meshFetch, type MeshError } from "./client.js";
+import { callPeer, joinMesh, type MeshError } from "./client.js";
 import { lendFolders, lentTools, registerLending, stopLending } from "./lend.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, readMesh, updateMesh } from "./state.js";
+import { createInvite, findPeer, newPairKey, readMesh, updateMesh, type Peer } from "./state.js";
+
+// These nodes link up directly; none of them may reach out to a real relay.
+process.env.SWARM_MESH_RELAY = "off";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "swarm-mesh-lend-")));
 const servers: MeshServer[] = [];
@@ -26,7 +31,7 @@ async function startNode(name: string): Promise<{ home: string; url: string; ser
   updateMesh((state) => ({ ...state, node: { ...state.node, name, listen: "127.0.0.1:0" } }), home);
   const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities: ["test"] }) });
   registerLending(server);
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   updateMesh((state) => ({ ...state, node: { ...state.node, advertise: url } }), home);
   servers.push(server);
   return { home, url, server };
@@ -86,7 +91,7 @@ test("a node's card says what it lends, and a paired runtime sees the tools of e
     ["mcp__gpu__write_file", "r3", true]
   ]);
   const gpuServer = runtime.listMcpServers().find((server) => server.id === "gpu");
-  assert.deepEqual([gpuServer?.status, gpuServer?.transport, gpuServer?.url], ["connected", "http", `${gpu.url}/mesh/v1/mcp`]);
+  assert.deepEqual([gpuServer?.status, gpuServer?.transport, gpuServer?.url], ["connected", "http", meshMcpUrl(readMesh(gpu.home).node.id)]);
   assert.deepEqual(runtime.listMcpServers().map((server) => server.id), ["gpu"], "ovh lends nothing and box does not answer");
 
   const mcp = (await runtime.listCapabilityProviders()).find((provider) => provider.providerId === "mcp");
@@ -127,15 +132,17 @@ test("a path that leaves the lent folders is refused, through a symlink too", as
   assert.equal(existsSync(join(root, "planted.txt")), false, "nothing was written outside");
 });
 
-test("the lent tools refuse a caller without a token the node issued", async () => {
+test("the lent tools refuse a device that is not paired with the node", async () => {
   const initialize = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stranger", version: "1" } } };
-  await assert.rejects(meshFetch(gpu.url, "/mesh/v1/mcp", { method: "POST", body: initialize }), (error: MeshError) => error.status === 401);
-  const stranger = new Client({ name: "stranger", version: "1" }, { capabilities: {} });
-  const transport = new StreamableHTTPClientTransport(new URL(`${gpu.url}/mesh/v1/mcp`), { requestInit: { headers: { authorization: "Bearer not-a-token-anyone-was-given" } } });
-  await assert.rejects(stranger.connect(transport, { timeout: 5000 }), /401|paired/);
+  // A stranger that knows the node's address but shares no key with it never gets past the link's TLS.
+  const stranger: Peer = { id: readMesh(gpu.home).node.id, name: "gpu", key: newPairKey(), addresses: [gpu.url], pairedAt: "" };
+  await assert.rejects(callPeer(stranger, "POST", "/mesh/v1/mcp", initialize), (error: MeshError) => error.status === 0 && /no longer knows this node/.test(error.message));
+  const client = new Client({ name: "stranger", version: "1" }, { capabilities: {} });
+  const transport = new StreamableHTTPClientTransport(new URL(meshMcpUrl(stranger.id)), { fetch: peerFetch(() => stranger) });
+  await assert.rejects(client.connect(transport, { timeout: 5000 }), /no longer knows this node/);
   await transport.close();
   const peer = findPeer(readMesh(process.env.SWARM_MESH_HOME), "gpu");
-  await assert.rejects(meshFetch(gpu.url, "/mesh/v1/mcp", { token: peer.token }), (error: MeshError) => error.status === 405);
+  await assert.rejects(callPeer(peer, "GET", "/mesh/v1/mcp"), (error: MeshError) => error.status === 405);
 });
 
 test("in ask mode a borrowed tool waits for approval, and a refusal runs nothing", async () => {

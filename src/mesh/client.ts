@@ -1,80 +1,57 @@
-/** Calling peers: requests with the token a peer issued this node, pairing with an invite code, and peer health. */
-import { advertisedUrl, type NodeCard } from "./card.js";
-import { hashToken, meshHome, newToken, parseInvite, readMesh, removePeer, savePeer, type Peer } from "./state.js";
+/** Calling peers over their links, pairing with a code, peer health, and leaving or removing devices. */
+import type { NodeCard } from "./card.js";
+import { MeshError, describePath, pathTo, peerRequest } from "./link.js";
+import { joinWithCode } from "./pair.js";
+import { meshHome, readMesh, removePeer, updateMesh, type Peer } from "./state.js";
 
-const TIMEOUT_MS = 10_000;
-
-export class MeshError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-/** One JSON request to a node; an error answer or an unreachable node throws, with the node's message when it gave one. */
-export async function meshFetch<T>(base: string, path: string, init: { method?: string; token?: string; body?: unknown; timeoutMs?: number } = {}): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${base.replace(/\/$/, "")}${path}`, {
-      method: init.method ?? "GET",
-      headers: { ...(init.token ? { authorization: `Bearer ${init.token}` } : {}), ...(init.body !== undefined ? { "content-type": "application/json" } : {}) },
-      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-      signal: AbortSignal.timeout(init.timeoutMs ?? TIMEOUT_MS)
-    });
-  } catch (error) {
-    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : error instanceof Error ? error.message : String(error);
-    throw new MeshError(0, `${base} is unreachable: ${cause}`);
-  }
-  const text = await response.text();
-  const parsed = text ? JSON.parse(text) as unknown : {};
-  if (!response.ok) {
-    const message = (parsed as { error?: { message?: string } }).error?.message ?? `HTTP ${response.status}`;
-    throw new MeshError(response.status, message);
-  }
-  return parsed as T;
-}
+export { MeshError, closePeerLinks } from "./link.js";
 
 export const callPeer = <T>(peer: Peer, method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> =>
-  meshFetch<T>(peer.url, path, { method, token: peer.token, ...(body !== undefined ? { body } : {}), ...(timeoutMs ? { timeoutMs } : {}) });
+  peerRequest<T>(peer, method, path, body, timeoutMs);
 
 /**
- * Pairs with the node that printed `code`: sends it this node's identity, address and the token it may call this node
- * with, and keeps the token it answers with. Both sides then know each other.
+ * Pairs with the device that gave out `code`, a short pairing code or a direct invite, and stores the members of its
+ * swarm it introduced. Returns the inviting device.
  */
 export async function joinMesh(code: string, home = meshHome()): Promise<Peer> {
-  const invite = parseInvite(code);
-  const { node } = readMesh(home);
-  if (invite.id === node.id) throw new Error("This is this node's own invite; join it from the other device");
-  if (invite.expiresAt <= new Date().toISOString()) throw new Error("The invite expired; make a new one with swarm mesh invite");
-  const token = newToken();
-  const answer = await meshFetch<{ node: NodeCard; token: string }>(invite.url, "/mesh/v1/pair", {
-    method: "POST", body: { secret: invite.secret, node: { id: node.id, name: node.name, url: await advertisedUrl(node) }, token }
-  });
-  const peer: Peer = { id: answer.node.id, name: answer.node.name, url: invite.url.replace(/\/$/, ""), token: answer.token,
-    tokenHash: hashToken(token), pairedAt: new Date().toISOString() };
-  savePeer(peer, home);
-  return peer;
+  return (await joinWithCode(code, home)).inviter;
 }
 
 export interface PeerHealth {
-  peer: Pick<Peer, "id" | "name" | "url">;
+  peer: Pick<Peer, "id" | "name" | "addresses">;
   reachable: boolean;
+  /** How this process reached it, when it did. */
+  path?: string;
   ms?: number;
   card?: NodeCard;
   error?: string;
 }
 
-/** Reads every peer's card at once; a peer that does not answer within the timeout is unreachable. */
+/**
+ * Reads every peer's card at once; a peer that does not answer within the timeout is unreachable. What a card says about
+ * where to reach its node is kept, and an introduction a peer has accepted is not shown to it again.
+ */
 export async function peerHealth(home = meshHome(), timeoutMs = 5000): Promise<PeerHealth[]> {
-  return Promise.all(readMesh(home).peers.map(async (peer): Promise<PeerHealth> => {
+  const health = await Promise.all(readMesh(home).peers.map(async (peer): Promise<PeerHealth> => {
     const started = Date.now();
-    const about = { id: peer.id, name: peer.name, url: peer.url };
+    const about = { id: peer.id, name: peer.name, addresses: peer.addresses };
     try {
       const card = await callPeer<NodeCard>(peer, "GET", "/mesh/v1/node", undefined, timeoutMs);
-      return { peer: about, reachable: true, ms: Date.now() - started, card };
+      return { peer: about, reachable: true, path: describePath(pathTo(peer.id)), ms: Date.now() - started, card };
     } catch (error) {
       return { peer: about, reachable: false, error: error instanceof Error ? error.message : String(error) };
     }
   }));
+  const reached = new Map(health.flatMap((item) => item.card ? [[item.peer.id, item.card] as const] : []));
+  if (reached.size) {
+    updateMesh((state) => ({ ...state, peers: state.peers.map((peer) => {
+      const card = reached.get(peer.id);
+      if (!card) return peer;
+      const { voucher: _accepted, ...rest } = peer;
+      return { ...rest, name: card.name, addresses: card.addresses, relayName: card.relayName, ...(card.relay ? { relay: card.relay } : {}) };
+    }) }), home);
+  }
+  return health;
 }
 
 /** Forgets a peer, telling it first so it forgets this node too; returns whether the peer heard. */
@@ -82,4 +59,18 @@ export async function unpair(peer: Peer, home = meshHome()): Promise<boolean> {
   const told = await callPeer(peer, "POST", "/mesh/v1/unpair", {}, 5000).then(() => true, () => false);
   removePeer(peer.id, home);
   return told;
+}
+
+/**
+ * Removes a device from the swarm: it is told to forget this node, every other member is told to forget it, and this
+ * node keeps a tombstone so introductions of it are refused. Returns the members that did not hear.
+ */
+export async function removeFromSwarm(peer: Peer, home = meshHome()): Promise<{ missed: string[] }> {
+  const others = readMesh(home).peers.filter((item) => item.id !== peer.id);
+  const results = await Promise.all([
+    callPeer(peer, "POST", "/mesh/v1/unpair", {}, 5000).then(() => undefined, () => peer.name),
+    ...others.map((other) => callPeer(other, "POST", "/mesh/v1/forget", { id: peer.id, name: peer.name }, 5000).then(() => undefined, () => other.name))
+  ]);
+  removePeer(peer.id, home, {});
+  return { missed: results.filter((name): name is string => Boolean(name)) };
 }

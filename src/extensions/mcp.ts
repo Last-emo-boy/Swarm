@@ -280,7 +280,8 @@ export class McpClientProvider implements CapabilityProvider {
       });
     };
     const headers = Object.fromEntries(Object.entries(server.config.headers ?? {}).map(([key, value]) => [key, resolveEnvValue(value)]));
-    return new StreamableHTTPClientTransport(new URL(server.config.url!), { requestInit: { headers } });
+    const url = new URL(server.config.url!);
+    return new StreamableHTTPClientTransport(url, { requestInit: { headers }, ...(url.protocol === "swarm-mesh:" ? { fetch: meshPeerFetch(url.hostname) } : {}) });
   }
 
   /**
@@ -758,6 +759,14 @@ function decodeMcpIdPart(value: string): string {
 }
 
 /** The name a model calls an MCP server's tool by. */
+/** A fetch over the link to a paired mesh device, for the tools it lends (src/mesh/borrow.ts); the mesh loads only when used. */
+function meshPeerFetch(peerId: string): typeof fetch {
+  return async (input, init) => {
+    const [{ peerFetch }, { findPeer, readMesh }] = await Promise.all([import("../mesh/link.js"), import("../mesh/state.js")]);
+    return peerFetch(() => findPeer(readMesh(), peerId))(input, init);
+  };
+}
+
 export function mcpToolName(serverId: string, toolName: string): string {
   return `mcp__${modelToolNamePart(serverId)}__${modelToolNamePart(toolName)}`;
 }

@@ -16,11 +16,14 @@ import { requestOn } from "../superagent/placement.js";
 import { startFakeModel, writeFakeModelHome, type ModelRequest } from "../superagent/testing/fake-model.js";
 import { ticketRow } from "../superagent/views.js";
 import { nodeCard, type NodeCard } from "./card.js";
-import { callPeer, joinMesh, MeshError, meshFetch } from "./client.js";
+import { callPeer, joinMesh, MeshError } from "./client.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, readMesh, updateMesh } from "./state.js";
+import { createInvite, findPeer, newPairKey, readMesh, updateMesh, type Peer } from "./state.js";
 import { fittest, MeshWork } from "./work.js";
 import { workPath } from "./work-link.js";
+
+// These nodes link up directly; none of them may reach out to a real relay.
+process.env.SWARM_MESH_RELAY = "off";
 
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const root = mkdtempSync(join(tmpdir(), "swarm-mesh-work-"));
@@ -97,7 +100,7 @@ async function startNode(name: string, abilities: string[]): Promise<TestNode> {
   await host.start();
   const server = new MeshServer({ home: mesh, card: () => nodeCard(readMesh(mesh).node, { abilities, load: work.load() }) });
   work.serve(server);
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   return { host, server, url, mesh, state };
 }
@@ -133,7 +136,7 @@ before(async () => {
     });
     return { accepted: true };
   });
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
   ghost = { server, mesh, offers };
@@ -152,7 +155,7 @@ after(async () => {
 
 test("work that needs abilities goes to the paired node that has them and the most free slots", () => {
   const card = (name: string, abilities: string[], load?: NodeCard["load"]): NodeCard =>
-    ({ id: name, name, url: `http://${name}`, version: "0", os: "linux", arch: "x64", abilities, ...(load ? { load } : {}), at: "" });
+    ({ id: name, name, addresses: [], relayName: name, version: "0", os: "linux", arch: "x64", abilities, ...(load ? { load } : {}), at: "" });
   const cards = [
     card("mac", ["macos"], { running: 0, queued: 0, slots: 2 }),
     card("busy", ["linux", "gpu"], { running: 2, queued: 0, slots: 2 }),
@@ -222,9 +225,11 @@ test("a node that is not paired can neither offer work nor act for a ticket, and
   const ticket = client.store.tickets.list().find((item) => item.title === "Train the model")!;
   const assignmentId = ticket.assignments.at(-1)!.id;
   const report = { assignmentId, report: { state: "ready", summary: "Done." } };
-  await assert.rejects(meshFetch(gpu.url, "/mesh/v1/work/offers", { method: "POST", body: { ticketId: ticket.id, assignmentId } }), (error: MeshError) => error.status === 401);
-  await assert.rejects(meshFetch(ovh.url, `${workPath(ticket.id)}/report`, { method: "POST", token: "not-a-token-anyone-was-given", body: report }),
-    (error: MeshError) => error.status === 401);
+  // A node that shares no key with gpu or ovh never gets past their links' TLS.
+  const stranger = (node: { url: string; mesh: string }): Peer => ({ id: readMesh(node.mesh).node.id, name: "stranger", key: newPairKey(), addresses: [node.url], pairedAt: "" });
+  const refused = (error: MeshError): boolean => error.status === 0 && /no longer knows this node/.test(error.message);
+  await assert.rejects(callPeer(stranger(gpu), "POST", "/mesh/v1/work/offers", { ticketId: ticket.id, assignmentId }), refused);
+  await assert.rejects(callPeer(stranger(ovh), "POST", `${workPath(ticket.id)}/report`, report), refused);
 
   const ovhFromGpu = findPeer(readMesh(gpu.mesh), "ovh");
   await assert.rejects(callPeer(ovhFromGpu, "POST", `${workPath(ticket.id)}/report`, report), (error: MeshError) => error.status === 403);

@@ -12,6 +12,9 @@ import { MeshServer } from "./server.js";
 import { createInvite, readMesh, updateMesh } from "./state.js";
 import { registerTicketRoutes, splitHandle } from "./tickets.js";
 
+// These nodes link up directly; none of them may reach out to a real relay.
+process.env.SWARM_MESH_RELAY = "off";
+
 const root = mkdtempSync(join(tmpdir(), "swarm-mesh-tickets-"));
 let ovh: { client: SuperagentClient; server: MeshServer };
 let mac: { client: SuperagentClient; tickets: TuiTickets; meshHome: string };
@@ -32,7 +35,7 @@ before(async () => {
   const ovhClient = new SuperagentClient({ stateDir: join(root, "ovh-superagent") });
   const server = new MeshServer({ home: ovhMesh, card: () => nodeCard(readMesh(ovhMesh).node, { abilities: ["linux"] }) });
   registerTicketRoutes(server, ovhClient);
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   updateMesh((state) => ({ ...state, node: { ...state.node, advertise: url } }), ovhMesh);
   ovh = { client: ovhClient, server };
 

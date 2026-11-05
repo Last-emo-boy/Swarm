@@ -22,6 +22,9 @@ import { createInvite, findPeer, readMesh, updateMesh, type Pull } from "./state
 import { MeshWork, unfit, type OpenWork } from "./work.js";
 import { workPath } from "./work-link.js";
 
+// These nodes link up directly; none of them may reach out to a real relay.
+process.env.SWARM_MESH_RELAY = "off";
+
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const root = mkdtempSync(join(tmpdir(), "swarm-mesh-pull-"));
 const saved = process.env.SWARM_HOME;
@@ -90,7 +93,7 @@ async function startNode(name: string, abilities: string[], settings?: unknown):
   await host.start();
   const server = new MeshServer({ home: mesh, card: () => nodeCard(readMesh(mesh).node, { abilities, load: work.load() }) });
   work.serve(server);
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   return { name, host, server, url, mesh, state, logs };
 }
@@ -141,7 +144,7 @@ before(async () => {
     });
     return { accepted: true };
   });
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
   ghost = { server, mesh, offers };
@@ -295,7 +298,7 @@ test("work that needs what the owner lacks waits for a busy node that has it and
   const mesh = join(root, "busy-mesh");
   updateMesh((current) => ({ ...current, node: { ...current.node, name: "busy", listen: "127.0.0.1:0" } }), mesh);
   const server = new MeshServer({ home: mesh, card: () => nodeCard(readMesh(mesh).node, { abilities: ["linux", "cuda"], load: { running: 1, queued: 0, slots: 1 } }) });
-  const { url } = await server.start();
+  const { address: url } = await server.start();
   try {
     updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
     await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);

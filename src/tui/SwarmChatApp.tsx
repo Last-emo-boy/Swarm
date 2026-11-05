@@ -100,6 +100,7 @@ import { NeedsYouStrip } from "./components/NeedsYouStrip.js";
 import { TicketsPane } from "./components/TicketsPane.js";
 import { TuiTickets, type TicketSnapshot } from "./tickets/controller.js";
 import { runTicketCommand } from "./tickets/commands.js";
+import { TuiMesh } from "./mesh-commands.js";
 import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPillValue, rowHandle } from "./tickets/view-model.js";
 import {
   compactValue,
@@ -395,6 +396,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const previousActionLogLengthRef = useRef(actionLogRows.length);
   const [motionTick, setMotionTick] = useState(0);
   const ticketsRef = useRef<TuiTickets | undefined>(undefined);
+  const meshRef = useRef<TuiMesh | undefined>(undefined);
   const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | undefined>(undefined);
   const ticketSignatureRef = useRef("");
   const busySinceRef = useRef<number | undefined>(undefined);
@@ -586,6 +588,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return () => {
       clearInterval(timer);
       void ticketsRef.current?.close();
+      meshRef.current?.close();
     };
   }, []);
 
@@ -673,6 +676,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       symphonyDaemonRecordsSignatureRef.current = signature;
       setSymphonyDaemons(next);
     }
+  }
+
+  function meshController(): TuiMesh {
+    meshRef.current ??= new TuiMesh({ notify: (brief) => appendChatMessage({ role: "system", brief }) });
+    return meshRef.current;
   }
 
   function ticketsController(): TuiTickets {
@@ -1828,6 +1836,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   async function runSlashCommand(command: string, args: string[], parsed?: ReturnType<typeof parseSlashCommandLine>): Promise<SlashCommandResult> {
+    if (command === "mesh") {
+      const result = await meshController().run(args);
+      refreshTickets();
+      return result.detail ? { brief: appendDetailShortcut(result.brief), detail: result.detail } : { brief: result.brief };
+    }
     if (command === "ticket" || command === "tickets") {
       const result = await runTicketCommand(ticketsController(), command, args);
       if (result.openPane) {
