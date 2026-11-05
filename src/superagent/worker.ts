@@ -33,6 +33,11 @@ const WORKER_MAX_TURNS = 60, WORKER_MAX_TOOL_CALLS = 200;
  * The one reminder a worker gets when a turn ends without any report: upstream's main Session asked an idle worker for its
  * status; here the host asks once, and records the worker's last words as waiting if it still does not report.
  */
+/**
+ * What a worker is told after a failed turn: the loop could not use the model's reply (a live trial on OVH ended so, after
+ * the worker had reported progress) or the turn ran out of budget. That is not the worker's last word, so it goes on.
+ */
+const FAILED_TURN = (why: string) => `Your last turn failed: ${why.slice(0, 500)} Continue the assignment where it stopped, and end with the mcp__ticket__report tool as usual: blocked or failed if you cannot go on.`;
 const UNREPORTED = "Your turn ended without calling the mcp__ticket__report tool, so nobody knows what happened: your final JSON is not a report. Put one mcp__ticket__report call in tool_calls now: state ready with message_for_person if the work is done and verified, progress if you wait for something such as CI or a review (say what), blocked or failed with what stops you, or dropped if there is nothing to do.";
 
 /** The worker's words at the end of a turn: the loop's summary, or the summary inside a final message that is raw JSON. */
@@ -208,6 +213,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
 
   let exitCode = 0;
   let tries = 0;
+  let failedTurns = 0;
   let retryNote: string | undefined;
   let reminded = false;
   let unreported = false;
@@ -255,6 +261,14 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       if (stopping || !current()) break;
       const after = current()!;
       if (handedOff(after)) { client.engine.turnEnded(ticketId, assignmentId); break; }
+      // A failed turn gets another with its reason, as a passing failure does; the reason would otherwise stand as its report.
+      if (result?.status === "failed") {
+        if (failedTurns >= TRANSIENT_TRIES) throw new Error(`its turns kept failing: ${lastWords(result)}`);
+        failedTurns += 1;
+        retryNote = FAILED_TURN(lastWords(result));
+        continue;
+      }
+      failedTurns = 0;
       const silent = latestReport(after)?.at === reportedBefore;
       if (silent) words.push(lastWords(result));
       if (!reminded && silent) {
