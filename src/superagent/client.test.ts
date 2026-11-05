@@ -93,3 +93,17 @@ test("a question the person answered leaves needs-you and shows the ticket worki
   const row = ticketRow(client, client.store.tickets.get(ticketId!)!);
   assert.deepEqual([row.group, row.label, row.question], ["working", "Working on your answer", undefined]);
 });
+
+test("a ready report that answers a person's message in the ticket's own conversation posts one reply, not a result and an answer", async () => {
+  const { fileReport } = await import("./ticket-tools.js");
+  const { triggerId } = client.request("fix the date format");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Fix the date format", scope: "x", reason: "asked", name: "fix-date-format", evalId: candidate.evalId });
+  client.engine.assignmentStarted(ticketId!, client.store.tickets.get(ticketId!)!.assignments[0]!.id);
+  const asked = client.message(ticketId!, "is it ready for review?");
+  const filed = await fileReport(client, ticketId!, { state: "ready", summary: "Fixed and tested.", reply_to_trigger_id: asked.triggerId, message_for_person: "Yes, it is ready for review." });
+  assert.deepEqual(filed.posted, ["answer"]);
+  const replies = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => JSON.parse(String(row.value)) as { text: string });
+  assert.deepEqual(replies.map((reply) => reply.text), ["Yes, it is ready for review."]);
+});
