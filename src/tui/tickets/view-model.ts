@@ -91,6 +91,9 @@ export function ticketsPaneLines(rows: readonly TicketRow[], selected: number): 
 }
 
 /** The order in which the pane lists tickets, which its selection indexes. */
+/** The exact handle of a row's ticket for commands: its whole id, after `<device>:` for a paired device's ticket. */
+export const rowHandle = (row: TicketRow): string => row.device ? `${row.device}:${row.id}` : row.id;
+
 export function paneOrder(rows: readonly TicketRow[]): TicketRow[] {
   return GROUP_ORDER.flatMap((group) => rows.filter((row) => row.group === group));
 }

@@ -15,9 +15,11 @@ const USAGE = `Usage: swarm superagent <command>
 Commands:
   run                         Run the ticket host in the foreground: Sources, model judgements, workers, replies
   status [--json]             Whether a host runs, its health, and how many tickets wait where
-  tickets [--all] [--json]    Tickets, what waits for a person first
-  ticket <id> [--json]        One ticket with its latest report and messages
-  request <text...>           File a request as a new ticket from this terminal
+  tickets [--all] [--all-devices] [--json]
+                              Tickets, what waits for a person first; --all-devices adds paired mesh devices' tickets
+  ticket <id> [--json]        One ticket with its latest report and messages; <device>:<id> for a paired device's
+  request [--device <name>] <text...>
+                              File a request as a new ticket from this terminal, or on a paired device
   say <id> <text...>          Send a message to a ticket, such as an answer to its question
   stop <id>                   Stop a ticket's work
   retry <id>                  Start a ticket again after it failed or blocked
@@ -59,6 +61,7 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
     return;
   }
   const json = flag(args, "json");
+  if (await runOnDevice(command, args, json)) return;
   const client = new SuperagentClient();
   try {
     if (command === "status") {
@@ -76,7 +79,8 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
       return;
     }
     if (command === "tickets") {
-      const rows = ticketRows(client, { ended: flag(args, "all") });
+      const ended = flag(args, "all");
+      const rows = flag(args, "all-devices") ? await allDeviceRows(client, ended) : ticketRows(client, { ended });
       if (json) { console.log(JSON.stringify(rows, null, 2)); return; }
       console.log(rows.length ? rows.map(rowLine).join("\n") : "No open tickets.");
       return;
@@ -127,6 +131,56 @@ export function selfCommand(): string[] {
     return arg;
   });
   return [process.execPath, ...flags, resolve(process.argv[1]!)];
+}
+
+/** This node's tickets and every reachable paired device's, newest first within each group. */
+async function allDeviceRows(client: SuperagentClient, ended: boolean): Promise<TicketRow[]> {
+  const { meshPeers } = await import("../mesh/state.js");
+  const { peerTickets } = await import("../mesh/tickets.js");
+  const remote = await Promise.all(meshPeers().map(async (peer) => {
+    try { return (await peerTickets(peer)).rows.filter((row) => ended || row.group !== "ended"); }
+    catch (error) { console.error(`${peer.name}: ${error instanceof Error ? error.message : String(error)}`); return []; }
+  }));
+  const order = ["person", "working", "queued", "idle", "ended"];
+  return [...ticketRows(client, { ended }), ...remote.flat()]
+    .sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** Runs a ticket command against a paired device: `request --device <name>`, or a `<device>:<id>` handle. */
+async function runOnDevice(command: string, args: string[], json: boolean): Promise<boolean> {
+  const device = command === "request" ? value(args, "device") : undefined;
+  const handle = command === "ticket" || command === "say" || command === "stop" || command === "retry" ? args[0] : undefined;
+  const { splitHandle } = await import("../mesh/tickets.js");
+  const target = device ?? (handle ? splitHandle(handle).device : undefined);
+  if (!target) return false;
+  const { meshPeers } = await import("../mesh/state.js");
+  const peer = meshPeers().find((item) => item.name === target || item.id === target);
+  if (!peer) throw new Error(`No paired device "${target}"; see swarm mesh status`);
+  const mesh = await import("../mesh/tickets.js");
+  if (command === "request") {
+    const text = args.join(" ").trim();
+    if (!text) throw new Error("Usage: swarm superagent request --device <name> <text>");
+    console.log(`Filed request ${(await mesh.peerRequest(peer, text)).triggerId.slice(0, 8)} on ${peer.name}.`);
+    return true;
+  }
+  const id = splitHandle(args.shift()!).id;
+  if (command === "ticket") {
+    const { row, messages } = await mesh.peerTicket(peer, id);
+    if (json) { console.log(JSON.stringify({ ...row, messages }, null, 2)); return true; }
+    console.log(rowLine(row));
+    if (row.summary) console.log(`\nLatest report:\n${row.summary}`);
+    for (const message of messages) console.log(`\n[${message.kind}] ${message.text}`);
+    return true;
+  }
+  if (command === "say") {
+    const text = args.join(" ").trim();
+    if (!text) throw new Error("Usage: swarm superagent say <device>:<ticket id> <text>");
+    console.log(`Sent to ${(await mesh.peerAct(peer, id, "messages", { text })).short}.`);
+    return true;
+  }
+  const row = await mesh.peerAct(peer, id, command as "stop" | "retry");
+  console.log(`${command === "stop" ? "Stopped" : "Retrying"} ${row.short}.`);
+  return true;
 }
 
 async function runHost(): Promise<void> {

@@ -11,8 +11,10 @@ import { pullOf } from "./sources/github-pull.js";
 export type TicketGroup = "person" | "working" | "queued" | "idle" | "ended";
 export interface TicketRow {
   id: string;
-  /** A short handle for commands: the first eight characters of the id. */
+  /** A short handle for commands: the first eight characters of the id, after `<device>:` for another node's ticket. */
   short: string;
+  /** The paired node that owns the ticket; unset for this node's own. */
+  device?: string;
   title: string;
   group: TicketGroup;
   /** Whom the ticket waits for and what it needs, such as "Awaiting review". */

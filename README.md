@@ -820,7 +820,12 @@ swarm mesh status                          # this node and its peers: reachable,
 ```
 
 The mesh speaks plain HTTP and relies on a private network such as Tailscale to encrypt it; do not expose its port
-publicly. Seeing and steering other devices' tickets, borrowing their tools, and placing work on them build on this.
+publicly.
+
+Paired devices' tickets appear beside this node's in the TUI (`/tickets`, the needs-you strip) and in
+`swarm superagent tickets --all-devices`, addressed as `<device>:<id>`. Answering, stopping and retrying one goes to
+the device that owns it, and `/ticket @<device> <request>` (or `swarm superagent request --device <name>`) files
+work there. A paired device acts as that device's own operator, so pair only devices you control.
 
 ## Architecture
 

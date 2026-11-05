@@ -74,6 +74,11 @@ export function readMesh(home = meshHome()): MeshState {
   return StateSchema.parse(JSON.parse(readFileSync(path, "utf8")));
 }
 
+/** The paired peers, without creating mesh state on a device that never joined a mesh. */
+export function meshPeers(home = meshHome()): Peer[] {
+  return existsSync(statePath(home)) ? readMesh(home).peers : [];
+}
+
 /** Writes the state atomically, readable by its owner only: it holds the tokens peers issued this node. */
 export function writeMesh(state: MeshState, home = meshHome()): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });

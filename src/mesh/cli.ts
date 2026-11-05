@@ -149,6 +149,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   const abilities = await detectAbilities();
   let facts: () => { repository?: string; load?: NodeLoad } = () => ({});
   let stopHost = async (): Promise<void> => {};
+  let serveHost = (_server: MeshServer): void => {};
   if (withHost) {
     const { SuperagentHost } = await import("../superagent/host.js");
     const { providerComplete } = await import("../superagent/provider.js");
@@ -165,8 +166,11 @@ export async function runNodeCommand(input: string[]): Promise<void> {
       return { ...(repository ? { repository } : {}), load: { running: counts.working, queued: counts.queued, slots: settings.executor.maxWorkers } };
     };
     stopHost = () => host.stop();
+    const { registerTicketRoutes } = await import("./tickets.js");
+    serveHost = (server) => registerTicketRoutes(server, host.client);
   }
   const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts() }), log: (message) => process.stderr.write(`${message}\n`) });
+  serveHost(server);
   const { node } = readMesh(home);
   const { url } = await server.start(node.listen);
   console.log(`Swarm node "${node.name}" serving the mesh at ${url}${withHost ? " with its superagent host" : ""}. Peers reach it at ${await advertisedUrl(node)}. Ctrl+C stops it.`);

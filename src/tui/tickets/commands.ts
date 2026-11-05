@@ -9,6 +9,7 @@ export interface TicketCommandResult { brief: string; detail?: string; openPane?
 
 const USAGE = [
   "/ticket <request>          File a request; a ticket worker does it in its own directory",
+  "/ticket @<device> <request> File it on a paired device, which then owns the ticket",
   "/ticket <id>               Show a ticket",
   "/ticket say <id> <text>    Send a message to a ticket, such as an answer to its question",
   "/ticket stop <id>          Stop a ticket's work",
@@ -16,8 +17,8 @@ const USAGE = [
   "/tickets                   Open the tickets pane"
 ].join("\n");
 
-/** A ticket handle: the start of a ticket id, as the TUI shows it. */
-const HANDLE = /^[0-9a-f]{6,32}$/;
+/** A ticket handle: the start of a ticket id, as the TUI shows it, after `<device>:` for a paired device's ticket. */
+const HANDLE = /^(?:[^\s:]+:)?[0-9a-f]{6,32}$/;
 
 export async function runTicketCommand(tickets: TuiTickets, command: "ticket" | "tickets", args: string[]): Promise<TicketCommandResult> {
   if (command === "tickets") {
@@ -41,7 +42,7 @@ export async function runTicketCommand(tickets: TuiTickets, command: "ticket" | 
       const text = rest.slice(1).join(" ").trim();
       if (!text) throw new Error("Usage: /ticket say <id> <text>");
       const row = await tickets.say(handle, text);
-      const started = await tickets.ensureHost();
+      const started = !row.device && await tickets.ensureHost();
       return { brief: `Sent to ticket ${row.short}: ${row.title}.${started ? " Started the ticket host in this TUI." : ""}` };
     }
     if (first === "stop") {
@@ -49,12 +50,19 @@ export async function runTicketCommand(tickets: TuiTickets, command: "ticket" | 
       return { brief: `Stopped ticket ${row.short}: ${row.title}.` };
     }
     const row = await tickets.retry(handle);
-    const started = await tickets.ensureHost();
+    const started = !row.device && await tickets.ensureHost();
     return { brief: `Retrying ticket ${row.short}: ${row.title}.${started ? " Started the ticket host in this TUI." : ""}` };
   }
   if (!rest.length && HANDLE.test(first) && tickets.available()) {
     const row = await tickets.find(first);
     if (row) return { brief: `Ticket ${row.short}: ${row.label} · ${row.title}`, detail: ticketDetailText(row, await tickets.messages(row.id)) };
+  }
+  if (first.startsWith("@") && first.length > 1) {
+    const device = first.slice(1);
+    const text = rest.join(" ").trim();
+    if (!text) throw new Error("Usage: /ticket @<device> <request>");
+    const { triggerId } = await tickets.request(text, device);
+    return { brief: `Filed on ${device} as a ticket request (${triggerId.slice(0, 8)}). Its worker runs there; replies appear here.` };
   }
   const text = args.join(" ").trim();
   const { triggerId } = await tickets.request(text);
