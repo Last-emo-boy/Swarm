@@ -342,9 +342,12 @@ export async function inviteWithCode(options: { home?: string; minutes?: number;
     })().catch((error: Error) => options.log?.(`pairing: ${error.message}`));
   }, options.log);
   const mailboxName = mailbox.mailbox;
-  const timer = setTimeout(() => mailbox.close(), minutes * 60_000);
+  // The relay closes the mailbox when the minutes are up, and so does this side; whichever close lands, it expired.
+  let expired = false;
+  const timer = setTimeout(() => { expired = true; mailbox.close(); }, minutes * 60_000);
   timer.unref();
-  const ended = Promise.race([cancelled, mailbox.closed.then((reason) => reason === "The invite ended" ? `The code expired after ${minutes} minutes` : reason)]);
+  const ended = Promise.race([cancelled, mailbox.closed.then((reason) =>
+    expired || /expired/.test(reason) ? `The code expired after ${minutes} minutes` : reason === "The invite ended" ? "The invite was closed" : reason)]);
   void ended.then(() => clearTimeout(timer));
   return {
     // A code for any relay but the default one says which, so the joining device needs no setting to use it.

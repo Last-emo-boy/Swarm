@@ -61,9 +61,14 @@ export async function tailnetAddress(): Promise<string | undefined> {
 
 const joinHost = (host: string, port: number): string => `${host.includes(":") ? `[${host}]` : host}:${port}`;
 
-/** This machine's own IPv4 addresses on its networks (LAN, tailnet), private ones first. */
+/**
+ * This machine's own IPv4 addresses on its networks (LAN, tailnet), private ones first. Link-local addresses and the
+ * 198.18.0.0/15 benchmarking range are left out: proxies with a TUN interface take addresses there, and a peer that
+ * dials one reaches the proxy, not this node.
+ */
 function interfaceAddresses(): string[] {
-  const all = Object.values(networkInterfaces()).flat().flatMap((item) => item && item.family === "IPv4" && !item.internal && !item.address.startsWith("169.254.") ? [item.address] : []);
+  const usable = (address: string): boolean => !address.startsWith("169.254.") && !/^198\.1[89]\./.test(address);
+  const all = Object.values(networkInterfaces()).flat().flatMap((item) => item && item.family === "IPv4" && !item.internal && usable(item.address) ? [item.address] : []);
   const isPrivate = (address: string): boolean => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(address);
   return [...all.filter(isPrivate), ...all.filter((address) => !isPrivate(address))];
 }

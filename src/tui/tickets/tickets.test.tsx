@@ -97,7 +97,8 @@ test("ticket commands file a request, show and answer a ticket, and do not start
   const stateDir = mkdtempSync(join(tmpdir(), "swarm-tui-tickets-"));
   // Another host holds the lock: this process.
   writeFileSync(join(stateDir, "host.lock"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
-  const tickets = new TuiTickets({ stateDir, log: () => {} });
+  // An empty mesh of its own: the machine running the tests may be paired with devices whose tickets would count.
+  const tickets = new TuiTickets({ stateDir, meshHome: join(stateDir, "mesh"), log: () => {} });
   try {
     assert.equal(tickets.available(), false);
     const filed = await runTicketCommand(tickets, "ticket", ["rename", "the", "build", "script"]);

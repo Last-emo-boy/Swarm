@@ -146,7 +146,13 @@ function handshake(peer: Peer, raw: Duplex): Promise<TLSSocket> {
     });
     const timer = setTimeout(() => socket.destroy(new Error("the TLS handshake timed out")), HANDSHAKE_MS);
     socket.once("secureConnect", () => { clearTimeout(timer); socket.off("error", reject); resolve(socket); });
-    socket.once("error", (error) => { clearTimeout(timer); raw.destroy(); reject(new HandshakeRefused(error.message)); });
+    // Only the peer's own refusal says it does not know the key; anything else, such as a proxy that took the connection
+    // and dropped it, is just a path that did not work.
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      raw.destroy();
+      reject(error.code === "ERR_SSL_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY" ? new HandshakeRefused(error.message) : error);
+    });
   });
 }
 
@@ -180,6 +186,7 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
           if (settled) return void socket.destroy();
           if (path.kind === "relay") relayUnder.set(socket, raw as RelayStream);
           settled = true;
+          clearTimeout(relayTimer);
           for (const other of open) if (other !== raw) other.destroy();
           paths.set(peer.id, path);
           resolve(socket);
@@ -203,12 +210,14 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
     };
     const finish = (): void => {
       settled = true;
+      clearTimeout(relayTimer);
       reject(new MeshError(0, refused
         ? `${peer.name} answered but no longer knows this node; pair again`
         : `${peer.name} is unreachable: ${failures.join("; ") || "no address or relay to reach it at"}`));
     };
+    // Not unref'd: while it waits it may be all that keeps a command alive, as for a peer with no direct address.
+    const relayTimer = setTimeout(startRelay, peer.addresses.length ? DIRECT_HEAD_START_MS : 0);
     for (const address of peer.addresses) attempt({ kind: "direct", address }, () => dialDirect(address));
-    setTimeout(startRelay, peer.addresses.length ? DIRECT_HEAD_START_MS : 0).unref();
     if (!peer.addresses.length && !(peer.relay && peer.relayName)) finish();
   });
 }

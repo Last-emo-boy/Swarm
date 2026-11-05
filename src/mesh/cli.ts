@@ -116,8 +116,12 @@ async function meshCommand(input: string[]): Promise<void> {
     const handle = args[0];
     if (!handle) throw new Error("Usage: swarm mesh remove <peer>");
     const peer = findPeer(readMesh(), handle);
-    const { missed } = await removeFromSwarm(peer);
-    console.log(`Removed ${peer.name} from the swarm.${missed.length ? ` ${missed.join(", ")} did not hear now and will still know it until removed there; ${peer.name}'s key here no longer works.` : " Every member forgot it."}`);
+    const { told, missed } = await removeFromSwarm(peer);
+    console.log([
+      `Removed ${peer.name} from the swarm; this node no longer accepts it.`,
+      missed.length ? `${missed.join(", ")} did not hear, so ${missed.length === 1 ? "it still accepts" : "they still accept"} ${peer.name} until you remove it there or ${missed.length === 1 ? "it hears" : "they hear"} of it.` : "Every other member forgot it too.",
+      told ? "" : `${peer.name} was not reachable to be told; it still lists this swarm, but members that forgot it refuse it.`
+    ].filter(Boolean).join(" "));
     return;
   }
   if (command === "relay") return relay(args);

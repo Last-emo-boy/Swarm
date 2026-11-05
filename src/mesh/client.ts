@@ -63,14 +63,14 @@ export async function unpair(peer: Peer, home = meshHome()): Promise<boolean> {
 
 /**
  * Removes a device from the swarm: it is told to forget this node, every other member is told to forget it, and this
- * node keeps a tombstone so introductions of it are refused. Returns the members that did not hear.
+ * node keeps a tombstone so introductions of it are refused. Says whether the device heard, and which members did not.
  */
-export async function removeFromSwarm(peer: Peer, home = meshHome()): Promise<{ missed: string[] }> {
+export async function removeFromSwarm(peer: Peer, home = meshHome()): Promise<{ told: boolean; missed: string[] }> {
   const others = readMesh(home).peers.filter((item) => item.id !== peer.id);
-  const results = await Promise.all([
-    callPeer(peer, "POST", "/mesh/v1/unpair", {}, 5000).then(() => undefined, () => peer.name),
-    ...others.map((other) => callPeer(other, "POST", "/mesh/v1/forget", { id: peer.id, name: peer.name }, 5000).then(() => undefined, () => other.name))
+  const [told, ...heard] = await Promise.all([
+    callPeer(peer, "POST", "/mesh/v1/unpair", {}, 5000).then(() => true, () => false),
+    ...others.map((other) => callPeer(other, "POST", "/mesh/v1/forget", { id: peer.id, name: peer.name }, 5000).then(() => true, () => false))
   ]);
-  removePeer(peer.id, home, {});
-  return { missed: results.filter((name): name is string => Boolean(name)) };
+  removePeer(peer.id, home, { name: peer.name });
+  return { told: told!, missed: others.filter((_, index) => !heard[index]).map((other) => other.name) };
 }

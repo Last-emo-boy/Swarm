@@ -171,8 +171,9 @@ test("a device removed from the swarm is forgotten by every member, which then r
   const boxSeesGpu = findPeer(readMesh(box), "gpu");
   assert.ok(boxSeesGpu.voucher, "box has not met gpu yet");
 
-  const { missed } = await removeFromSwarm(findPeer(readMesh(ovh), "box"), ovh);
-  assert.deepEqual(missed, []);
+  const { told, missed } = await removeFromSwarm(findPeer(readMesh(ovh), "box"), ovh);
+  assert.deepEqual([told, missed], [true, []]);
+  assert.deepEqual(readMesh(ovh).removed.map((item) => item.name), ["box"]);
   assert.deepEqual(readMesh(gpu).removed.map((item) => item.name), ["box"], "gpu heard of box's removal before it ever met box");
   await assert.rejects(callPeer(boxSeesGpu, "GET", "/mesh/v1/node"), /no longer knows this node/);
   assert.equal(readMesh(gpu).peers.some((peer) => peer.name === "box"), false);
