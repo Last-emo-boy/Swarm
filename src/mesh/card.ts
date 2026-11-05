@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { promisify } from "node:util";
 import { loadSwarmVersion } from "../runtime/headless-artifacts.js";
-import { DEFAULT_MESH_PORT, type MeshNode } from "./state.js";
+import { DEFAULT_MESH_PORT, type Lend, type MeshNode } from "./state.js";
 import { parseListen } from "./listen.js";
 
 const exec = promisify(execFile);
@@ -33,6 +33,8 @@ export interface NodeCard {
   /** The repository its ticket host watches, when it runs one. */
   repository?: string;
   load?: NodeLoad;
+  /** The folders it lends paired peers a shell or file access in, when it lends any. */
+  lend?: Lend;
   at: string;
 }
 
@@ -57,7 +59,7 @@ const wildcard = (host: string): boolean => host === "0.0.0.0" || host === "::" 
  * The URL peers call this node at: its configured address; else the concrete address it binds; else its tailnet
  * address, which works inside containers where tailnet names do not resolve; else its hostname.
  */
-export async function advertisedUrl(node: MeshNode): Promise<string> {
+export async function advertisedUrl(node: Pick<MeshNode, "listen" | "advertise">): Promise<string> {
   if (node.advertise) return node.advertise.replace(/\/$/, "");
   const { host, port } = parseListen(node.listen);
   const reach = !wildcard(host) ? host : await tailnetAddress() ?? hostname();
@@ -79,6 +81,7 @@ export async function nodeCard(node: MeshNode, extra: { repository?: string; loa
     os: process.platform, arch: process.arch, abilities: extra.abilities ?? await detectAbilities(),
     ...(extra.repository ? { repository: extra.repository } : {}),
     ...(extra.load ? { load: extra.load } : {}),
+    ...(Object.keys(node.lend).length ? { lend: node.lend } : {}),
     at: new Date().toISOString()
   };
 }

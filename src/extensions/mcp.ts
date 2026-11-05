@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerSettings, SwarmSettings } from "../config/settings.js";
 import type { ToolResult } from "../tools/types.js";
@@ -51,7 +52,7 @@ type McpServerRuntime = {
   config: McpServerSettings;
   status: McpServerStatus;
   client?: Client;
-  transport?: StdioClientTransport;
+  transport?: StdioClientTransport | StreamableHTTPClientTransport;
   tools: Tool[];
   resources: Resource[];
   prompts: Prompt[];
@@ -65,23 +66,28 @@ export class McpClientProvider implements CapabilityProvider {
   readonly title = "MCP servers";
   private readonly servers = new Map<string, McpServerRuntime>();
   private providerDiagnostics: CapabilityDiagnostic[] = [];
+  /** Servers for the tools paired mesh devices lend, by device name. */
+  private borrowed: Record<string, McpServerSettings> = {};
+  private borrowedIds = new Set<string>();
 
   constructor(private readonly input: { settings: SwarmSettings; workspace: string }) {
     this.reloadConfig();
   }
 
   async refresh(): Promise<void> {
-    this.reloadConfig();
     this.providerDiagnostics = [];
+    await this.loadBorrowedServers();
+    this.reloadConfig();
     if (!this.input.settings.extensions.mcp.enabled) {
       this.providerDiagnostics.push({
         severity: "info",
         code: "MCP_DISABLED",
         message: "MCP client support is disabled by settings.extensions.mcp.enabled."
       });
-      return;
     }
-    await Promise.all([...this.servers.keys()].map((serverId) => this.refreshServer(serverId)));
+    await Promise.all([...this.servers.keys()]
+      .filter((serverId) => this.serverAllowed(serverId))
+      .map((serverId) => this.refreshServer(serverId)));
   }
 
   async refreshServer(serverId: string): Promise<McpServerRecord> {
@@ -94,7 +100,7 @@ export class McpClientProvider implements CapabilityProvider {
     server.diagnostics = [];
     server.lastError = undefined;
 
-    if (!this.input.settings.extensions.mcp.enabled || server.config.disabled) {
+    if (!this.serverAllowed(server.id) || server.config.disabled) {
       server.status = "disabled";
       if (server.config.trust === "project") {
         server.diagnostics.push({
@@ -105,17 +111,17 @@ export class McpClientProvider implements CapabilityProvider {
       }
       return this.toRecord(server);
     }
-    if (server.config.transport !== "stdio") {
+    if (server.config.transport === "http" && !server.config.url?.trim()) {
       server.status = "failed";
-      server.lastError = "Only stdio MCP transport is implemented.";
+      server.lastError = "MCP http server requires a url.";
       server.diagnostics.push({
-        severity: "warn",
-        code: "MCP_TRANSPORT_UNSUPPORTED",
-        message: "Only stdio MCP transport is implemented in this phase."
+        severity: "error",
+        code: "MCP_URL_MISSING",
+        message: "MCP http server requires settings.extensions.mcp.servers.<id>.url."
       });
       return this.toRecord(server);
     }
-    if (!server.config.command?.trim()) {
+    if (server.config.transport === "stdio" && !server.config.command?.trim()) {
       server.status = "failed";
       server.lastError = "MCP stdio server requires a command.";
       server.diagnostics.push({
@@ -132,25 +138,9 @@ export class McpClientProvider implements CapabilityProvider {
         { name: "swarm", version: "0.1.0" },
         { capabilities: {} }
       );
-      const transport = new StdioClientTransport({
-        command: server.config.command,
-        args: server.config.args ?? [],
-        cwd: server.config.cwd ?? this.input.workspace,
-        env: resolveMcpEnv(server.config.env),
-        stderr: "pipe"
-      });
-      const stderr = transport.stderr;
-      stderr?.on("data", (chunk) => {
-        const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-        if (!text.trim()) {
-          return;
-        }
-        server.diagnostics.push({
-          severity: "info",
-          code: "MCP_STDERR",
-          message: redactEnvValues(text.trim(), server.config.env)
-        });
-      });
+      const transport = server.config.transport === "http"
+        ? this.httpTransport(server, client)
+        : this.stdioTransport(server);
       await client.connect(transport, { timeout: server.config.timeoutMs ?? 30_000 });
       server.client = client;
       server.transport = transport;
@@ -257,8 +247,76 @@ export class McpClientProvider implements CapabilityProvider {
     this.servers.clear();
   }
 
+  private stdioTransport(server: McpServerRuntime): StdioClientTransport {
+    const transport = new StdioClientTransport({
+      command: server.config.command!,
+      args: server.config.args ?? [],
+      cwd: server.config.cwd ?? this.input.workspace,
+      env: resolveMcpEnv(server.config.env),
+      stderr: "pipe"
+    });
+    const stderr = transport.stderr;
+    stderr?.on("data", (chunk) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      if (!text.trim()) {
+        return;
+      }
+      server.diagnostics.push({
+        severity: "info",
+        code: "MCP_STDERR",
+        message: redactEnvValues(text.trim(), server.config.env)
+      });
+    });
+    return transport;
+  }
+
+  /** A Streamable HTTP connection; its transport errors are the diagnostics a stdio server writes to stderr. */
+  private httpTransport(server: McpServerRuntime, client: Client): StreamableHTTPClientTransport {
+    client.onerror = (error) => {
+      server.diagnostics.push({
+        severity: "warn",
+        code: "MCP_HTTP_ERROR",
+        message: redactMcpText(error.message, server.config)
+      });
+    };
+    const headers = Object.fromEntries(Object.entries(server.config.headers ?? {}).map(([key, value]) => [key, resolveEnvValue(value)]));
+    return new StreamableHTTPClientTransport(new URL(server.config.url!), { requestInit: { headers } });
+  }
+
+  /**
+   * Tools that paired mesh devices lend load whether or not configured MCP servers are enabled: pairing with the device
+   * and its choice to lend are the opt-in. A strict runtime MCP config takes only its own servers.
+   */
+  private async loadBorrowedServers(): Promise<void> {
+    if (this.input.settings.extensions.mcp.runtimeConfig?.strict) {
+      this.borrowed = {};
+      return;
+    }
+    try {
+      const { borrowedMcpServers } = await import("../mesh/borrow.js");
+      const { servers, diagnostics } = await borrowedMcpServers();
+      this.borrowed = servers;
+      this.providerDiagnostics.push(...diagnostics);
+    } catch (error) {
+      this.borrowed = {};
+      this.providerDiagnostics.push({
+        severity: "warn",
+        code: "MCP_MESH_UNREADABLE",
+        message: `Could not read the mesh's paired devices, so no tools are borrowed: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  }
+
+  private serverAllowed(serverId: string): boolean {
+    return this.input.settings.extensions.mcp.enabled || this.borrowedIds.has(serverId);
+  }
+
   private reloadConfig(): void {
-    const configs = loadMcpServerSettings(this.input.settings, this.input.workspace);
+    const configured = loadMcpServerSettings(this.input.settings, this.input.workspace);
+    // A configured server keeps its id even when a paired device has the same name.
+    const borrowed = Object.entries(this.borrowed).filter(([id]) => !(id in configured));
+    this.borrowedIds = new Set(borrowed.map(([id]) => id));
+    const configs = { ...Object.fromEntries(borrowed), ...configured };
     const currentIds = new Set(this.servers.keys());
     for (const [id, config] of Object.entries(configs)) {
       currentIds.delete(id);
@@ -359,7 +417,9 @@ function mcpToolDescriptor(server: McpServerRuntime, tool: Tool): CapabilityDesc
   const destructive = tool.annotations?.destructiveHint === true;
   const openWorld = tool.annotations?.openWorldHint === true;
   const overriddenRisk = server.config.toolRiskOverrides?.[tool.name];
-  const derivedRisk: CapabilityDescriptor["riskClass"] = destructive ? "r3" : openWorld ? "r2" : readOnly ? "r0" : "r1";
+  // A remote server acts on another machine, so its tools count as open-world whatever they say of themselves.
+  const remote = server.config.transport === "http";
+  const derivedRisk: CapabilityDescriptor["riskClass"] = destructive ? "r3" : openWorld || remote ? "r2" : readOnly ? "r0" : "r1";
   const riskClass = overriddenRisk ?? derivedRisk;
   const trust = mcpTrust(server.config);
   const exposesLocalProcess = server.config.transport === "stdio";
@@ -369,7 +429,7 @@ function mcpToolDescriptor(server: McpServerRuntime, tool: Tool): CapabilityDesc
     source: "mcp",
     trust,
     providerId: `mcp:${server.id}`,
-    name: `mcp__${modelToolNamePart(server.id)}__${modelToolNamePart(tool.name)}`,
+    name: mcpToolName(server.id, tool.name),
     title: tool.title ?? tool.name,
     description: tool.description ?? `MCP tool ${tool.name} from ${server.id}.`,
     inputSchema: tool.inputSchema,
@@ -695,6 +755,11 @@ function encodeMcpIdPart(value: string): string {
 
 function decodeMcpIdPart(value: string): string {
   return Buffer.from(value, "base64url").toString("utf8");
+}
+
+/** The name a model calls an MCP server's tool by. */
+export function mcpToolName(serverId: string, toolName: string): string {
+  return `mcp__${modelToolNamePart(serverId)}__${modelToolNamePart(toolName)}`;
 }
 
 function modelToolNamePart(value: string): string {

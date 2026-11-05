@@ -2,9 +2,11 @@
  * `swarm mesh`: pair this device with others and see them; `swarm node run`: the device daemon, which runs the
  * superagent host and the mesh server together so peers can reach this node.
  */
-import { DEFAULT_MESH_PORT, createInvite, findPeer, meshHome, readMesh, updateMesh } from "./state.js";
+import { mcpToolName } from "../extensions/mcp.js";
+import { DEFAULT_MESH_PORT, createInvite, findPeer, meshHome, readMesh, updateMesh, type Lend } from "./state.js";
 import { advertisedUrl, detectAbilities, nodeCard, tailnetAddress, type NodeCard, type NodeLoad } from "./card.js";
 import { joinMesh, meshFetch, peerHealth, unpair } from "./client.js";
+import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
 import { parseListen } from "./listen.js";
 import { MeshServer } from "./server.js";
 
@@ -18,13 +20,18 @@ Commands:
   name <name>                Rename this node
   listen <host:port>         Where this node's mesh server binds; tailnet:38172 binds its Tailscale address
   advertise <url>|--clear    The URL peers call this node at; derived from Tailscale or the hostname when unset
+  lend [shell|files <dir>…]  Lend paired peers a shell or file access in these folders; alone, shows what is lent
+  lend --stop shell|files [<dir>…]
+                             Stop lending in these folders, or in all of them
+  tools [peer] [--json]      What each peer lends; this node's sessions use it as mcp__<peer>__<tool>
 
 Run \`swarm node run\` on each device so peers can reach it. Pair over a private network such as Tailscale:
 the mesh speaks plain HTTP and relies on the network to encrypt it. State lives in ${meshHome()}.`;
 
 const NODE_USAGE = `Usage: swarm node run [--no-host]
 
-Runs this device's node: the superagent host (tickets, Sources, workers) and the mesh server peers call.
+Runs this device's node: the superagent host (tickets, Sources, workers) and the mesh server peers call,
+which also serves the tools this node lends (swarm mesh lend).
 --no-host serves the mesh only, for a device that runs its ticket host elsewhere.`;
 
 function flag(args: string[], name: string): boolean {
@@ -103,7 +110,52 @@ export async function runMeshCommand(input: string[]): Promise<void> {
     console.log(clear ? "Peers will reach this node at its tailnet or host name." : `Peers will reach this node at ${url}.`);
     return;
   }
+  if (command === "lend") return lend(args);
+  if (command === "tools") {
+    const json = flag(args, "json");
+    return tools(args[0] ?? "", json);
+  }
   throw new Error(`Unknown mesh command "${command}".\n\n${USAGE}`);
+}
+
+const lendLines = (lend: Lend | undefined): string[] =>
+  LEND_KINDS.flatMap((kind) => lend?.[kind] ? [`${kind} (${lentTools({ [kind]: lend[kind] }).join(", ")}) in ${lend[kind].roots.join(", ")}`] : []);
+
+function lend(args: string[]): void {
+  const stop = flag(args, "stop");
+  const [kind, ...folders] = args;
+  if (!kind && !stop) {
+    const lines = lendLines(readMesh().node.lend);
+    console.log(lines.length ? `Paired peers may use:\n${lines.map((line) => `  ${line}`).join("\n")}` : "This node lends nothing. swarm mesh lend shell|files <dir> lends a shell or file access in a folder.");
+    return;
+  }
+  if (!LEND_KINDS.includes(kind as LendKind)) throw new Error("Usage: swarm mesh lend [--stop] shell|files <dir>…");
+  if (stop) {
+    const left = stopLending(kind as LendKind, folders);
+    console.log(left[kind as LendKind] ? `Still lending ${kind} in ${left[kind as LendKind]!.roots.join(", ")}.` : `No longer lending ${kind}.`);
+    return;
+  }
+  if (!folders.length) throw new Error(`Usage: swarm mesh lend ${kind} <dir>…`);
+  const lent = lendFolders(kind as LendKind, folders);
+  console.log(`Lending ${kind} in ${lent[kind as LendKind]!.roots.join(", ")} to every paired peer, from the next request on.`);
+  if (kind === "shell") console.log("A shell runs any command as this user; its folders bound where a command starts, not what it can reach.");
+}
+
+async function tools(handle: string, json: boolean): Promise<void> {
+  const peer = handle ? findPeer(readMesh(), handle) : undefined;
+  const peers = (await peerHealth()).filter((item) => !peer || item.peer.id === peer.id);
+  if (json) {
+    console.log(JSON.stringify(peers.map((item) => ({ peer: item.peer.name, reachable: item.reachable, tools: lentTools(item.card?.lend), lend: item.card?.lend ?? {},
+      ...(item.error ? { error: item.error } : {}) })), null, 2));
+    return;
+  }
+  if (!peers.length) console.log("No peers yet: run swarm mesh invite here and swarm mesh join <code> on the other device.");
+  for (const item of peers) {
+    const lines = lendLines(item.card?.lend);
+    if (!item.reachable) console.log(`${item.peer.name}: unreachable  ${item.error ?? ""}`);
+    else if (!lines.length) console.log(`${item.peer.name}: lends nothing`);
+    else console.log(`${item.peer.name}: ${lines.join("; ")}\n  as ${lentTools(item.card?.lend).map((tool) => mcpToolName(item.peer.name, tool)).join(", ")}`);
+  }
 }
 
 async function status(json: boolean): Promise<void> {
@@ -172,6 +224,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   }
   const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts() }), log: (message) => process.stderr.write(`${message}\n`) });
   serveHost(server);
+  registerLending(server);
   const { node } = readMesh(home);
   const { url } = await server.start(node.listen);
   console.log(`Swarm node "${node.name}" serving the mesh at ${url}${withHost ? " with its superagent host" : ""}. Peers reach it at ${await advertisedUrl(node)}. Ctrl+C stops it.`);

@@ -16,13 +16,17 @@ export const INVITE_MINUTES = 15;
 
 export const meshHome = (): string => process.env.SWARM_MESH_HOME ?? join(getSwarmPaths().home, "mesh");
 
+const LentFoldersSchema = z.object({ roots: z.array(z.string().min(1)).min(1) });
+/** What this node lends its paired peers, as the real paths of the folders each kind works in; nothing by default. */
+const LendSchema = z.object({ shell: LentFoldersSchema.optional(), files: LentFoldersSchema.optional() });
 const NodeSchema = z.object({
   id: z.string().min(1),
   name: z.string().trim().min(1).max(64),
   /** host:port the mesh server binds; loopback until the device is put on a private network. */
   listen: z.string().default(`127.0.0.1:${DEFAULT_MESH_PORT}`),
   /** The URL peers call this node at, such as its tailnet name; derived from the network when unset. */
-  advertise: z.string().url().optional()
+  advertise: z.string().url().optional(),
+  lend: LendSchema.default({})
 });
 const PeerSchema = z.object({
   id: z.string().min(1),
@@ -40,6 +44,7 @@ const StateSchema = z.object({
   peers: z.array(PeerSchema).default([]),
   invites: z.array(InviteSchema).default([])
 });
+export type Lend = z.infer<typeof LendSchema>;
 export type MeshNode = z.infer<typeof NodeSchema>;
 export type Peer = z.infer<typeof PeerSchema>;
 export type MeshState = z.infer<typeof StateSchema>;

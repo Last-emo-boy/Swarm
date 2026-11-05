@@ -827,6 +827,15 @@ Paired devices' tickets appear beside this node's in the TUI (`/tickets`, the ne
 the device that owns it, and `/ticket @<device> <request>` (or `swarm superagent request --device <name>`) files
 work there. A paired device acts as that device's own operator, so pair only devices you control.
 
+A device can also lend its paired peers tools, which their Swarm sessions call as MCP tools. Nothing is lent until
+you name folders: `swarm mesh lend shell ~/src/app` lends running commands that start in that folder (a shell can
+still reach anything this user can), and `swarm mesh lend files ~/data` lends listing, reading and writing files
+inside it, refusing paths that lead out, symlinks included. `swarm mesh lend` shows what is lent and
+`swarm mesh lend --stop shell` takes it back. On the other devices `swarm mesh tools` lists what each peer lends, and
+every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_file` and so on, served by the peer's
+`swarm node run` over Streamable HTTP with its pairing token. Borrowed tools count as remote, so in `ask` mode each
+call waits for approval; a peer that does not answer is skipped.
+
 ## Architecture
 
 ```text
