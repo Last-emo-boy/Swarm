@@ -4,13 +4,16 @@
  * so it remains the only process that writes its store. The node that runs the worker prepares the ticket's directory with
  * its own prepare command and credentials and holds a lease on the Assignment, which it renews with heartbeats; a lease
  * that lapses is treated like a worker the owner lost in a restart, so the work can be placed again.
+ *
+ * A node that pulls asks its paired nodes for work that waits there for a worker and claims what fits it. The owner still
+ * decides: it hands the work to the first valid claim through the same offer and lease, and refuses the others.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod/v4";
 import { HttpError, errorMessage } from "../server/gateway-http.js";
-import { latestAssignment, liveTicket, waitsForPerson, type Ticket } from "../superagent/core/index.js";
+import { latestAssignment, liveTicket, ticketStage, waitsForPerson, type Ticket } from "../superagent/core/index.js";
 import { Later } from "../superagent/effects.js";
 import { verifyEnvironment, workerBin, workerEnvironment, writeEnvironment } from "../superagent/environment.js";
 import { WORKER_SHELL_AUTO_BACKGROUND_MS, prepareDirectory, workerExited, type RemoteWork } from "../superagent/executor.js";
@@ -28,13 +31,15 @@ import { workDelivered, workStart, workView } from "../superagent/work-link.js";
 import type { NodeCard, NodeLoad } from "./card.js";
 import { callPeer, MeshError, peerHealth } from "./client.js";
 import type { MeshHandler, MeshRequest, MeshServer } from "./server.js";
-import { readMesh, type Peer } from "./state.js";
+import { readMesh, type Peer, type Pull } from "./state.js";
 import { workPath } from "./work-link.js";
 
 /** How long a lease holds without a heartbeat, and how often a node renews the leases it holds. */
 export const LEASE_MS = 60_000, HEARTBEAT_MS = 15_000;
 /** How long a stop waits for a worker process to exit before killing it. */
 const STOP_GRACE_MS = 10_000;
+/** How often a node that pulls looks for waiting work; while none is open it looks less often, down to 8 times as rarely. */
+export const PULL_MS = 15_000;
 
 const OfferSchema = z.object({
   ticketId: z.string().min(1).max(128),
@@ -51,6 +56,7 @@ const OfferSchema = z.object({
   leaseMs: z.number().int().min(1000).max(3_600_000)
 });
 type Offer = z.infer<typeof OfferSchema>;
+const ClaimSchema = z.object({ ticketId: z.string().min(1).max(128), assignmentId: z.string().min(1).max(128) });
 const ReportSchema = z.object({ state: z.enum(["progress", "waiting", "ready", "blocked", "failed", "dropped"]), summary: z.string().min(1).max(8000) });
 
 export interface MeshWorkOptions {
@@ -62,7 +68,21 @@ export interface MeshWorkOptions {
   workerCommand: readonly string[];
   leaseMs?: number;
   heartbeatMs?: number;
+  pullMs?: number;
   log?: (message: string) => void;
+}
+
+/** An Assignment that waits for a worker on the node that owns its ticket, which a paired node that pulls may claim. */
+export interface OpenWork {
+  ticketId: string;
+  assignmentId: string;
+  title: string;
+  /** The repository the owner's tickets work on; empty when it has none. */
+  repository: string;
+  /** What the work needs of the machine its worker runs on, such as gpu. */
+  needs: string[];
+  /** When the Assignment began to wait. */
+  since: string;
 }
 
 /** The worker of a paired node's ticket that this node runs, under the lease it holds on the Assignment. */
@@ -93,6 +113,17 @@ export function fittest(needs: readonly string[], cards: readonly NodeCard[]): N
     .sort((a, b) => free(b) - free(a))[0];
 }
 
+/**
+ * Why a node with these abilities, pulling work of these repositories (any when none), may not take the work; undefined
+ * when it may.
+ */
+export function unfit(work: Pick<OpenWork, "needs" | "repository">, abilities: readonly string[], repositories: readonly string[]): string | undefined {
+  const missing = work.needs.filter((need) => !abilities.includes(need));
+  if (missing.length) return `it lacks ${missing.join(", ")}, which the work needs`;
+  if (repositories.length && !repositories.includes(work.repository)) return `it pulls only work of ${repositories.join(", ")}`;
+  return undefined;
+}
+
 /** A route a worker on a paired node calls: what the owner's Engine or tools refuse reaches it with their reason, as here. */
 const forWorkers = (handler: MeshHandler): MeshHandler => async (request) => {
   try {
@@ -113,6 +144,11 @@ export class MeshWork implements RemoteWork {
   private readonly leaseMs: number;
   private readonly timers: NodeJS.Timeout[];
   private readonly health: HealthEntry;
+  /** Tickets whose Assignment a paired node that pulls is being offered now. */
+  private readonly claiming = new Set<string>();
+  private readonly pullMs: number;
+  private pullDelay: number;
+  private pullTimer?: NodeJS.Timeout;
   private closing = false;
   private beating = false;
 
@@ -125,6 +161,8 @@ export class MeshWork implements RemoteWork {
       setInterval(() => { void this.beat(); }, options.heartbeatMs ?? HEARTBEAT_MS)
     ];
     for (const timer of this.timers) timer.unref();
+    this.pullMs = this.pullDelay = options.pullMs ?? PULL_MS;
+    this.nextPull();
   }
 
   private get client() { return this.host.client; }
@@ -159,6 +197,8 @@ export class MeshWork implements RemoteWork {
 
   async run(ticket: Ticket, assignmentId: string): Promise<boolean> {
     if (this.closing) throw new Later("The node is stopping");
+    // The offer of a claim decides where it runs.
+    if (this.claiming.has(ticket.id)) throw new Later("A paired node that pulls is taking the work");
     const lease = this.lease(ticket.id);
     let node: Peer | undefined;
     if (this.live(lease) && lease.assignmentId === assignmentId) node = this.peer(lease.node);
@@ -189,7 +229,12 @@ export class MeshWork implements RemoteWork {
     if (needs.every((need) => this.options.abilities.includes(need))) return undefined;
     const cards = (await peerHealth(this.options.home, 3000)).flatMap((health) => health.card ? [health.card] : []);
     const card = fittest(needs, cards);
-    return card ? this.peer(card) : undefined;
+    if (card) return this.peer(card);
+    // A paired node fit for it that pulls takes it once it has a free slot; until then it waits here, open to that node.
+    const repository = this.client.deployment().repository;
+    const puller = cards.find((item) => item.pull && !unfit({ needs, repository }, item.abilities, item.pull.repositories));
+    if (puller && this.pulls().offer) throw new Later(`The work waits for ${puller.name}, which has ${needs.join(", ")}, to pull it`);
+    return undefined;
   }
 
   /** Offers the Assignment to `node`, which takes it, or wakes its worker for new Inputs when it holds it already. */
@@ -237,6 +282,8 @@ export class MeshWork implements RemoteWork {
         if (!lease || Date.parse(lease.expiresAt) > Date.now()) continue;
         const ticketId = key.slice(KV.mesh.lease.prefix.length);
         this.dropLease(ticketId);
+        // A pulled Assignment whose node went silent is open again.
+        if (client.store.get(KV.mesh.placement(ticketId))?.pulled?.assignmentId === lease.assignmentId) updatePlacement(client, ticketId, { pulled: undefined });
         const ticket = client.store.tickets.get(ticketId);
         const latest = ticket && liveTicket(ticket) ? latestAssignment(ticket) : undefined;
         if (!ticket || latest?.id !== lease.assignmentId) continue;
@@ -247,6 +294,84 @@ export class MeshWork implements RemoteWork {
     } catch (error) {
       this.log(`checking leases failed: ${errorMessage(error)}`);
     }
+  }
+
+  private pulls(): Pull { return readMesh(this.options.home).node.pull; }
+
+  /** The repository of the work this node hands out now; undefined while it stops or pauses, or before its setup resolved. */
+  private offering(): string | undefined {
+    if (this.closing || this.client.settings().paused) return undefined;
+    try {
+      return this.client.deployment().repository;
+    } catch {
+      // A host without a deployment starts no work, so it hands out none either.
+      return undefined;
+    }
+  }
+
+  /**
+   * The ticket's Assignment when it waits for a worker and a paired node may pull it: it waits in the launch queue, which is
+   * not starting it now, for a slot or for a node with what it needs. Work placed on a node or held under a lease is not
+   * open, and neither is a ticket that waits for a person.
+   */
+  private waiting(ticket: Ticket, repository: string): OpenWork | undefined {
+    const latest = latestAssignment(ticket);
+    const stage = ticketStage(ticket);
+    if (!ticket.execution || latest?.state !== "pending" || stage.stage !== "working" || stage.action !== "queued") return undefined;
+    if (this.live(this.lease(ticket.id))) return undefined;
+    const placement = placementOf(this.client, ticket);
+    if (placement?.on) return undefined;
+    const { effects } = this.client;
+    if (!effects.pending("launch", latest.id) || effects.running("launch", latest.id)) return undefined;
+    return { ticketId: ticket.id, assignmentId: latest.id, title: ticket.title, repository, needs: placement?.needs ?? [], since: latest.createdAt };
+  }
+
+  /** This node's Assignments that wait for a worker and that paired nodes may pull, oldest first. */
+  openWork(): OpenWork[] {
+    const repository = this.offering();
+    if (repository === undefined) return [];
+    return this.client.store.tickets.open().flatMap((ticket) => this.waiting(ticket, repository) ?? []).sort((a, b) => a.since.localeCompare(b.since));
+  }
+
+  /**
+   * A paired node that pulls claims an open Assignment. Nothing waits between the check that the work is still open and the
+   * lease that takes it, so the first valid claim wins, and the executor here, which would see the lease, cannot start it in
+   * between. The claimer then gets the work through the offer placement uses; when it does not take it, the work is open again.
+   */
+  private async claim(peer: Peer, body: Record<string, unknown>): Promise<{ claimed: true }> {
+    const { ticketId, assignmentId } = ClaimSchema.parse(body);
+    const short = ticketId.slice(0, 8);
+    const node = this.name();
+    if (!this.pulls().offer) throw new HttpError(403, `${node} does not hand its waiting work to nodes that pull`);
+    const card = await callPeer<NodeCard>(peer, "GET", "/mesh/v1/node", undefined, 5000).catch((error: unknown) => {
+      throw new HttpError(409, `${node} could not read ${peer.name}'s card: ${errorMessage(error)}`);
+    });
+    const ticket = this.client.store.tickets.get(ticketId);
+    const repository = this.offering();
+    const work = ticket && repository !== undefined ? this.waiting(ticket, repository) : undefined;
+    if (!ticket || work?.assignmentId !== assignmentId) throw new HttpError(409, `The work of ticket ${short} is no longer open on ${node}`);
+    const reason = unfit(work, card.abilities, card.pull?.repositories ?? []);
+    if (reason) throw new HttpError(409, `${peer.name} cannot take ticket ${short}: ${reason}`);
+    const by = { id: peer.id, name: peer.name };
+    this.claiming.add(ticketId);
+    try {
+      this.client.store.atomic(() => {
+        const at = new Date().toISOString();
+        this.saveLease(ticketId, { assignmentId, node: by, at, expiresAt: new Date(Date.now() + this.leaseMs).toISOString() });
+        updatePlacement(this.client, ticketId, { pulled: { ...by, assignmentId } });
+      });
+      await this.offer(peer, ticket, assignmentId);
+    } catch (error) {
+      this.client.store.atomic(() => {
+        this.dropLease(ticketId);
+        updatePlacement(this.client, ticketId, { pulled: undefined });
+      });
+      throw new HttpError(409, errorMessage(error));
+    } finally {
+      this.claiming.delete(ticketId);
+    }
+    this.log(`${peer.name} pulled ticket ${short}`);
+    return { claimed: true };
   }
 
   /** The lease the calling node holds on the ticket's Assignment that the request names; any other caller is refused. */
@@ -286,11 +411,16 @@ export class MeshWork implements RemoteWork {
   }
 
   /**
-   * Registers the routes paired nodes call: offers of work for this node to run, and, for the workers that run this
-   * node's tickets elsewhere, the ticket's reads, reports and tools.
+   * Registers the routes paired nodes call: this node's open work and claims on it, offers of work for this node to run,
+   * and, for the workers that run this node's tickets elsewhere, the ticket's reads, reports and tools.
    */
   serve(server: MeshServer): void {
     const { client } = this;
+    server.route("GET", "/mesh/v1/work/open", () => {
+      if (!this.pulls().offer) throw new HttpError(403, `${this.name()} does not hand its waiting work to nodes that pull`);
+      return { work: this.openWork() };
+    });
+    server.route("POST", "/mesh/v1/work/claims", ({ peer, body }) => this.claim(peer!, body));
     server.route("POST", "/mesh/v1/work/offers", ({ peer, body }) => this.accept(peer!, body));
     server.route("POST", "/mesh/v1/work/offers/:ticket/stop", async ({ peer, params, body }) => {
       const work = this.held.get(heldKey(peer!.id, params.ticket!));
@@ -510,10 +640,65 @@ export class MeshWork implements RemoteWork {
     }
   }
 
+  /** Worker slots that neither run a worker nor wait for this node's own queued tickets. */
+  private free(): number {
+    const { running, queued, slots } = this.load();
+    return slots - running - queued;
+  }
+
+  private nextPull(): void {
+    if (this.closing) return;
+    this.pullTimer = setTimeout(() => { void this.pull(); }, this.pullDelay);
+    this.pullTimer.unref();
+  }
+
+  /**
+   * While this node pulls and has free worker slots, it asks each paired node for its open work, keeps what its abilities
+   * and repositories fit, and claims it oldest first; each owner decides whose claim wins. It looks again soon after it
+   * found work, and less often while none fits.
+   */
+  private async pull(): Promise<void> {
+    let found = true;
+    try {
+      const { node, peers } = readMesh(this.options.home);
+      if (!node.pull.enabled || this.client.settings().paused || this.free() <= 0) return;
+      const offered = await Promise.all(peers.map(async (peer) => {
+        try {
+          const { work } = await callPeer<{ work: OpenWork[] }>(peer, "GET", "/mesh/v1/work/open", undefined, 3000);
+          return work.map((item) => ({ peer, work: item }));
+        } catch {
+          // Unreachable, without a ticket host, or keeping its work: nothing to take there now.
+          return [];
+        }
+      }));
+      const fitting = offered.flat()
+        .filter(({ peer, work }) => !this.held.has(heldKey(peer.id, work.ticketId)) && !unfit(work, this.options.abilities, node.pull.repositories))
+        .sort((a, b) => a.work.since.localeCompare(b.work.since));
+      found = fitting.length > 0;
+      for (const { peer, work } of fitting) {
+        if (this.closing || this.free() <= 0) break;
+        const ticket = `ticket ${work.ticketId.slice(0, 8)} (${work.title})`;
+        try {
+          await callPeer(peer, "POST", "/mesh/v1/work/claims", { ticketId: work.ticketId, assignmentId: work.assignmentId }, 60_000);
+          this.log(`pulled ${ticket} from ${peer.name}`);
+        } catch (error) {
+          // Another node or the owner itself took it first; the next look sees what is still open.
+          this.log(`${peer.name} kept ${ticket}: ${errorMessage(error)}`);
+        }
+      }
+    } catch (error) {
+      this.log(`pulling work failed: ${errorMessage(error)}`);
+    } finally {
+      this.pullDelay = found ? this.pullMs : Math.min(this.pullDelay * 2, this.pullMs * 8);
+      this.nextPull();
+    }
+  }
+
   /** On host stop: no more placing or renewing; the workers this node runs for paired nodes stop, and their leases lapse. */
   async close(): Promise<void> {
     this.closing = true;
     for (const timer of this.timers) clearInterval(timer);
+    clearTimeout(this.pullTimer);
     this.health.release();
     await Promise.all([...this.held.values()].map((work) => this.release(work)));
   }

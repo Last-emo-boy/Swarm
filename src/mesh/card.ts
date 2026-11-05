@@ -35,6 +35,8 @@ export interface NodeCard {
   load?: NodeLoad;
   /** The folders it lends paired peers a shell or file access in, when it lends any. */
   lend?: Lend;
+  /** Set when it takes waiting work from paired nodes: only work of these repositories, or any when none. */
+  pull?: { repositories: string[] };
   at: string;
 }
 
@@ -82,6 +84,7 @@ export async function nodeCard(node: MeshNode, extra: { repository?: string; loa
     ...(extra.repository ? { repository: extra.repository } : {}),
     ...(extra.load ? { load: extra.load } : {}),
     ...(Object.keys(node.lend).length ? { lend: node.lend } : {}),
+    ...(node.pull.enabled ? { pull: { repositories: node.pull.repositories } } : {}),
     at: new Date().toISOString()
   };
 }

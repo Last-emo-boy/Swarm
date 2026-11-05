@@ -102,7 +102,7 @@ export function paneOrder(rows: readonly TicketRow[]): TicketRow[] {
 export function ticketDetailText(row: TicketRow, messages: readonly { kind: string; text: string }[]): string {
   return [
     `${row.title}`,
-    `${row.label} · ${row.source}${row.pr ? ` · PR #${row.pr}` : ""}${row.runsOn ? ` · worker on ${row.runsOn}` : ""} · ticket ${row.id}`,
+    `${row.label} · ${row.source}${row.pr ? ` · PR #${row.pr}` : ""}${row.pulledBy ? ` · pulled by ${row.pulledBy}` : row.runsOn ? ` · worker on ${row.runsOn}` : ""} · ticket ${row.id}`,
     row.url ? row.url : undefined,
     row.question ? `\nQuestion: ${row.question}\nAnswer with: /ticket say ${row.short} <answer>` : undefined,
     row.summary ? `\nLatest report:\n${row.summary}` : undefined,

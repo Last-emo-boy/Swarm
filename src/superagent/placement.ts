@@ -17,6 +17,8 @@ export interface Placement {
   needs?: string[];
   /** The paired node that ran or runs an Assignment of the ticket, and the ticket's directory there. */
   ran?: NodeRef & { assignmentId: string; directory?: string };
+  /** The paired node that pulled an Assignment of the ticket while it waited here for a worker. */
+  pulled?: NodeRef & { assignmentId: string };
   at: string;
 }
 
@@ -62,4 +64,10 @@ export function workerNode(client: Records, ticket: Ticket): string | undefined 
   const latest = latestAssignment(ticket);
   if (placement?.ran && placement.ran.assignmentId === latest?.id) return placement.ran.name;
   return typeof placement?.on === "object" && !ticket.ended && (!latest || latest.state === "pending") ? placement.on.name : undefined;
+}
+
+/** The paired node that pulled the ticket's latest Assignment from this node, when one did. */
+export function pulledBy(client: Records, ticket: Ticket): string | undefined {
+  const pulled = client.store.get(KV.mesh.placement(ticket.id))?.pulled;
+  return pulled && pulled.assignmentId === latestAssignment(ticket)?.id ? pulled.name : undefined;
 }

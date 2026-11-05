@@ -3,7 +3,8 @@
  * superagent host and the mesh server together so peers can reach this node.
  */
 import { mcpToolName } from "../extensions/mcp.js";
-import { DEFAULT_MESH_PORT, createInvite, findPeer, meshHome, readMesh, updateMesh, type Lend } from "./state.js";
+import type { TicketRow } from "../superagent/views.js";
+import { DEFAULT_MESH_PORT, createInvite, findPeer, meshHome, readMesh, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
 import { advertisedUrl, detectAbilities, nodeCard, tailnetAddress, type NodeCard, type NodeLoad } from "./card.js";
 import { joinMesh, meshFetch, peerHealth, unpair } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
@@ -24,6 +25,10 @@ Commands:
   lend --stop shell|files [<dir>…]
                              Stop lending in these folders, or in all of them
   tools [peer] [--json]      What each peer lends; this node's sessions use it as mcp__<peer>__<tool>
+  pull [on|off] [--repo <owner/name>…]
+                             Take work that waits for a worker on paired nodes when this node has a free slot,
+                             only work of these repositories when given; alone, shows the setting
+  offer on|off               Whether paired nodes that pull may take this node's waiting work (on by default)
 
 Run \`swarm node run\` on each device so peers can reach it. Pair over a private network such as Tailscale:
 the mesh speaks plain HTTP and relies on the network to encrypt it. State lives in ${meshHome()}.`;
@@ -57,8 +62,16 @@ async function localUrl(listen: string): Promise<string> {
 
 const cardLine = (card: NodeCard): string => {
   const load = card.load ? `, ${card.load.running}/${card.load.slots} workers${card.load.queued ? `, ${card.load.queued} queued` : ""}` : "";
-  return `${card.abilities.join(" ")}, swarm ${card.version}${card.repository ? `, ${card.repository}` : ""}${load}`;
+  const pull = card.pull ? `, pulls${card.pull.repositories.length ? ` ${card.pull.repositories.join(" ")}` : ""}` : "";
+  return `${card.abilities.join(" ")}, swarm ${card.version}${card.repository ? `, ${card.repository}` : ""}${load}${pull}`;
 };
+
+const pullLines = (pull: Pull): string[] => [
+  pull.enabled
+    ? `Pulls waiting work from paired nodes when it has a free worker slot: ${pull.repositories.length ? `work of ${pull.repositories.join(", ")}` : "any repository's"}.`
+    : "Does not pull work from paired nodes; swarm mesh pull on lets it.",
+  pull.offer ? "Hands its own waiting work to paired nodes that pull." : "Keeps its own waiting work from paired nodes that pull."
+];
 
 export async function runMeshCommand(input: string[]): Promise<void> {
   const args = [...input];
@@ -115,6 +128,14 @@ export async function runMeshCommand(input: string[]): Promise<void> {
     const json = flag(args, "json");
     return tools(args[0] ?? "", json);
   }
+  if (command === "pull") return pull(args);
+  if (command === "offer") {
+    const setting = args[0];
+    if (setting !== "on" && setting !== "off") throw new Error("Usage: swarm mesh offer on|off");
+    updateMesh((state) => ({ ...state, node: { ...state.node, pull: { ...state.node.pull, offer: setting === "on" } } }));
+    console.log(setting === "on" ? "Paired nodes that pull may take this node's waiting work." : "This node keeps its waiting work; paired nodes that pull take none of it.");
+    return;
+  }
   throw new Error(`Unknown mesh command "${command}".\n\n${USAGE}`);
 }
 
@@ -141,6 +162,21 @@ function lend(args: string[]): void {
   if (kind === "shell") console.log("A shell runs any command as this user; its folders bound where a command starts, not what it can reach.");
 }
 
+function pull(args: string[]): void {
+  const repositories: string[] = [];
+  for (let repository = value(args, "repo"); repository !== undefined; repository = value(args, "repo")) repositories.push(repository);
+  const setting = args[0];
+  if ((setting !== undefined && setting !== "on" && setting !== "off") || (setting !== "on" && repositories.length)) {
+    throw new Error("Usage: swarm mesh pull [on|off] [--repo <owner/name>…]");
+  }
+  const odd = repositories.find((repository) => !/^[^/\s]+\/[^/\s]+$/.test(repository));
+  if (odd) throw new Error(`--repo takes a repository as owner/name, not "${odd}"`);
+  const state = setting ? updateMesh((current) => ({ ...current, node: { ...current.node,
+    pull: { ...current.node.pull, enabled: setting === "on", ...(setting === "on" ? { repositories } : {}) } } })) : readMesh();
+  console.log(pullLines(state.node.pull).join("\n"));
+  if (setting === "on") console.log("A node run with swarm node run starts pulling at its next look.");
+}
+
 async function tools(handle: string, json: boolean): Promise<void> {
   const peer = handle ? findPeer(readMesh(), handle) : undefined;
   const peers = (await peerHealth()).filter((item) => !peer || item.peer.id === peer.id);
@@ -158,22 +194,46 @@ async function tools(handle: string, json: boolean): Promise<void> {
   }
 }
 
+/**
+ * Work pulled across the mesh that is not over: this node's tickets that paired nodes pulled, and the tickets of paired
+ * nodes with a ticket host that this node pulled.
+ */
+async function pulledWork(name: string, hosts: Peer[]): Promise<TicketRow[]> {
+  const { existsSync } = await import("node:fs");
+  const { SuperagentClient, databasePath } = await import("../superagent/client.js");
+  const { superagentStateDir } = await import("../superagent/settings.js");
+  const { ticketRows } = await import("../superagent/views.js");
+  const { peerTickets } = await import("./tickets.js");
+  let own: TicketRow[] = [];
+  if (existsSync(databasePath(superagentStateDir()))) {
+    const client = new SuperagentClient();
+    try { own = ticketRows(client).filter((row) => row.pulledBy); } finally { client.close(); }
+  }
+  const theirs = await Promise.all(hosts.map((peer) => peerTickets(peer).then((answer) => answer.rows, () => [])));
+  return [...own, ...theirs.flat().filter((row) => row.pulledBy === name && row.group !== "ended")];
+}
+
 async function status(json: boolean): Promise<void> {
-  const { node } = readMesh();
+  const state = readMesh();
+  const { node } = state;
   const url = await advertisedUrl(node);
   const serving = await meshFetch<{ id: string }>(await localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then((answer) => answer.id === node.id, () => false);
   const peers = await peerHealth();
+  const hosts = state.peers.filter((peer) => peers.some((item) => item.peer.id === peer.id && item.card?.load));
+  const pulled = await pulledWork(node.name, hosts);
   if (json) {
-    console.log(JSON.stringify({ node: { id: node.id, name: node.name, listen: node.listen, url, serving }, peers }, null, 2));
+    console.log(JSON.stringify({ node: { id: node.id, name: node.name, listen: node.listen, url, serving, pull: node.pull }, peers, pulled }, null, 2));
     return;
   }
   console.log(`${node.name}  ${url}  ${serving ? "serving" : `not serving: start swarm node run (binds ${node.listen})`}`);
+  for (const line of pullLines(node.pull)) console.log(`  ${line}`);
   if (!peers.length) console.log("No peers yet: run swarm mesh invite here and swarm mesh join <code> on the other device.");
   for (const item of peers) {
     console.log(item.reachable && item.card
       ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${cardLine(item.card)}`
       : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}`);
   }
+  if (pulled.length) console.log(`Pulled work:\n${pulled.map((row) => `  ${row.short}  ${row.label.padEnd(22)} ${row.title}  (pulled by ${row.pulledBy})`).join("\n")}`);
 }
 
 async function invite(minutes: number): Promise<void> {

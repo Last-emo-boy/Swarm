@@ -19,6 +19,16 @@ export const meshHome = (): string => process.env.SWARM_MESH_HOME ?? join(getSwa
 const LentFoldersSchema = z.object({ roots: z.array(z.string().min(1)).min(1) });
 /** What this node lends its paired peers, as the real paths of the folders each kind works in; nothing by default. */
 const LendSchema = z.object({ shell: LentFoldersSchema.optional(), files: LentFoldersSchema.optional() });
+/**
+ * Pulling work: whether this node takes waiting work from its paired nodes when it has free worker slots (off by default),
+ * only work of these repositories when it names any, and whether paired nodes that pull may take this node's own waiting
+ * work (on by default: pairing already lets a peer run this node's work when it is placed there).
+ */
+const PullSchema = z.object({
+  enabled: z.boolean().default(false),
+  repositories: z.array(z.string().regex(/^[^/\s]+\/[^/\s]+$/, "a repository as owner/name")).default([]),
+  offer: z.boolean().default(true)
+});
 const NodeSchema = z.object({
   id: z.string().min(1),
   name: z.string().trim().min(1).max(64),
@@ -26,7 +36,8 @@ const NodeSchema = z.object({
   listen: z.string().default(`127.0.0.1:${DEFAULT_MESH_PORT}`),
   /** The URL peers call this node at, such as its tailnet name; derived from the network when unset. */
   advertise: z.string().url().optional(),
-  lend: LendSchema.default({})
+  lend: LendSchema.default({}),
+  pull: PullSchema.default({ enabled: false, repositories: [], offer: true })
 });
 const PeerSchema = z.object({
   id: z.string().min(1),
@@ -45,6 +56,7 @@ const StateSchema = z.object({
   invites: z.array(InviteSchema).default([])
 });
 export type Lend = z.infer<typeof LendSchema>;
+export type Pull = z.infer<typeof PullSchema>;
 export type MeshNode = z.infer<typeof NodeSchema>;
 export type Peer = z.infer<typeof PeerSchema>;
 export type MeshState = z.infer<typeof StateSchema>;

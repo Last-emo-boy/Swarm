@@ -48,7 +48,7 @@ function value(args: string[], name: string): string | undefined {
 }
 
 const rowLine = (row: TicketRow): string =>
-  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.runsOn ? `  (on ${row.runsOn})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
+  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
 
 /** A paired node by name, id or a unique start of either, as a placement names it. */
 async function pairedNode(handle: string): Promise<NodeRef> {

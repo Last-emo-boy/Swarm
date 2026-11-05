@@ -6,7 +6,7 @@ import { latestReport, ticketOutcome, ticketStage, type Ticket } from "./core/in
 import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import type { Health } from "./health.js";
-import { workerNode } from "./placement.js";
+import { pulledBy, workerNode } from "./placement.js";
 import { pullOf } from "./sources/github-pull.js";
 
 export type TicketGroup = "person" | "working" | "queued" | "idle" | "ended";
@@ -27,6 +27,8 @@ export interface TicketRow {
   summary?: string;
   /** The paired node its worker runs on, ran on last, or is placed on to start; unset when that is the node that owns it. */
   runsOn?: string;
+  /** The paired node that pulled its latest Assignment while it waited for a worker here. */
+  pulledBy?: string;
   updatedAt: string;
 }
 
@@ -59,7 +61,8 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
   const pr = pullOf(ticket);
   const report = latestReport(ticket);
   const node = workerNode(client, ticket);
-  const runsOn = node ? { runsOn: node } : {};
+  const puller = pulledBy(client, ticket);
+  const runsOn = { ...(node ? { runsOn: node } : {}), ...(puller ? { pulledBy: puller } : {}) };
   // A question the person already answered waits for the worker, not for the person: it leaves "needs you".
   const answered = !!ticket.attention && !ticket.ended && ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context
     && input.at >= (report?.at ?? ""));
