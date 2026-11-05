@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { nodeCard, type NodeCard } from "./card.js";
+import { advertisedUrl, nodeCard, type NodeCard } from "./card.js";
 import { callPeer, joinMesh, MeshError, meshFetch, peerHealth, unpair } from "./client.js";
-import { MeshServer, parseListen } from "./server.js";
+import { parseListen } from "./listen.js";
+import { MeshServer } from "./server.js";
 import { createInvite, findPeer, parseInvite, readMesh, updateMesh } from "./state.js";
 
 interface TestNode { home: string; server: MeshServer; url: string }
@@ -103,4 +104,11 @@ test("parses listen addresses with hosts, IPv6 brackets and bare ports", () => {
   assert.deepEqual(parseListen("[::]:38172"), { host: "::", port: 38172 });
   assert.deepEqual(parseListen("38172"), { host: "127.0.0.1", port: 38172 });
   assert.throws(() => parseListen("mac:http"), /host:port/);
+});
+
+test("a node advertises its configured address, else the concrete address it binds", async () => {
+  const node = { id: "n", name: "gpu", listen: "100.64.0.7:38172" };
+  assert.equal(await advertisedUrl(node), "http://100.64.0.7:38172");
+  assert.equal(await advertisedUrl({ ...node, advertise: "http://gpu.example:9000/" }), "http://gpu.example:9000");
+  assert.equal(await advertisedUrl({ ...node, listen: "[fd7a::1]:38172" }), "http://[fd7a::1]:38172");
 });

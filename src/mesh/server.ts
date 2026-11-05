@@ -7,7 +7,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { z } from "zod/v4";
 import { HttpError, errorMessage, readJsonBody, sendJson } from "../server/gateway-http.js";
-import type { NodeCard } from "./card.js";
+import { tailnetAddress, type NodeCard } from "./card.js";
+import { parseListen } from "./listen.js";
 import { hashToken, meshHome, newToken, peerByToken, readMesh, removePeer, savePeer, spendInvite, type Peer } from "./state.js";
 
 export interface MeshRequest {
@@ -35,15 +36,6 @@ export interface MeshServerOptions {
   log?: (message: string) => void;
 }
 
-/** Splits `host:port`, `[v6]:port` or a bare port into its parts. */
-export function parseListen(listen: string): { host: string; port: number } {
-  const at = listen.lastIndexOf(":");
-  const host = at < 0 ? "127.0.0.1" : listen.slice(0, at).replace(/^\[|\]$/g, "") || "127.0.0.1";
-  const port = Number(at < 0 ? listen : listen.slice(at + 1));
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`"${listen}" is not host:port`);
-  return { host, port };
-}
-
 export class MeshServer {
   readonly home: string;
   private readonly routes: Route[] = [];
@@ -65,7 +57,10 @@ export class MeshServer {
   }
 
   async start(listen = readMesh(this.home).node.listen): Promise<{ url: string; port: number }> {
-    const { host, port } = parseListen(listen);
+    const parsed = parseListen(listen);
+    const host = parsed.host === "tailnet" ? await tailnetAddress() : parsed.host;
+    if (!host) throw new Error("Tailscale is not running here, so there is no tailnet address to bind; start Tailscale or run swarm mesh listen <ip>:<port>");
+    const { port } = parsed;
     const server = createServer((request, response) => { void this.handle(request, response); });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);

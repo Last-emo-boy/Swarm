@@ -3,9 +3,10 @@
  * superagent host and the mesh server together so peers can reach this node.
  */
 import { DEFAULT_MESH_PORT, createInvite, findPeer, meshHome, readMesh, updateMesh } from "./state.js";
-import { advertisedUrl, detectAbilities, nodeCard, type NodeCard, type NodeLoad } from "./card.js";
+import { advertisedUrl, detectAbilities, nodeCard, tailnetAddress, type NodeCard, type NodeLoad } from "./card.js";
 import { joinMesh, meshFetch, peerHealth, unpair } from "./client.js";
-import { MeshServer, parseListen } from "./server.js";
+import { parseListen } from "./listen.js";
+import { MeshServer } from "./server.js";
 
 const USAGE = `Usage: swarm mesh <command>
 
@@ -15,7 +16,7 @@ Commands:
   join <code>                Pair with the device that printed the code
   remove <peer>              Unpair; the peer forgets this node too
   name <name>                Rename this node
-  listen <host:port>         Where this node's mesh server binds, such as its tailnet address
+  listen <host:port>         Where this node's mesh server binds; tailnet:38172 binds its Tailscale address
   advertise <url>|--clear    The URL peers call this node at; derived from Tailscale or the hostname when unset
 
 Run \`swarm node run\` on each device so peers can reach it. Pair over a private network such as Tailscale:
@@ -41,11 +42,11 @@ function value(args: string[], name: string): string | undefined {
 
 const loopback = (host: string): boolean => host === "localhost" || host === "::1" || host.startsWith("127.");
 /** Where this machine reaches its own mesh server, whatever address it binds. */
-const localUrl = (listen: string): string => {
+async function localUrl(listen: string): Promise<string> {
   const { host, port } = parseListen(listen);
-  const reach = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const reach = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host === "tailnet" ? await tailnetAddress() ?? "127.0.0.1" : host;
   return `http://${reach.includes(":") ? `[${reach}]` : reach}:${port}`;
-};
+}
 
 const cardLine = (card: NodeCard): string => {
   const load = card.load ? `, ${card.load.running}/${card.load.slots} workers${card.load.queued ? `, ${card.load.queued} queued` : ""}` : "";
@@ -108,7 +109,7 @@ export async function runMeshCommand(input: string[]): Promise<void> {
 async function status(json: boolean): Promise<void> {
   const { node } = readMesh();
   const url = await advertisedUrl(node);
-  const serving = await meshFetch<{ id: string }>(localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then((answer) => answer.id === node.id, () => false);
+  const serving = await meshFetch<{ id: string }>(await localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then((answer) => answer.id === node.id, () => false);
   const peers = await peerHealth();
   if (json) {
     console.log(JSON.stringify({ node: { id: node.id, name: node.name, listen: node.listen, url, serving }, peers }, null, 2));
@@ -133,7 +134,7 @@ async function invite(minutes: number): Promise<void> {
   if (loopback(parseListen(node.listen).host)) {
     console.log(`This node binds ${node.listen}, which other devices cannot reach: run swarm mesh listen <tailnet-ip>:${parseListen(node.listen).port || DEFAULT_MESH_PORT} first.`);
   }
-  const serving = await meshFetch(localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then(() => true, () => false);
+  const serving = await meshFetch(await localUrl(node.listen), "/mesh/v1/health", { timeoutMs: 2000 }).then(() => true, () => false);
   if (!serving) console.log("No mesh server runs here yet: start swarm node run, or the join fails.");
 }
 

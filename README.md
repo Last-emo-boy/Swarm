@@ -812,7 +812,7 @@ explicit: one device prints a one-time code, the other joins with it, and each s
 token, which `swarm mesh remove` revokes on both.
 
 ```bash
-swarm mesh listen 100.101.102.103:38172   # bind this device's tailnet address
+swarm mesh listen tailnet:38172           # bind this device's Tailscale address
 swarm node run                             # on every device
 swarm mesh invite                          # on one device: prints a code valid once for 15 minutes
 swarm mesh join swarm-mesh:…               # on the other
