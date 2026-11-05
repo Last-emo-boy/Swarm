@@ -12,7 +12,8 @@ import { createPrivateKey, createPublicKey, randomBytes, sign, verify } from "no
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
-import { WebSocket, WebSocketServer, createWebSocketStream, type RawData } from "ws";
+import { WebSocket, WebSocketServer, createWebSocketStream, type ClientOptions, type RawData } from "ws";
+import { loadSwarmVersion } from "../runtime/headless-artifacts.js";
 import { parseListen } from "./listen.js";
 import { relayName } from "./state.js";
 
@@ -33,6 +34,12 @@ const STREAMS_PER_NAME = 64;
 const PER_MINUTE = { dial: 240, listen: 30 };
 /** Frames in flight towards one side before the other side is paused. */
 const HIGH_WATER = 64;
+
+/**
+ * How every connection to a relay introduces itself. A relay behind Cloudflare needs it: Cloudflare challenges a WebSocket
+ * from a server's address that names no client, as ws sends none, and a node cannot answer a challenge meant for browsers.
+ */
+const clientOptions = (timeoutMs: number): ClientOptions => ({ handshakeTimeout: timeoutMs, headers: { "user-agent": `Swarm/${loadSwarmVersion()} (mesh relay client)` } });
 
 const listenMessage = (challenge: string, name: string): Buffer => Buffer.from(`swarm-relay/listen/v1|${challenge}|${name}`);
 
@@ -264,7 +271,7 @@ export class RelayError extends Error {
 /** Opens a stream to whoever listens under `name` at the relay; it fails when nobody does. */
 export function relayDial(relay: string, name: string, timeoutMs = 15_000): Promise<RelayStream> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${relay}/v1/dial?name=${encodeURIComponent(name)}`, { handshakeTimeout: timeoutMs });
+    const ws = new WebSocket(`${relay}/v1/dial?name=${encodeURIComponent(name)}`, clientOptions(timeoutMs));
     const timer = setTimeout(() => { ws.terminate(); reject(new RelayError(0, `the relay did not connect within ${timeoutMs} ms`)); }, timeoutMs);
     ws.once("message", (data, binary) => {
       clearTimeout(timer);
@@ -281,7 +288,7 @@ export function relayDial(relay: string, name: string, timeoutMs = 15_000): Prom
 /** Takes a stream the relay announced, as a Duplex. */
 function acceptStream(relay: string, stream: string): Promise<RelayStream> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${relay}/v1/accept?stream=${encodeURIComponent(stream)}`, { handshakeTimeout: ACCEPT_MS });
+    const ws = new WebSocket(`${relay}/v1/accept?stream=${encodeURIComponent(stream)}`, clientOptions(ACCEPT_MS));
     ws.once("open", () => { ws.removeAllListeners("error"); resolve(relayStream(ws)); });
     ws.once("error", reject);
   });
@@ -316,7 +323,7 @@ export class RelayListener {
   start(): void {
     if (this.closed) return;
     const name = this.name;
-    const ws = new WebSocket(`${this.relay}/v1/listen?name=${encodeURIComponent(name)}`, { handshakeTimeout: 15_000 });
+    const ws = new WebSocket(`${this.relay}/v1/listen?name=${encodeURIComponent(name)}`, clientOptions(15_000));
     this.ws = ws;
     ws.once("message", (data) => {
       const { challenge } = JSON.parse(String(data)) as { challenge: string };
@@ -350,7 +357,7 @@ export class RelayListener {
 export function openMailbox(relay: string, minutes: number, onStream: (stream: Duplex) => void, log: (message: string) => void = () => {}):
   Promise<{ mailbox: string; closed: Promise<string>; close(): void }> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${relay}/v1/listen?mailbox=1&minutes=${minutes}`, { handshakeTimeout: 15_000 });
+    const ws = new WebSocket(`${relay}/v1/listen?mailbox=1&minutes=${minutes}`, clientOptions(15_000));
     const closed = new Promise<string>((done) => ws.on("close", (code, reason) => done(closeReason(code, reason))));
     ws.once("message", (data) => {
       const { mailbox } = JSON.parse(String(data)) as { mailbox?: string };

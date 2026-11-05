@@ -80,6 +80,17 @@ test("reads a code as a person types it", () => {
   assert.equal(formatCode("K7", "QM4ZX2", "wss://relay.example"), "K7QM-4ZX2@relay.example");
 });
 
+test("connections to the relay say they come from Swarm, which Cloudflare in front of a relay requires", async () => {
+  const seen: string[] = [];
+  const probe = new RelayServer();
+  const { url } = await probe.start("127.0.0.1:0");
+  const server = (probe as unknown as { server: import("node:http").Server }).server;
+  server.prependListener("upgrade", (request: import("node:http").IncomingMessage) => seen.push(request.headers["user-agent"] ?? ""));
+  await assert.rejects(relayDial(url, "node:nobody-listens-here-at-all"), /not listening/);
+  await probe.stop();
+  assert.match(seen[0] ?? "", /^Swarm\/\S+ \(mesh relay client\)$/);
+});
+
 test("the relay lets only a key's holder listen under its name, and says when nobody listens", async () => {
   const home = device("lone");
   const name = relayName(readMesh(home).node.keys.publicKey);
