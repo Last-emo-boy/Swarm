@@ -6,6 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { liveTicket, type Trigger } from "./core/index.js";
 import { ModelAssessor, routeProblem, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
+import { placementOf } from "./placement.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import { commentTrigger } from "./sources/github-trigger.js";
 
@@ -61,6 +62,21 @@ test("routes an explicit request to a new ticket with the router's title, name a
   assert.equal(calls[0]!.purpose, "superagent_route");
   assert.match(calls[0]!.system, /Return exactly one JSON object/);
   assert.equal(JSON.parse(calls[0]!.user).candidate.strength, "explicit");
+});
+
+test("records what the router says accepted work needs of its machine, for a mesh node to place its worker", async () => {
+  start();
+  const { triggerId } = client.request("retrain the model on the GPU box");
+  answers.push(accept({ title: "Retrain the model", worktree_name: "retrain-model", needs: ["GPU", "linux", "gpu"] }));
+  await judge(triggerId);
+  const ticketId = client.store.decisions.get(client.store.triggers.disposition(triggerId)!.decisionId!)!.ticketId!;
+  assert.deepEqual(placementOf(client, client.store.tickets.get(ticketId)!)?.needs, ["gpu", "linux"]);
+
+  const plain = client.request("fix the typo in README");
+  answers.push(accept());
+  await judge(plain.triggerId);
+  const other = client.store.decisions.get(client.store.triggers.disposition(plain.triggerId)!.decisionId!)!.ticketId!;
+  assert.equal(placementOf(client, client.store.tickets.get(other)!), undefined, "work any machine can do has no placement");
 });
 
 test("asks again with the problem when an answer breaks a limit, and leaves the Eval undecided after a second bad answer", async () => {

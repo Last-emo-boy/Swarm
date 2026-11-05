@@ -1,6 +1,7 @@
 /**
- * The TUI's ticket commands: `/ticket <request>` files work for a ticket worker, `/ticket <id>` shows one, `/ticket say`,
- * `stop` and `retry` act on one, and `/tickets` opens the tickets pane.
+ * The TUI's ticket commands: `/ticket <request>` files work for a ticket worker, `/ticket --on <node> <request>` runs its
+ * worker on a paired node, `/ticket <id>` shows one, `/ticket say`, `stop` and `retry` act on one, and `/tickets` opens the
+ * tickets pane.
  */
 import type { TuiTickets } from "./controller.js";
 import { needsYouItems, paneOrder, ticketDetailText, ticketsPillValue } from "./view-model.js";
@@ -10,6 +11,7 @@ export interface TicketCommandResult { brief: string; detail?: string; openPane?
 const USAGE = [
   "/ticket <request>          File a request; a ticket worker does it in its own directory",
   "/ticket @<device> <request> File it on a paired device, which then owns the ticket",
+  "/ticket --on <node> <request> Keep the ticket here and run its worker on a paired node",
   "/ticket <id>               Show a ticket",
   "/ticket say <id> <text>    Send a message to a ticket, such as an answer to its question",
   "/ticket stop <id>          Stop a ticket's work",
@@ -56,6 +58,14 @@ export async function runTicketCommand(tickets: TuiTickets, command: "ticket" | 
   if (!rest.length && HANDLE.test(first) && tickets.available()) {
     const row = await tickets.find(first);
     if (row) return { brief: `Ticket ${row.short}: ${row.label} · ${row.title}`, detail: ticketDetailText(row, await tickets.messages(row.id)) };
+  }
+  if (first === "--on") {
+    const [node, ...words] = rest;
+    const text = words.join(" ").trim();
+    if (!node || !text) throw new Error("Usage: /ticket --on <node> <request>");
+    const { triggerId, placed, mesh } = await tickets.requestOn(text, node);
+    // Only a mesh node's host places work on its peers; a host this TUI started would run the worker itself.
+    return { brief: `Filed as a ticket request (${triggerId.slice(0, 8)}); its worker runs on ${placed}, and replies appear here.${mesh ? "" : " Start this device's node with `swarm node run` to place it there."}` };
   }
   if (first.startsWith("@") && first.length > 1) {
     const device = first.slice(1);

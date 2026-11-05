@@ -15,6 +15,8 @@ import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooter
 import { runTicketCommand } from "./commands.js";
 import { TuiTickets } from "./controller.js";
 import type { TicketRow } from "../../superagent/views.js";
+import { KV } from "../../superagent/kv.js";
+import { savePeer } from "../../mesh/state.js";
 
 const row = (overrides: Partial<TicketRow>): TicketRow => ({
   id: "a1b2c3d4e5f6a7b8", short: "a1b2c3d4", title: "Fix the flaky retry test", group: "working", label: "Working", source: "github",
@@ -127,5 +129,28 @@ test("ticket commands file a request, show and answer a ticket, and do not start
   } finally {
     await tickets.close();
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("/ticket --on files a request here whose worker runs on a paired node, and says when no mesh node runs to place it", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "swarm-tui-tickets-"));
+  const meshHome = mkdtempSync(join(tmpdir(), "swarm-tui-mesh-"));
+  savePeer({ id: "gpu-node", name: "gpu", url: "http://127.0.0.1:9", token: "a-token-gpu-issued-us", tokenHash: "0".repeat(64), pairedAt: new Date().toISOString() }, meshHome);
+  const tickets = new TuiTickets({ stateDir, meshHome, log: () => {} });
+  try {
+    const filed = await runTicketCommand(tickets, "ticket", ["--on", "gpu", "retrain", "the", "model"]);
+    assert.match(filed.brief, /its worker runs on gpu/);
+    assert.match(filed.brief, /swarm node run/, "no mesh node's host runs here to place it");
+    const { SuperagentClient } = await import("../../superagent/client.js");
+    const client = new SuperagentClient({ stateDir });
+    const [placement] = client.store.keys(KV.mesh.placement).map((key) => client.store.get(key));
+    client.close();
+    assert.deepEqual(placement?.on, { id: "gpu-node", name: "gpu" });
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--on", "nowhere", "retrain"]), /No paired device "nowhere"/);
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--on", "gpu"]), /Usage: \/ticket --on/);
+  } finally {
+    await tickets.close();
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(meshHome, { recursive: true, force: true });
   }
 });

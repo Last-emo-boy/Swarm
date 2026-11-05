@@ -207,20 +207,20 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     const { SuperagentHost } = await import("../superagent/host.js");
     const { providerComplete } = await import("../superagent/provider.js");
     const { selfCommand } = await import("../superagent/cli.js");
-    const { hostStatus } = await import("../superagent/views.js");
     const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete() });
+    const { MeshWork } = await import("./work.js");
+    const work = new MeshWork(host, { home, abilities, workerCommand: selfCommand() });
     await host.start();
     if (host.problem) console.log(`Superagent setup: ${host.problem.detail}`);
     facts = () => {
       const settings = host.client.settings();
       const github = settings.sources.github;
       const repository = github?.enabled ? (github.config as { repository?: string }).repository : undefined;
-      const { counts } = hostStatus(host.client);
-      return { ...(repository ? { repository } : {}), load: { running: counts.working, queued: counts.queued, slots: settings.executor.maxWorkers } };
+      return { ...(repository ? { repository } : {}), load: work.load() };
     };
     stopHost = () => host.stop();
     const { registerTicketRoutes } = await import("./tickets.js");
-    serveHost = (server) => registerTicketRoutes(server, host.client);
+    serveHost = (server) => { registerTicketRoutes(server, host.client); work.serve(server); };
   }
   const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts() }), log: (message) => process.stderr.write(`${message}\n`) });
   serveHost(server);

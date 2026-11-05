@@ -163,6 +163,14 @@ export class TuiTickets {
     if (device) return (await this.meshModule()).peerRequest(this.peer(device), text);
     return (await this.open()).client.request(text);
   }
+  /** Files a request here whose worker runs on a paired node; `mesh` says whether a mesh node's host runs here to place it. */
+  async requestOn(text: string, node: string): Promise<{ triggerId: string; placed: string; mesh: boolean }> {
+    const { id, name } = this.peer(node);
+    const [{ client, views }, { requestOn }] = await Promise.all([this.open(), import("../../superagent/placement.js")]);
+    const { triggerId } = requestOn(client, text, { id, name });
+    const status = views.hostStatus(client);
+    return { triggerId, placed: name, mesh: status.running && !!status.health.mesh };
+  }
   async find(handle: string): Promise<TicketRow | undefined> { return (await this.locate(handle))?.row; }
   async messages(handle: string): Promise<TicketReply[]> {
     const found = await this.require(handle);

@@ -108,6 +108,7 @@ export const ROUTE_CONTRACT = [
   ' "worktree_name": "accept: 1-4 lowercase English words in kebab-case, at most 32 characters, such as fix-plan-color",',
   ' "acknowledgement": "accept: one sentence of at most 100 words in the source language naming the concrete change and intended result; it is posted as a reply to the request",',
   ' "note": "accept or attach: optional routing background or an explicit human constraint, at most 30 words",',
+  ' "needs": "accept: optional list of what the work needs of the machine its worker runs on, from gpu (an NVIDIA GPU), macos, linux, windows; omit it when any machine will do",',
   ' "ticket_id": "attach and stop: the ticket",',
   ' "reason": "ignore and stop: why, at most 500 characters"}'
 ].join("\n");

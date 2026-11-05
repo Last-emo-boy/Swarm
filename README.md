@@ -836,6 +836,15 @@ every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_fi
 `swarm node run` over Streamable HTTP with its pairing token. Borrowed tools count as remote, so in `ask` mode each
 call waits for approval; a peer that does not answer is skipped.
 
+A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>`
+(or `/ticket --on <node> <request>`) files it that way, `swarm superagent place <id> <node>|here` moves its next
+worker, and when the router says the work needs `gpu` or `macos`, the worker goes to a paired node that has that
+ability and a free slot. The node that accepted the ticket remains its record and the only writer of its store. The
+other node prepares its own ticket directory with its own prepare command and credentials (a node that runs GitHub
+tickets needs the agent account's CLI signed in there) and holds a lease it renews; if the lease lapses, the owner
+treats the worker as lost and places the work again. `swarm superagent ticket` shows where a worker runs. Placement
+takes effect on a node run as `swarm node run`.
+
 ## Architecture
 
 ```text

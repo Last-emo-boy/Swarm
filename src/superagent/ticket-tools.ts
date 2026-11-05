@@ -34,6 +34,60 @@ const readable = (client: SuperagentClient, ticket: Ticket, trigger: Trigger): b
   || ticket.origin.triggerIds.includes(trigger.id)
   || trigger.threads.some((ref) => ticket.follows?.some((follow) => follow.thread === threadKey(ref)));
 
+/** The ticket tools as a worker's model sees them; `ticketTools` runs them on the ticket's store. */
+const TOOLS = {
+  read: {
+    description: "Read one page of a resource of this ticket: ticket/<id> (its card, inputs and latest report), ticket/<id>/assignment, ticket/<id>/input/<id>, trigger/<id>, thread/<key>, github/... as the GitHub section says, or feishu/<trigger-id>/... as the Feishu section says. Follow next_offset.",
+    input: {
+      resource: z.string().min(1),
+      offset: z.number().int().min(0).default(0).describe("Copy next_offset from the previous page."),
+      limit: z.number().int().min(1).max(8000).optional().describe("Characters of the page, 4000 by default.")
+    },
+    readOnly: true
+  },
+  ack: {
+    description: "Acknowledge one original human request before substantial work, as the Replies section says; it posts as a reply to that message.",
+    input: { trigger_id: z.string(), text: AcknowledgementSchema.describe(`At most ${IM_WORDS} words; Markdown is supported.`) },
+    readOnly: false
+  },
+  thread_unrelated: {
+    description: "Stop following an attached thread that is not about this ticket, as the Work section says; its own threads cannot be dropped.",
+    input: { thread: z.string().min(1).describe("The thread key, such as github:<number>."), reason: z.string().trim().min(1).max(300) },
+    readOnly: false
+  },
+  thread_follow: {
+    description: "Follow a related thread, such as an Issue or another PR, for context only.",
+    input: { thread: z.string().describe("Thread key, such as github:<number>."), reason: z.string().trim().min(1).max(300) },
+    readOnly: false
+  },
+  handback: {
+    description: "Hand back a message that asks for work beyond this ticket or for another one, for a fresh assessment; once per message. queued is false while another ticket still decides it, and for a message that was never this ticket's to decide.",
+    input: { trigger_id: z.string().min(1), reason: z.string().trim().min(1).max(300).describe("One sentence on what it asks for beyond this ticket.") },
+    readOnly: false
+  },
+  report: {
+    description: "Report progress, ready, blocked, failed or dropped, as the Work and Handoff sections say. This tool is the only report: your final JSON reaches nobody. With ready, a human_action question or reply_to_trigger_id, `message_for_person` is the one short message the person reads.",
+    input: {
+      state: z.enum(["progress", "ready", "blocked", "failed", "dropped"]),
+      summary: z.string().min(1),
+      human_action: z.string().trim().min(1).max(1000).nullish().describe("One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it."),
+      question_for_trigger_id: z.string().optional().describe("With human_action: the human message that raised the question, which is asked where that person wrote."),
+      pr_number: z.number().int().positive().nullish().describe("The ticket's PR: its source PR, or one by the agent account from a branch named after this ticket (SWARM_TICKET_NAME)."),
+      reply_to_trigger_id: z.string().optional().describe("The explicit human question this report answers; never for ordinary progress."),
+      message_for_person: z.string().trim().min(1).optional().describe(`What the person reads, at most ${IM_WORDS} words, in the language of the source conversation.`)
+    },
+    readOnly: false
+  }
+} satisfies Record<string, Omit<TicketTool, "name" | "run">>;
+type ToolName = keyof typeof TOOLS;
+
+const withRuns = (run: (name: ToolName) => TicketTool["run"]): TicketTool[] =>
+  (Object.keys(TOOLS) as ToolName[]).map((name) => ({ name, ...TOOLS[name], run: run(name) }));
+
+/** The ticket tools of a worker on another node: the same tools, each run by the node that owns the ticket. */
+export const proxiedTicketTools = (call: (name: string, args: Record<string, unknown>) => Promise<unknown>): TicketTool[] =>
+  withRuns((name) => (args) => call(name, args));
+
 export function ticketTools(client: SuperagentClient, ticketId: string): TicketTool[] {
   const snapshots = new Map<string, string>();
   const ticket = (): Ticket => {
@@ -90,95 +144,48 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
     }
     return undefined;
   };
-  return [
-    {
-      name: "read",
-      description: "Read one page of a resource of this ticket: ticket/<id> (its card, inputs and latest report), ticket/<id>/assignment, ticket/<id>/input/<id>, trigger/<id>, thread/<key>, github/... as the GitHub section says, or feishu/<trigger-id>/... as the Feishu section says. Follow next_offset.",
-      input: {
-        resource: z.string().min(1),
-        offset: z.number().int().min(0).default(0).describe("Copy next_offset from the previous page."),
-        limit: z.number().int().min(1).max(8000).optional().describe("Characters of the page, 4000 by default.")
-      },
-      readOnly: true,
-      run: async (args) => {
-        const resource = String(args.resource);
-        const offset = Number(args.offset ?? 0);
-        const limit = args.limit === undefined ? undefined : Number(args.limit);
-        if (resource.startsWith("github/")) return page(resource, offset, limit, () => readGithub(client.commands, resource));
-        if (resource.startsWith("feishu/")) {
-          const source = trigger(resource.slice("feishu/".length).split("/")[0]!);
-          const ref = feishuRef(source);
-          if (!ref) throw new Error("A Feishu source trigger is required");
-          return page(resource, offset, limit, () => feishuRead(client.commands, ref, resource, feishuSettings(client.sources).readPageSize));
-        }
-        const found = read(resource);
-        if (found === undefined) throw new Error("Unknown resource");
-        return page(resource, offset, limit, () => found);
+  const runs: Record<ToolName, TicketTool["run"]> = {
+    read: async (args) => {
+      const resource = String(args.resource);
+      const offset = Number(args.offset ?? 0);
+      const limit = args.limit === undefined ? undefined : Number(args.limit);
+      if (resource.startsWith("github/")) return page(resource, offset, limit, () => readGithub(client.commands, resource));
+      if (resource.startsWith("feishu/")) {
+        const source = trigger(resource.slice("feishu/".length).split("/")[0]!);
+        const ref = feishuRef(source);
+        if (!ref) throw new Error("A Feishu source trigger is required");
+        return page(resource, offset, limit, () => feishuRead(client.commands, ref, resource, feishuSettings(client.sources).readPageSize));
       }
+      const found = read(resource);
+      if (found === undefined) throw new Error("Unknown resource");
+      return page(resource, offset, limit, () => found);
     },
-    {
-      name: "ack",
-      description: "Acknowledge one original human request before substantial work, as the Replies section says; it posts as a reply to that message.",
-      input: { trigger_id: z.string(), text: AcknowledgementSchema.describe(`At most ${IM_WORDS} words; Markdown is supported.`) },
-      readOnly: false,
-      run: async (args) => {
-        const reply = client.engine.reply({ purpose: "acknowledgement", ticketId, triggerId: String(args.trigger_id), text: String(args.text) });
-        return { trigger_id: args.trigger_id, acknowledgement: client.store.replyStatus(reply.id) ?? reply.status, reused: reply.reused };
-      }
+    ack: async (args) => {
+      const reply = client.engine.reply({ purpose: "acknowledgement", ticketId, triggerId: String(args.trigger_id), text: String(args.text) });
+      return { trigger_id: args.trigger_id, acknowledgement: client.store.replyStatus(reply.id) ?? reply.status, reused: reply.reused };
     },
-    {
-      name: "thread_unrelated",
-      description: "Stop following an attached thread that is not about this ticket, as the Work section says; its own threads cannot be dropped.",
-      input: { thread: z.string().min(1).describe("The thread key, such as github:<number>."), reason: z.string().trim().min(1).max(300) },
-      readOnly: false,
-      run: async (args) => {
-        client.engine.markUnrelated(ticketId, String(args.thread), String(args.reason));
-        return { removed: true, thread: args.thread };
-      }
+    thread_unrelated: async (args) => {
+      client.engine.markUnrelated(ticketId, String(args.thread), String(args.reason));
+      return { removed: true, thread: args.thread };
     },
-    {
-      name: "thread_follow",
-      description: "Follow a related thread, such as an Issue or another PR, for context only.",
-      input: { thread: z.string().describe("Thread key, such as github:<number>."), reason: z.string().trim().min(1).max(300) },
-      readOnly: false,
-      run: async (args) => {
-        const thread = String(args.thread);
-        const at = thread.indexOf(":");
-        if (at < 1 || at === thread.length - 1) throw new Error("A thread key is <source>:<id>, such as github:<number>");
-        return { followed: client.engine.followForContext(ticketId, { source: thread.slice(0, at), id: thread.slice(at + 1) }), thread };
-      }
+    thread_follow: async (args) => {
+      const thread = String(args.thread);
+      const at = thread.indexOf(":");
+      if (at < 1 || at === thread.length - 1) throw new Error("A thread key is <source>:<id>, such as github:<number>");
+      return { followed: client.engine.followForContext(ticketId, { source: thread.slice(0, at), id: thread.slice(at + 1) }), thread };
     },
-    {
-      name: "handback",
-      description: "Hand back a message that asks for work beyond this ticket or for another one, for a fresh assessment; once per message. queued is false while another ticket still decides it, and for a message that was never this ticket's to decide.",
-      input: { trigger_id: z.string().min(1), reason: z.string().trim().min(1).max(300).describe("One sentence on what it asks for beyond this ticket.") },
-      readOnly: false,
-      run: async (args) => ({ trigger_id: args.trigger_id, queued: client.engine.handback(ticketId, String(args.trigger_id), String(args.reason)) })
-    },
-    {
-      name: "report",
-      description: "Report progress, ready, blocked, failed or dropped, as the Work and Handoff sections say. This tool is the only report: your final JSON reaches nobody. With ready, a human_action question or reply_to_trigger_id, `message_for_person` is the one short message the person reads.",
-      input: {
-        state: z.enum(["progress", "ready", "blocked", "failed", "dropped"]),
-        summary: z.string().min(1),
-        human_action: z.string().trim().min(1).max(1000).nullish().describe("One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it."),
-        question_for_trigger_id: z.string().optional().describe("With human_action: the human message that raised the question, which is asked where that person wrote."),
-        pr_number: z.number().int().positive().nullish().describe("The ticket's PR: its source PR, or one by the agent account from a branch named after this ticket (SWARM_TICKET_NAME)."),
-        reply_to_trigger_id: z.string().optional().describe("The explicit human question this report answers; never for ordinary progress."),
-        message_for_person: z.string().trim().min(1).optional().describe(`What the person reads, at most ${IM_WORDS} words, in the language of the source conversation.`)
-      },
-      readOnly: false,
-      run: async (args) => fileReport(client, ticketId, {
-        state: args.state as ReportArgs["state"],
-        summary: String(args.summary),
-        ...(args.human_action === null ? { human_action: null } : typeof args.human_action === "string" ? { human_action: args.human_action } : {}),
-        ...(typeof args.question_for_trigger_id === "string" ? { question_for_trigger_id: args.question_for_trigger_id } : {}),
-        ...(typeof args.pr_number === "number" ? { pr_number: args.pr_number } : {}),
-        ...(typeof args.reply_to_trigger_id === "string" ? { reply_to_trigger_id: args.reply_to_trigger_id } : {}),
-        ...(typeof args.message_for_person === "string" ? { message_for_person: args.message_for_person } : {})
-      })
-    }
-  ];
+    handback: async (args) => ({ trigger_id: args.trigger_id, queued: client.engine.handback(ticketId, String(args.trigger_id), String(args.reason)) }),
+    report: async (args) => fileReport(client, ticketId, {
+      state: args.state as ReportArgs["state"],
+      summary: String(args.summary),
+      ...(args.human_action === null ? { human_action: null } : typeof args.human_action === "string" ? { human_action: args.human_action } : {}),
+      ...(typeof args.question_for_trigger_id === "string" ? { question_for_trigger_id: args.question_for_trigger_id } : {}),
+      ...(typeof args.pr_number === "number" ? { pr_number: args.pr_number } : {}),
+      ...(typeof args.reply_to_trigger_id === "string" ? { reply_to_trigger_id: args.reply_to_trigger_id } : {}),
+      ...(typeof args.message_for_person === "string" ? { message_for_person: args.message_for_person } : {})
+    })
+  };
+  return withRuns((name) => runs[name]);
 }
 
 export interface ReportArgs {
@@ -238,11 +245,11 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
 }
 
 /** Serves the ticket tools over stdio MCP until the worker's runtime closes the connection. */
-export async function serveTicketTools(client: SuperagentClient, ticketId: string): Promise<void> {
+export async function serveTicketTools(tools: readonly TicketTool[]): Promise<void> {
   const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
   const server = new McpServer({ name: "swarm-ticket", version: "1.0.0" });
-  for (const tool of ticketTools(client, ticketId)) {
+  for (const tool of tools) {
     server.registerTool(tool.name, {
       description: tool.description,
       inputSchema: tool.input,

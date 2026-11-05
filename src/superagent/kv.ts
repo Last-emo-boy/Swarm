@@ -3,6 +3,7 @@
  * Readers and writers refer to a record by its entry here so each key is spelled once with its value type.
  */
 import type { Health } from './health.js'
+import type { Lease, Placement } from './placement.js'
 import type { Retry } from './sources/github.js'
 
 /** Key of a KV record whose value has type `V`. */
@@ -27,6 +28,11 @@ export const KV = {
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
   /** Local Source: the requests a Swarm TUI or CLI queued that the host has taken in, by request id. */
   local: { taken: record<string>('local-taken-at') },
+  /**
+   * Mesh: where a ticket's worker runs, by ticket id or by the id of the request it was filed with, and the lease of the
+   * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.
+   */
+  mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
   /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision.
