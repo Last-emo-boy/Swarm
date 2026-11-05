@@ -228,7 +228,15 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       const prompt = [first, ...inputs.map((input) => input.text), retryNote].filter(Boolean).join("\n\n");
       retryNote = undefined;
       const delivered = new Set(inputs.map((input) => input.id));
-      client.engine.inputsDelivered(ticketId, assignmentId, [...delivered]);
+      // A message is read once the worker's session takes it into its history, as upstream reads it, which this turn's prompt
+      // or a live message does at once; read only after the turn, it counted as read after the worker went idle, and a ticket
+      // whose PR then merged stayed open for an answer it had given (a live trial on OVH).
+      const read = (ids: readonly string[]) => {
+        client.engine.inputsDelivered(ticketId, assignmentId, [...ids]);
+        const triggers = ids.filter((id) => client.store.tickets.get(ticketId)?.inputs.find((input) => input.id === id)?.kind === "trigger");
+        if (triggers.length) client.engine.inputsRead(ticketId, triggers);
+      };
+      read([...delivered]);
       const reportedBefore = latestReport(current()!)?.at;
       let result: ExecutionResult | undefined;
       const live = setInterval(() => {
@@ -237,7 +245,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
         for (const input of waiting(now, delivered)) {
           void runtime.sendUserMessage(input.text, { sessionId, source: "superagent", sourceId: input.id }).then(() => {
             delivered.add(input.id);
-            client.engine.inputsDelivered(ticketId, assignmentId, [input.id]);
+            read([input.id]);
           }, () => { /* Between steps there is no live target; the next turn takes it. */ });
         }
       }, DELIVERY_POLL_MS);
@@ -256,8 +264,6 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       } finally {
         clearInterval(live);
       }
-      const reads = [...delivered].filter((id) => client.store.tickets.get(ticketId)?.inputs.find((input) => input.id === id)?.kind === "trigger");
-      if (reads.length) client.engine.inputsRead(ticketId, reads);
       if (stopping || !current()) break;
       const after = current()!;
       if (handedOff(after)) { client.engine.turnEnded(ticketId, assignmentId); break; }
