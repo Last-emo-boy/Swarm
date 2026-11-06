@@ -5,13 +5,14 @@
  * `--mcp-config`, `-c mcp_servers.ticket.*`, the directory's `.kimi-code/mcp.json` or `OPENCODE_CONFIG_CONTENT`, the
  * session to resume), connects to that server, writes `harness.txt` in its working directory, reports ready through the
  * ticket tools and prints the events the real CLI prints, in the formats recorded from Claude Code 2.1.285, Codex CLI
- * 0.163.0 and OpenCode 1.18.21. Kimi Code 2.1.1's format is taken from its `--output-format stream-json` writer in the
- * binary and from its session wire files, not from a recorded turn: the one live turn tried failed at sign-in. A turn without ticket tools, as a
- * delegated subagent runs, writes `harness.txt` and ends with its final words. Every invocation is appended to
- * `calls.jsonl` under its home as one JSON line. `FAKE_HARNESS_SIGNED_OUT=1` makes the status command report that nobody
- * is signed in. A request that says "quietly" ends its turn without a report until it is reminded, and one that says
- * "flaky" fails its turn with an API error until it is told the turn failed, as real models and endpoints did in live
- * trials; one that says "slowly" takes a minute before it works, long enough to be stopped.
+ * 0.163.0 and OpenCode 1.18.21. Kimi Code 2.1.1's format comes from its `--output-format stream-json` writer in the binary
+ * and from its session wire files, not from a recorded turn: the one live turn tried failed at sign-in. A turn without
+ * ticket tools, as a delegated subagent runs, writes `harness.txt` and ends with its final words; a read-only one changes
+ * nothing. Every invocation is appended to `calls.jsonl` under its home as one JSON line. `FAKE_HARNESS_SIGNED_OUT=1`
+ * makes the status command report that nobody is signed in. A request that says "quietly" ends its turn without a report
+ * until it is reminded, and one that says "flaky" fails its turn with an API error until it is told the turn failed, as
+ * real models and endpoints did in live trials; one that says "slowly" takes a minute before it works, long enough to be
+ * stopped.
  */
 import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -154,12 +155,20 @@ async function callReport(tools: NonNullable<FakeHarnessCall["tools"]>, args: Re
   }
 }
 
+/** Whether the turn was started read-only, as each CLI's flags or configuration say. */
+const readOnly = (call: FakeHarnessCall): boolean =>
+  call.kind === "claude" ? after(call.args, "--permission-mode") === "dontAsk"
+    : call.kind === "codex" ? after(call.args, "-s") === "read-only"
+      : call.kind === "kimi" ? Array.isArray(call.permission) && !call.permission.includes("Write")
+        : (call.permission as Record<string, unknown> | undefined)?.["*"] === "deny";
+
 /**
  * The fake's work for a turn: a file in its working directory, then a ready report whose message names the turn; without
- * ticket tools, final words that say what it wrote.
+ * ticket tools, final words that say what it wrote. A read-only turn changes nothing.
  */
 async function work(call: FakeHarnessCall, turn: number): Promise<{ text: string; reported: string }> {
   if (sessionSays(call, "slowly")) await new Promise((resolve) => setTimeout(resolve, 60_000));
+  if (readOnly(call)) return { text: `Reviewed the workspace on ${call.kind} without changing it.`, reported: "" };
   writeFileSync(join(call.cwd, "harness.txt"), `${call.kind} turn ${turn}\n`, { flag: "a" });
   if (!call.tools) return { text: `Wrote harness.txt on ${call.kind}.`, reported: "" };
   if (sessionSays(call, "quietly") && !/Your turn ended without calling the \S+ tool/.test(call.prompt ?? "")) {

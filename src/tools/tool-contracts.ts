@@ -473,7 +473,8 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
       preferred_agent_spec_id: "optional agent spec id from available_agent_specs",
       preferred_mode: "optional call_subagent | handoff | parallel",
       run_in_background: "optional boolean; true maps to preferred_mode=parallel and returns immediately after launch",
-      file_scope: "optional string[]; required for scoped_write implementation delegation"
+      file_scope: "optional string[]; required for scoped_write implementation delegation",
+      harness: "optional agent harness profile id, such as claude, codex, kimi or opencode, to run the worker on instead of Swarm's coding loop"
     },
     required: ["capability", "task"]
   }

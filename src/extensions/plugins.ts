@@ -77,6 +77,7 @@ type PluginAgentSpecManifest = {
   };
   output_contract?: string;
   prompt?: string;
+  harness?: string;
 };
 
 export type PluginAgentSpec = {
@@ -94,6 +95,8 @@ export type PluginAgentSpec = {
   };
   output_contract: string;
   prompt: string;
+  /** The agent harness profile that runs this agent instead of Swarm's coding loop. */
+  harness?: string;
 };
 
 type PluginMcpServerManifest = Partial<McpServerSettings> & {
@@ -616,6 +619,7 @@ function pluginAgentSpec(plugin: PluginRecord, contribution: PluginContributionR
   const prompt = stringValue(contribution.metadata.prompt)
     || stringValue(manifest.prompt)
     || `You are ${contribution.title}, a plugin-provided Swarm agent from ${plugin.id}. ${description}`;
+  const harness = stringValue(manifest.harness);
   return {
     id: `plugin.${plugin.id}.${contribution.id}`,
     name: contribution.title,
@@ -630,7 +634,8 @@ function pluginAgentSpec(plugin: PluginRecord, contribution: PluginContributionR
       max_tool_calls: boundedPositiveInteger(budget.max_tool_calls, writePolicy === "read_only" ? 20 : 32, 80)
     },
     output_contract: outputContract,
-    prompt
+    prompt,
+    ...(harness ? { harness } : {})
   };
 }
 

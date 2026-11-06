@@ -54,6 +54,7 @@ import { PlanGenerator } from "./plan-generator.js";
 import { Orchestrator, type ExecutionResult, type PlannedSession, type ToolApprovalHandler } from "./orchestrator.js";
 import { getDebugLogger, type DebugLogger } from "./debug-logger.js";
 import { CodingAgentLoop } from "./coding-agent-loop.js";
+import { harnessWorker } from "./harness-worker.js";
 import type { ExecutionRoute, RunOptions, RunSandboxMode } from "./execution-router.js";
 import { SwarmController, type ControllerLiveDecision } from "./swarm-controller.js";
 import { createSelfReview, type SelfReviewResult } from "./self-review.js";
@@ -307,7 +308,8 @@ export class SwarmRuntime {
         preferred_agent_spec_id: action.preferred_agent_spec_id,
         preferred_mode: action.run_in_background ? "parallel" : action.preferred_mode,
         file_scope: action.file_scope,
-        spawn_reason: `capability broker delegate from ${taskId}`
+        spawn_reason: `capability broker delegate from ${taskId}`,
+        harness: action.harness
       }),
       agentControl: this.createRuntimeAgentControlTools(),
       onWorkspaceChange: (sessionId, change) => this.recordWorkspaceChange(change.sessionId ?? sessionId ?? "unknown", change),
@@ -3043,7 +3045,7 @@ export class SwarmRuntime {
       });
 
       const workerSettings = settingsForAgentTask(this.settings, taskPacket);
-      const workerLoop = new CodingAgentLoop({
+      const loopOptions: ConstructorParameters<typeof CodingAgentLoop>[0] = {
         workspace: this.workspaceForSession(request.parent_session_id),
         settings: workerSettings,
         provider: this.provider,
@@ -3127,7 +3129,30 @@ export class SwarmRuntime {
         },
         onWorkspaceChange: (change) => this.recordWorkspaceChange(change.sessionId ?? request.parent_session_id, change),
         onFileLock: (event) => this.recordFileLock(event)
-      });
+      };
+      // A spec or the delegating call can name an agent harness, which then runs the worker instead of Swarm's coding loop.
+      const harnessId = request.harness ?? spec.harness;
+      const workerLoop = harnessId ? harnessWorker({
+        harness: harnessId,
+        workspace: loopOptions.workspace,
+        spec,
+        instructions: renderAgentRuntimeInstructions(spec, workerDecision, taskPacket),
+        objective: request.task,
+        fileScope: taskPacket.file_scope,
+        budget: taskPacket.budget,
+        permissionMode: workerSettings.permissions.defaultMode,
+        approve: async (approval) => {
+          this.events.emitEvent({ type: "approval", request: approval, status: "pending" });
+          const approved = this.approvalHandler ? await this.approvalHandler(approval) : false;
+          this.events.emitEvent({ type: "approval", request: approval, status: approved ? "approved" : "denied" });
+          return approved;
+        },
+        stopped: () => this.workerStateStore.get(workerId)?.status === "stopped",
+        onSessionStart: loopOptions.onSessionStart!,
+        recordUsage: (sessionId, rows) => {
+          for (const row of rows) this.usageStore.append({ session_id: sessionId, task_id: workerId, ...row });
+        }
+      }) : new CodingAgentLoop(loopOptions);
 
       try {
         const result = await workerLoop.run(renderAgentTaskPrompt(taskPacket, workerDecision));

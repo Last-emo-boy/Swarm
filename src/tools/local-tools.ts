@@ -453,7 +453,8 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       preferred_agent_spec_id: optionalStringInput(inputs.preferred_agent_spec_id ?? inputs.agent_spec_id ?? inputs.agent ?? inputs.subagent_type),
       preferred_mode: runInBackground === true ? "parallel" : preferredMode,
       run_in_background: runInBackground,
-      file_scope: stringArrayInput(inputs.file_scope ?? inputs.fileScope ?? inputs.paths)
+      file_scope: stringArrayInput(inputs.file_scope ?? inputs.fileScope ?? inputs.paths),
+      harness: optionalStringInput(inputs.harness)
     };
   }
   throw new Error(`Unsupported tool action: ${rawAction || "(empty)"}`);

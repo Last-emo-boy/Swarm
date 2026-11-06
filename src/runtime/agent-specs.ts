@@ -16,6 +16,8 @@ export type AgentSpec = {
   };
   output_contract: string;
   prompt: string;
+  /** The agent harness profile (superagent/harness.ts) that runs this agent instead of Swarm's coding loop. */
+  harness?: string;
 };
 
 export type AgentInvocationMode = "call_subagent" | "handoff" | "parallel";
@@ -57,6 +59,8 @@ export type AgentInvocationRequest = {
   prior_worker_session_id?: string;
   permission_snapshot?: AgentPermissionContext;
   spawn_reason?: string;
+  /** An agent harness profile to run the worker on, over the agent spec's own. */
+  harness?: string;
 };
 
 export type AgentSpawnDecision = {
@@ -209,6 +213,7 @@ export function renderAgentSpec(spec: AgentSpec): string {
     "",
     `When to use: ${spec.when_to_use}`,
     `Write policy: ${spec.write_policy}`,
+    ...(spec.harness ? [`Harness: ${spec.harness}`] : []),
     `Budget: ${spec.default_budget.max_turns} turns / ${spec.default_budget.max_tool_calls} tools`,
     `Capabilities: ${spec.capabilities.join(", ")}`,
     `Tools: ${spec.tools.join(", ")}`,
@@ -234,7 +239,8 @@ function pluginAgentSpecs(source: AgentSpecSource): AgentSpec[] {
     write_policy: spec.write_policy,
     default_budget: spec.default_budget,
     output_contract: spec.output_contract,
-    prompt: spec.prompt
+    prompt: spec.prompt,
+    ...(spec.harness ? { harness: spec.harness } : {})
   }));
 }
 

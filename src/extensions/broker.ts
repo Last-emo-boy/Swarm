@@ -352,7 +352,8 @@ export class CapabilityBroker {
       preferred_agent_spec_id: agentSpecIdForCapability(capability),
       preferred_mode: preferredMode,
       run_in_background: runInBackground,
-      file_scope: stringArrayArg(args.file_scope ?? args.fileScope ?? args.paths)
+      file_scope: stringArrayArg(args.file_scope ?? args.fileScope ?? args.paths),
+      harness: optionalStringArg(args, ["harness"])
     };
     return this.input.delegate(action, sessionId, taskId);
   }
