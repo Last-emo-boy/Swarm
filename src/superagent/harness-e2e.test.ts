@@ -1,7 +1,7 @@
 /**
  * End to end with harness workers and no paid model: a real host routes requests with a scripted model, and each ticket's
- * worker process runs its turns on fake `claude` and `codex` executables (testing/fake-harness.ts) that print the real
- * CLIs' event formats and report through the real ticket tools' MCP server.
+ * worker process runs its turns on fake `claude`, `codex`, `kimi` and `opencode` executables (testing/fake-harness.ts) that
+ * print the real CLIs' event formats and report through the real ticket tools' MCP server.
  */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -19,15 +19,17 @@ import { writeFakeHarnesses } from "./testing/fake-harness.js";
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const exec = promisify(execFile);
 const home = mkdtempSync(join(tmpdir(), "swarm-harness-e2e-"));
-const saved = { SWARM_HOME: process.env.SWARM_HOME, SWARM_SUPERAGENT_HOME: process.env.SWARM_SUPERAGENT_HOME, CODEX_HOME: process.env.CODEX_HOME, PATH: process.env.PATH };
+const saved = { SWARM_HOME: process.env.SWARM_HOME, SWARM_SUPERAGENT_HOME: process.env.SWARM_SUPERAGENT_HOME, CODEX_HOME: process.env.CODEX_HOME,
+  KIMI_CODE_HOME: process.env.KIMI_CODE_HOME, PATH: process.env.PATH };
 const fakes = writeFakeHarnesses(join(home, "bin"), join(home, "harness"));
 let model: Awaited<ReturnType<typeof startFakeModel>>;
 let host: Host;
 
-const NAMES: Record<string, string> = { claude: "claude-note", codex: "codex-note", ghost: "ghost-note", away: "away-note", quietly: "quiet-note", flaky: "flaky-note", slowly: "slow-note" };
+const NAMES: Record<string, string> = { claude: "claude-note", codex: "codex-note", kimi: "kimi-note", opencode: "opencode-note", ghost: "ghost-note", away: "away-note",
+  quietly: "quiet-note", flaky: "flaky-note", slowly: "slow-note", "kimi quietly": "kimi-quiet-note", "opencode flaky": "opencode-flaky-note" };
 function answer(request: ModelRequest): string {
   if (request.system.includes("You route requests for Swarm's ticket host")) {
-    const word = Object.keys(NAMES).find((name) => request.user.includes(`note with ${name}`)) ?? "claude";
+    const word = Object.keys(NAMES).sort((a, b) => b.length - a.length).find((name) => request.user.includes(`note with ${name}`)) ?? "claude";
     return JSON.stringify({ kind: "accept", title: `Write the ${word} note`, worktree_name: NAMES[word], acknowledgement: `On it: the ${word} note.` });
   }
   throw new Error("Only the router calls the model here: the workers run on harnesses");
@@ -37,6 +39,7 @@ before(async () => {
   process.env.SWARM_HOME = home;
   process.env.SWARM_SUPERAGENT_HOME = join(home, "superagent");
   process.env.CODEX_HOME = join(home, "codex");
+  process.env.KIMI_CODE_HOME = join(home, "kimi");
   process.env.PATH = `${join(home, "bin")}:${process.env.PATH}`;
   model = await startFakeModel(answer);
   writeFakeModelHome(home, model.url);
@@ -82,7 +85,7 @@ async function usage(ticketId: string) {
 }
 
 /** Runs one harness's ticket to completion, then a follow-up on it, and checks the harness's calls, its session and its usage. */
-async function harnessTicket(kind: "claude" | "codex", options: { harness?: string }, expected: { model: string; input: number }) {
+async function harnessTicket(kind: "claude" | "codex" | "kimi" | "opencode", options: { harness?: string }, expected: { model: string; input: number }) {
   const { client } = host;
   client.request(`write the note with ${kind}`, undefined, options);
   const title = `Write the ${kind} note`;
@@ -99,7 +102,7 @@ async function harnessTicket(kind: "claude" | "codex", options: { harness?: stri
   assert.ok(first?.session, "the harness ran a turn there");
   assert.equal(first.resumed, undefined, "a new session for the ticket's first turn");
   assert.match(first.prompt ?? "", /write the note with/);
-  assert.match(first.instructions ?? "", /## Swarm superagent[\s\S]*## Working in (Claude Code|Codex)/);
+  assert.match(first.instructions ?? "", /## Swarm superagent[\s\S]*## Working in (Claude Code|Codex|Kimi Code|OpenCode)/);
   assert.match(first.instructions ?? "", /stage those files by path, never with `git add -A` or `git add \.`/);
   assert.match(first.instructions ?? "", /no attribution to an agent, model or harness/);
   assert.deepEqual(first.tools?.args.slice(-4), ["superagent", "mcp", "--ticket", ticket.id]);
@@ -145,6 +148,29 @@ test("a ticket on Claude Code works in its directory, reports ready through the 
 
 test("a ticket on Codex, the settings' default, does the same and records the model from Codex's session file", { timeout: 200_000 }, async () => {
   await harnessTicket("codex", {}, { model: "gpt-6.1-sol", input: 146600 });
+});
+
+test("a ticket on Kimi Code gets the ticket tools from its directory's mcp.json, put back after each turn, and its usage from the session files", { timeout: 200_000 }, async () => {
+  await harnessTicket("kimi", { harness: "kimi" }, { model: "kimi-code/k3", input: 1779 });
+  const ticket = find("Write the kimi note")!;
+  assert.equal(existsSync(join(ticket.execution!.directory, ".kimi-code")), false, "no Kimi config is left in the ticket's directory");
+});
+
+test("a ticket on OpenCode gets the ticket tools and its agent from inline config, and its model from its session export", { timeout: 200_000 }, async () => {
+  await harnessTicket("opencode", { harness: "opencode" }, { model: "deepseek/deepseek-flash", input: 23386 });
+});
+
+test("Kimi Code and OpenCode turns are reminded and retried with their own tool names", { timeout: 200_000 }, async () => {
+  host.client.request("write the note with kimi quietly", undefined, { harness: "kimi" });
+  host.client.request("write the note with opencode flaky", undefined, { harness: "opencode" });
+  await until(() => !!find("Write the kimi quietly note")?.ended && !!find("Write the opencode flaky note")?.ended, "both tickets to end");
+  for (const title of ["Write the kimi quietly note", "Write the opencode flaky note"]) {
+    assert.equal(find(title)?.ended?.outcome, "completed", `${title}: ${JSON.stringify(find(title)?.assignments.at(-1)?.report)}`);
+  }
+  const [, reminded] = fakes.calls().filter((call) => call.cwd === realpathSync(find("Write the kimi quietly note")!.execution!.directory));
+  assert.match(reminded?.prompt ?? "", /^Your turn ended without calling the mcp__ticket__report tool/);
+  const [, retried] = fakes.calls().filter((call) => call.cwd === realpathSync(find("Write the opencode flaky note")!.execution!.directory));
+  assert.match(retried?.prompt ?? "", /^Your last turn failed: OpenCode: API Error: 400 Unexpected value\(s\)/, "the cause from OpenCode's error log, not its generic event");
 });
 
 test("a harness that is missing or not signed in fails its ticket with what to do", { timeout: 200_000 }, async () => {
