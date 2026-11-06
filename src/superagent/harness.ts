@@ -121,9 +121,17 @@ const claudeUsage = (usage: Event): HarnessUsage => ({
 });
 
 /**
+ * Claude Code's `attribution` setting with every part empty: no Co-Authored-By trailer in commits, no "Generated with"
+ * line in pull requests and no session link (2.1.285 marks the older `includeCoAuthoredBy` deprecated). Given with
+ * `--settings` it overrides the user's, project and local settings; only a managed policy is above it.
+ */
+const NO_ATTRIBUTION = JSON.stringify({ attribution: { commit: "", pr: "", sessionUrl: false } });
+
+/**
  * Claude Code: `claude -p` with stream-json events, the ticket tools from `--mcp-config` and only those
- * (`--strict-mcp-config`), allowed without asking. full-auto is its auto mode, whose classifier blocks risky actions, and
- * yolo skips its permission checks; nothing can answer a prompt, so whatever would ask is denied.
+ * (`--strict-mcp-config`), allowed without asking, and no attribution in what it commits. full-auto is its auto mode,
+ * whose classifier blocks risky actions, and yolo skips its permission checks; nothing can answer a prompt, so whatever
+ * would ask is denied. Its `--settings` comes after the profile's arguments, so a profile cannot turn attribution back on.
  */
 const CLAUDE: HarnessKind = {
   label: "Claude Code",
@@ -132,6 +140,7 @@ const CLAUDE: HarnessKind = {
   args: (request) => [
     "-p", "--output-format", "stream-json", "--verbose",
     ...request.extra,
+    "--settings", NO_ATTRIBUTION,
     ...(request.session ? ["--resume", request.session] : []),
     ...(request.model ? ["--model", request.model] : []),
     "--append-system-prompt", request.instructions,

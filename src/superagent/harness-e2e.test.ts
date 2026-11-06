@@ -100,6 +100,8 @@ async function harnessTicket(kind: "claude" | "codex", options: { harness?: stri
   assert.equal(first.resumed, undefined, "a new session for the ticket's first turn");
   assert.match(first.prompt ?? "", /write the note with/);
   assert.match(first.instructions ?? "", /## Swarm superagent[\s\S]*## Working in (Claude Code|Codex)/);
+  assert.match(first.instructions ?? "", /stage those files by path, never with `git add -A` or `git add \.`/);
+  assert.match(first.instructions ?? "", /no attribution to an agent, model or harness/);
   assert.deepEqual(first.tools?.args.slice(-4), ["superagent", "mcp", "--ticket", ticket.id]);
 
   client.message(ticket.id, "add one more line");

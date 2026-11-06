@@ -840,7 +840,13 @@ Before its first turn a worker checks that the harness is installed and signed
 in (`claude auth status`, `codex login status`); if not, the ticket fails with
 what to do on that machine, and Swarm never signs in for you. A harness runs as
 it is set up for your OS user, with its own login, configuration, instructions
-and hooks (Claude Code's commit attribution included). Profiles under `executor.harnesses` change the built-in `claude`
+and hooks. Two things Swarm adds to every turn: Claude Code's `attribution`
+setting with every part empty (`--settings`, which overrides your own settings),
+so its commits and pull requests carry no Co-Authored-By trailer or "Generated
+with" line; and instructions to stage only the files the ticket changed, by
+path, so files a hook leaves in the ticket's directory stay out of its commits.
+Codex adds its own trailer only when your ChatGPT workspace turns attribution
+on, which Swarm cannot switch off; the instructions ask it not to. Profiles under `executor.harnesses` change the built-in `claude`
 and `codex` (command, model, arguments, environment) or add others of either
 kind; credentials never go in the settings: `keys` names the environment
 variable each one is read from.

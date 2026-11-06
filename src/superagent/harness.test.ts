@@ -30,6 +30,8 @@ const after = (args: readonly string[], flag: string) => args[args.indexOf(flag)
 test("Claude Code runs a turn headless with the ticket tools only, its permission mode and the blocked commands denied", () => {
   const args = HARNESS_KINDS.claude.args(request);
   assert.deepEqual(args.slice(0, 4), ["-p", "--output-format", "stream-json", "--verbose"]);
+  assert.deepEqual(JSON.parse(after(args, "--settings")!), { attribution: { commit: "", pr: "", sessionUrl: false } },
+    "no Co-Authored-By trailer, pull request line or session link");
   assert.equal(after(args, "--append-system-prompt"), request.instructions);
   assert.deepEqual(JSON.parse(after(args, "--mcp-config")!), { mcpServers: { ticket: { type: "stdio", ...request.tools } } });
   assert.ok(args.includes("--strict-mcp-config"));
@@ -43,6 +45,7 @@ test("Claude Code runs a turn headless with the ticket tools only, its permissio
   assert.equal(after(later, "--resume"), "845fd0c6-64b4-452e-a53d-dc059b4ed0ff");
   assert.equal(after(later, "--model"), "sonnet");
   assert.equal(after(later, "--effort"), "high");
+  assert.ok(later.indexOf("--settings") > later.indexOf("--effort"), "the profile's arguments cannot override the attribution setting");
   assert.ok(later.includes("--dangerously-skip-permissions") && !later.includes("--permission-mode"));
 });
 
