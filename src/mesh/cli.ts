@@ -16,6 +16,7 @@ import { inviteWithCode, joinWithCode } from "./pair.js";
 import { RelayServer } from "./relay.js";
 import { MeshServer } from "./server.js";
 import { LOG_CAP_BYTES, installService, keepLogCapped, serviceHost, serviceStatus, showLog, uninstallService, type LockHolder } from "./service.js";
+import { registerUsage } from "./usage.js";
 
 const USAGE = `Usage: swarm mesh <command>
 
@@ -447,6 +448,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts() }), log: (message) => process.stderr.write(`${message}\n`) });
   serveHost(server);
   registerLending(server);
+  registerUsage(server);
   const { node } = readMesh(home);
   const relay = relayOf(node);
   await server.start(node.listen, relay ? { relay } : {});

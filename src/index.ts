@@ -116,6 +116,9 @@ if (!command) {
 } else if (command === "update") {
   const { runUpdateCommand } = await import("./update.js");
   await runUpdateCommand(args);
+} else if (command === "usage") {
+  const { runUsageCommand } = await import("./usage/cli.js");
+  await runUsageCommand(args);
 } else if (command === "tui-artifact") {
   const { runCcGradeVisualArtifactCli } = await import("./tui/renderer/cc-grade-visual-artifact.js");
   runCcGradeVisualArtifactCli(args);
@@ -3333,6 +3336,7 @@ Usage:
   ${binary} [--debug] [--debug-trace]
   ${binary} --version
   ${binary} update [--check]
+  ${binary} usage [--since 24h|7d|30d|<date>] [--by model|provider|harness|device|ticket|day|source] [--all-devices] [--json]
   ${binary} --yolo
   ${binary} yolo
   ${binary} chat [--debug]
@@ -3432,6 +3436,7 @@ Commands:
   chat       Open the interactive swarm TUI (also the default)
   version    Print the Swarm CLI version
   update     Update a clone install: pull, npm install, build, restart the node service; --check only looks
+  usage      What model calls and harness turns used and cost, by model, provider, harness, device, ticket or day
   run        Run one objective non-interactively. Defaults to the local coding loop in auto mode.
   watch      Follow the live Gateway event stream for the current workspace
   live       Show the active Gateway-controlled live target and its current session summary

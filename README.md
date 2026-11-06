@@ -165,6 +165,7 @@ Commands:
   models     Show or update selected models
   version    Print the installed Swarm version
   update     Pull, install and build a clone install, and restart its node service; --check only looks
+  usage      What model calls and harness turns used and cost, by model, provider, harness, device, ticket or day
 
 Run modes:
   auto         Default. Structured route decision; usually starts with coding_loop.
@@ -992,6 +993,64 @@ Each node's card names its Swarm version, its commit when it runs from a git che
 speaks: 1 now, bumped whenever the link or route formats change (cards from before the field speak 1).
 `swarm mesh status` and `/mesh` in the TUI mark a peer that speaks another protocol, which may not work with this
 node, or runs another Swarm version or commit, and say to update one of them with `swarm update`.
+
+## Usage, Prices And Budgets
+
+Each device records every model call it makes and every harness turn its ticket workers run in
+`~/.swarm/state/swarm.db`: Swarm's own sessions, ticket workers, and the ticket host's routing and assessment calls,
+each with its provider, model, harness and tokens. `swarm usage` reads them as a ledger that counts each call once:
+
+```bash
+swarm usage                                   # the last 7 days on this device, by model
+swarm usage --since 30d --by provider         # or by harness, device, ticket, day or source
+swarm usage --since 2026-11-01 --all-devices  # adds every paired device that answers
+swarm usage --since 24h --json
+```
+
+`input` counts every prompt token, cache hits and cache writes included, and `cached` the cache hits. In the TUI,
+`/usage [session_id]` (also `/debug usage`) shows a session's calls and this device's day, and
+`GET /v1/sessions/:id/usage` adds the same ledger as `ledger` beside its raw counters, whose token rows overlap.
+`--all-devices` reads each paired device's calls through its `swarm node run`, prices them with this device's
+prices, and names a device that does not answer or runs a Swarm without the route.
+
+Costs come from a price table per million tokens. Swarm ships prices only for models whose providers' pricing pages
+confirmed them on 2026-11-07, each page cited in `src/usage/prices.ts`: DeepSeek Flash (also its retired
+`deepseek-v4-flash` names) and V4 Pro with their peak hours, Kimi K3.1 Pro, K3, K2.7 Code and K2.6 on `moonshot`,
+OpenAI GPT-5.5, GPT-5.4 and GPT-5.4 mini, Claude Sonnet 4.5 and Haiku 4.5, and Gemini 2.5 Pro and Flash. Every other
+model shows its tokens and `unpriced` until `usage.prices` in `~/.swarm/settings.json` gives it a price, which also
+replaces a shipped one:
+
+```json
+{
+  "usage": {
+    "prices": {
+      "deepseek/deepseek-v4-flash": { "input": 0.15, "cachedInput": 0.003, "output": 0.6, "currency": "USD",
+        "peak": { "hoursUtc": [[1, 4], [6, 10]], "factor": 2 } },
+      "openai/gpt-5.5": { "input": 5, "cachedInput": 0.5, "output": 30, "long": { "above": 272000, "input": 10, "cachedInput": 1, "output": 45 } },
+      "ollama/*": { "input": 0, "output": 0 }
+    },
+    "budgets": {
+      "providers": { "deepseek": { "daily": 2, "monthly": 30 }, "kimi-coding": { "dailyTokens": 5000000 } },
+      "harnesses": { "claude": { "monthly": 100 } }
+    }
+  }
+}
+```
+
+A price is keyed `<provider>/<model>`, or `<provider>/*` for all of a provider's models. `cachedInput` (cache hits)
+and `cacheWrite` (tokens written to the cache) default to `input`, `currency` to USD; `long` prices a prompt over
+`above` tokens, and `peak` multiplies every rate in its UTC hours, Monday to Friday. A harness turn that reports its
+own cost, as Claude Code does, keeps it; other turns are priced by `harness:<id>/<model>` or `harness:<id>/*`.
+
+Budgets cap a provider's calls, or a harness's turns, per day (from local midnight) and per month (from the 1st):
+`daily` and `monthly` in money (`currency`, USD by default), counting priced calls, or `dailyTokens` and
+`monthlyTokens`, counting input and output tokens. Each device counts its own calls. Once a cap is reached, new model
+calls on that provider fail, and a harness's next turn does not start, with a message that names the cap, what went,
+and the setting that raises it; a ticket whose worker hits it gets a blocked report saying so, to retry once the cap
+is raised, and the TUI shows a notice above the prompt. Caps are read again before every call, so raising one
+applies at once. They are checked before a call, not during it: calls already running finish, and parallel calls can
+pass a cap by what they use. `swarm usage` and `/usage` show each cap's state and how many calls a money cap could
+not count for lack of a price.
 
 ## Architecture
 

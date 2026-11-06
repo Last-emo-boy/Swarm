@@ -14,7 +14,7 @@ import type { RunMode } from "../runtime/execution-router.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
 import type { ApprovalRecord } from "../storage/approval-store.js";
 import type { SessionRow } from "../storage/session-store.js";
-import { installPluginRoot, removePluginRoot, setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
+import { installPluginRoot, loadSwarmSettings, removePluginRoot, setCapabilityEnabled, setCapabilityModelVisible, setPluginEnabled } from "../config/settings.js";
 import type { SymphonyScheduler } from "../symphony/scheduler.js";
 import { SymphonyDaemonManager } from "../symphony/daemon.js";
 import { createSymphonyActionFact, type SymphonyActionFact } from "../symphony/action-lifecycle.js";
@@ -24,6 +24,8 @@ import { summarizeCapabilityCatalog, summarizeMcpCatalog, summarizePluginCatalog
 import { mcpSettingsSnapshot } from "../extensions/mcp-report.js";
 import { skillSettingsSnapshot } from "../extensions/skill-report.js";
 import { getGlobalLspManager } from "../lsp/manager.js";
+import { priceLedger, readLedger, totalOf } from "../usage/ledger.js";
+import { mergedPrices } from "../usage/prices.js";
 import { handleSwarmMcpEndpoint } from "./mcp-endpoint.js";
 import { buildSessionSnapshot, buildWorkspaceSnapshot } from "./session-view.js";
 import {
@@ -1709,10 +1711,13 @@ export class SwarmGatewayServer {
     }
 
     if (request.method === "GET" && child === "usage") {
+      // The ledger counts each model call once; summary adds raw counters, whose token rows overlap.
+      const entries = priceLedger(readLedger(this.runtime.database.db, "this device", { sessionId }), mergedPrices(loadSwarmSettings(this.runtime.workspaceRoot()).usage.prices));
       sendJson(response, 200, {
         session_id: sessionId,
         usage: this.runtime.usageStore.list(sessionId, integerParam(url, "limit", 100)),
-        summary: this.runtime.usageStore.summarize(sessionId)
+        summary: this.runtime.usageStore.summarize(sessionId),
+        ledger: { entries, total: totalOf(entries) }
       });
       return;
     }

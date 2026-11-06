@@ -105,6 +105,45 @@ export type SwarmSettings = {
     enabled: boolean;
   };
   extensions: ExtensionSettings;
+  /** Prices and budgets for model calls and harness turns (src/usage/). */
+  usage: UsageSettings;
+};
+
+/**
+ * A model's price per million tokens. Input tokens read from the provider's prompt cache cost `cachedInput`, tokens written
+ * to it `cacheWrite`, and the rest `input`; both default to `input`.
+ */
+export type ModelPrice = {
+  input: number;
+  output: number;
+  cachedInput?: number;
+  cacheWrite?: number;
+  currency: string;
+  /** Rates for a call whose prompt, cached tokens included, is longer than `above` tokens. */
+  long?: { above: number; input: number; output: number; cachedInput?: number; cacheWrite?: number };
+  /** Hours (UTC, Monday to Friday, `[start, end)`) that cost `factor` times the rates above, such as DeepSeek's peak hours. */
+  peak?: { hoursUtc: [number, number][]; factor: number };
+};
+
+/**
+ * A provider's or harness's caps: `daily` and `monthly` in money (`currency`, USD by default) for priced calls, or
+ * `dailyTokens` and `monthlyTokens` in tokens. A day starts at local midnight, a month on the 1st.
+ */
+export type BudgetCap = {
+  daily?: number;
+  monthly?: number;
+  currency?: string;
+  dailyTokens?: number;
+  monthlyTokens?: number;
+};
+
+export type UsageSettings = {
+  /** Prices by `<provider>/<model>` (or `<provider>/*`); they replace or add to the defaults in src/usage/prices.ts. */
+  prices: Record<string, ModelPrice>;
+  budgets: {
+    providers: Record<string, BudgetCap>;
+    harnesses: Record<string, BudgetCap>;
+  };
 };
 
 export type PermissionMode = "ask" | "auto-edit" | "full-auto" | "yolo";
@@ -284,6 +323,10 @@ export function defaultSwarmSettings(paths = getSwarmPaths()): SwarmSettings {
         disabled: [],
         maxPlugins: 100
       }
+    },
+    usage: {
+      prices: {},
+      budgets: { providers: {}, harnesses: {} }
     }
   };
 }
@@ -1033,8 +1076,52 @@ function normalizeSwarmSettings(settings: SwarmSettings): SwarmSettings {
     providers: normalizeProviderRegistry(settings.providers),
     enabledProviders: Array.isArray(settings.enabledProviders) ? settings.enabledProviders : [],
     disabledProviders: Array.isArray(settings.disabledProviders) ? settings.disabledProviders : [],
-    extensions: normalizeExtensionSettings(settings.extensions)
+    extensions: normalizeExtensionSettings(settings.extensions),
+    usage: normalizeUsageSettings(settings.usage)
   };
+}
+
+/** Prices and caps as settings give them; an entry whose numbers are missing or negative is left out rather than guessed. */
+function normalizeUsageSettings(usage: unknown): UsageSettings {
+  const raw = isObject(usage) ? usage : {};
+  const budgets = isObject(raw.budgets) ? raw.budgets : {};
+  const amount = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+  const rates = (value: Record<string, unknown>) => {
+    const input = amount(value.input);
+    const output = amount(value.output);
+    if (input === undefined || output === undefined) return undefined;
+    const cachedInput = amount(value.cachedInput);
+    const cacheWrite = amount(value.cacheWrite);
+    return { input, output, ...(cachedInput === undefined ? {} : { cachedInput }), ...(cacheWrite === undefined ? {} : { cacheWrite }) };
+  };
+  const prices: Record<string, ModelPrice> = {};
+  for (const [key, value] of Object.entries(isObject(raw.prices) ? raw.prices : {})) {
+    const base = isObject(value) ? rates(value) : undefined;
+    if (!key.includes("/") || !base || !isObject(value)) continue;
+    const long = isObject(value.long) ? rates(value.long) : undefined;
+    const above = isObject(value.long) ? amount(value.long.above) : undefined;
+    const peak = isObject(value.peak) ? value.peak : undefined;
+    const hoursUtc = Array.isArray(peak?.hoursUtc)
+      ? peak.hoursUtc.filter((range): range is [number, number] => Array.isArray(range) && range.length === 2
+        && range.every((hour) => typeof hour === "number" && hour >= 0 && hour <= 24) && range[0] < range[1])
+      : [];
+    const factor = amount(peak?.factor);
+    prices[key] = {
+      ...base,
+      currency: typeof value.currency === "string" && value.currency.trim() ? value.currency.trim().toUpperCase() : "USD",
+      ...(long && above !== undefined ? { long: { above, ...long } } : {}),
+      ...(hoursUtc.length && factor ? { peak: { hoursUtc, factor } } : {})
+    };
+  }
+  const caps = (value: unknown): Record<string, BudgetCap> => Object.fromEntries(Object.entries(isObject(value) ? value : {}).flatMap(([id, cap]) => {
+    if (!id.trim() || !isObject(cap)) return [];
+    const limits = Object.fromEntries((["daily", "monthly", "dailyTokens", "monthlyTokens"] as const)
+      .flatMap((field) => amount(cap[field]) === undefined ? [] : [[field, amount(cap[field])]]));
+    if (!Object.keys(limits).length) return [];
+    const currency = typeof cap.currency === "string" && cap.currency.trim() ? cap.currency.trim().toUpperCase() : "USD";
+    return [[id, { ...limits, ...(limits.daily !== undefined || limits.monthly !== undefined ? { currency } : {}) }]];
+  }));
+  return { prices, budgets: { providers: caps(budgets.providers), harnesses: caps(budgets.harnesses) } };
 }
 
 function normalizeExtensionSettings(extensions: SwarmSettings["extensions"]): SwarmSettings["extensions"] {

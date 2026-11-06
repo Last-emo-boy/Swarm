@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { UsageStore } from "../storage/usage-store.js";
+import { assertBudget } from "../usage/budget.js";
 import { checkHarness, HarnessSetupError, resolveHarness, runTurn, SessionLost, type Harness, type TurnLimits, type TurnOutcome } from "./harness.js";
 import { transient, workerSessionId } from "./messages.js";
 import { readSettings, settingsPath } from "./settings.js";
@@ -118,6 +119,8 @@ export async function harnessTurns(input: HarnessTurnsInput): Promise<WorkerTurn
   return {
     fresh: !session,
     run: async (prompt) => {
+      // A harness's turns stop at its budget (usage.budgets.harnesses), as model calls stop at their provider's.
+      assertBudget({ harness: harness.id }, directory);
       const outcome = await runTurn(harness, { ...request, ...(session ? { session } : {}) }, prompt, input.limits, abort.signal);
       try { recordUsage(directory, sessionId, ticketId, harness, outcome); }
       catch (error) { process.stderr.write(`superagent: could not record the harness turn's usage: ${String(error)}\n`); }
