@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { Engine, followupOwners, latestAssignment, liveTicket, threadKey, type DomainEvent, type Executor, type Ticket } from "./core/index.js";
 import { Commands } from "./commands.js";
 import { Effects } from "./effects.js";
+import { harnessIds } from "./harness.js";
 import { HealthBoard } from "./health.js";
+import { KV } from "./kv.js";
 import { ticketExecution } from "./messages.js";
 import { Outbox } from "./outbox.js";
 import { settingsPolicy } from "./policy.js";
@@ -75,7 +77,7 @@ export class SuperagentClient {
       assessor: { request: (candidate) => this.effects.enqueue("assessment", candidate.evalId, { triggerId: candidate.triggers[0]!.id }) },
       executor,
       outbox: this.outbox,
-      prepareTicket: (ticket, outcome) => ({ ...ticket, execution: ticketExecution(ticket, outcome, this.settings(), this.stateDir) }),
+      prepareTicket: (ticket, outcome) => ({ ...ticket, execution: ticketExecution(ticket, outcome, this.settings(), this.stateDir, this.harnessOf(ticket)) }),
       ...(options.now ? { now: options.now } : {}),
       emit: (event) => this.store.afterCommit(() => this.emitted(event))
     });
@@ -105,11 +107,26 @@ export class SuperagentClient {
   }
   close(): void { this.store.close(); }
 
-  /** Files a request from the Swarm TUI or CLI as a new local Thread; it reaches Eval like any explicit request. */
-  request(text: string, actor = localOperator()): { triggerId: string; thread: string } {
+  /**
+   * Files a request from the Swarm TUI or CLI as a new local Thread; it reaches Eval like any explicit request. With
+   * `harness`, the ticket it becomes runs on that harness profile instead of the settings' default.
+   */
+  request(text: string, actor = localOperator(), options: { harness?: string } = {}): { triggerId: string; thread: string } {
+    const { harness } = options;
+    const known = harnessIds(this.settings().executor.harnesses);
+    if (harness && !known.includes(harness)) throw new Error(`No harness "${harness}": choose one of ${known.join(", ")}, or add it under executor.harnesses`);
     const trigger = localTrigger({ id: randomUUID(), text, actor });
-    this.engine.receive(trigger);
+    this.store.atomic(() => {
+      if (harness) this.store.set(KV.harness.chosen(trigger.id), harness);
+      this.engine.receive(trigger);
+    });
     return { triggerId: trigger.id, thread: threadKey(trigger.threads[0]!) };
+  }
+
+  /** The harness a newly accepted ticket runs on: the one its request was filed with, else the settings' default. */
+  private harnessOf(ticket: Ticket): string | undefined {
+    const chosen = [ticket.origin.triggerId, ...ticket.origin.triggerIds].map((id) => this.store.get(KV.harness.chosen(id))).find(Boolean);
+    return chosen ?? this.settings().executor.harness ?? undefined;
   }
 
   /**

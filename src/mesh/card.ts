@@ -7,10 +7,18 @@ import { existsSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { promisify } from "node:util";
 import { loadSwarmVersion } from "../runtime/headless-artifacts.js";
+import { swarmCommit } from "../update.js";
 import { hostPort, relayName, relayOf, type Lend, type MeshNode } from "./state.js";
 import { parseListen } from "./listen.js";
 
 const exec = promisify(execFile);
+
+/**
+ * The mesh protocol this Swarm speaks: the formats of its links and its routes. Bump it when they change, so a node can
+ * tell that a peer may not understand it. Cards from before the field existed speak 1. 2: dials through the relay are
+ * signed, which a node speaking 1 cannot do.
+ */
+export const MESH_PROTOCOL = 2;
 
 export interface NodeLoad {
   /** Tickets whose workers run on this node now. */
@@ -29,7 +37,11 @@ export interface NodeCard {
   /** The relay it listens at, and its name there. */
   relay?: string;
   relayName: string;
+  /** Its mesh protocol; absent on cards from before the field existed, which speak 1. */
+  protocol?: number;
+  /** Its Swarm version and, when it runs from a git checkout, the short commit. */
   version: string;
+  commit?: string;
   os: NodeJS.Platform;
   arch: string;
   /** Kinds of work the machine is fit for: its OS, `docker` inside a container, `gpu` with an NVIDIA GPU. */
@@ -102,10 +114,29 @@ export async function detectAbilities(): Promise<string[]> {
   return abilities;
 }
 
+/** What this Swarm is: its mesh protocol, its version and, in a clone, its commit. */
+export function thisSwarm(): { protocol: number; version: string; commit?: string } {
+  const commit = swarmCommit();
+  return { protocol: MESH_PROTOCOL, version: loadSwarmVersion(), ...(commit ? { commit } : {}) };
+}
+
+/**
+ * How a peer's Swarm differs from this one, as one note naming what to do: a different mesh protocol first (they may
+ * not work together), else a different version, else a different commit. Undefined when they are alike, or when a
+ * commit is unknown on either side.
+ */
+export function versionMismatch(card: Pick<NodeCard, "protocol" | "version" | "commit">, own = thisSwarm()): string | undefined {
+  const protocol = card.protocol ?? 1;
+  if (protocol !== own.protocol) return `speaks mesh protocol ${protocol}, this device ${own.protocol}: they may not work together; update one of them with swarm update`;
+  if (card.version !== own.version) return `runs Swarm ${card.version}, this device ${own.version}: update one of them with swarm update`;
+  const differ = card.commit && own.commit && !card.commit.startsWith(own.commit) && !own.commit.startsWith(card.commit);
+  return differ ? `runs Swarm at ${card.commit}, this device at ${own.commit}: update one of them with swarm update` : undefined;
+}
+
 export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[] } = {}): Promise<NodeCard> {
   return {
     id: node.id, name: node.name, addresses: await advertisedAddresses(node), ...(relayOf(node) ? { relay: relayOf(node) } : {}),
-    relayName: relayName(node.keys.publicKey), version: loadSwarmVersion(),
+    relayName: relayName(node.keys.publicKey), ...thisSwarm(),
     os: process.platform, arch: process.arch, abilities: extra.abilities ?? await detectAbilities(),
     ...(extra.repository ? { repository: extra.repository } : {}),
     ...(extra.load ? { load: extra.load } : {}),

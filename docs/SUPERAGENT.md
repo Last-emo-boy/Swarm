@@ -26,6 +26,7 @@ The domain is upstream's, ported unchanged in `src/superagent/core/` with its en
 | Routing, assessment, follow-up stop check | `assessor.ts`, `prompts.ts` | Host |
 | Executor: slots, prepare command, worker processes | `executor.ts` | Host |
 | Worker: coding loop on the ticket's session | `worker.ts` | One child process per running ticket |
+| Harness turns: Claude Code or Codex in place of the coding loop | `harness.ts`, `harness-turns.ts` | One child of the worker per turn |
 | Ticket tools (`mcp__ticket__*`) | `ticket-tools.ts` | MCP stdio child of the worker |
 | Sources | `sources/local.ts`, `sources/github*.ts`, `sources/feishu*.ts` | Host polls; the TUI and CLI write local Triggers |
 
@@ -83,7 +84,8 @@ describing the ticket, the repository and the agent account, and `gh`/`lark-cli`
 ## Safety
 
 Workers run as the operator's OS user in `full-auto` mode; an action that still needs approval is refused and the worker
-reports what it needs. The wrappers and blocked commands are defaults, not a sandbox: a worker can run programs by
+reports what it needs. A worker on an agent harness runs under the harness's own permission mode or sandbox instead of
+Swarm's permission rules (README, "Harness workers"). The wrappers and blocked commands are defaults, not a sandbox: a worker can run programs by
 path and read the operator's home directory. Messages on a ticket's Threads reach its worker as context whoever wrote
 them, so on a public repository strangers can put text in front of a worker with shell access; run the host under a
 dedicated OS account holding only the agent's credentials there. Upstream lists which Trigger fields to trust as an

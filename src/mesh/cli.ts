@@ -1,18 +1,21 @@
 /**
  * `swarm mesh`: pair this device with others and see them; `swarm node run`: the device daemon, which runs the
- * superagent host and the mesh server together so peers can reach this node.
+ * superagent host and the mesh server together so peers can reach this node, and `swarm node install` runs it as a
+ * service (service.ts).
  */
+import { getSwarmPaths } from "../config/settings.js";
 import { mcpToolName } from "../extensions/mcp.js";
 import type { TicketRow } from "../superagent/views.js";
 import { connect } from "node:net";
 import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, hostPort, meshHome, readMesh, relayOf, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
-import { advertisedAddresses, detectAbilities, nodeCard, type NodeCard, type NodeLoad } from "./card.js";
+import { advertisedAddresses, detectAbilities, nodeCard, thisSwarm, versionMismatch, type NodeCard, type NodeLoad } from "./card.js";
 import { closePeerLinks, peerHealth, removeFromSwarm } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
 import { parseListen } from "./listen.js";
 import { inviteWithCode, joinWithCode } from "./pair.js";
 import { RelayServer } from "./relay.js";
 import { MeshServer } from "./server.js";
+import { LOG_CAP_BYTES, installService, keepLogCapped, serviceHost, serviceStatus, showLog, uninstallService, type LockHolder } from "./service.js";
 
 const USAGE = `Usage: swarm mesh <command>
 
@@ -44,11 +47,21 @@ Run \`swarm node run\` on a device so its peers can reach it; a device without i
 of devices shares a key that encrypts everything between them: direct on a shared network, through the relay
 otherwise, which passes the bytes on without reading them. State lives in ${meshHome()}.`;
 
-const NODE_USAGE = `Usage: swarm node run [--no-host]
+const NODE_USAGE = `Usage: swarm node <command>
 
-Runs this device's node: the superagent host (tickets, Sources, workers) and the mesh server peers call,
-directly and through the relay, which also serves the tools this node lends (swarm mesh lend).
---no-host serves the mesh only, for a device that runs its ticket host elsewhere.`;
+Commands:
+  run [--no-host]            Run this device's node here until Ctrl+C
+  install [--no-host]        Run it as a service the system keeps up: a launchd LaunchAgent on macOS, a systemd user
+                             unit on Linux. It starts now and at login, restarts after a crash, and runs again with
+                             the new code when installed again
+  uninstall                  Stop the service and remove it; its env file and logs stay
+  status [--json]            Whether the service is installed and loaded, its pid, how it last ended, its log
+  logs [-f]                  The end of the service's log; -f follows it
+
+The node is the superagent host (tickets, Sources, workers) and the mesh server peers call, directly and through the
+relay, which also serves the tools this node lends (swarm mesh lend). --no-host serves the mesh only, for a device that
+runs its ticket host elsewhere. The service reads secrets such as provider keys from
+${getSwarmPaths().home}/node.env, never from its plist or unit.`;
 
 function flag(args: string[], name: string): boolean {
   const index = args.indexOf(`--${name}`);
@@ -77,7 +90,7 @@ function serving(listen: string): Promise<boolean> {
 const cardLine = (card: NodeCard): string => {
   const load = card.load ? `, ${card.load.running}/${card.load.slots} workers${card.load.queued ? `, ${card.load.queued} queued` : ""}` : "";
   const pull = card.pull ? `, pulls${card.pull.repositories.length ? ` ${card.pull.repositories.join(" ")}` : ""}` : "";
-  return `${card.abilities.join(" ")}, swarm ${card.version}${card.repository ? `, ${card.repository}` : ""}${load}${pull}`;
+  return `${card.abilities.join(" ")}, swarm ${card.version}${card.commit ? ` ${card.commit}` : ""}${card.repository ? `, ${card.repository}` : ""}${load}${pull}`;
 };
 
 const pullLines = (pull: Pull): string[] => [
@@ -251,11 +264,15 @@ async function status(json: boolean): Promise<void> {
   const peers = await peerHealth();
   const hosts = state.peers.filter((peer) => peers.some((item) => item.peer.id === peer.id && item.card?.load));
   const pulled = await pulledWork(node.name, hosts);
+  const own = thisSwarm();
+  const mismatch = (item: (typeof peers)[number]): string | undefined => item.card && versionMismatch(item.card, own);
   if (json) {
-    console.log(JSON.stringify({ node: { id: node.id, name: node.name, listen: node.listen, addresses, relay: relay ?? null, serving: running, pull: node.pull }, peers, pulled }, null, 2));
+    console.log(JSON.stringify({ node: { id: node.id, name: node.name, ...own, listen: node.listen, addresses, relay: relay ?? null, serving: running, pull: node.pull },
+      peers: peers.map((item) => ({ ...item, ...(mismatch(item) ? { mismatch: mismatch(item) } : {}) })), pulled }, null, 2));
     return;
   }
-  console.log(`${node.name}  ${running ? "running" : "not running: start swarm node run so peers can reach it"}`);
+  console.log(`${node.name}  ${running ? "running" : "not running: start swarm node run (or swarm node install) so peers can reach it"}`);
+  console.log(`  swarm ${own.version}${own.commit ? ` ${own.commit}` : ""}, mesh protocol ${own.protocol}`);
   console.log(`  direct at ${addresses.join(", ") || "no address peers can reach"}; relay ${relay ?? "off"}`);
   for (const line of pullLines(node.pull)) console.log(`  ${line}`);
   if (!peers.length) console.log("No peers yet: run swarm mesh invite here and swarm mesh join <code> on the other device.");
@@ -263,6 +280,8 @@ async function status(json: boolean): Promise<void> {
     console.log(item.reachable && item.card
       ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${item.path}  ${cardLine(item.card)}`
       : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}`);
+    const differs = mismatch(item);
+    if (differs) console.log(`  ${"".padEnd(16)} ! ${differs}`);
   }
   if (pulled.length) console.log(`Pulled work:\n${pulled.map((row) => `  ${row.short}  ${row.label.padEnd(22)} ${row.title}  (pulled by ${row.pulledBy})`).join("\n")}`);
 }
@@ -325,14 +344,82 @@ async function relay(args: string[]): Promise<void> {
   if (setting) console.log("A node run with swarm node run uses it from its next start.");
 }
 
+const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
+
+async function installNode(withHost: boolean): Promise<void> {
+  const host = serviceHost();
+  const before = await serviceStatus(host);
+  let holder: LockHolder | undefined;
+  if (withHost) {
+    const { lockHolder } = await import("../superagent/host.js");
+    const { superagentStateDir } = await import("../superagent/settings.js");
+    holder = lockHolder(superagentStateDir());
+  }
+  const { listen } = readMesh().node;
+  if (!before.pid && !holder && await serving(listen)) {
+    throw new Error(`Something already takes connections on ${listen}, most likely a swarm node run in a terminal. Stop it first, then run swarm node install again.`);
+  }
+  const { files, envCreated, notes } = await installService(host, { withHost, ...(holder ? { holder } : {}) });
+  console.log(`${before.installed ? "Reinstalled" : "Installed"} the node service: ${files.file}`);
+  console.log(`It runs now, at login and again after a crash: ${files.program.map(shellWord).join(" ")}`);
+  console.log(`Log: ${files.logFile} (swarm node logs -f; past ${LOG_CAP_BYTES / 1024 / 1024} MB it moves to node.log.1)`);
+  console.log(envCreated
+    ? `Secrets: put provider keys and tokens the node needs from the environment in ${files.envFile} (created empty with instructions, mode 600), then run swarm node install again to restart it.`
+    : `Secrets: ${files.envFile} (kept as it was, mode 600).`);
+  for (const note of notes) console.log(note);
+  for (let tries = 0; tries < 20; tries++) {
+    const status = await serviceStatus(host);
+    if (status.pid && status.pid !== before.pid) return console.log(`The node runs as pid ${status.pid}.`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  console.log("The node has not started yet: swarm node status and swarm node logs show why.");
+}
+
+async function nodeStatus(json: boolean): Promise<void> {
+  const status = await serviceStatus(serviceHost());
+  if (json) {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  if (!status.installed && !status.loaded) {
+    console.log("No node service is installed. swarm node install runs this device's node in the background: now, at login and after a crash.");
+  } else {
+    console.log(`Node service ${status.installed ? "installed" : "not installed but still loaded"} at ${status.file}, ${status.loaded ? "loaded" : "not loaded"}, ${status.pid ? `running as pid ${status.pid}` : "not running"}.`);
+    console.log(`Last exit: ${status.lastExit ?? "none yet"}`);
+  }
+  console.log(`Log: ${status.logFile} (swarm node logs -f)`);
+  console.log(`Secrets: ${status.envFile}`);
+  if (status.problem) console.log(status.problem);
+}
+
+async function uninstallNode(): Promise<void> {
+  const host = serviceHost();
+  const { envFile, logFile } = await serviceStatus(host);
+  const removed = await uninstallService(host);
+  console.log(removed
+    ? `Removed the node service; this device's node no longer runs in the background. Its env file ${envFile} and log ${logFile} stay.`
+    : "No node service was installed.");
+}
+
 export async function runNodeCommand(input: string[]): Promise<void> {
   const args = [...input];
   const command = args.shift();
+  if (command === "install") return installNode(!flag(args, "no-host"));
+  if (command === "uninstall") return uninstallNode();
+  if (command === "status") return nodeStatus(flag(args, "json"));
+  if (command === "logs") return showLog((await serviceStatus(serviceHost())).logFile, args.includes("-f") || flag(args, "follow"));
   if (command !== "run") {
     console.log(NODE_USAGE);
     return;
   }
   const withHost = !flag(args, "no-host");
+  // The service passes its log so the node keeps it capped; the service manager writes to it.
+  const log = value(args, "log");
+  if (log) {
+    keepLogCapped(log);
+    const own = thisSwarm();
+    console.log(`${new Date().toISOString()} starting swarm ${own.version}${own.commit ? ` ${own.commit}` : ""} as pid ${process.pid}`);
+  }
   const home = meshHome();
   const abilities = await detectAbilities();
   let facts: () => { repository?: string; load?: NodeLoad } = () => ({});

@@ -8,6 +8,7 @@ import { z } from "zod/v4";
 import { getSwarmPaths } from "../config/settings.js";
 import { key } from "./core/index.js";
 import type { AdmissionRow } from "./admission.js";
+import { HarnessIdSchema, HarnessProfileSchema, harnessSettingsProblem } from "./harness.js";
 
 export const LIMITS = {
   ruleName: 100,
@@ -72,7 +73,8 @@ const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine((name) =>
   .refine((name) => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(", ")} cannot be blocked`);
 /**
  * Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare`
- * command run once per new ticket directory, blocked commands, and the permission mode workers run under.
+ * command run once per new ticket directory, blocked commands, the permission mode workers run under, the agent harness
+ * new tickets run on (null for Swarm's own coding loop), and the harness profiles of this machine (see harness.ts).
  */
 export const ExecutorConfigSchema = z.object({
   model: ModelRefSchema,
@@ -80,8 +82,13 @@ export const ExecutorConfigSchema = z.object({
   directory: z.string().trim().refine((path) => path === "" || path.startsWith("/"), "An absolute path, or empty for <stateDir>/work").default(""),
   prepare: z.string().max(LIMITS.prepareCommand).default(""),
   blockedCommands: z.array(CommandNameSchema).default([]),
-  permissionMode: z.enum(["full-auto", "yolo"]).default("full-auto")
-}).strict();
+  permissionMode: z.enum(["full-auto", "yolo"]).default("full-auto"),
+  harness: HarnessIdSchema.nullable().default(null),
+  harnesses: z.record(HarnessIdSchema, HarnessProfileSchema).default({})
+}).strict().superRefine((executor, context) => {
+  const problem = harnessSettingsProblem(executor.harness, executor.harnesses);
+  if (problem) context.addIssue({ code: "custom", message: problem, path: ["harness"] });
+});
 export const SourceInstanceSchema = z.object({
   enabled: z.boolean().default(true),
   config: z.record(z.string(), z.unknown()).default({})

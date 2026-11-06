@@ -1,17 +1,20 @@
 /**
  * A ticket's worker process: Swarm's coding loop on the ticket's Work Kernel session, in the ticket's directory, with the
- * ticket's tools served by `swarm superagent mcp`. It runs turns while Inputs wait for it and exits once its turn ends with
- * nothing left, so an idle ticket holds no process. A person's message that arrives during a turn reaches the loop as a
- * live message at its next step, as upstream's 5-second shell limit let a DSH worker take one. It reads and tells its ticket
- * through a link: the store of the node that owns the ticket, or that node over the mesh when it runs on a paired node.
+ * ticket's tools served by `swarm superagent mcp`; or, when the ticket's execution names one, an agent harness such as
+ * Claude Code with the same tools (harness-turns.ts). It runs turns while Inputs wait for it and exits once its turn ends
+ * with nothing left, so an idle ticket holds no process. A person's message that arrives during a turn reaches Swarm's loop
+ * as a live message at its next step, as upstream's 5-second shell limit let a DSH worker take one, and a harness's next
+ * turn. It reads and tells its ticket through a link: the store of the node that owns the ticket, or that node over the
+ * mesh when it runs on a paired node.
  */
 import { createLocalPolicy } from "../runtime/policy-configuration.js";
 import type { SwarmSession } from "../protocol/types.js";
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import { listBackgroundProcesses, stopBackgroundProcess } from "../tools/background-processes.js";
 import { latestReport, runningAssignment, waitsForPerson, type Ticket } from "./core/index.js";
+import { SessionLost } from "./harness.js";
 import { batchLine, inputMessage, inputResource, transient, triggerMessage, workerSessionId } from "./messages.js";
-import type { WorkLink, WorkView } from "./work-link.js";
+import type { WorkLink, WorkStart, WorkView } from "./work-link.js";
 import { parseJsonObject, type Complete } from "./assessor.js";
 import { z } from "zod/v4";
 import { execFile } from "node:child_process";
@@ -24,7 +27,7 @@ const TRANSIENT_TRIES = 3, TRANSIENT_BACKOFF_MS = 15_000;
 const BACKGROUND_LIMIT_MS = 30 * 60_000;
 const RETRIED = "A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.";
 /** A ticket worker's budget per turn of the host: upstream set none, and Swarm's interactive defaults (12 turns) stop mid-ticket. */
-const WORKER_MAX_TURNS = 60, WORKER_MAX_TOOL_CALLS = 200;
+export const WORKER_MAX_TURNS = 60, WORKER_MAX_TOOL_CALLS = 200;
 /**
  * The one reminder a worker gets when a turn ends without any report: upstream's main Session asked an idle worker for its
  * status; here the host asks once, and records the worker's last words as waiting if it still does not report.
@@ -67,6 +70,31 @@ const CONCLUDE_PROMPT = [
 
 const exec = promisify(execFile);
 
+/** What a turn left: whether it failed, and the worker's words at its end, or why it failed. */
+export interface TurnResult { failed: boolean; words: string }
+
+/**
+ * How a worker runs its turns: Swarm's coding loop on the ticket's Work Kernel session, or an agent harness. The loop around
+ * them reads the ticket, delivers Inputs, reminds, retries and reports in the same way for both.
+ */
+export interface WorkerTurns {
+  /** Whether the worker's session is new here, so its first message is the whole assignment. */
+  readonly fresh: boolean;
+  /**
+   * Runs one turn. Throws for a failure that may pass, which the loop retries after a while, and `SessionLost` when a
+   * harness no longer has the session, which the loop starts again with the whole assignment.
+   */
+  run(prompt: string): Promise<TurnResult>;
+  /** Gives the running turn a message at its next step; rejects when no turn takes it. Without it, messages wait for the next turn. */
+  send?(text: string, inputId: string): Promise<void>;
+  /** Waits for background processes a turn left running, and returns what ended or was stopped, for the next turn. */
+  settle(stopped: () => Promise<boolean>): Promise<string[]>;
+  /** The reminder after a turn that ended without a report. */
+  readonly unreported: string;
+  stop(): void;
+  dispose(): void;
+}
+
 export interface WorkerOptions {
   ticketId: string;
   /** How the worker reads and tells its ticket: the owner's store, or the owner node over the mesh. */
@@ -89,15 +117,14 @@ function handedOff(ticket: Ticket): boolean {
   return ((report?.state === "ready" || !!ticket.attention) && !since) || waitsForPerson(ticket);
 }
 
-export async function runWorker(options: WorkerOptions): Promise<number> {
-  const { ticketId, link } = options;
-  const current = (): Promise<WorkView | undefined> => link.view();
-  const start = (await current())?.ticket;
-  if (!start) { link.close(); return 0; }
-  const { directory, prompt: appendSystemPrompt, blockedCommands, model } = await link.start();
+/**
+ * Swarm's coding loop on the ticket's Work Kernel session, with the ticket tools served by `swarm superagent mcp`. Without
+ * its tools a worker can neither report nor reply, so it fails at once with why rather than run blind.
+ */
+async function swarmTurns(ticketId: string, link: WorkLink, begun: WorkStart, command: readonly string[], start: Ticket): Promise<WorkerTurns | { failure: string }> {
+  const { directory, prompt: appendSystemPrompt, blockedCommands } = begun;
   const sessionId = workerSessionId(ticketId);
-
-  const [node, ...entry] = options.entry;
+  const [node, ...entry] = command;
   const { SwarmRuntime } = await import("../runtime/runtime.js");
   const runtime = new SwarmRuntime({
     workspace: directory,
@@ -112,20 +139,17 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     }
   });
   for (const name of blockedCommands) runtime.settings.permissions.deny.push(`Bash(${name})`, `Bash(${name} *)`);
-  // Without its tools a worker can neither report nor reply, so it fails at once with why rather than run blind.
   const tools = await runtime.listCapabilities({ modelVisible: true });
   if (!tools.some((tool) => tool.name === "mcp__ticket__report" && tool.status === "available")) {
     const servers = runtime.listMcpServers();
     const ticketServer = servers.find((server) => server.id === "ticket");
     const why = ticketServer?.diagnostics?.map((item) => item.message).join("; ") || ticketServer?.status || "the ticket tools server did not start";
     runtime.dispose();
-    await link.report({ state: "failed", summary: `The worker's ticket tools are unavailable: ${why}` });
-    link.close();
-    return 0;
+    return { failure: `The worker's ticket tools are unavailable: ${why}` };
   }
   // A Session this process creates has none of the ticket's history, such as on a node the ticket moved to: its first
   // message is the whole assignment, also for a later Assignment or one that took Inputs elsewhere.
-  let fresh = !runtime.sessionStore.get(sessionId);
+  const fresh = !runtime.sessionStore.get(sessionId);
   if (fresh) {
     const lease = runtime.workspaceLeaseStore.createForLocalSession({ session_id: sessionId, workspace: directory });
     const now = new Date().toISOString();
@@ -139,11 +163,45 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     };
     runtime.sessionStore.createIfMissing(session);
   }
+  return {
+    fresh,
+    run: async (prompt) => {
+      const result = await runtime.executeWorkSession({ session_id: sessionId, prompt, workspace_path: directory, appendSystemPrompt,
+        maxTurns: WORKER_MAX_TURNS, maxToolCalls: WORKER_MAX_TOOL_CALLS });
+      return { failed: result?.status === "failed", words: lastWords(result) };
+    },
+    send: async (text, inputId) => { await runtime.sendUserMessage(text, { sessionId, source: "superagent", sourceId: inputId }); },
+    settle: (stopped) => settleBackground(sessionId, stopped),
+    unreported: UNREPORTED,
+    stop: () => runtime.requestStopActiveWork("The ticket's host stopped this worker."),
+    dispose: () => runtime.dispose()
+  };
+}
+
+export async function runWorker(options: WorkerOptions): Promise<number> {
+  const { ticketId, link } = options;
+  const current = (): Promise<WorkView | undefined> => link.view();
+  const start = (await current())?.ticket;
+  if (!start) { link.close(); return 0; }
+  const begun = await link.start();
+  const { directory, model } = begun;
+  const harness = start.execution?.harness;
+  const opened = harness
+    ? await (await import("./harness-turns.js")).harnessTurns({ ticketId, link, start: begun, entry: options.entry, harness,
+      limits: { steps: WORKER_MAX_TURNS, toolCalls: WORKER_MAX_TOOL_CALLS } })
+    : await swarmTurns(ticketId, link, begun, options.entry, start);
+  if ("failure" in opened) {
+    await link.report({ state: "failed", summary: opened.failure });
+    link.close();
+    return 0;
+  }
+  const turns = opened;
+  let fresh = turns.fresh;
 
   let stopping = false;
   const stop = () => {
     stopping = true;
-    runtime.requestStopActiveWork("The ticket's host stopped this worker.");
+    turns.stop();
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
@@ -205,6 +263,8 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
   let retryNote: string | undefined;
   let reminded = false;
   let unreported = false;
+  /** A turn's prompt whose harness session was gone, which goes on in a new session after the whole assignment. */
+  let lost: string | undefined;
   const words: string[] = [];
   try {
     for (;;) {
@@ -212,9 +272,10 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       if (!view || stopping) break;
       const first = assignmentMessage(view);
       const inputs = waiting(view, new Set());
-      if (!first && !inputs.length && !retryNote) break;
-      const prompt = [first, ...inputs.map((input) => input.text), retryNote].filter(Boolean).join("\n\n");
+      if (!first && !inputs.length && !retryNote && !lost) break;
+      const prompt = [first, lost, ...inputs.map((input) => input.text), retryNote].filter(Boolean).join("\n\n");
       retryNote = undefined;
+      lost = undefined;
       fresh = false;
       const delivered = new Set(inputs.map((input) => input.id));
       // A message is read once the worker's session takes it into its history, as upstream reads it, which this turn's prompt
@@ -224,14 +285,15 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
       const before = await current();
       if (!before) break;
       const reportedBefore = latestReport(before.ticket)?.at;
-      let result: ExecutionResult | undefined;
+      let result: TurnResult;
       let polling = false;
-      const live = setInterval(() => {
+      const send = turns.send;
+      const live = send && setInterval(() => {
         if (polling) return;
         polling = true;
         void current().then(async (now) => {
           for (const input of now ? waiting(now, delivered) : []) {
-            await runtime.sendUserMessage(input.text, { sessionId, source: "superagent", sourceId: input.id }).then(async () => {
+            await send(input.text, input.id).then(async () => {
               delivered.add(input.id);
               await link.delivered([input.id]);
             }, () => { /* Between steps there is no live target; the next turn takes it. */ });
@@ -239,10 +301,14 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
         }).catch(() => { /* The ticket's store did not answer; the next poll reads it again. */ }).finally(() => { polling = false; });
       }, DELIVERY_POLL_MS);
       try {
-        result = await runtime.executeWorkSession({ session_id: sessionId, prompt, workspace_path: directory, appendSystemPrompt,
-          maxTurns: WORKER_MAX_TURNS, maxToolCalls: WORKER_MAX_TOOL_CALLS });
+        result = await turns.run(prompt);
         tries = 0;
       } catch (error) {
+        if (error instanceof SessionLost && !stopping) {
+          fresh = true;
+          lost = prompt;
+          continue;
+        }
         if (transient(error) && tries < TRANSIENT_TRIES && !stopping) {
           tries += 1;
           await sleep(TRANSIENT_BACKOFF_MS * 2 ** (tries - 1));
@@ -251,30 +317,30 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
         }
         throw error;
       } finally {
-        clearInterval(live);
+        if (live) clearInterval(live);
       }
       if (stopping) break;
       const after = await current();
       if (!after) break;
       if (handedOff(after.ticket)) { await link.turnEnded(); break; }
       // A failed turn gets another with its reason, as a passing failure does; the reason would otherwise stand as its report.
-      if (result?.status === "failed") {
-        if (failedTurns >= TRANSIENT_TRIES) throw new Error(`its turns kept failing: ${lastWords(result)}`);
+      if (result.failed) {
+        if (failedTurns >= TRANSIENT_TRIES) throw new Error(`its turns kept failing: ${result.words}`);
         failedTurns += 1;
-        retryNote = FAILED_TURN(lastWords(result));
+        retryNote = FAILED_TURN(result.words);
         continue;
       }
       failedTurns = 0;
       const silent = latestReport(after.ticket)?.at === reportedBefore;
-      if (silent) words.push(lastWords(result));
+      if (silent) words.push(result.words);
       if (!reminded && silent) {
         reminded = true;
-        retryNote = UNREPORTED;
+        retryNote = turns.unreported;
         continue;
       }
       unreported = reminded && silent;
       // Background processes the turn left running hold the ticket's slot until they end, for at most the limit.
-      const ended = await settleBackground(sessionId, async () => stopping || !await current().then((now) => !!now, () => true));
+      const ended = await turns.settle(async () => stopping || !await current().then((now) => !!now, () => true));
       if (stopping || !await current()) break;
       if (ended.length) retryNote = `Your background processes ended: ${ended.join(", ")}. Read their output with process.tail.`;
       await link.turnEnded();
@@ -289,7 +355,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
           return false;
         });
         if (!concluded) {
-          const said = lastWords(result);
+          const said = result.words;
           const before = latestReport(next.ticket)?.summary ?? "";
           await link.report({ state: "waiting", summary: said || before || "The worker ended its turn without a status report." });
         }
@@ -303,7 +369,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     const filed = !!ticket && await link.report({ state: "failed", summary }).then(() => true, () => false);
     if (!filed) exitCode = stopping ? 0 : 1;
   } finally {
-    try { runtime.dispose(); } catch { /* The process exits next; a failed cleanup changes nothing the ticket records. */ }
+    try { turns.dispose(); } catch { /* The process exits next; a failed cleanup changes nothing the ticket records. */ }
     link.close();
   }
   return exitCode;

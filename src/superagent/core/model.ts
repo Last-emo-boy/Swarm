@@ -301,7 +301,7 @@ export interface Ticket {
   updatedAt: string
   /** The Triggers it was accepted from: the one that started it, and the batch its Eval held. */
   origin: { triggerId: string; triggerIds: string[] }
-  /** What its Executor chose: its short name, directory and assignment text. */
+  /** What its Executor chose: its short name, directory, assignment text and the agent harness its worker runs on. */
   execution?: Execution
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
   delivery?: { error: string; at: string }
@@ -312,7 +312,8 @@ export interface Ticket {
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-export interface Execution { name: string; directory: string; assignment: string }
+/** A ticket's execution; `harness` names the harness profile its worker runs on, and Swarm's own coding loop runs it without. */
+export interface Execution { name: string; directory: string; assignment: string; harness?: string }
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

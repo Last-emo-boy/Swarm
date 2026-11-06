@@ -47,10 +47,13 @@ export function placementOf(client: Records, ticket: Ticket): Placement | undefi
 
 export const leaseOf = (client: Records, ticketId: string): Lease | undefined => client.store.get(KV.mesh.lease(ticketId));
 
-/** Files a request whose worker runs on a paired node; the request and its placement are recorded together. */
-export function requestOn(client: SuperagentClient, text: string, node: NodeRef): { triggerId: string; thread: string } {
+/**
+ * Files a request whose worker runs on a paired node, on the harness profile `harness` when one is given; the request and
+ * its placement are recorded together.
+ */
+export function requestOn(client: SuperagentClient, text: string, node: NodeRef, harness?: string): { triggerId: string; thread: string } {
   return client.store.atomic(() => {
-    const filed = client.request(text);
+    const filed = client.request(text, undefined, harness ? { harness } : {});
     updatePlacement(client, filed.triggerId, { on: node });
     return filed;
   });

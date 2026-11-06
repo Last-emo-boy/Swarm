@@ -41,13 +41,21 @@ export class TuiMesh {
     const { meshPeers, readMesh, relayOf } = await import("../mesh/state.js");
     if (!meshPeers(this.options.meshHome).length) return { brief: "This device is in no swarm yet. /mesh invite shows a code other devices join with; /mesh join <code> joins one.", detail: USAGE };
     const { peerHealth } = await import("../mesh/client.js");
+    const { thisSwarm, versionMismatch } = await import("../mesh/card.js");
     const health = await peerHealth(this.options.meshHome, 5000);
     const { node } = readMesh(this.options.meshHome);
     const reached = health.filter((item) => item.reachable).length;
+    const own = thisSwarm();
+    const differs = new Map(health.flatMap((item) => {
+      const mismatch = item.card && versionMismatch(item.card, own);
+      return mismatch ? [[item.peer.id, mismatch] as const] : [];
+    }));
+    const odd = health.filter((item) => differs.has(item.peer.id)).map((item) => item.peer.name);
     return {
-      brief: `${node.name}'s swarm: ${health.length} other ${health.length === 1 ? "device" : "devices"}, ${reached} reachable now.`,
-      detail: [...health.map((item) => `${item.peer.name.padEnd(16)} ${item.reachable ? `${item.path}, ${item.ms} ms` : `unreachable: ${item.error}`}`),
-        "", `Relay: ${relayOf(node) ?? "off"}`].join("\n")
+      brief: `${node.name}'s swarm: ${health.length} other ${health.length === 1 ? "device" : "devices"}, ${reached} reachable now.${odd.length ? ` ${odd.join(", ")} ${odd.length === 1 ? "runs" : "run"} a different Swarm: swarm update on one side.` : ""}`,
+      detail: [...health.flatMap((item) => [`${item.peer.name.padEnd(16)} ${item.reachable ? `${item.path}, ${item.ms} ms` : `unreachable: ${item.error}`}`,
+        ...(differs.has(item.peer.id) ? [`${"".padEnd(16)} ! ${differs.get(item.peer.id)}`] : [])]),
+        "", `This device: swarm ${own.version}${own.commit ? ` ${own.commit}` : ""}, mesh protocol ${own.protocol}`, `Relay: ${relayOf(node) ?? "off"}`].join("\n")
     };
   }
 

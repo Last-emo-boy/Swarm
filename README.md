@@ -90,6 +90,11 @@ swarm onboard
 swarm
 ```
 
+`swarm update` later pulls the branch the clone tracks (fast-forward only), runs `npm install` and `npm run build`,
+and restarts the node service when one runs; `swarm update --check` only says whether an update waits. It refuses a
+clone with uncommitted changes, one on a branch that tracks no remote, and one with commits of its own, and says how
+any other install (a copied package, a container image) is updated instead.
+
 Manual configuration is also available:
 
 ```bash
@@ -153,12 +158,13 @@ Commands:
   symphony   Run local work-source automation commands
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
   mesh       Pair this device with other Swarm devices and see them
-  node       Run this device's node: the ticket host and the mesh server peers call
+  node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
   models     Show or update selected models
   version    Print the installed Swarm version
+  update     Pull, install and build a clone install, and restart its node service; --check only looks
 
 Run modes:
   auto         Default. Structured route decision; usually starts with coding_loop.
@@ -776,9 +782,9 @@ person who is allowed to ask for work mentions the agent on GitHub, messages its
 Feishu bot, or types `/ticket <request>` in the TUI. A deterministic gate checks
 who sent it before any model sees it; a model routes the request to a new
 ticket, an existing one, a stop or nothing. Each ticket gets a worker process
-running Swarm's coding loop in its own directory (usually a git worktree made
-by a prepare command), and the worker answers in the conversation where it was
-asked. Later messages on that conversation go straight to the ticket's worker.
+running Swarm's coding loop, or another agent harness such as Claude Code, in
+its own directory (usually a git worktree made by a prepare command), and the
+worker answers in the conversation where it was asked. Later messages on that conversation go straight to the ticket's worker.
 
 ```bash
 swarm superagent config init      # write ~/.swarm/superagent/settings.json
@@ -804,6 +810,92 @@ not a security boundary, and messages on a ticket's threads reach its worker as
 context, so use a dedicated OS account for repositories where strangers comment.
 Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
 
+### Harness workers
+
+A ticket's worker can run on another agent harness installed on the machine
+instead of Swarm's own coding loop: Claude Code (`claude`) or Codex (`codex`).
+`executor.harness` in the superagent settings names the harness new tickets run
+on (`null`, the default, keeps Swarm's loop); `swarm superagent request --harness
+claude "..."` or `/ticket --harness codex <request>` chooses one for a single
+request. The choice is stored with the ticket's execution, so its follow-ups run
+on the same harness, and `swarm superagent tickets`/`ticket` and the TUI show it
+as `via claude`.
+
+Each turn is one headless run in the ticket's directory: `claude -p
+--output-format stream-json` or `codex exec --json`, with Swarm's ticket tools
+(`swarm superagent mcp`, plus `--remote` for a worker placed on a paired node)
+as the MCP server `ticket` and Swarm's worker instructions added to the
+harness's own (`--append-system-prompt`, Codex's `developer_instructions`).
+Later turns resume the harness's session (`--resume <id>`, `codex exec resume
+<id>`) with the messages that waited for the ticket; the session ids are kept in
+`~/.swarm/state/harness-sessions/`. Reports, the reminder after a turn without a
+report, retries of failed turns, the budget per turn (60 model messages and 200
+tool calls, counted from the harness's events) and stopping work as they do for
+Swarm's loop, except that a message that arrives during a harness turn waits for
+the next turn. Each turn's tokens go to Swarm's usage records with the harness
+and its model (Codex's from its session file); Claude Code's cost is its own
+list-price estimate.
+
+Before its first turn a worker checks that the harness is installed and signed
+in (`claude auth status`, `codex login status`); if not, the ticket fails with
+what to do on that machine, and Swarm never signs in for you. A harness runs as
+it is set up for your OS user, with its own login, configuration, instructions
+and hooks. Two things Swarm adds to every turn: Claude Code's `attribution`
+setting with every part empty (`--settings`, which overrides your own settings),
+so its commits and pull requests carry no Co-Authored-By trailer or "Generated
+with" line; and instructions to stage only the files the ticket changed, by
+path, so files a hook leaves in the ticket's directory stay out of its commits.
+Codex adds its own trailer only when your ChatGPT workspace turns attribution
+on, which Swarm cannot switch off; the instructions ask it not to. Profiles under `executor.harnesses` change the built-in `claude`
+and `codex` (command, model, arguments, environment) or add others of either
+kind; credentials never go in the settings: `keys` names the environment
+variable each one is read from.
+
+```json
+"executor": {
+  "harness": "claude",
+  "harnesses": {
+    "claude": { "model": "sonnet", "env": { "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1" } },
+    "codex": { "command": "/Users/me/.local/bin/codex", "args": ["--profile", "work"] },
+    "relay": { "kind": "claude", "env": { "ANTHROPIC_BASE_URL": "https://relay.example/anthropic" },
+      "keys": { "ANTHROPIC_AUTH_TOKEN": "RELAY_API_KEY" } }
+  }
+}
+```
+
+An Anthropic-compatible relay that rejects Claude Code's experimental beta
+headers (an HTTP 400 naming an `anthropic-beta` value) needs
+`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` in the profile's `env`, as above.
+Variables that an enclosing Claude Code session gives its own tools
+(`CLAUDECODE`, the desktop app's host-managed provider) are dropped, so a host
+started from inside Claude Code still finds the account the harness signs in
+with.
+
+The ticket's permission mode maps to the harness's own flags:
+
+| `executor.permissionMode` | Claude Code | Codex |
+| --- | --- | --- |
+| `full-auto` | `--permission-mode auto` (its classifier blocks risky actions); prompts are denied | `-s danger-full-access` with `approval_policy="never"`: no sandbox (see below) |
+| `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+
+Codex runs without its sandbox in both modes. Its `workspace-write` sandbox keeps
+a workspace's own git metadata read-only, so a worker there cannot commit unless
+someone approves each commit; in live trials the ticket ended blocked with
+approvals off, and also with `--approve-for-me` when the provider did not serve
+Codex's reviewer model or the model did not ask it. Swarm's own worker is not
+sandboxed either: it runs as your OS user.
+
+Swarm cannot enforce its own rules inside another harness. Its permission
+rules in `~/.swarm/settings.json`, its risk levels and the approval it asks for
+destructive commands do not apply there; the harness decides with its own mode,
+classifier or sandbox, and Swarm does not see or audit each tool call. Blocked
+commands reach the harness only as Swarm's `PATH` shims (and Claude Code deny
+rules); Codex has no flag to deny a command, and either harness can run a
+program by its full path. Claude Code gets only the ticket tools
+(`--strict-mcp-config`); Codex also loads the MCP servers, plugins and
+instructions of its own configuration. The budget stops a harness after the
+fact, from the events it prints, and the usage is what the harness reports.
+
 ## Mesh
 
 Swarm devices link into a swarm: a laptop, an always-on server and a GPU box join with a short pairing code and then
@@ -814,6 +906,7 @@ joins is paired with every member, not just the one that showed the code.
 swarm mesh invite                          # on any member: prints a code such as K7QM-4ZX2 and waits
 swarm mesh join K7QM-4ZX2                  # on each device to add (or /mesh join K7QM-4ZX2 in the TUI)
 swarm node run                             # on devices that others should reach: the ticket host and mesh server
+swarm node install                         # the same as a service: up now, at login and after a crash
 swarm mesh status                          # this node and its peers: how each is reached, abilities, load
 swarm mesh remove gpu                      # take a device out of the swarm: every member forgets it
 ```
@@ -828,9 +921,11 @@ tells a node which peer is calling. Devices connect directly when one reaches th
 forwarded port set with `swarm mesh advertise`) and through the relay otherwise; the first link to finish its
 handshake wins. The relay (`wss://swarm-relay.w33d.xyz` unless `swarm mesh relay <url>` names another, or
 `swarm mesh relay off` turns it off) only joins streams: it sees which device names connect, when and how much,
-never what they say. `swarm mesh relay serve` runs one; a code made on a device using another relay names it
-(`K7QM-4ZX2@relay.example`), so joining needs no setting. Without a relay, `swarm mesh invite --direct` prints a long
-one-time code with this node's addresses.
+never what they say. A device listens there under a name only its key can claim, and every dial to a device is signed
+with the dialing device's key, so the relay limits each device as well as each address; a device that is pairing
+dials the code's mailbox unsigned, under a tighter limit. `swarm mesh relay serve` runs one, and its `/v1/health`
+answers counts; a code made on a device using another relay names it (`K7QM-4ZX2@relay.example`), so joining needs no
+setting. Without a relay, `swarm mesh invite --direct` prints a long one-time code with this node's addresses.
 
 A device joining through a member is introduced to the others by vouchers: the member seals the new pair's key for
 each other member with the key it shares with that member, and the new device's first connection to a member shows
@@ -872,6 +967,31 @@ waiting work to paired nodes that pull by default, because pairing already lets 
 is placed there and a puller only takes work that would otherwise wait; `swarm mesh offer off` keeps it.
 `swarm mesh status` shows whether each node pulls and the work pulled either way, and ticket rows say
 "pulled by <node>".
+
+### Keeping Nodes Up And Current
+
+`swarm node install` runs this device's node as a service the system keeps up: a launchd LaunchAgent
+(`~/Library/LaunchAgents/com.agent-swarm.node.plist`) on macOS, a systemd user unit
+(`~/.config/systemd/user/swarm-node.service`) on Linux. It starts at once and at each login, restarts after a crash,
+and runs the Node binary and `dist/index.js` of the install that ran it, as `node run` (`--no-host` passes through).
+Its output goes to `~/.swarm/logs/node.log`, which moves to `node.log.1` once it passes 10 MB. `swarm node logs -f`
+follows it, `swarm node status` says whether the service is installed and loaded, its pid and how it last ended, and
+`swarm node uninstall` removes it, keeping the log and the env file. Installing again restarts the node. Install
+refuses while another superagent host runs on the device (a `swarm node run` in a terminal, or a TUI that started
+one), because only one host holds the device's lock: stop that one first.
+
+A service does not see your shell's environment, only `PATH` and Swarm's own `SWARM_HOME` and `SWARM_MESH_HOME`.
+Keys the node and its workers need from the environment (provider keys, `GH_TOKEN`) go in `~/.swarm/node.env`, one
+`KEY=value` per line: install creates it with instructions and mode 600, and the node loads it at each start with
+Node's `--env-file-if-exists`. Nothing secret is written into the plist or unit, and keys saved with
+`swarm auth set-key` already live in Swarm's settings. On a headless Linux box, `loginctl enable-linger` keeps the
+user's services running without a login session and starts them at boot; install says when lingering is off. In a
+container, run `swarm node run` under the container's restart policy instead.
+
+Each node's card names its Swarm version, its commit when it runs from a git checkout, and the mesh protocol it
+speaks: 1 now, bumped whenever the link or route formats change (cards from before the field speak 1).
+`swarm mesh status` and `/mesh` in the TUI mark a peer that speaks another protocol, which may not work with this
+node, or runs another Swarm version or commit, and say to update one of them with `swarm update`.
 
 ## Architecture
 
