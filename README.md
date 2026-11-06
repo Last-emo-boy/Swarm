@@ -90,6 +90,11 @@ swarm onboard
 swarm
 ```
 
+`swarm update` later pulls the branch the clone tracks (fast-forward only), runs `npm install` and `npm run build`,
+and restarts the node service when one runs; `swarm update --check` only says whether an update waits. It refuses a
+clone with uncommitted changes, one on a branch that tracks no remote, and one with commits of its own, and says how
+any other install (a copied package, a container image) is updated instead.
+
 Manual configuration is also available:
 
 ```bash
@@ -153,12 +158,13 @@ Commands:
   symphony   Run local work-source automation commands
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
   mesh       Pair this device with other Swarm devices and see them
-  node       Run this device's node: the ticket host and the mesh server peers call
+  node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
   models     Show or update selected models
   version    Print the installed Swarm version
+  update     Pull, install and build a clone install, and restart its node service; --check only looks
 
 Run modes:
   auto         Default. Structured route decision; usually starts with coding_loop.
@@ -814,6 +820,7 @@ joins is paired with every member, not just the one that showed the code.
 swarm mesh invite                          # on any member: prints a code such as K7QM-4ZX2 and waits
 swarm mesh join K7QM-4ZX2                  # on each device to add (or /mesh join K7QM-4ZX2 in the TUI)
 swarm node run                             # on devices that others should reach: the ticket host and mesh server
+swarm node install                         # the same as a service: up now, at login and after a crash
 swarm mesh status                          # this node and its peers: how each is reached, abilities, load
 swarm mesh remove gpu                      # take a device out of the swarm: every member forgets it
 ```
@@ -874,6 +881,31 @@ waiting work to paired nodes that pull by default, because pairing already lets 
 is placed there and a puller only takes work that would otherwise wait; `swarm mesh offer off` keeps it.
 `swarm mesh status` shows whether each node pulls and the work pulled either way, and ticket rows say
 "pulled by <node>".
+
+### Keeping Nodes Up And Current
+
+`swarm node install` runs this device's node as a service the system keeps up: a launchd LaunchAgent
+(`~/Library/LaunchAgents/com.agent-swarm.node.plist`) on macOS, a systemd user unit
+(`~/.config/systemd/user/swarm-node.service`) on Linux. It starts at once and at each login, restarts after a crash,
+and runs the Node binary and `dist/index.js` of the install that ran it, as `node run` (`--no-host` passes through).
+Its output goes to `~/.swarm/logs/node.log`, which moves to `node.log.1` once it passes 10 MB. `swarm node logs -f`
+follows it, `swarm node status` says whether the service is installed and loaded, its pid and how it last ended, and
+`swarm node uninstall` removes it, keeping the log and the env file. Installing again restarts the node. Install
+refuses while another superagent host runs on the device (a `swarm node run` in a terminal, or a TUI that started
+one), because only one host holds the device's lock: stop that one first.
+
+A service does not see your shell's environment, only `PATH` and Swarm's own `SWARM_HOME` and `SWARM_MESH_HOME`.
+Keys the node and its workers need from the environment (provider keys, `GH_TOKEN`) go in `~/.swarm/node.env`, one
+`KEY=value` per line: install creates it with instructions and mode 600, and the node loads it at each start with
+Node's `--env-file-if-exists`. Nothing secret is written into the plist or unit, and keys saved with
+`swarm auth set-key` already live in Swarm's settings. On a headless Linux box, `loginctl enable-linger` keeps the
+user's services running without a login session and starts them at boot; install says when lingering is off. In a
+container, run `swarm node run` under the container's restart policy instead.
+
+Each node's card names its Swarm version, its commit when it runs from a git checkout, and the mesh protocol it
+speaks: 1 now, bumped whenever the link or route formats change (cards from before the field speak 1).
+`swarm mesh status` and `/mesh` in the TUI mark a peer that speaks another protocol, which may not work with this
+node, or runs another Swarm version or commit, and say to update one of them with `swarm update`.
 
 ## Architecture
 

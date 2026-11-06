@@ -113,6 +113,9 @@ if (!command) {
 } else if (command === "node") {
   const { runNodeCommand } = await import("./mesh/cli.js");
   await runNodeCommand(args);
+} else if (command === "update") {
+  const { runUpdateCommand } = await import("./update.js");
+  await runUpdateCommand(args);
 } else if (command === "tui-artifact") {
   const { runCcGradeVisualArtifactCli } = await import("./tui/renderer/cc-grade-visual-artifact.js");
   runCcGradeVisualArtifactCli(args);
@@ -3329,6 +3332,7 @@ function printHelp(): void {
 Usage:
   ${binary} [--debug] [--debug-trace]
   ${binary} --version
+  ${binary} update [--check]
   ${binary} --yolo
   ${binary} yolo
   ${binary} chat [--debug]
@@ -3427,6 +3431,7 @@ Usage:
 Commands:
   chat       Open the interactive swarm TUI (also the default)
   version    Print the Swarm CLI version
+  update     Update a clone install: pull, npm install, build, restart the node service; --check only looks
   run        Run one objective non-interactively. Defaults to the local coding loop in auto mode.
   watch      Follow the live Gateway event stream for the current workspace
   live       Show the active Gateway-controlled live target and its current session summary
@@ -3450,7 +3455,7 @@ Commands:
   lsp        Inspect local Language Server Protocol providers and logs
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
   mesh       Join devices into a swarm with a pairing code, and see them
-  node       Run this device's node: the ticket host and the mesh server peers call
+  node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
   tui-artifact
              Generate cc-grade TUI plain/ANSI/profile-diff visual artifacts
   tui-smoke  Run local-only TUI smoke and capture ANSI/log/checklist evidence
