@@ -4,10 +4,8 @@
  * turns resume its session, whose id is kept under Swarm's state on the machine that runs the worker. Each turn's token
  * usage goes to Swarm's usage records with the harness and its model.
  */
-import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, isAbsolute } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join } from "node:path";
 import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { UsageStore } from "../storage/usage-store.js";
@@ -16,8 +14,6 @@ import { transient, workerSessionId } from "./messages.js";
 import { readSettings, settingsPath } from "./settings.js";
 import type { WorkLink, WorkStart } from "./work-link.js";
 import type { WorkerTurns } from "./worker.js";
-
-const exec = promisify(execFile);
 
 const UNREPORTED = "Your turn ended without calling the mcp__ticket__report tool, so nobody knows what happened: your final message is not a report. Call mcp__ticket__report now: state ready with message_for_person if the work is done and verified, progress if you wait for something such as CI or a review (say what), blocked or failed with what stops you, or dropped if there is nothing to do.";
 
@@ -49,14 +45,6 @@ function writeSaved(ticketId: string, saved: Saved): void {
   renameSync(temporary, path);
 }
 
-/** The git directory the work in `directory` writes when it lies outside it, as a worktree's does. */
-async function gitDirectories(directory: string, env: NodeJS.ProcessEnv): Promise<string[]> {
-  const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: directory, env, timeout: 15_000 })
-    .then((result) => result.stdout.trim(), () => "");
-  const path = relative(directory, common);
-  return common && (path.startsWith("..") || isAbsolute(path)) ? [common] : [];
-}
-
 /** Writes a turn's usage as Swarm's provider calls write theirs: one count row and its token rows, with the harness and model. */
 function recordUsage(directory: string, sessionId: string, ticketId: string, harness: Harness, outcome: TurnOutcome): void {
   const usage = outcome.usage;
@@ -71,7 +59,8 @@ function recordUsage(directory: string, sessionId: string, ticketId: string, har
     cacheCreationInputTokens: usage.cacheCreationInputTokens, totalInputWithCacheTokens: total,
     uncachedInputTokens: Math.max(0, total - usage.cachedInputTokens),
     ...(usage.reasoningOutputTokens ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
-    ...(usage.costUsd !== undefined ? { reportedCostUsd: usage.costUsd } : {})
+    ...(usage.costUsd !== undefined ? { reportedCostUsd: usage.costUsd } : {}),
+    ...(usage.partial ? { usagePartial: true } : {})
   };
   const database = new SwarmDatabase(loadSwarmSettings(directory).runtime.databasePath);
   try {
@@ -119,7 +108,7 @@ export async function harnessTurns(input: HarnessTurnsInput): Promise<WorkerTurn
   const request = {
     directory, instructions: `${start.prompt}\n\n${harnessSection(harness.kind.label)}`, tools,
     permission: process.env.SWARM_PERMISSION_MODE === "yolo" ? "yolo" as const : "full-auto" as const,
-    blockedCommands: start.blockedCommands, writable: await gitDirectories(directory, harness.env),
+    blockedCommands: start.blockedCommands,
     variables: Object.keys(harness.env).filter((name) => harness.env[name] !== undefined)
   };
   let session = readSaved(ticketId, harness.id, directory);

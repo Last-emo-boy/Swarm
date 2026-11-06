@@ -38,8 +38,6 @@ export interface TurnRequest {
   permission: HarnessPermission;
   /** Commands the worker may not run. */
   blockedCommands: readonly string[];
-  /** Directories outside the ticket's that its work writes, such as the git directory of a worktree. */
-  writable: readonly string[];
   /** Names of the variables the harness runs with, which the ticket tools' server inherits as it would under Swarm. */
   variables: readonly string[];
   model?: string;
@@ -56,6 +54,8 @@ export interface HarnessUsage {
   cacheCreationInputTokens: number;
   reasoningOutputTokens?: number;
   costUsd?: number;
+  /** Summed from the turn's messages because the turn ended before the harness reported its total, which counts more output. */
+  partial?: boolean;
 }
 
 /** What a turn's events said so far. */
@@ -76,6 +76,8 @@ export interface TurnEvents {
   toolsDown?: string;
   /** The last model message's id: a message comes in several events, and counts as one step. */
   message?: string;
+  /** Each model message's usage by id, as its latest event gave it, for a turn stopped before the harness reports its total. */
+  messages?: Record<string, HarnessUsage>;
 }
 
 type Event = Record<string, unknown>;
@@ -110,6 +112,13 @@ const tomlString = (text: string): string => JSON.stringify(text).replace(/\u007
 const toml = (value: string | number | boolean | readonly string[]): string =>
   typeof value === "string" ? tomlString(value) : Array.isArray(value) ? `[${value.map(tomlString).join(",")}]` : String(value);
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Claude's usage counts: input without the cached tokens, which are counted apart. */
+const claudeUsage = (usage: Event): HarnessUsage => ({
+  inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens),
+  cachedInputTokens: num(usage.cache_read_input_tokens), cacheCreationInputTokens: num(usage.cache_creation_input_tokens),
+  reasoningOutputTokens: num(obj(usage.output_tokens_details).thinking_tokens)
+});
 
 /**
  * Claude Code: `claude -p` with stream-json events, the ticket tools from `--mcp-config` and only those
@@ -152,6 +161,7 @@ const CLAUDE: HarnessKind = {
       const id = str(message.id);
       if (!id || id !== turn.message) turn.steps += 1;
       turn.message = id;
+      if (id && message.usage) (turn.messages ??= {})[id] = claudeUsage(obj(message.usage));
       for (const block of list(message.content).map(obj)) {
         if (block.type === "tool_use") turn.toolCalls += 1;
         if (block.type === "text" && str(block.text)?.trim()) turn.text = String(block.text);
@@ -160,13 +170,7 @@ const CLAUDE: HarnessKind = {
     }
     if (type !== "result") return;
     turn.session = str(event.session_id) ?? turn.session;
-    const usage = obj(event.usage);
-    turn.usage = {
-      inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens),
-      cachedInputTokens: num(usage.cache_read_input_tokens), cacheCreationInputTokens: num(usage.cache_creation_input_tokens),
-      reasoningOutputTokens: num(obj(usage.output_tokens_details).thinking_tokens),
-      ...(typeof event.total_cost_usd === "number" ? { costUsd: event.total_cost_usd } : {})
-    };
+    turn.usage = { ...claudeUsage(obj(event.usage)), ...(typeof event.total_cost_usd === "number" ? { costUsd: event.total_cost_usd } : {}) };
     // The model of the turn is the one that used the most output tokens, when it delegated to others.
     const models = Object.entries(obj(event.modelUsage)).sort(([, a], [, b]) => num(obj(b).outputTokens) - num(obj(a).outputTokens));
     if (models[0]) turn.model = models[0][0];
@@ -193,13 +197,24 @@ const CLAUDE: HarnessKind = {
   unset: ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED",
     "CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_HOST_AUTH_ENV_VAR", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
     "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SIMPLE"],
-  lost: (output) => output.includes("No conversation found with session ID")
+  lost: (output) => output.includes("No conversation found with session ID"),
+  settle(turn) {
+    const messages = Object.values(turn.messages ?? {});
+    if (turn.usage || !messages.length) return;
+    const sum = (field: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheCreationInputTokens" | "reasoningOutputTokens") =>
+      messages.reduce((total, usage) => total + (usage[field] ?? 0), 0);
+    turn.usage = { inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens"), cachedInputTokens: sum("cachedInputTokens"),
+      cacheCreationInputTokens: sum("cacheCreationInputTokens"), reasoningOutputTokens: sum("reasoningOutputTokens"), partial: true };
+  }
 };
 
 /**
  * Codex: `codex exec --json`, the ticket tools as `mcp_servers.ticket` approved to run without asking, and Swarm's
- * instructions as its developer instructions. full-auto is the workspace-write sandbox with network access and no
- * approvals, writable in the ticket's directory and its git directory; yolo bypasses the sandbox and approvals.
+ * instructions as its developer instructions. Its workspace-write sandbox keeps the workspace's own git metadata
+ * read-only, so a worker in it cannot commit unless someone approves each commit: live trials ended blocked with approvals
+ * off, and with `--approve-for-me` when the provider did not serve Codex's reviewer or the model did not ask it. A ticket's
+ * work is commits, so full-auto runs without that sandbox and with approvals off, as Swarm's own worker runs as the OS
+ * user; yolo bypasses approvals and the sandbox outright.
  */
 const CODEX: HarnessKind = {
   label: "Codex",
@@ -213,8 +228,7 @@ const CODEX: HarnessKind = {
       "exec", ...request.extra, "--json", "--skip-git-repo-check", "-C", request.directory,
       ...(request.model ? ["-m", request.model] : []),
       ...(request.permission === "yolo" ? ["--dangerously-bypass-approvals-and-sandbox"]
-        : ["-s", "workspace-write", ...config("approval_policy", "never"), ...config("sandbox_workspace_write.network_access", true)]),
-      ...request.writable.flatMap((directory) => ["--add-dir", directory]),
+        : ["-s", "danger-full-access", ...config("approval_policy", "never")]),
       ...config("developer_instructions", request.instructions),
       ...config(`${server}.command`, request.tools.command),
       ...config(`${server}.args`, request.tools.args),
@@ -288,8 +302,11 @@ export const HARNESS_KINDS = { claude: CLAUDE, codex: CODEX } satisfies Record<s
 export type HarnessKindId = keyof typeof HARNESS_KINDS;
 const KIND_IDS = Object.keys(HARNESS_KINDS) as [HarnessKindId, ...HarnessKindId[]];
 
-/** Variables that hold credentials: a profile reads them from the environment through `keys`, never from its settings. */
-const SECRET = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
+/**
+ * Variables that hold credentials, such as ANTHROPIC_AUTH_TOKEN or OPENAI_API_KEY: a profile reads them from the
+ * environment through `keys`, never from its settings. MAX_THINKING_TOKENS and the like are settings.
+ */
+const SECRET = /(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(_|$)/i;
 export const HarnessIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, "A harness id: lowercase letters, digits and dashes");
 const VariableSchema = z.string().regex(VARIABLE, "An environment variable name");
 /**

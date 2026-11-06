@@ -16,7 +16,7 @@ import { writeFakeHarnesses } from "./testing/fake-harness.js";
 const request: TurnRequest = {
   directory: "/work/fix-typo", instructions: "## Swarm superagent\nReport with mcp__ticket__report.",
   tools: { command: "/usr/bin/node", args: ["/swarm/index.js", "superagent", "mcp", "--ticket", "t1"], env: { SWARM_SUPERAGENT_HOME: "/state", SWARM_SUPERAGENT_DEPLOYMENT: "{\"repository\":\"a/b\"}" } },
-  permission: "full-auto", blockedCommands: ["npm-publish"], writable: ["/src/app/.git"], variables: ["HOME", "PATH", "SWARM_SUPERAGENT_HOME"], extra: []
+  permission: "full-auto", blockedCommands: ["npm-publish"], variables: ["HOME", "PATH", "SWARM_SUPERAGENT_HOME"], extra: []
 };
 const fresh = (): TurnEvents => ({ text: "", done: false, steps: 0, toolCalls: 0 });
 const read = (kind: keyof typeof HARNESS_KINDS, events: unknown[]): TurnEvents => {
@@ -46,19 +46,17 @@ test("Claude Code runs a turn headless with the ticket tools only, its permissio
   assert.ok(later.includes("--dangerously-skip-permissions") && !later.includes("--permission-mode"));
 });
 
-test("Codex runs `exec --json` with the ticket tools as an approved MCP server, the sandbox of the permission mode, and resumes by thread id", () => {
+test("Codex runs `exec --json` with the ticket tools as an approved MCP server, approvals off, and resumes by thread id", () => {
   const args = HARNESS_KINDS.codex.args({ ...request, extra: ["--profile", "cli"] });
   assert.deepEqual(args.slice(0, 3), ["exec", "--profile", "cli"]);
   assert.equal(args.at(-1), "-", "the prompt comes on standard input");
   assert.equal(after(args, "-C"), request.directory);
-  assert.equal(after(args, "-s"), "workspace-write");
-  assert.equal(after(args, "--add-dir"), "/src/app/.git");
+  assert.equal(after(args, "-s"), "danger-full-access", "its sandbox keeps git metadata read-only, and a ticket's work is commits");
   assert.ok(args.includes("--json") && args.includes("--skip-git-repo-check"));
   // Every -c value is TOML that is also JSON, as Swarm writes it.
   const config = new Map(args.flatMap((arg, index) => arg === "-c" ? [args[index + 1]!.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])
     .map(([key, value]) => [key, JSON.parse(value)] as const));
   assert.equal(config.get("approval_policy"), "never");
-  assert.equal(config.get("sandbox_workspace_write.network_access"), true);
   assert.equal(config.get("developer_instructions"), request.instructions);
   assert.equal(config.get("mcp_servers.ticket.command"), "/usr/bin/node");
   assert.deepEqual(config.get("mcp_servers.ticket.args"), request.tools.args);
@@ -99,6 +97,15 @@ test("Claude Code's stream-json events give the session, the final words, the mo
   assert.match(refused.error ?? "", /API Error: 400/);
   assert.equal(refused.toolsDown, "failed");
 
+  const stopped = read("claude", [
+    { type: "assistant", message: { id: "msg_1", content: [{ type: "thinking" }], usage: { input_tokens: 4358, cache_creation_input_tokens: 34327, cache_read_input_tokens: 0, output_tokens: 4 } } },
+    { type: "assistant", message: { id: "msg_1", content: [{ type: "tool_use" }], usage: { input_tokens: 4358, cache_creation_input_tokens: 34327, cache_read_input_tokens: 0, output_tokens: 4 } } },
+    { type: "assistant", message: { id: "msg_2", content: [{ type: "text", text: "done" }], usage: { input_tokens: 2, cache_creation_input_tokens: 4504, cache_read_input_tokens: 34327, output_tokens: 3 } } }
+  ]);
+  HARNESS_KINDS.claude.settle!(stopped, {});
+  assert.deepEqual(stopped.usage, { inputTokens: 4360, outputTokens: 7, cachedInputTokens: 34327, cacheCreationInputTokens: 38831, reasoningOutputTokens: 0, partial: true },
+    "a turn stopped before its result still counts each message once");
+
   const lost = read("claude", [{ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, errors: ["No conversation found with session ID: 0000"] }]);
   assert.ok(HARNESS_KINDS.claude.lost(lost.error ?? ""));
 });
@@ -130,6 +137,8 @@ test("Codex's JSON events give the thread, the final message and the usage; warn
 
 test("profiles change the built-in harnesses and add others, and read keys only from the environment", () => {
   assert.throws(() => HarnessProfileSchema.parse({ env: { ANTHROPIC_AUTH_TOKEN: "sk-secret" } }), /read from the environment/);
+  assert.throws(() => HarnessProfileSchema.parse({ env: { OPENAI_API_KEY: "sk-secret" } }), /read from the environment/);
+  assert.deepEqual(HarnessProfileSchema.parse({ env: { MAX_THINKING_TOKENS: "8000" } }).env, { MAX_THINKING_TOKENS: "8000" });
   assert.throws(() => SettingsSchema.parse({ executor: { harness: "glm" } }), /names no harness profile: glm/);
   assert.throws(() => SettingsSchema.parse({ executor: { harnesses: { glm: { model: "glm-4.6" } } } }), /needs a kind/);
   const settings = SettingsSchema.parse({ executor: { harness: "glm", harnesses: { glm: { kind: "claude", model: "glm-4.6",
@@ -163,7 +172,7 @@ test("a turn that goes past its budget is stopped and fails with why", async () 
   try {
     writeFakeHarnesses(bin, join(bin, "home"));
     const harness = resolveHarness("claude", {}, "settings.json", { ...process.env, PATH: `${bin}:${process.env.PATH}` });
-    const outcome = await runTurn(harness, { ...request, directory: bin, tools: { command: "/usr/bin/false", args: [], env: {} }, blockedCommands: [], writable: [] },
+    const outcome = await runTurn(harness, { ...request, directory: bin, tools: { command: "/usr/bin/false", args: [], env: {} }, blockedCommands: [] },
       "do the work", { steps: 0, toolCalls: 0 });
     assert.equal(outcome.status, "failed");
     assert.match(outcome.error ?? "", /ran out of budget after 1 model messages and 0 tool calls/);

@@ -839,8 +839,8 @@ list-price estimate.
 Before its first turn a worker checks that the harness is installed and signed
 in (`claude auth status`, `codex login status`); if not, the ticket fails with
 what to do on that machine, and Swarm never signs in for you. A harness runs as
-it is set up for your OS user, with its own login, configuration and
-instructions. Profiles under `executor.harnesses` change the built-in `claude`
+it is set up for your OS user, with its own login, configuration, instructions
+and hooks (Claude Code's commit attribution included). Profiles under `executor.harnesses` change the built-in `claude`
 and `codex` (command, model, arguments, environment) or add others of either
 kind; credentials never go in the settings: `keys` names the environment
 variable each one is read from.
@@ -857,12 +857,27 @@ variable each one is read from.
 }
 ```
 
+An Anthropic-compatible relay that rejects Claude Code's experimental beta
+headers (an HTTP 400 naming an `anthropic-beta` value) needs
+`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` in the profile's `env`, as above.
+Variables that an enclosing Claude Code session gives its own tools
+(`CLAUDECODE`, the desktop app's host-managed provider) are dropped, so a host
+started from inside Claude Code still finds the account the harness signs in
+with.
+
 The ticket's permission mode maps to the harness's own flags:
 
 | `executor.permissionMode` | Claude Code | Codex |
 | --- | --- | --- |
-| `full-auto` | `--permission-mode auto` (its classifier blocks risky actions); prompts are denied | `-s workspace-write` with network access and `approval_policy="never"`; the ticket's directory and its git directory are writable |
+| `full-auto` | `--permission-mode auto` (its classifier blocks risky actions); prompts are denied | `-s danger-full-access` with `approval_policy="never"`: no sandbox (see below) |
 | `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+
+Codex runs without its sandbox in both modes. Its `workspace-write` sandbox keeps
+a workspace's own git metadata read-only, so a worker there cannot commit unless
+someone approves each commit; in live trials the ticket ended blocked with
+approvals off, and also with `--approve-for-me` when the provider did not serve
+Codex's reviewer model or the model did not ask it. Swarm's own worker is not
+sandboxed either: it runs as your OS user.
 
 Swarm cannot enforce its own rules inside another harness. Its permission
 rules in `~/.swarm/settings.json`, its risk levels and the approval it asks for
