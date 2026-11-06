@@ -1,7 +1,7 @@
 /**
  * Delegated subagents on agent harnesses, with fake harnesses (superagent/testing/fake-harness.ts) and no model: a delegate
  * on a harness returns its outcome to the parent, a writer and a read-only reviewer run side by side in the background,
- * and a read-only spec does not start on a harness Swarm cannot keep read-only.
+ * a read-only spec does not start on a harness Swarm cannot keep read-only, and none starts on a harness past its budget.
  */
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
@@ -130,6 +130,25 @@ test("a read-only spec on a harness that cannot be kept read-only refuses to sta
     assert.equal(result.status, "failed");
     assert.match(result.content ?? "", /\(reviewer\) failed: Review Agent only reads, and cannot start on loose \(Claude Code\): the profile "loose" passes --dangerously-skip-permissions in its args, which sets Claude Code's permissions itself, so Swarm cannot keep it read-only\./);
     assert.equal(fakes.calls().filter((each) => each.cwd.endsWith("/refused")).length, 0, "the harness never ran");
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test("a delegate on a harness whose budget is reached does not start, and asks no approval", { timeout: 60_000 }, async () => {
+  const { workspace, runtime, approvals, invoke } = fixture("capped");
+  try {
+    mkdirSync(join(workspace, ".swarm"));
+    writeFileSync(join(workspace, ".swarm", "settings.json"), JSON.stringify({ runtime: { databasePath: join(workspace, "..", "capped.db") },
+      usage: { budgets: { providers: {}, harnesses: { opencode: { dailyTokens: 100 } } } } }));
+    runtime.usageStore.append({ kind: "llm_call", amount: 1, unit: "count", metadata: { providerId: "harness:opencode", event: "harness_turn",
+      harness: "opencode", model: "deepseek/deepseek-flash", purpose: "agent_worker", inputTokens: 20_000, outputTokens: 0, totalInputWithCacheTokens: 20_000 } });
+    const result = await invoke({ capability: "code.implement", task: "Write the harness note in harness.txt for the main Swarm.",
+      preferred_agent_spec_id: "coder", file_scope: ["harness.txt"], harness: "opencode" });
+    assert.equal(result.status, "failed");
+    assert.match(result.content ?? "", /\(coder\) failed: Code Agent cannot start on opencode: The daily budget for harness opencode is reached: 20\.0K tokens used of 100 tokens today\./);
+    assert.equal(approvals.length, 0);
+    assert.equal(fakes.calls().filter((each) => each.cwd.endsWith("/capped")).length, 0, "the harness never ran");
   } finally {
     runtime.dispose();
   }

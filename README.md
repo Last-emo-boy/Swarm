@@ -1101,7 +1101,7 @@ node, or runs another Swarm version or commit, and say to update one of them wit
 
 ## Usage, Prices And Budgets
 
-Each device records every model call it makes and every harness turn its ticket workers run in
+Each device records every model call it makes and every harness turn its ticket workers and subagents run in
 `~/.swarm/state/swarm.db`: Swarm's own sessions, ticket workers, and the ticket host's routing and assessment calls,
 each with its provider, model, harness and tokens. `swarm usage` reads them as a ledger that counts each call once:
 
@@ -1150,12 +1150,12 @@ own cost, as Claude Code does, keeps it; other turns are priced by `harness:<id>
 Budgets cap a provider's calls, or a harness's turns, per day (from local midnight) and per month (from the 1st):
 `daily` and `monthly` in money (`currency`, USD by default), counting priced calls, or `dailyTokens` and
 `monthlyTokens`, counting input and output tokens. Each device counts its own calls. Once a cap is reached, new model
-calls on that provider fail, and a harness's next turn does not start, with a message that names the cap, what went,
-and the setting that raises it; a ticket whose worker hits it gets a blocked report saying so, to retry once the cap
-is raised, and the TUI shows a notice above the prompt. Caps are read again before every call, so raising one
-applies at once. They are checked before a call, not during it: calls already running finish, and parallel calls can
-pass a cap by what they use. `swarm usage` and `/usage` show each cap's state and how many calls a money cap could
-not count for lack of a price.
+calls on that provider fail, and a harness's next turn, or a subagent delegated to it, does not start, with a message
+that names the cap, what went, and the setting that raises it; a ticket whose worker hits it gets a blocked report
+saying so, to retry once the cap is raised, and the TUI shows a notice above the prompt. Caps are read again before
+every call, so raising one applies at once. They are checked before a call, not during it: calls already running
+finish, and parallel calls can pass a cap by what they use. `swarm usage` and `/usage` show each cap's state and how
+many calls a money cap could not count for lack of a price.
 
 ## Architecture
 

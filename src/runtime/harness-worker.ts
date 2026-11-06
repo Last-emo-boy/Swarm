@@ -15,6 +15,7 @@ import type { RiskClass } from "../protocol/types.js";
 import { harnessUsageRows, HarnessSetupError, readOnlyProblem, resolveHarness, runTurn, type Harness, type HarnessPermission, type HarnessProfile } from "../superagent/harness.js";
 import { readSettings, settingsPath } from "../superagent/settings.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
+import { capMessage, reachedCap } from "../usage/budget.js";
 import type { AgentSpec } from "./agent-specs.js";
 import type { ExecutionResult } from "./orchestrator.js";
 
@@ -127,6 +128,9 @@ export function harnessWorker(options: HarnessWorkerOptions): { run(prompt: stri
         const problem = readOnlyProblem(harness);
         if (problem) return failed(`${options.spec.name} only reads, and cannot start on ${harness.id} (${label}): ${problem}`);
       }
+      // A harness subagent stops at its harness's budget (usage.budgets.harnesses), as a ticket's harness turns do.
+      const cap = reachedCap({ harness: harness.id }, options.workspace);
+      if (cap) return failed(`${options.spec.name} cannot start on ${harness.id}: ${capMessage(cap)}`);
       const yolo = options.permissionMode === "yolo";
       if (!readOnly && (options.permissionMode === "ask" || options.permissionMode === "auto-edit")) {
         const approved = await options.approve({
