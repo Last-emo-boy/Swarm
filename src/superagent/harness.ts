@@ -690,7 +690,7 @@ type KindedProfile = HarnessProfile & { kind: HarnessKindId };
  */
 const MODEL_PROFILES: Record<string, KindedProfile> = {
   "claude-glm": {
-    kind: "claude", args: [], keys: { ANTHROPIC_AUTH_TOKEN: "ZHIPU_API_KEY" },
+    kind: "claude", model: "glm-5.3[1m]", args: [], keys: { ANTHROPIC_AUTH_TOKEN: "ZHIPU_API_KEY" },
     env: {
       ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
       ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.3[1m]", ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.3[1m]", ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-5.3-flash[1m]",
@@ -698,7 +698,7 @@ const MODEL_PROFILES: Record<string, KindedProfile> = {
     }
   },
   "claude-deepseek": {
-    kind: "claude", args: [], keys: { ANTHROPIC_AUTH_TOKEN: "DEEPSEEK_API_KEY" },
+    kind: "claude", model: "deepseek-flash[1m]", args: [], keys: { ANTHROPIC_AUTH_TOKEN: "DEEPSEEK_API_KEY" },
     env: {
       ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_MODEL: "deepseek-flash[1m]",
       ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-flash[1m]", ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-flash[1m]", ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-flash",

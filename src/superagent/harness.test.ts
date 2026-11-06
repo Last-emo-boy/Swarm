@@ -405,7 +405,7 @@ test("`swarm harness` statuses name each profile's command, kind, model and keys
     writeFakeHarnesses(bin, join(bin, "home"));
     const base = { PATH: bin, HOME: bin };
     const deepseek = await harnessStatus("claude-deepseek", {}, "settings.json", { base });
-    assert.deepEqual({ ...deepseek, command: undefined }, { id: "claude-deepseek", kind: "claude", label: "Claude Code", command: undefined, installed: true,
+    assert.deepEqual({ ...deepseek, command: undefined }, { id: "claude-deepseek", kind: "claude", label: "Claude Code", command: undefined, model: "deepseek-flash[1m]", installed: true,
       keys: [{ name: "ANTHROPIC_AUTH_TOKEN", from: "DEEPSEEK_API_KEY", present: false }],
       problem: `The Claude Code profile "claude-deepseek" reads ANTHROPIC_AUTH_TOKEN from DEEPSEEK_API_KEY, which is not set where Swarm runs on ${(await import("node:os")).hostname()}.` });
     assert.equal(deepseek.command, join(bin, "claude"));

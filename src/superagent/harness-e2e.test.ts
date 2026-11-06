@@ -183,6 +183,15 @@ test("a harness that is missing or not signed in fails its ticket with what to d
     /Claude Code is not installed on .+: \/nonexistent\/claude is not an executable file\. Install it, or set executor\.harnesses\.ghost\.command in .+settings\.json/);
   assert.match(find("Write the away note")!.assignments.at(-1)!.report!.summary,
     /Codex is not signed in on .+: run `.+\/codex login` in a terminal as this user, then retry the ticket\./);
+
+  const cli = (args: string[]) => exec(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "src/index.ts"), "harness", ...args],
+    { env: process.env, timeout: 60_000 }).then(({ stdout }) => ({ stdout, code: 0 }), (error: { stdout: string; code: number }) => ({ stdout: error.stdout, code: error.code }));
+  const listed = JSON.parse((await cli(["list", "--json"])).stdout) as { id: string; installed: boolean }[];
+  assert.deepEqual(listed.map((status) => [status.id, status.installed]), [["claude", true], ["codex", true], ["kimi", true], ["opencode", true],
+    ["claude-glm", true], ["claude-deepseek", true], ["ghost", false], ["away", true]]);
+  const away = await cli(["check", "away"]);
+  assert.equal(away.code, 1);
+  assert.match(away.stdout, /^away \(Codex\)\n  command: {3}.+\/codex\n  model: {5}the harness's default\n  keys: {6}none\n  signed in: no\n  ! not signed in: run `.+\/codex login`/);
 });
 
 test("a harness turn that ends without a report is reminded once in the same session, and its report then ends the ticket", { timeout: 200_000 }, async () => {

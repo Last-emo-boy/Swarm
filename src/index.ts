@@ -113,6 +113,7 @@ if (!command) {
 } else if (command === "node") {
   const { runNodeCommand } = await import("./mesh/cli.js");
   await runNodeCommand(args);
+} else if (command === "harness") { await (await import("./superagent/harness-cli.js")).runHarnessCommand(args);
 } else if (command === "update") {
   const { runUpdateCommand } = await import("./update.js");
   await runUpdateCommand(args);

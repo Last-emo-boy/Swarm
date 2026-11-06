@@ -25,13 +25,14 @@ Commands:
   request [--device <name> | --on <node>] [--harness <id>] <text...>
                               File a request as a new ticket from this terminal, or on a paired device;
                               --on keeps the ticket here and runs its worker on a paired node;
-                              --harness runs its worker on an agent harness such as claude or codex
+                              --harness runs its worker on an agent harness such as claude, codex, kimi or opencode
   say <id> <text...>          Send a message to a ticket, such as an answer to its question
   stop <id>                   Stop a ticket's work
   retry <id>                  Start a ticket again after it failed or blocked
   place <id> <node>|here      Run a ticket's next worker on a paired node, or here
   pause | resume              Pause or resume processing: new Evals, launches, deliveries and replies
   config [path|show|init]     The settings file: its path, its content, or a starting file
+  harness list|check [<id>]   The agent harness profiles here: installed, signed in, keys set (also swarm harness)
 
 Settings live in ${settingsPath()}; ticket directories default to <state>/work.`;
 
@@ -76,6 +77,7 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
   if (command === "worker") return runWorkerCommand(args);
   if (command === "mcp") return runMcpCommand(args);
   if (command === "config") return runConfig(args);
+  if (command === "harness") return (await import("./harness-cli.js")).runHarnessCommand(args);
   if (command === "pause" || command === "resume") {
     updateSettings((settings) => ({ ...settings, paused: command === "pause" }));
     console.log(command === "pause" ? "Processing paused: no new Evals, launches, deliveries or replies until resume." : "Processing resumed.");
