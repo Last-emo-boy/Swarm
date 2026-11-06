@@ -15,9 +15,10 @@ const exec = promisify(execFile);
 
 /**
  * The mesh protocol this Swarm speaks: the formats of its links and its routes. Bump it when they change, so a node can
- * tell that a peer may not understand it. Cards from before the field existed speak 1.
+ * tell that a peer may not understand it. Cards from before the field existed speak 1. 2: dials through the relay are
+ * signed, which a node speaking 1 cannot do.
  */
-export const MESH_PROTOCOL = 1;
+export const MESH_PROTOCOL = 2;
 
 export interface NodeLoad {
   /** Tickets whose workers run on this node now. */

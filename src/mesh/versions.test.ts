@@ -73,7 +73,7 @@ test("mesh status and /mesh mark the peers whose cards name another mesh protoco
   const tui = new TuiMesh({ meshHome: mac.home, notify: () => {} });
   const shown = await tui.run([]);
   assert.match(shown.brief, /3 reachable now\. ovh, gpu run a different Swarm: swarm update on one side\.$/);
-  assert.match(shown.detail ?? "", /^gpu .*\n {17}! speaks mesh protocol 2/m);
+  assert.match(shown.detail ?? "", new RegExp(`^gpu .*\\n {17}! speaks mesh protocol ${MESH_PROTOCOL + 1}`, "m"));
   assert.match(shown.detail ?? "", new RegExp(`^This device: swarm ${loadSwarmVersion().replace(/\./g, "\\.")}`, "m"));
 });
 
