@@ -100,7 +100,8 @@ import { NeedsYouStrip } from "./components/NeedsYouStrip.js";
 import { TicketsPane } from "./components/TicketsPane.js";
 import { TuiTickets, type TicketSnapshot } from "./tickets/controller.js";
 import { runTicketCommand } from "./tickets/commands.js";
-import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPillValue } from "./tickets/view-model.js";
+import { TuiMesh } from "./mesh-commands.js";
+import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPillValue, rowHandle } from "./tickets/view-model.js";
 import {
   compactValue,
   policyBadge,
@@ -395,6 +396,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const previousActionLogLengthRef = useRef(actionLogRows.length);
   const [motionTick, setMotionTick] = useState(0);
   const ticketsRef = useRef<TuiTickets | undefined>(undefined);
+  const meshRef = useRef<TuiMesh | undefined>(undefined);
   const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | undefined>(undefined);
   const ticketSignatureRef = useRef("");
   const busySinceRef = useRef<number | undefined>(undefined);
@@ -586,6 +588,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return () => {
       clearInterval(timer);
       void ticketsRef.current?.close();
+      meshRef.current?.close();
     };
   }, []);
 
@@ -675,6 +678,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
   }
 
+  function meshController(): TuiMesh {
+    meshRef.current ??= new TuiMesh({ notify: (brief) => appendChatMessage({ role: "system", brief }) });
+    return meshRef.current;
+  }
+
   function ticketsController(): TuiTickets {
     ticketsRef.current ??= new TuiTickets({ log: (message) => runtimeRef.current?.debug?.warn("superagent", message) });
     return ticketsRef.current;
@@ -692,11 +700,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setTicketSnapshot(snapshot);
       }
       for (const reply of await tickets.newReplies()) {
+        const handle = `${reply.device ? `${reply.device}:` : ""}${reply.ticketId?.slice(0, 8) ?? "?"}`;
         appendChatTranscriptMessage({
           role: "assistant",
           kind: "message",
-          title: `ticket ${reply.ticketId?.slice(0, 8) ?? ""}`.trim(),
-          brief: `ticket ${reply.ticketId?.slice(0, 8) ?? "?"} · ${reply.text}`
+          title: `ticket ${handle}`,
+          brief: `ticket ${handle} · ${reply.text}`
         });
       }
     })().catch((error: unknown) => {
@@ -724,23 +733,23 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (!row) return true;
     const tickets = ticketsController();
     if (key.return) {
-      void tickets.messages(row.id).then((messages) => {
+      void tickets.messages(rowHandle(row)).then((messages) => {
         recordCommandDetail(ticketDetailText(row, messages));
         setDetailOpen(true);
       }, pushError);
       return true;
     }
     if (character === "s" && row.group !== "ended") {
-      void tickets.stop(row.id).then(() => {
+      void tickets.stop(rowHandle(row)).then(() => {
         appendChatMessage({ role: "system", brief: `Stopped ticket ${row.short}: ${row.title}.` });
         refreshTickets();
       }, pushError);
       return true;
     }
     if (character === "r") {
-      void tickets.retry(row.id).then(async () => {
+      void tickets.retry(rowHandle(row)).then(async () => {
         appendChatMessage({ role: "system", brief: `Retrying ticket ${row.short}: ${row.title}.` });
-        await tickets.ensureHost();
+        if (!row.device) await tickets.ensureHost();
         refreshTickets();
       }).catch(pushError);
       return true;
@@ -1827,6 +1836,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   async function runSlashCommand(command: string, args: string[], parsed?: ReturnType<typeof parseSlashCommandLine>): Promise<SlashCommandResult> {
+    if (command === "mesh") {
+      const result = await meshController().run(args);
+      refreshTickets();
+      return result.detail ? { brief: appendDetailShortcut(result.brief), detail: result.detail } : { brief: result.brief };
+    }
     if (command === "ticket" || command === "tickets") {
       const result = await runTicketCommand(ticketsController(), command, args);
       if (result.openPane) {
@@ -3507,7 +3521,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         selected={ticketSelection}
         columns={terminalColumns}
         height={terminalRows}
-        summary={ticketsPillValue(ticketSnapshot?.status)}
+        summary={`${ticketsPillValue(ticketSnapshot?.status)}${ticketSnapshot?.unreachable?.length ? ` · ${ticketSnapshot.unreachable.join(", ")} unreachable` : ""}`}
         hosting={ticketsRef.current?.hosting() ?? false}
       />
     );

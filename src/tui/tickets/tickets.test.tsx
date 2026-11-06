@@ -15,6 +15,8 @@ import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooter
 import { runTicketCommand } from "./commands.js";
 import { TuiTickets } from "./controller.js";
 import type { TicketRow } from "../../superagent/views.js";
+import { KV } from "../../superagent/kv.js";
+import { newPairKey, savePeer } from "../../mesh/state.js";
 
 const row = (overrides: Partial<TicketRow>): TicketRow => ({
   id: "a1b2c3d4e5f6a7b8", short: "a1b2c3d4", title: "Fix the flaky retry test", group: "working", label: "Working", source: "github",
@@ -95,7 +97,8 @@ test("ticket commands file a request, show and answer a ticket, and do not start
   const stateDir = mkdtempSync(join(tmpdir(), "swarm-tui-tickets-"));
   // Another host holds the lock: this process.
   writeFileSync(join(stateDir, "host.lock"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
-  const tickets = new TuiTickets({ stateDir, log: () => {} });
+  // An empty mesh of its own: the machine running the tests may be paired with devices whose tickets would count.
+  const tickets = new TuiTickets({ stateDir, meshHome: join(stateDir, "mesh"), log: () => {} });
   try {
     assert.equal(tickets.available(), false);
     const filed = await runTicketCommand(tickets, "ticket", ["rename", "the", "build", "script"]);
@@ -127,5 +130,28 @@ test("ticket commands file a request, show and answer a ticket, and do not start
   } finally {
     await tickets.close();
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("/ticket --on files a request here whose worker runs on a paired node, and says when no mesh node runs to place it", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "swarm-tui-tickets-"));
+  const meshHome = mkdtempSync(join(tmpdir(), "swarm-tui-mesh-"));
+  savePeer({ id: "gpu-node", name: "gpu", key: newPairKey(), addresses: ["127.0.0.1:9"], pairedAt: new Date().toISOString() }, meshHome);
+  const tickets = new TuiTickets({ stateDir, meshHome, log: () => {} });
+  try {
+    const filed = await runTicketCommand(tickets, "ticket", ["--on", "gpu", "retrain", "the", "model"]);
+    assert.match(filed.brief, /its worker runs on gpu/);
+    assert.match(filed.brief, /swarm node run/, "no mesh node's host runs here to place it");
+    const { SuperagentClient } = await import("../../superagent/client.js");
+    const client = new SuperagentClient({ stateDir });
+    const [placement] = client.store.keys(KV.mesh.placement).map((key) => client.store.get(key));
+    client.close();
+    assert.deepEqual(placement?.on, { id: "gpu-node", name: "gpu" });
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--on", "nowhere", "retrain"]), /No paired device "nowhere"/);
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--on", "gpu"]), /Usage: \/ticket --on/);
+  } finally {
+    await tickets.close();
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(meshHome, { recursive: true, force: true });
   }
 });

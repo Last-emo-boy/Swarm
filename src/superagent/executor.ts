@@ -3,6 +3,7 @@
  * launch and delivery effects (from dsh-superagent's executor/dsh.ts). A worker process runs Swarm's coding loop on the
  * ticket's Work Kernel session and exits when its turn ends, so an idle ticket holds no process; a person's message wakes it
  * with a new process. A ticket holds a slot while its worker starts or runs, and one extra slot is kept for a person's message.
+ * A ticket placed on a paired mesh node runs its worker there instead (`RemoteWork`), while this host keeps its record.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, rmdirSync } from "node:fs";
@@ -23,7 +24,7 @@ const STOP_GRACE_MS = 10_000;
  * A worker's foreground command moves to a background process after this long, so a person's message reaches the worker
  * at its next step instead of waiting for a long build or test run (upstream moved shell commands after 5 seconds).
  */
-const WORKER_SHELL_AUTO_BACKGROUND_MS = 30_000;
+export const WORKER_SHELL_AUTO_BACKGROUND_MS = 30_000;
 
 /** True when an input comes from a person: a human Trigger that is not context only, or text such as a status request. */
 const fromPerson = (ticket: Ticket): boolean => ticket.undelivered.some((id) => {
@@ -52,6 +53,58 @@ export class WorkerSlots {
 
 class PrepareFailed extends Error {}
 
+/**
+ * Runs a new ticket directory's prepare command in its parent, with the ticket's variables in `env`, then verifies the
+ * directory as the worker's git sees it. A failed command throws; an empty directory it left is removed.
+ */
+export async function prepareDirectory(directory: string, command: string, env: NodeJS.ProcessEnv): Promise<void> {
+  mkdirSync(dirname(directory), { recursive: true });
+  if (command.trim()) {
+    await exec("sh", ["-c", command.trim()], { cwd: dirname(directory), env, timeout: PREPARE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 })
+      .catch((error: { stderr?: string; message?: string }) => {
+        try { rmdirSync(directory); } catch { /* Absent, or holding what the command wrote, which its output explains. */ }
+        throw new PrepareFailed(`The prepare command failed: ${(error.stderr || error.message || String(error)).slice(0, 2000)}`);
+      });
+  }
+  mkdirSync(directory, { recursive: true });
+  await verifyDirectory(directory, env);
+}
+
+/**
+ * A worker process that ended its own turn leaves the Inputs that came since for the next; one that crashed fails its ticket.
+ * `node` names the paired node it ran on.
+ */
+export function workerExited(client: SuperagentClient, ticketId: string, assignmentId: string, code: number | null, stderr: string, node?: string): void {
+  const ticket = client.store.tickets.get(ticketId);
+  const assignment = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined;
+  if (!ticket || assignment?.id !== assignmentId) return;
+  if (code !== 0) {
+    const where = node ? ` on ${node}` : "";
+    client.engine.report(ticketId, { state: "failed", summary: `The worker process${where} exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(-500)}` : ""}` });
+    return;
+  }
+  if (ticket.undelivered.length) client.effects.enqueue("delivery", ticketId, { ticketId });
+}
+
+/**
+ * Running a ticket's worker on a paired node instead of here: the mesh's side of the Executor (src/mesh/work.ts). The node
+ * that runs it holds a lease on the Assignment while it renews it; this host keeps the ticket's record.
+ */
+export interface RemoteWork {
+  /**
+   * Runs the Assignment's worker on the node that holds its lease or that the ticket's placement chooses, which also wakes
+   * an idle one for its Inputs, and returns true; returns false when it runs here. Throws `Later` while that node has no free
+   * slot, and an error when it does not take the work.
+   */
+  run(ticket: Ticket, assignmentId: string): Promise<boolean>;
+  /** Whether a paired node holds a live lease on the Assignment. */
+  holds(ticketId: string, assignmentId: string): boolean;
+  /** Ends the Assignment's worker on the node that holds it, and the lease. */
+  stop(ticketId: string, assignmentId: string): Promise<void>;
+  /** On host stop: stops placing work and renewing leases. */
+  close(): Promise<void>;
+}
+
 export interface ExecutorHost {
   readonly client: SuperagentClient;
   deployment(): Deployment;
@@ -61,6 +114,8 @@ export interface ExecutorHost {
   environment(ticket: Ticket): Record<string, string>;
   closing(): boolean;
   log(message: string): void;
+  /** Where tickets placed on paired nodes run, on a host that is a mesh node. */
+  remote(): RemoteWork | undefined;
 }
 
 interface Worker { process: ChildProcess; assignmentId: string; exited: Promise<number | null>; stopping?: boolean }
@@ -88,6 +143,13 @@ export class SwarmExecutor {
     const assignment = ticket && latestAssignment(ticket);
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== "pending") return;
     if (this.host.closing()) throw new Later("The host is stopping");
+    try {
+      if (await this.host.remote()?.run(ticket, assignmentId)) return;
+    } catch (error) {
+      if (error instanceof Later) throw error;
+      this.failed(ticketId, assignmentId, error instanceof Error ? error.message : String(error));
+      return;
+    }
     this.slots.reserve(ticketId, "launch");
     try {
       const directory = ticket.execution?.directory ?? "";
@@ -103,25 +165,10 @@ export class SwarmExecutor {
     }
   }
 
-  /**
-   * Runs the prepare command for a new ticket directory in its parent, with the ticket's variables, then verifies the
-   * directory as the worker's git sees it. A failed command fails the ticket; an empty directory it left is removed.
-   */
+  /** Prepares a ticket's new directory with the prepare command; a failed command fails the ticket. */
   private async prepare(ticket: Ticket): Promise<void> {
-    const { client } = this.host;
-    const directory = ticket.execution!.directory;
-    mkdirSync(dirname(directory), { recursive: true });
-    const command = client.settings().executor.prepare.trim();
     const env = workerEnvironment(this.host.deployment(), this.host.environment(ticket));
-    if (command) {
-      await exec("sh", ["-c", command], { cwd: dirname(directory), env, timeout: PREPARE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 })
-        .catch((error: { stderr?: string; message?: string }) => {
-          try { rmdirSync(directory); } catch { /* Absent, or holding what the command wrote, which its output explains. */ }
-          throw new PrepareFailed(`The prepare command failed: ${(error.stderr || error.message || String(error)).slice(0, 2000)}`);
-        });
-    }
-    mkdirSync(directory, { recursive: true });
-    await verifyDirectory(directory, env);
+    await prepareDirectory(ticket.execution!.directory, this.host.client.settings().executor.prepare, env);
   }
 
   /** Wakes an idle ticket's worker for the Inputs waiting for it; a running worker takes them by itself. */
@@ -134,8 +181,22 @@ export class SwarmExecutor {
     // A blocked or failed ticket takes automatic Inputs only once a person wrote, which the Engine already filtered.
     if (waitsForPerson(ticket) && !fromPerson(ticket)) return;
     if (this.host.closing()) throw new Later("The host is stopping");
+    try {
+      if (await this.host.remote()?.run(ticket, assignment.id)) return;
+    } catch (error) {
+      if (error instanceof Later) throw error;
+      // The ticket shows the Inputs that did not reach its worker, until a delivery succeeds or a person retries it.
+      client.engine.deliveryFailed(ticketId, assignment.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
     this.slots.reserve(ticketId, fromPerson(ticket) ? "person" : "wake");
-    try { this.spawnWorker(ticketId, assignment.id); } finally { this.slots.free(ticketId); }
+    try {
+      // An Assignment that ran on a paired node whose lease lapsed has no directory here yet.
+      if (!existsSync(ticket.execution?.directory ?? "")) await this.prepare(ticket);
+      this.spawnWorker(ticketId, assignment.id);
+    } catch (error) {
+      client.engine.deliveryFailed(ticketId, assignment.id, error instanceof Error ? error.message : String(error));
+    } finally { this.slots.free(ticketId); }
   }
 
   private spawnWorker(ticketId: string, assignmentId: string): void {
@@ -169,17 +230,9 @@ export class SwarmExecutor {
 
   /** A worker process that ended its own turn reports; one that crashed without a report fails its ticket. */
   private exited(ticketId: string, assignmentId: string, code: number | null, stderr: string, stopped: boolean): void {
-    const { client } = this.host;
     if (stopped || this.host.closing()) return;
-    const ticket = client.store.tickets.get(ticketId);
-    const assignment = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined;
-    if (!ticket || assignment?.id !== assignmentId) return;
-    if (code !== 0) {
-      this.host.log(`superagent worker for ${ticketId} exited with ${code}: ${stderr.trim().split("\n").slice(-3).join(" | ")}`);
-      this.failed(ticketId, assignmentId, `The worker process exited with code ${code}${stderr.trim() ? `: ${stderr.trim().slice(-500)}` : ""}`);
-      return;
-    }
-    if (ticket.undelivered.length) client.effects.enqueue("delivery", ticketId, { ticketId });
+    if (code !== 0) this.host.log(`superagent worker for ${ticketId} exited with ${code}: ${stderr.trim().split("\n").slice(-3).join(" | ")}`);
+    workerExited(this.host.client, ticketId, assignmentId, code, stderr);
   }
 
   private failed(ticketId: string, assignmentId: string, summary: string): void {
@@ -195,13 +248,16 @@ export class SwarmExecutor {
    */
   private async stop(ticketId: string, assignmentId: string): Promise<void> {
     const worker = this.workers.get(ticketId);
-    if (!worker || worker.assignmentId !== assignmentId) return;
+    const here = worker?.assignmentId === assignmentId;
+    const remote = this.host.remote();
+    if (!here && !remote?.holds(ticketId, assignmentId)) return;
     const ticket = this.host.client.store.tickets.get(ticketId);
     const assignment = ticket?.assignments.find((item) => item.id === assignmentId);
     const report = assignment?.report;
     const busy = !!assignment?.deliveredAt && !!report && assignment.deliveredAt >= report.at;
     if ((report?.state === "ready" || report?.state === "dropped") && !busy) return;
-    await this.terminate(worker);
+    if (here) await this.terminate(worker!);
+    else await remote!.stop(ticketId, assignmentId);
   }
 
   private async terminate(worker: Worker): Promise<void> {
@@ -213,12 +269,16 @@ export class SwarmExecutor {
     clearTimeout(timer);
   }
 
-  /** On host start: an Assignment left running by an earlier host has no worker now, so the Engine restarts it or keeps its report. */
+  /**
+   * On host start: an Assignment left running by an earlier host has no worker now, so the Engine restarts it or keeps its
+   * report; one whose worker a paired node runs under a live lease keeps running there.
+   */
   resume(): void {
     const { client } = this.host;
+    const remote = this.host.remote();
     for (const ticket of client.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       const running = runningAssignment(ticket);
-      if (running && !this.workers.has(ticket.id)) client.engine.assignmentInterrupted(ticket.id, running.id);
+      if (running && !this.workers.has(ticket.id) && !remote?.holds(ticket.id, running.id)) client.engine.assignmentInterrupted(ticket.id, running.id);
       else if (latestAssignment(ticket)?.state === "pending" && !waitsForPerson(ticket)) {
         client.effects.enqueue("launch", latestAssignment(ticket)!.id, { ticketId: ticket.id, assignmentId: latestAssignment(ticket)!.id });
       }

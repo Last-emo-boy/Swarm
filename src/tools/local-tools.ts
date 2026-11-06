@@ -3444,8 +3444,8 @@ async function detectProject(action: Extract<ToolAction, { type: "project.detect
   };
 }
 
-/** Shared shell runner used by tools that wrap shell commands. */
-async function runShellCommand(
+/** Shared shell runner used by tools that wrap shell commands, and by the shell a mesh node lends its peers. */
+export async function runShellCommand(
   command: string,
   options: { cwd: string; timeoutMs: number; maxOutputBytes: number }
 ): Promise<ShellCommandResult> {

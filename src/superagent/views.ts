@@ -6,13 +6,16 @@ import { latestReport, ticketOutcome, ticketStage, type Ticket } from "./core/in
 import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import type { Health } from "./health.js";
+import { pulledBy, workerNode } from "./placement.js";
 import { pullOf } from "./sources/github-pull.js";
 
 export type TicketGroup = "person" | "working" | "queued" | "idle" | "ended";
 export interface TicketRow {
   id: string;
-  /** A short handle for commands: the first eight characters of the id. */
+  /** A short handle for commands: the first eight characters of the id, after `<device>:` for another node's ticket. */
   short: string;
+  /** The paired node that owns the ticket; unset for this node's own. */
+  device?: string;
   title: string;
   group: TicketGroup;
   /** Whom the ticket waits for and what it needs, such as "Awaiting review". */
@@ -22,6 +25,10 @@ export interface TicketRow {
   pr?: number;
   question?: string;
   summary?: string;
+  /** The paired node its worker runs on, ran on last, or is placed on to start; unset when that is the node that owns it. */
+  runsOn?: string;
+  /** The paired node that pulled its latest Assignment while it waited for a worker here. */
+  pulledBy?: string;
   updatedAt: string;
 }
 
@@ -53,13 +60,16 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
     : stage.stage === "idle" ? "idle" : action === "queued" ? "queued" : "working";
   const pr = pullOf(ticket);
   const report = latestReport(ticket);
+  const node = workerNode(client, ticket);
+  const puller = pulledBy(client, ticket);
+  const runsOn = { ...(node ? { runsOn: node } : {}), ...(puller ? { pulledBy: puller } : {}) };
   // A question the person already answered waits for the worker, not for the person: it leaves "needs you".
   const answered = !!ticket.attention && !ticket.ended && ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context
     && input.at >= (report?.at ?? ""));
   if (answered && group === "person" && STAGE_LABELS[key] === "Awaiting answer") {
     return { id: ticket.id, short: ticket.id.slice(0, 8), title: ticket.title, group: "working", label: "Working on your answer",
       source: origin?.source ?? "unknown", ...(origin?.url ? { url: origin.url } : {}), ...(pr ? { pr } : {}),
-      ...(report?.summary ? { summary: report.summary } : {}), updatedAt: ticket.updatedAt ?? ticket.createdAt };
+      ...(report?.summary ? { summary: report.summary } : {}), ...runsOn, updatedAt: ticket.updatedAt ?? ticket.createdAt };
   }
   return {
     id: ticket.id,
@@ -72,6 +82,7 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
     ...(pr ? { pr } : {}),
     ...(ticket.attention ? { question: ticket.attention.question } : {}),
     ...(report?.summary ? { summary: report.summary } : {}),
+    ...runsOn,
     updatedAt: ticket.updatedAt ?? ticket.createdAt
   };
 }

@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { defaultSwarmSettings } from "../../config/settings.js";
 
 export interface ModelRequest { system: string; user: string; body: Record<string, unknown> }
-export type Answer = (request: ModelRequest, index: number) => string;
+/** The assistant's text for a request; a promise holds the request open until it settles. */
+export type Answer = (request: ModelRequest, index: number) => string | Promise<string>;
 
 const text = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.map((part) => typeof part === "string" ? part : String((part as { text?: string }).text ?? "")).join("\n") : "";
@@ -27,21 +28,18 @@ export async function startFakeModel(answer: Answer): Promise<{ url: string; req
         user: messages.filter((message) => message.role !== "system").map((message) => text(message.content)).join("\n"),
         body
       };
-      requests.push(entry);
-      let content: string;
-      try {
-        content = answer(entry, requests.length - 1);
-      } catch (error) {
+      const index = requests.push(entry) - 1;
+      void (async () => answer(entry, index))().then((content) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          id: `chatcmpl-${index + 1}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: "model",
+          choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content } }],
+          usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
+        }));
+      }, (error: unknown) => {
         response.writeHead(500, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: { message: String(error) } }));
-        return;
-      }
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        id: `chatcmpl-${requests.length}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: "model",
-        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content } }],
-        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
-      }));
+      });
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

@@ -152,6 +152,8 @@ Commands:
   serve      Start the local Swarm Gateway HTTP/event-stream server
   symphony   Run local work-source automation commands
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
+  mesh       Pair this device with other Swarm devices and see them
+  node       Run this device's node: the ticket host and the mesh server peers call
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
@@ -801,6 +803,75 @@ permission mode; the `gh`/`lark-cli` wrappers and blocked commands are defaults,
 not a security boundary, and messages on a ticket's threads reach its worker as
 context, so use a dedicated OS account for repositories where strangers comment.
 Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
+
+## Mesh
+
+Swarm devices link into a swarm: a laptop, an always-on server and a GPU box join with a short pairing code and then
+reach each other wherever they are. One device shows a code, every other device joins with it, and each one that
+joins is paired with every member, not just the one that showed the code.
+
+```bash
+swarm mesh invite                          # on any member: prints a code such as K7QM-4ZX2 and waits
+swarm mesh join K7QM-4ZX2                  # on each device to add (or /mesh join K7QM-4ZX2 in the TUI)
+swarm node run                             # on devices that others should reach: the ticket host and mesh server
+swarm mesh status                          # this node and its peers: how each is reached, abilities, load
+swarm mesh remove gpu                      # take a device out of the swarm: every member forgets it
+```
+
+A code works for 15 minutes for any number of devices, and three wrong tries cancel it. In the TUI, `/mesh invite`
+opens one while the TUI runs and `/mesh` lists the swarm.
+
+Each pair of devices shares a key, agreed during pairing with a password-authenticated key exchange (CPace): the code
+proves both devices saw it, without the code or the key ever crossing the network. Every connection between two
+devices is TLS keyed with their shared key, so only the two of them can read it or finish its handshake, and the key
+tells a node which peer is calling. Devices connect directly when one reaches the other (a LAN, a tailnet, a
+forwarded port set with `swarm mesh advertise`) and through the relay otherwise; the first link to finish its
+handshake wins. The relay (`wss://swarm-relay.w33d.xyz` unless `swarm mesh relay <url>` names another, or
+`swarm mesh relay off` turns it off) only joins streams: it sees which device names connect, when and how much,
+never what they say. `swarm mesh relay serve` runs one; a code made on a device using another relay names it
+(`K7QM-4ZX2@relay.example`), so joining needs no setting. Without a relay, `swarm mesh invite --direct` prints a long
+one-time code with this node's addresses.
+
+A device joining through a member is introduced to the others by vouchers: the member seals the new pair's key for
+each other member with the key it shares with that member, and the new device's first connection to a member shows
+it. A device removed with `swarm mesh remove` is forgotten by every member that hears of it, and its old
+introductions are refused.
+
+Paired devices' tickets appear beside this node's in the TUI (`/tickets`, the needs-you strip) and in
+`swarm superagent tickets --all-devices`, addressed as `<device>:<id>`. Answering, stopping and retrying one goes to
+the device that owns it, and `/ticket @<device> <request>` (or `swarm superagent request --device <name>`) files
+work there. A paired device acts as that device's own operator, so pair only devices you control.
+
+A device can also lend its paired peers tools, which their Swarm sessions call as MCP tools. Nothing is lent until
+you name folders: `swarm mesh lend shell ~/src/app` lends running commands that start in that folder (a shell can
+still reach anything this user can), and `swarm mesh lend files ~/data` lends listing, reading and writing files
+inside it, refusing paths that lead out, symlinks included. `swarm mesh lend` shows what is lent and
+`swarm mesh lend --stop shell` takes it back. On the other devices `swarm mesh tools` lists what each peer lends, and
+every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_file` and so on, served by the peer's
+`swarm node run` over Streamable HTTP on the link to that peer. Borrowed tools count as remote, so in `ask` mode each
+call waits for approval; a peer that does not answer is skipped.
+
+A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>`
+(or `/ticket --on <node> <request>`) files it that way, `swarm superagent place <id> <node>|here` moves its next
+worker, and when the router says the work needs `gpu` or `macos`, the worker goes to a paired node that has that
+ability and a free slot. The node that accepted the ticket remains its record and the only writer of its store. The
+other node prepares its own ticket directory with its own prepare command and credentials (a node that runs GitHub
+tickets needs the agent account's CLI signed in there) and holds a lease it renews; if the lease lapses, the owner
+treats the worker as lost and places the work again. `swarm superagent ticket` shows where a worker runs. Placement
+takes effect on a node run as `swarm node run`.
+
+A node with free worker slots can also pull work instead of waiting to be handed it. Pulling is off until
+`swarm mesh pull on` (add `--repo owner/name`, repeatable, to take only those repositories' work); the node then asks
+its paired nodes, every 15 seconds and less often while nothing is open, for work that waits there for a worker:
+queued behind `executor.maxWorkers`, or needing an ability the owner lacks while the paired nodes that have it and
+pull are busy (such work waits for them instead of running on the owner). It claims what its abilities and
+repositories fit, oldest first. The owner decides: the first claim that is still valid gets the work through the
+same offer and lease as placement, later ones are refused, and the owner never starts a claimed Assignment itself.
+Work placed with `--on` or `place`, held under a lease, or waiting for a person is never open. Owners hand their
+waiting work to paired nodes that pull by default, because pairing already lets a peer run this node's work when it
+is placed there and a puller only takes work that would otherwise wait; `swarm mesh offer off` keeps it.
+`swarm mesh status` shows whether each node pulls and the work pulled either way, and ticket rows say
+"pulled by <node>".
 
 ## Architecture
 

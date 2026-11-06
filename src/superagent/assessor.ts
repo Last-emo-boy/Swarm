@@ -9,6 +9,7 @@ import { UserError, followupOwners, reasonText, threadKey, type Candidate, type 
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
+import { updatePlacement } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed } from "./policy.js";
 import { assessmentPrompt, followupPrompt, routerPrompt } from "./prompts.js";
 import { admissionContext } from "./sources/admission-context.js";
@@ -35,10 +36,12 @@ const RouteSchema = z.object({
   acknowledgement: z.string().nullish(),
   note: z.string().nullish(),
   ticket_id: z.string().nullish(),
-  reason: z.string().nullish()
+  reason: z.string().nullish(),
+  /** What accepted work needs of the machine its worker runs on, such as gpu: it places the worker on a paired node fit for it. */
+  needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish()
 });
 type Route = z.infer<typeof RouteSchema>;
-type Field = Exclude<keyof Route, "kind">;
+type Field = Exclude<keyof Route, "kind" | "needs">;
 /** Each field's check, the kinds that read it and those that need it, as upstream's orchestrator_route checked them. */
 const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][]; needs: readonly Route["kind"][] }> = {
   ticket_id: { check: z.string(), reads: ["attach", "stop"], needs: ["attach", "stop"] },
@@ -177,9 +180,15 @@ export class ModelAssessor {
     try {
       switch (route.kind) {
         case "accept": {
-          const decision = engine.decide(triggerId, {
-            kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
-            acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}), evalId: candidate.evalId
+          const { client } = this.host;
+          const decision = client.store.atomic(() => {
+            const decided = engine.decide(triggerId, {
+              kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
+              acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}), evalId: candidate.evalId
+            });
+            // Recorded with the ticket, before its worker launches, so a mesh node places the worker where the work can run.
+            if (decided.ticketId && route.needs?.length) updatePlacement(client, decided.ticketId, { needs: [...new Set(route.needs)] });
+            return decided;
           });
           return decision.kind === "accept" && decision.ticketId ? undefined : `Ticket was not created: ${reasonText(decision.reason)}`;
         }

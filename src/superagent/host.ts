@@ -10,7 +10,7 @@ import { liveTicket, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
 import { writeEnvironment, verifyEnvironment, workerBin } from "./environment.js";
-import { SwarmExecutor } from "./executor.js";
+import { SwarmExecutor, type RemoteWork } from "./executor.js";
 import { KV } from "./kv.js";
 import { policyEffects } from "./policy.js";
 import { policyVersion, superagentStateDir, type Settings } from "./settings.js";
@@ -72,6 +72,8 @@ export class SuperagentHost {
   private release?: () => void;
   private deployment?: Deployment;
   problem?: SetupProblem;
+  /** Where tickets placed on paired nodes run; a mesh node sets it before it starts the host (src/mesh/work.ts). */
+  remote?: RemoteWork;
   private timer?: NodeJS.Timeout;
   private closing = false;
   private passing = false;
@@ -91,7 +93,8 @@ export class SuperagentHost {
         workerCommand: options.workerCommand,
         environment: (ticket) => this.variables(ticket),
         closing: () => this.closing,
-        log: this.log
+        log: this.log,
+        remote: () => this.remote
       });
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment });
       this.assessor.install();
@@ -184,6 +187,9 @@ export class SuperagentHost {
   }
   private readonly startedAt = new Date().toISOString();
 
+  /** Worker processes running here now. */
+  runningWorkers(): number { return this.executor.running().length; }
+
   /** A changed Policy version discards running Evals and tells the live tickets it bears on, as a settings save did upstream. */
   private applyPolicy(settings: Settings): void {
     const { store, engine, sources } = this.client;
@@ -247,6 +253,7 @@ export class SuperagentHost {
     if (this.timer) clearInterval(this.timer);
     for (const watcher of this.watchers.values()) watcher.controller.abort();
     await Promise.allSettled([...this.watchers.values()].map((watcher) => watcher.done));
+    await this.remote?.close();
     await this.executor.shutdown();
     await this.client.effects.drain();
     this.client.store.delete(KV.host.owner);
