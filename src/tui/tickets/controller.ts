@@ -158,16 +158,16 @@ export class TuiTickets {
     return this.starting;
   }
 
-  /** Files a request here, or on a paired device, which then owns the ticket. */
-  async request(text: string, device?: string): Promise<{ triggerId: string }> {
+  /** Files a request here, on the agent harness `harness` when one is given, or on a paired device, which then owns the ticket. */
+  async request(text: string, device?: string, harness?: string): Promise<{ triggerId: string }> {
     if (device) return (await this.meshModule()).peerRequest(this.peer(device), text);
-    return (await this.open()).client.request(text);
+    return (await this.open()).client.request(text, undefined, harness ? { harness } : {});
   }
   /** Files a request here whose worker runs on a paired node; `mesh` says whether a mesh node's host runs here to place it. */
-  async requestOn(text: string, node: string): Promise<{ triggerId: string; placed: string; mesh: boolean }> {
+  async requestOn(text: string, node: string, harness?: string): Promise<{ triggerId: string; placed: string; mesh: boolean }> {
     const { id, name } = this.peer(node);
     const [{ client, views }, { requestOn }] = await Promise.all([this.open(), import("../../superagent/placement.js")]);
-    const { triggerId } = requestOn(client, text, { id, name });
+    const { triggerId } = requestOn(client, text, { id, name }, harness);
     const status = views.hostStatus(client);
     return { triggerId, placed: name, mesh: status.running && !!status.health.mesh };
   }

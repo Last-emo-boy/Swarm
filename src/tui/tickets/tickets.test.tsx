@@ -155,3 +155,31 @@ test("/ticket --on files a request here whose worker runs on a paired node, and 
     rmSync(meshHome, { recursive: true, force: true });
   }
 });
+
+test("/ticket --harness files a request whose ticket runs on that harness, and the ticket shows it", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "swarm-tui-tickets-"));
+  // Another host holds the lock: this process.
+  writeFileSync(join(stateDir, "host.lock"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  const tickets = new TuiTickets({ stateDir, meshHome: join(stateDir, "mesh"), log: () => {} });
+  try {
+    const filed = await runTicketCommand(tickets, "ticket", ["--harness", "codex", "rename", "the", "build", "script"]);
+    assert.match(filed.brief, /A worker takes it on codex/);
+    const { SuperagentClient } = await import("../../superagent/client.js");
+    const { ticketRow } = await import("../../superagent/views.js");
+    const client = new SuperagentClient({ stateDir });
+    const [key] = client.store.keys(KV.harness.chosen);
+    const triggerId = key!.slice(KV.harness.chosen.prefix.length);
+    client.engine.evaluateDue();
+    const candidate = client.engine.candidate(triggerId)!;
+    const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Rename the build script", scope: "x", reason: "asked", name: "rename-build", evalId: candidate.evalId });
+    const row = ticketRow(client, client.store.tickets.get(ticketId!)!);
+    client.close();
+    assert.equal(row.harness, "codex");
+    assert.match(ticketDetailText(row, []), / · via codex · ticket /);
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--harness", "kimi", "rename"]), /No harness "kimi"/);
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--harness", "codex"]), /Usage: \/ticket --harness/);
+  } finally {
+    await tickets.close();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

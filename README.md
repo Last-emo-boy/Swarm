@@ -782,9 +782,9 @@ person who is allowed to ask for work mentions the agent on GitHub, messages its
 Feishu bot, or types `/ticket <request>` in the TUI. A deterministic gate checks
 who sent it before any model sees it; a model routes the request to a new
 ticket, an existing one, a stop or nothing. Each ticket gets a worker process
-running Swarm's coding loop in its own directory (usually a git worktree made
-by a prepare command), and the worker answers in the conversation where it was
-asked. Later messages on that conversation go straight to the ticket's worker.
+running Swarm's coding loop, or another agent harness such as Claude Code, in
+its own directory (usually a git worktree made by a prepare command), and the
+worker answers in the conversation where it was asked. Later messages on that conversation go straight to the ticket's worker.
 
 ```bash
 swarm superagent config init      # write ~/.swarm/superagent/settings.json
@@ -809,6 +809,71 @@ permission mode; the `gh`/`lark-cli` wrappers and blocked commands are defaults,
 not a security boundary, and messages on a ticket's threads reach its worker as
 context, so use a dedicated OS account for repositories where strangers comment.
 Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
+
+### Harness workers
+
+A ticket's worker can run on another agent harness installed on the machine
+instead of Swarm's own coding loop: Claude Code (`claude`) or Codex (`codex`).
+`executor.harness` in the superagent settings names the harness new tickets run
+on (`null`, the default, keeps Swarm's loop); `swarm superagent request --harness
+claude "..."` or `/ticket --harness codex <request>` chooses one for a single
+request. The choice is stored with the ticket's execution, so its follow-ups run
+on the same harness, and `swarm superagent tickets`/`ticket` and the TUI show it
+as `via claude`.
+
+Each turn is one headless run in the ticket's directory: `claude -p
+--output-format stream-json` or `codex exec --json`, with Swarm's ticket tools
+(`swarm superagent mcp`, plus `--remote` for a worker placed on a paired node)
+as the MCP server `ticket` and Swarm's worker instructions added to the
+harness's own (`--append-system-prompt`, Codex's `developer_instructions`).
+Later turns resume the harness's session (`--resume <id>`, `codex exec resume
+<id>`) with the messages that waited for the ticket; the session ids are kept in
+`~/.swarm/state/harness-sessions/`. Reports, the reminder after a turn without a
+report, retries of failed turns, the budget per turn (60 model messages and 200
+tool calls, counted from the harness's events) and stopping work as they do for
+Swarm's loop, except that a message that arrives during a harness turn waits for
+the next turn. Each turn's tokens go to Swarm's usage records with the harness
+and its model (Codex's from its session file); Claude Code's cost is its own
+list-price estimate.
+
+Before its first turn a worker checks that the harness is installed and signed
+in (`claude auth status`, `codex login status`); if not, the ticket fails with
+what to do on that machine, and Swarm never signs in for you. A harness runs as
+it is set up for your OS user, with its own login, configuration and
+instructions. Profiles under `executor.harnesses` change the built-in `claude`
+and `codex` (command, model, arguments, environment) or add others of either
+kind; credentials never go in the settings: `keys` names the environment
+variable each one is read from.
+
+```json
+"executor": {
+  "harness": "claude",
+  "harnesses": {
+    "claude": { "model": "sonnet", "env": { "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1" } },
+    "codex": { "command": "/Users/me/.local/bin/codex", "args": ["--profile", "work"] },
+    "relay": { "kind": "claude", "env": { "ANTHROPIC_BASE_URL": "https://relay.example/anthropic" },
+      "keys": { "ANTHROPIC_AUTH_TOKEN": "RELAY_API_KEY" } }
+  }
+}
+```
+
+The ticket's permission mode maps to the harness's own flags:
+
+| `executor.permissionMode` | Claude Code | Codex |
+| --- | --- | --- |
+| `full-auto` | `--permission-mode auto` (its classifier blocks risky actions); prompts are denied | `-s workspace-write` with network access and `approval_policy="never"`; the ticket's directory and its git directory are writable |
+| `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+
+Swarm cannot enforce its own rules inside another harness. Its permission
+rules in `~/.swarm/settings.json`, its risk levels and the approval it asks for
+destructive commands do not apply there; the harness decides with its own mode,
+classifier or sandbox, and Swarm does not see or audit each tool call. Blocked
+commands reach the harness only as Swarm's `PATH` shims (and Claude Code deny
+rules); Codex has no flag to deny a command, and either harness can run a
+program by its full path. Claude Code gets only the ticket tools
+(`--strict-mcp-config`); Codex also loads the MCP servers, plugins and
+instructions of its own configuration. The budget stops a harness after the
+fact, from the events it prints, and the usage is what the harness reports.
 
 ## Mesh
 

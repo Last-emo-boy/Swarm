@@ -29,6 +29,8 @@ export interface TicketRow {
   runsOn?: string;
   /** The paired node that pulled its latest Assignment while it waited for a worker here. */
   pulledBy?: string;
+  /** The agent harness profile its worker runs on; unset for Swarm's own coding loop. */
+  harness?: string;
   updatedAt: string;
 }
 
@@ -62,7 +64,8 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
   const report = latestReport(ticket);
   const node = workerNode(client, ticket);
   const puller = pulledBy(client, ticket);
-  const runsOn = { ...(node ? { runsOn: node } : {}), ...(puller ? { pulledBy: puller } : {}) };
+  const harness = ticket.execution?.harness;
+  const runsOn = { ...(node ? { runsOn: node } : {}), ...(puller ? { pulledBy: puller } : {}), ...(harness ? { harness } : {}) };
   // A question the person already answered waits for the worker, not for the person: it leaves "needs you".
   const answered = !!ticket.attention && !ticket.ended && ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context
     && input.at >= (report?.at ?? ""));

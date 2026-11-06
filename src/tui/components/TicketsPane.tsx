@@ -33,7 +33,7 @@ function lineSpans(line: TicketsPaneLine): SemanticTextSpan[] {
     { text: `${sign.text} `, color: sign.color, bold: true },
     { text: `${row.short}  `, color: "text.muted" },
     { text: row.title, color: line.selected ? "brand.focus" : "text.primary", bold: line.selected },
-    { text: `  ${row.label}${row.pr ? ` · PR #${row.pr}` : ""} · ${row.source}${row.pulledBy ? ` · pulled by ${row.pulledBy}` : ""}`, color: "text.muted" },
+    { text: `  ${row.label}${row.pr ? ` · PR #${row.pr}` : ""} · ${row.source}${row.pulledBy ? ` · pulled by ${row.pulledBy}` : ""}${row.harness ? ` · via ${row.harness}` : ""}`, color: "text.muted" },
     ...(row.question && row.group === "person" ? [{ text: `  asks: ${row.question}`, color: "status.pending" as const }] : [])
   ];
 }

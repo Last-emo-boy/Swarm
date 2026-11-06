@@ -22,9 +22,10 @@ Commands:
   tickets [--all] [--all-devices] [--json]
                               Tickets, what waits for a person first; --all-devices adds paired mesh devices' tickets
   ticket <id> [--json]        One ticket with its latest report and messages; <device>:<id> for a paired device's
-  request [--device <name> | --on <node>] <text...>
+  request [--device <name> | --on <node>] [--harness <id>] <text...>
                               File a request as a new ticket from this terminal, or on a paired device;
-                              --on keeps the ticket here and runs its worker on a paired node
+                              --on keeps the ticket here and runs its worker on a paired node;
+                              --harness runs its worker on an agent harness such as claude or codex
   say <id> <text...>          Send a message to a ticket, such as an answer to its question
   stop <id>                   Stop a ticket's work
   retry <id>                  Start a ticket again after it failed or blocked
@@ -48,7 +49,7 @@ function value(args: string[], name: string): string | undefined {
 }
 
 const rowLine = (row: TicketRow): string =>
-  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
+  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.harness ? `  (via ${row.harness})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
 
 /** A paired node by name, id or a unique start of either, as a placement names it. */
 async function pairedNode(handle: string): Promise<NodeRef> {
@@ -107,16 +108,18 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
     }
     if (command === "request") {
       const on = value(args, "on");
+      const harness = value(args, "harness");
       const text = args.join(" ").trim();
-      if (!text) throw new Error("Usage: swarm superagent request [--on <node>] <text>");
+      if (!text) throw new Error("Usage: swarm superagent request [--on <node>] [--harness <id>] <text>");
+      const via = harness ? ` on ${harness}` : "";
       if (on) {
         const node = await pairedNode(on);
-        const { triggerId } = requestOn(client, text, node);
-        console.log(`Filed request ${triggerId.slice(0, 8)}; its worker runs on ${node.name}.${placeHint(client)}`);
+        const { triggerId } = requestOn(client, text, node, harness);
+        console.log(`Filed request ${triggerId.slice(0, 8)}; its worker runs${via} on ${node.name}.${placeHint(client)}`);
         return;
       }
-      const { triggerId } = client.request(text);
-      console.log(`Filed request ${triggerId.slice(0, 8)}.${lockHolder(client.stateDir) ? "" : " No host runs yet: start one with `swarm superagent run`."}`);
+      const { triggerId } = client.request(text, undefined, harness ? { harness } : {});
+      console.log(`Filed request ${triggerId.slice(0, 8)}${harness ? `; its worker runs on ${harness}` : ""}.${lockHolder(client.stateDir) ? "" : " No host runs yet: start one with `swarm superagent run`."}`);
       return;
     }
     const handle = args.shift();
@@ -188,6 +191,7 @@ async function allDeviceRows(client: SuperagentClient, ended: boolean): Promise<
 async function runOnDevice(command: string, args: string[], json: boolean): Promise<boolean> {
   const device = command === "request" ? value(args, "device") : undefined;
   if (device && args.includes("--on")) throw new Error("Give --device to file on a paired device, or --on to run the worker on one, not both");
+  if (device && args.includes("--harness")) throw new Error("A ticket filed on a paired device runs on that device's default harness; set executor.harness there instead of --harness");
   const handle = command === "ticket" || command === "say" || command === "stop" || command === "retry" ? args[0] : undefined;
   const { splitHandle } = await import("../mesh/tickets.js");
   const target = device ?? (handle ? splitHandle(handle).device : undefined);

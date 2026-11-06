@@ -33,6 +33,8 @@ export const KV = {
    * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.
    */
   mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
+  /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */
+  harness: { chosen: family<string>('harness-chosen:') },
   /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision.
