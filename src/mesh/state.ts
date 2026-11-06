@@ -79,8 +79,11 @@ const StateSchema = z.object({
 export type Lend = z.infer<typeof LendSchema>;
 export type Pull = z.infer<typeof PullSchema>;
 export type MeshNode = z.infer<typeof NodeSchema>;
-export type Peer = z.infer<typeof PeerSchema>;
-export type MeshState = z.infer<typeof StateSchema>;
+export type Peer = z.infer<typeof PeerSchema> & {
+  /** The mesh home the record was read from, not stored: a link to the peer dials the relay as that home's node. */
+  home?: string;
+};
+export type MeshState = Omit<z.infer<typeof StateSchema>, "peers"> & { peers: Peer[] };
 export type Removed = z.infer<typeof RemovedSchema>;
 
 /** A direct invite: the addresses of the node that answers it, which invite, and its secret. */
@@ -113,19 +116,14 @@ const statePath = (home: string): string => join(home, "state.json");
 
 /**
  * The node's state, created with a fresh identity named after the host the first time. State from before nodes had keys
- * gets its key pair here, and is written back so the relay name stays the same.
+ * gets its key pair here, and is written back so the relay name stays the same. Each peer says which home it came from.
  */
 export function readMesh(home = meshHome()): MeshState {
   const path = statePath(home);
-  if (!existsSync(path)) {
-    const fresh = StateSchema.parse({ node: { id: randomUUID(), name: hostname().replace(/\.local$/, "") } });
-    writeMesh(fresh, home);
-    return fresh;
-  }
-  const raw = JSON.parse(readFileSync(path, "utf8")) as { node?: { keys?: unknown } };
-  const state = StateSchema.parse(raw);
-  if (!raw.node?.keys) writeMesh(state, home);
-  return state;
+  const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as { node?: { keys?: unknown } } : undefined;
+  const state = StateSchema.parse(raw ?? { node: { id: randomUUID(), name: hostname().replace(/\.local$/, "") } });
+  if (!raw?.node?.keys) writeMesh(state, home);
+  return { ...state, peers: state.peers.map((peer) => ({ ...peer, home })) };
 }
 
 /** The paired peers, without creating mesh state on a device that never joined a mesh. */

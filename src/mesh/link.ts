@@ -12,7 +12,7 @@ import { Duplex, Readable } from "node:stream";
 import { connect as tlsConnect, createServer as createTlsServer, type TLSSocket, type Server as TlsServer } from "node:tls";
 import { parseListen } from "./listen.js";
 import { RelayError, relayDial, type RelayStream } from "./relay.js";
-import { peerByIdentity, pskIdentity, readMesh, type Peer } from "./state.js";
+import { meshHome, peerByIdentity, pskIdentity, readMesh, type Peer } from "./state.js";
 
 const TLS = { ciphers: "ECDHE-PSK-CHACHA20-POLY1305", minVersion: "TLSv1.2", maxVersion: "TLSv1.2" } as const;
 export const OPENER = "SWARM/1 ";
@@ -164,7 +164,8 @@ export const pathTo = (peerId: string): LinkPath | undefined => paths.get(peerId
 
 /**
  * Connects to a peer: its direct addresses at once, the relay where it listens shortly after, and the first link whose TLS
- * handshake finishes wins. A peer that answers but refuses the handshake no longer shares this node's key.
+ * handshake finishes wins. A peer that answers but refuses the handshake no longer shares this node's key. The relay dial
+ * is signed with the key of the node whose mesh home the peer record came from.
  */
 export function connectPeer(peer: Peer): Promise<TLSSocket> {
   return new Promise((resolve, reject) => {
@@ -206,7 +207,9 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
     const startRelay = (): void => {
       if (relayStarted || settled) return;
       relayStarted = true;
-      if (peer.relay && peer.relayName) attempt({ kind: "relay", relay: peer.relay }, () => relayDial(peer.relay!, peer.relayName!));
+      if (peer.relay && peer.relayName) {
+        attempt({ kind: "relay", relay: peer.relay }, () => relayDial(peer.relay!, peer.relayName!, readMesh(peer.home ?? meshHome()).node.keys));
+      }
     };
     const finish = (): void => {
       settled = true;

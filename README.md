@@ -828,9 +828,11 @@ tells a node which peer is calling. Devices connect directly when one reaches th
 forwarded port set with `swarm mesh advertise`) and through the relay otherwise; the first link to finish its
 handshake wins. The relay (`wss://swarm-relay.w33d.xyz` unless `swarm mesh relay <url>` names another, or
 `swarm mesh relay off` turns it off) only joins streams: it sees which device names connect, when and how much,
-never what they say. `swarm mesh relay serve` runs one; a code made on a device using another relay names it
-(`K7QM-4ZX2@relay.example`), so joining needs no setting. Without a relay, `swarm mesh invite --direct` prints a long
-one-time code with this node's addresses.
+never what they say. A device listens there under a name only its key can claim, and every dial to a device is signed
+with the dialing device's key, so the relay limits each device as well as each address; a device that is pairing
+dials the code's mailbox unsigned, under a tighter limit. `swarm mesh relay serve` runs one, and its `/v1/health`
+answers counts; a code made on a device using another relay names it (`K7QM-4ZX2@relay.example`), so joining needs no
+setting. Without a relay, `swarm mesh invite --direct` prints a long one-time code with this node's addresses.
 
 A device joining through a member is introduced to the others by vouchers: the member seals the new pair's key for
 each other member with the key it shares with that member, and the new device's first connection to a member shows

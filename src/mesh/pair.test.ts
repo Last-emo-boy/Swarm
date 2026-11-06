@@ -86,7 +86,7 @@ test("connections to the relay say they come from Swarm, which Cloudflare in fro
   const { url } = await probe.start("127.0.0.1:0");
   const server = (probe as unknown as { server: import("node:http").Server }).server;
   server.prependListener("upgrade", (request: import("node:http").IncomingMessage) => seen.push(request.headers["user-agent"] ?? ""));
-  await assert.rejects(relayDial(url, "node:nobody-listens-here-at-all"), /not listening/);
+  await assert.rejects(relayDial(url, "node:nobody-listens-here-at-all", readMesh(device("probe")).node.keys), /not listening/);
   await probe.stop();
   assert.match(seen[0] ?? "", /^Swarm\/\S+ \(mesh relay client\)$/);
 });
@@ -94,7 +94,7 @@ test("connections to the relay say they come from Swarm, which Cloudflare in fro
 test("the relay lets only a key's holder listen under its name, and says when nobody listens", async () => {
   const home = device("lone");
   const name = relayName(readMesh(home).node.keys.publicKey);
-  await assert.rejects(relayDial(relayUrl, name), /not listening at the relay/);
+  await assert.rejects(relayDial(relayUrl, name, readMesh(device("caller")).node.keys), /not listening at the relay/);
   await assert.rejects(relayDial(relayUrl, "code:ZZ"), /No device is waiting/);
   const impostor = new WebSocket(`${relayUrl}/v1/listen?name=${encodeURIComponent(name)}`);
   const other = readMesh(device("other")).node.keys;
