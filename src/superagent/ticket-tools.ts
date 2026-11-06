@@ -7,7 +7,7 @@ import { z } from "zod/v4";
 import { key, latestReport, liveTicket, reached, threadKey, ticketStage, type Ticket, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { textPage, ticketCard } from "./cards.js";
-import { inputMessage, triggerMessage } from "./messages.js";
+import { inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
 import { feishuSettings } from "./sources/feishu.js";
@@ -216,14 +216,20 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
     };
     const updated = client.engine.report(ticketId, report);
     const posted: string[] = [];
+    const answering = !!report.answers && !!message && !report.question;
+    // An answer posted where the ticket started is its result too, so the person reads the message once, as upstream's main
+    // Session sent one; asked elsewhere, both conversations get it.
+    const asked = answering ? client.store.triggers.get(report.answers!)?.channel : undefined;
+    const origin = sourceTrigger(client, updated)?.channel ?? updated.channels[0];
+    const answerIsResult = !!asked && !!origin && asked.source === origin.source && asked.thread === origin.thread;
     if (report.question && updated.attention) {
       client.engine.reply({ purpose: "attention", ticketId, question: updated.attention.question, text: message ?? updated.attention.question });
       posted.push("attention");
-    } else if (report.state === "ready" && message) {
+    } else if (report.state === "ready" && message && !answerIsResult) {
       client.engine.reply({ purpose: "result", ticketId, text: message });
       posted.push("result");
     }
-    if (report.answers && message && !report.question) {
+    if (answering) {
       client.engine.reply({ purpose: "answer", ticketId, triggerId: report.answers, text: message });
       posted.push("answer");
     }

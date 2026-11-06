@@ -16,6 +16,10 @@ const home = mkdtempSync(join(tmpdir(), "swarm-superagent-e2e-"));
 const saved = { SWARM_HOME: process.env.SWARM_HOME, SWARM_SUPERAGENT_HOME: process.env.SWARM_SUPERAGENT_HOME };
 let model: Awaited<ReturnType<typeof startFakeModel>>;
 let host: Host;
+/** The README ticket's worker answers in order: a progress report, a failed turn, then, once told the turn failed, its result. */
+let readmeStep = 0;
+/** Whether the config ticket's worker already answered the person's question, which it does once. */
+let configAnswered = false;
 
 const loop = (result: Record<string, unknown>) => JSON.stringify({ files_touched: [], next_actions: [], tool_calls: [], ...result });
 const reported = (request: ModelRequest) => request.user.includes("\"reported\":true") || request.user.includes("\\\"reported\\\":true");
@@ -28,6 +32,12 @@ function answer(request: ModelRequest): string {
     if (request.user.includes("bump the version")) {
       return JSON.stringify({ kind: "accept", title: "Bump the version", worktree_name: "bump-version", acknowledgement: "On it: bumping the version." });
     }
+    if (request.user.includes("config file")) {
+      return JSON.stringify({ kind: "accept", title: "Rename the config file", worktree_name: "rename-config", acknowledgement: "On it: renaming the config file." });
+    }
+    if (request.user.includes("README")) {
+      return JSON.stringify({ kind: "accept", title: "Tidy the README", worktree_name: "tidy-readme", acknowledgement: "On it: tidying the README." });
+    }
     if (request.user.includes("changelog")) {
       return JSON.stringify({ kind: "accept", title: "Update the changelog", worktree_name: "update-changelog", acknowledgement: "On it: updating the changelog." });
     }
@@ -36,6 +46,38 @@ function answer(request: ModelRequest): string {
   // The version ticket's worker never reports, even when reminded, as a real model did in a live trial.
   if (request.system.includes("bump-version-")) {
     return loop({ status: "completed", summary: "Bumped the version; reporting ready now.", message: "" });
+  }
+  // The config ticket's worker reports progress, then answers a person's question with its result, as on OVH.
+  if (request.system.includes("rename-config-")) {
+    if (!request.user.includes("ready for review")) {
+      if (reported(request)) return loop({ status: "completed", summary: "Waiting for review", message: "Waiting for review." });
+      return loop({ status: "continue", summary: "Progress", message: "Recording progress.", tool_calls: [
+        { id: "progress", action: "mcp__ticket__report", inputs: { state: "progress", summary: "Renamed the config file; the PR waits for review." } }
+      ] });
+    }
+    if (configAnswered) return loop({ status: "completed", summary: "Answered", message: "Answered." });
+    configAnswered = true;
+    const asked = [...request.user.matchAll(/trigger_id\\?":\\?"([0-9a-f]{32})/g)].at(-1)?.[1] ?? "";
+    return loop({ status: "continue", summary: "Answer", message: "Answering.", tool_calls: [
+      { id: "ready", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Renamed the config file; ready for review.", reply_to_trigger_id: asked, message_for_person: "Yes, it is ready for review." } }
+    ] });
+  }
+  // The README ticket's worker reports progress, then its turn fails on a reply the loop cannot use, as a real model's did on OVH.
+  if (request.system.includes("tidy-readme-")) {
+    readmeStep += 1;
+    if (readmeStep === 1) {
+      return loop({ status: "continue", summary: "Bind", message: "Recording progress.", tool_calls: [
+        { id: "progress", action: "mcp__ticket__report", inputs: { state: "progress", summary: "Tidied the README; checking it next." } }
+      ] });
+    }
+    if (readmeStep === 2) return loop({ status: "failed", summary: "The invalid output contains shell fragments rather than a valid executable tool_call.", message: "" });
+    if (!request.user.includes("Your last turn failed")) return loop({ status: "completed", summary: "Done", message: "Done." });
+    if (readmeStep === 3) {
+      return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
+        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Tidied the README and checked it.", message_for_person: "The README is tidy." } }
+      ] });
+    }
+    return loop({ status: "completed", summary: "Reported", message: "Reported." });
   }
   // The changelog ticket's worker ends its first turn without a report, as a real model did in a live trial.
   if (request.system.includes("update-changelog-")) {
@@ -149,4 +191,46 @@ test("a worker that stays silent after the reminder gets its report written from
   assert.match(conclusion.user, /reporting ready now/, "from the worker's last words");
   const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
   assert.ok(replies.some((reply) => reply.text === "The version is bumped to 0.2.0."));
+});
+
+test("a worker whose turn fails after a progress report gets another turn with the reason, and its report then ends the ticket", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  client.request("tidy the README");
+  const deadline = Date.now() + 100_000;
+  const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Tidy the README");
+  let ticket = find();
+  while (Date.now() < deadline && !ticket?.ended) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ticket = find();
+  }
+  assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)}`);
+  const retry = model.requests.find((request) => request.system.includes("tidy-readme-") && request.user.includes("Your last turn failed"));
+  assert.ok(retry, "the worker was told its turn failed");
+  assert.match(retry.user, /shell fragments/, "with the loop's reason");
+  const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
+  assert.ok(replies.some((reply) => reply.text === "The README is tidy."));
+});
+
+test("a worker reads a person's message before it reports on it, so the ticket ends when its PR merges", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  client.request("rename the config file");
+  const deadline = Date.now() + 100_000;
+  const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Rename the config file");
+  const until = async (done: () => boolean) => {
+    while (Date.now() < deadline && !done()) await new Promise((resolve) => setTimeout(resolve, 300));
+  };
+  await until(() => !!find()?.assignments.at(-1)?.idleAt);
+  const ticketId = find()!.id;
+  client.engine.bindThread(ticketId, { source: "github", id: "9" }, true);
+  const asked = client.message(ticketId, "is it ready for review?");
+  await until(() => find()?.assignments.at(-1)?.report?.state === "ready" && !!find()?.assignments.at(-1)?.idleAt
+    && find()!.assignments.at(-1)!.idleAt! > find()!.assignments.at(-1)!.report!.at);
+  const ticket = find()!;
+  const report = ticket.assignments.at(-1)!.report!;
+  assert.equal(report.state, "ready", `report: ${JSON.stringify(report)}`);
+  const input = ticket.inputs.find((item) => item.kind === "trigger" && item.triggerId === asked.triggerId);
+  assert.ok(input?.kind === "trigger" && input.readAt, "the worker read the message");
+  assert.ok(input.readAt < report.at, `read at ${input.readAt}, before the report at ${report.at}`);
+  client.engine.threadClosed({ source: "github", id: "9" }, "merged", new Date().toISOString());
+  assert.equal(find()?.ended?.outcome, "merged", `ended: ${JSON.stringify(find()?.ended)}`);
 });
