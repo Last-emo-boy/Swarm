@@ -157,6 +157,7 @@ Commands:
   serve      Start the local Swarm Gateway HTTP/event-stream server
   symphony   Run local work-source automation commands
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
+  harness    List the agent harness profiles here: installed, signed in, keys set
   mesh       Pair this device with other Swarm devices and see them
   node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
   config     Print config paths
@@ -814,32 +815,54 @@ Feishu images are not read during assessments yet. See `docs/SUPERAGENT.md`.
 ### Harness workers
 
 A ticket's worker can run on another agent harness installed on the machine
-instead of Swarm's own coding loop: Claude Code (`claude`) or Codex (`codex`).
-`executor.harness` in the superagent settings names the harness new tickets run
-on (`null`, the default, keeps Swarm's loop); `swarm superagent request --harness
-claude "..."` or `/ticket --harness codex <request>` chooses one for a single
-request. The choice is stored with the ticket's execution, so its follow-ups run
+instead of Swarm's own coding loop: Claude Code (`claude`), Codex (`codex`), Kimi
+Code (`kimi`) or OpenCode (`opencode`), or Claude Code on GLM or DeepSeek
+(`claude-glm`, `claude-deepseek`, below). `executor.harness` in the superagent
+settings names the harness new tickets run on (`null`, the default, keeps
+Swarm's loop); `swarm superagent request --harness claude "..."` or `/ticket
+--harness codex <request>` chooses one for a single request. The choice is stored with the ticket's execution, so its follow-ups run
 on the same harness, and `swarm superagent tickets`/`ticket` and the TUI show it
 as `via claude`.
 
-Each turn is one headless run in the ticket's directory: `claude -p
---output-format stream-json` or `codex exec --json`, with Swarm's ticket tools
-(`swarm superagent mcp`, plus `--remote` for a worker placed on a paired node)
-as the MCP server `ticket` and Swarm's worker instructions added to the
-harness's own (`--append-system-prompt`, Codex's `developer_instructions`).
-Later turns resume the harness's session (`--resume <id>`, `codex exec resume
-<id>`) with the messages that waited for the ticket; the session ids are kept in
+Each turn is one headless run in the ticket's directory, with Swarm's ticket
+tools (`swarm superagent mcp`, plus `--remote` for a worker placed on a paired
+node) as the MCP server `ticket` and Swarm's worker instructions added to the
+harness's own:
+
+| Harness | Turn | Ticket tools | Instructions | Resume |
+| --- | --- | --- | --- | --- |
+| Claude Code | `claude -p --output-format stream-json` | `--mcp-config`, and only those (`--strict-mcp-config`) | `--append-system-prompt` | `--resume <id>` |
+| Codex | `codex exec --json` | `-c mcp_servers.ticket.*` | `developer_instructions` | `codex exec resume <id>` |
+| Kimi Code | `kimi --prompt <prompt> --output-format stream-json` | added to the directory's `.kimi-code/mcp.json` for the turn and put back after it, with `KIMI_CODE_TRUST_WORKSPACE=1` | an agent file (`--agent-file`) with Kimi's own prompt first | `--session <id>` |
+| OpenCode | `opencode run --format json --agent swarm` | `OPENCODE_CONFIG_CONTENT`, which OpenCode merges above your config for that process | an instructions file named in that config | `--session <id>` |
+
+Kimi Code has no flag for an MCP server or extra instructions, so a ticket's
+turn writes the project-level `.kimi-code/mcp.json` in the ticket's directory
+(keeping whatever else is in it) and restores the file when the turn ends; the
+trust variable is what lets a headless run read it, and it also enables MCP
+servers the repository itself declares there or in `.mcp.json`. A Kimi session
+keeps the agent file's instructions it started with. Files Swarm writes for a
+turn, such as Kimi's agent file, OpenCode's instructions and Claude Code's
+settings file, live in a private temporary directory that is removed when the
+turn ends. Later turns resume the harness's session with the messages that
+waited for the ticket; the session ids are kept in
 `~/.swarm/state/harness-sessions/`. Reports, the reminder after a turn without a
 report, retries of failed turns, the budget per turn (60 model messages and 200
 tool calls, counted from the harness's events) and stopping work as they do for
 Swarm's loop, except that a message that arrives during a harness turn waits for
 the next turn. Each turn's tokens go to Swarm's usage records with the harness
-and its model (Codex's from its session file); Claude Code's cost is its own
-list-price estimate.
+and its model: Codex's model from its session file, Kimi Code's tokens and model
+from its session's wire files (its events carry neither), and OpenCode's model
+from `opencode export`. Claude Code's cost is its own list-price estimate, and
+OpenCode's is the sum of the cost it reports for each model call. Claude Code
+prices every model at Claude's rates, so on `claude-glm` and `claude-deepseek`
+its cost is wrong (a live DeepSeek turn it put at $0.127 cost about $0.003 at
+DeepSeek's prices); the token counts in the usage records are right.
 
 Before its first turn a worker checks that the harness is installed and signed
-in (`claude auth status`, `codex login status`); if not, the ticket fails with
-what to do on that machine, and Swarm never signs in for you. A harness runs as
+in (`claude auth status`, `codex login status`, `kimi provider list` with
+Kimi's token file, `opencode auth list`); if not, the ticket fails with what to
+do on that machine, and Swarm never signs in for you. A harness runs as
 it is set up for your OS user, with its own login, configuration, instructions
 and hooks. Two things Swarm adds to every turn: Claude Code's `attribution`
 setting with every part empty (`--settings`, which overrides your own settings),
@@ -847,10 +870,15 @@ so its commits and pull requests carry no Co-Authored-By trailer or "Generated
 with" line; and instructions to stage only the files the ticket changed, by
 path, so files a hook leaves in the ticket's directory stay out of its commits.
 Codex adds its own trailer only when your ChatGPT workspace turns attribution
-on, which Swarm cannot switch off; the instructions ask it not to. Profiles under `executor.harnesses` change the built-in `claude`
-and `codex` (command, model, arguments, environment) or add others of either
-kind; credentials never go in the settings: `keys` names the environment
-variable each one is read from.
+on, which Swarm cannot switch off; the instructions ask it not to. Kimi Code
+2.1.1 and OpenCode 1.18.21 add no attribution of their own in these modes.
+Profiles under `executor.harnesses` change the built-in ones (command, model,
+arguments, environment) or add others of any kind; credentials never go in the
+settings: `keys` names the environment variable each one is read from. A
+profile's own variables and keys also go in Claude Code's `--settings`, as a
+file in the turn's temporary directory, because the `env` of your
+`~/.claude/settings.json` (such as an `ANTHROPIC_BASE_URL` for a relay) would
+otherwise override them.
 
 ```json
 "executor": {
@@ -858,6 +886,7 @@ variable each one is read from.
   "harnesses": {
     "claude": { "model": "sonnet", "env": { "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1" } },
     "codex": { "command": "/Users/me/.local/bin/codex", "args": ["--profile", "work"] },
+    "opencode": { "model": "deepseek/deepseek-flash" },
     "relay": { "kind": "claude", "env": { "ANTHROPIC_BASE_URL": "https://relay.example/anthropic" },
       "keys": { "ANTHROPIC_AUTH_TOKEN": "RELAY_API_KEY" } }
   }
@@ -872,12 +901,46 @@ Variables that an enclosing Claude Code session gives its own tools
 started from inside Claude Code still finds the account the harness signs in
 with.
 
+#### GLM and DeepSeek behind Claude Code
+
+Two built-in profiles run Claude Code on other models through their providers'
+Anthropic-compatible endpoints, with the variables those providers' Claude Code
+guides set (Zhipu's [GLM Coding Plan guide](https://docs.bigmodel.cn/cn/coding-plan/tool/claude)
+and [DeepSeek's](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code),
+as of November 2026). Their keys come only from the environment:
+
+| Profile | Endpoint (`ANTHROPIC_BASE_URL`) | Model | Key |
+| --- | --- | --- | --- |
+| `claude-glm` | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3[1m]`; Haiku-class `glm-5.3-flash[1m]` | `ZHIPU_API_KEY` |
+| `claude-deepseek` | `https://api.deepseek.com/anthropic` | `deepseek-flash[1m]` for every class | `DEEPSEEK_API_KEY` |
+
+Both also set the providers' other variables (the auto-compact window, and for
+GLM `API_TIMEOUT_MS=3000000` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
+Settings add to a built-in model profile instead of replacing it, so Z.ai's
+international GLM endpoint is `"claude-glm": { "env": { "ANTHROPIC_BASE_URL":
+"https://api.z.ai/api/anthropic" } }`, and another key variable is `"keys": {
+"ANTHROPIC_AUTH_TOKEN": "MY_GLM_KEY" }`. DeepSeek maps any `claude-opus*` model
+name to `deepseek-v4-pro`, billed at its price. OpenCode reaches both natively,
+without Claude Code: a profile `{ "kind": "opencode", "model":
+"deepseek/deepseek-flash" }` (or `zhipuai-coding-plan/glm-5.3`, or Z.ai's
+`zai-coding-plan/glm-5.3`) uses the key from `opencode auth login` or from
+`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY`.
+
+#### Checking the harnesses here
+
+`swarm harness list` (also `swarm superagent harness list`) prints each profile
+with its kind, command, model, whether it is installed, and the variables its
+keys come from and whether they are set, by name only. `swarm harness check
+[<id>]` also runs each harness's sign-in status command and says what to do
+about one that is not signed in; with an id it exits non-zero when that profile
+cannot run here. Both take `--json`.
+
 The ticket's permission mode maps to the harness's own flags:
 
-| `executor.permissionMode` | Claude Code | Codex |
-| --- | --- | --- |
-| `full-auto` | `--permission-mode auto` (its classifier blocks risky actions); prompts are denied | `-s danger-full-access` with `approval_policy="never"`: no sandbox (see below) |
-| `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+| `executor.permissionMode` | Claude Code | Codex | Kimi Code | OpenCode |
+| --- | --- | --- | --- | --- |
+| `full-auto` | `--permission-mode auto` (its classifier blocks risky actions); prompts are denied | `-s danger-full-access` with `approval_policy="never"`: no sandbox (see below) | its Never Ask mode, which `--prompt` always uses | an agent that allows everything but the blocked commands, with `--auto` |
+| `yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | as `full-auto` | as `full-auto` |
 
 Codex runs without its sandbox in both modes. Its `workspace-write` sandbox keeps
 a workspace's own git metadata read-only, so a worker there cannot commit unless
@@ -890,12 +953,54 @@ Swarm cannot enforce its own rules inside another harness. Its permission
 rules in `~/.swarm/settings.json`, its risk levels and the approval it asks for
 destructive commands do not apply there; the harness decides with its own mode,
 classifier or sandbox, and Swarm does not see or audit each tool call. Blocked
-commands reach the harness only as Swarm's `PATH` shims (and Claude Code deny
-rules); Codex has no flag to deny a command, and either harness can run a
-program by its full path. Claude Code gets only the ticket tools
-(`--strict-mcp-config`); Codex also loads the MCP servers, plugins and
-instructions of its own configuration. The budget stops a harness after the
-fact, from the events it prints, and the usage is what the harness reports.
+commands reach the harness only as Swarm's `PATH` shims, and as deny rules in
+Claude Code and OpenCode; Codex and Kimi Code have no flag to deny a command,
+and any harness can run a program by its full path. Claude Code gets only the
+ticket tools (`--strict-mcp-config`); Codex, Kimi Code and OpenCode also load
+the MCP servers, plugins and instructions of their own configuration. The
+budget stops a harness after the fact, from the events it prints, and the usage
+is what the harness reports.
+
+### Harness subagents
+
+Subagents that the main Swarm delegates to (`agent.delegate`, the `Agent` tool)
+run in-process on Swarm's coding loop, or on a harness: an agent spec's
+`harness` field (a plugin's agent spec can set it too) or the delegate call's
+`harness` input names the profile, and the call's wins. The subagent then runs
+as one headless turn of that harness in the delegating session's workspace,
+with the spec's role, output contract and file scope as its instructions, the
+task packet as its prompt, no ticket tools, and the spec's tool budget as the
+turn's limits (`max_tool_calls` tool calls, and `max_turns + max_tool_calls`
+model messages). Its result returns to the parent as Swarm's workers return
+theirs: the harness's final message as the summary, followed by a line saying
+which harness and model ran and what it could not be held to, and the changed
+files from git status and HEAD before and after the turn. A delegate call that
+names a harness skips Swarm's check that small single-file tasks stay in the
+main loop.
+
+The spec's write policy is kept as far as the harness's own flags allow:
+
+- A `read_only` spec runs in the harness's read-only mode: Claude Code in its
+  `dontAsk` mode with only Read, Grep, Glob and git's status, diff, log and
+  show; Codex in its read-only sandbox (MCP servers from your Codex
+  configuration run outside it); Kimi Code with an agent that has only reading,
+  search and web tools; OpenCode with an agent that denies everything but
+  reading, searching, the web and git's read-only commands. A profile whose own
+  `args` set the harness's permissions, sandbox or tools (such as
+  `--dangerously-skip-permissions` or `--auto`) cannot be kept read-only, and the
+  subagent does not start: the parent gets a failed result that says why.
+- A `scoped_write` or `workspace_write` spec runs in the harness's `full-auto`
+  mode (`yolo` when Swarm runs in yolo). The harness is not confined to the
+  file scope or the workspace; files it changed outside the file scope are
+  named in the summary. In the `ask` and `auto-edit` permission modes Swarm asks
+  for approval once before such a subagent starts, as it cannot ask for each
+  edit or command inside the harness. It is told not to commit, push or open
+  pull requests.
+
+Parallel delegation can mix harnesses: a writer on OpenCode and a reviewer on
+Claude Code read-only, for example, each in the background with its own
+result. Their tokens go to the runtime's usage records with the harness and
+model, under the worker.
 
 ## Mesh
 
