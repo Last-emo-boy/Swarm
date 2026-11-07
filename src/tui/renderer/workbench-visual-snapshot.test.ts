@@ -45,7 +45,6 @@ test("workbench visual snapshot covers result approval inspector action log and 
   }
 
   const wideSnapshot = snapshots[2]!.snapshot;
-  assert.equal(cellStyleAtText(snapshotRowWithText(wideSnapshot, "[cache:HIT 81%]"), "[cache:HIT 81%]")?.backgroundColor, resolveTuiColor("surface.selection"));
   assert(colorCount(wideSnapshot) >= 6, "wide workbench should keep multiple semantic accents visible");
 });
 
@@ -121,22 +120,6 @@ function workbenchFixture(input: typeof WORKBENCH_VIEWPORTS[number]): React.Reac
       onSubmit: () => undefined,
       onCompletionRowsChange: () => undefined,
       inputActive: false,
-      footerModeLabel: "WORK",
-      footerModeTone: "brand.focus",
-      footerPermissionLabel: "YOLO",
-      footerPermissionTone: "status.danger",
-      footerSandboxLabel: "RW",
-      footerSandboxTone: "status.success",
-      footerItems: [
-        { id: "tasks", label: "tasks", value: "2/5", tone: "running" },
-        { id: "cache", label: "cache", value: "HIT 81%", tone: "success" },
-        { id: "lsp", label: "lsp", value: "READY", tone: "success" },
-        { id: "gateway", label: "gateway", value: "LOCAL", tone: "success" },
-        { id: "symphony", label: "symphony", value: "2 run", tone: "running" }
-      ],
-      selectedFooterItem: "cache",
-      footerHint: "Left/Right footer | [/] message | / search",
-      columns: input.columns,
       maxRows: 4
     })
   );

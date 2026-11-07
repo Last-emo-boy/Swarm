@@ -17,7 +17,7 @@ const VIEWPORTS = [
   { columns: 120, rows: 36 }
 ] as const;
 
-test("cc-grade visual matrix preserves semantic transcript footer and search layers across viewports", () => {
+test("cc-grade visual matrix keeps turn markers, tool states, search and the status line across viewports", () => {
   const snapshots = VIEWPORTS.map((viewport) => ({
     viewport,
     snapshot: renderCcGradeSnapshot(viewport.columns, viewport.rows)
@@ -25,13 +25,17 @@ test("cc-grade visual matrix preserves semantic transcript footer and search lay
 
   for (const { viewport, snapshot } of snapshots) {
     assert.deepEqual(assertFrameHasNoOverflow(snapshot), [], `${viewport.columns}x${viewport.rows} overflow`);
-    assert.match(snapshotText(snapshot), /❯ user\s+Find cache miss/);
-    assert.match(snapshotText(snapshot), /\[cache:HIT 74%\]/);
-    assert.match(snapshotText(snapshot), /● tool\s+shell/);
-    assert.match(snapshotText(snapshot), /✓ result\s+stdout/);
+    const text = snapshotText(snapshot);
+    assert.match(text, /^ › Find cache miss/m);
+    assert.match(text, /^ {3}✓ Read {3}README\.md$/m);
+    assert.match(text, /^ {3}✗ Bash {3}ls docs\/missing · command exited 1$/m);
+    assert.match(text, /^ {3}○ Bash {3}npm run check · approved$/m);
+    assert.match(text, /^ › Ask Swarm$/m);
+    assert.match(text, /^ {3}deepseek daily budget reached · 1 approval waiting/m);
+    assert.doesNotMatch(text, /❯|\buser\b|\[cache:|\[WORK\]/);
 
-    const userRow = snapshotRowWithText(snapshot, "❯ user");
-    assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
+    const userRow = snapshotRowWithText(snapshot, "› Find");
+    assert.equal(cellStyleAtText(userRow, "›")?.color, resolveTuiColor("brand.focus"));
     assert.equal(cellStyleAtText(userRow, "Find")?.backgroundColor, resolveTuiColor("surface.selection"));
     assert.equal(cellStyleAtText(userRow, "cache")?.backgroundColor, resolveTuiColor("surface.searchMatch"));
     assert.equal(cellStyleAtText(userRow, "cache")?.underline, true);
@@ -41,28 +45,28 @@ test("cc-grade visual matrix preserves semantic transcript footer and search lay
     assert.equal(cellStyleAtText(assistantRow, "Assistant")?.color, resolveTuiColor("role.assistant"));
     assert.equal(cellStyleAtText(assistantRow, "Assistant")?.backgroundColor, undefined);
 
-    const toolRow = snapshotRowWithText(snapshot, "● tool");
-    assert.equal(cellStyleAtText(toolRow, "●")?.color, resolveTuiColor("status.running"));
-    assert.equal(cellStyleAtText(toolRow, "shell")?.color, resolveTuiColor("text.primary"));
+    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "README.md"), "✓")?.color, resolveTuiColor("status.success"));
+    const failedRow = snapshotRowWithText(snapshot, "ls docs/missing");
+    assert.equal(cellStyleAtText(failedRow, "✗")?.color, resolveTuiColor("status.danger"));
+    assert.equal(cellStyleAtText(failedRow, "ls docs")?.color, resolveTuiColor("text.primary"));
+    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "npm run check"), "○")?.color, resolveTuiColor("status.running"));
 
-    const resultRow = snapshotRowWithText(snapshot, "✓ result");
-    assert.equal(cellStyleAtText(resultRow, "✓")?.color, resolveTuiColor("status.success"));
-    assert.equal(cellStyleAtText(resultRow, "cache")?.color, resolveTuiColor("text.primary"));
-
-    const footerRow = snapshotRowWithText(snapshot, "[cache:HIT 74%]");
-    assert.equal(cellStyleAtText(footerRow, "[cache:HIT 74%]")?.backgroundColor, resolveTuiColor("surface.selection"));
+    const statusRow = snapshotRowWithText(snapshot, "deepseek daily budget reached");
+    assert.equal(cellStyleAtText(statusRow, "deepseek")?.color, resolveTuiColor("status.danger"));
+    assert.equal(cellStyleAtText(statusRow, "1 approval")?.color, resolveTuiColor("status.warning"));
+    assert.equal(cellStyleAtText(statusRow, "$0.13")?.color, resolveTuiColor("text.muted"));
   }
 
-  const wideText = snapshotText(snapshots[2]!.snapshot);
-  assert.match(wideText, /Left\/Right footer \| \[\/\] message \| \/ search/);
+  assert.match(snapshotText(snapshots[2]!.snapshot), /\$0\.13 today +\? keys$/m);
 });
 
 test("cc-grade visual matrix keeps NO_COLOR readable and truecolor SGR expressive", () => {
   withNoColor(() => {
     const snapshot = renderCcGradeSnapshot(100, 30);
     assert.deepEqual(assertFrameHasNoOverflow(snapshot), []);
-    assert.match(snapshotText(snapshot), /❯ user\s+Find cache miss/);
-    assert.match(snapshotText(snapshot), /\[cache:HIT 74%\]/);
+    assert.match(snapshotText(snapshot), /› Find cache miss/);
+    assert.match(snapshotText(snapshot), /✗ Bash {3}ls docs\/missing/);
+    assert.match(snapshotText(snapshot), /1 approval waiting/);
     assert.equal(coloredCellCount(snapshot), 0);
   });
 
@@ -71,9 +75,9 @@ test("cc-grade visual matrix keeps NO_COLOR readable and truecolor SGR expressiv
     capabilities: { trueColor: true }
   }));
 
-  assert.match(patch, /\u001B\[38;2;122;217;122m❯/);
-  assert.match(patch, /\u001B\[[^m]*48;2;92;70;24[^m]*mcache/);
-  assert.match(patch, /\u001B\[[^m]*48;2;38;79;120[^m]*m\[cache:HIT 74%\]/);
+  assert.match(patch, new RegExp(`\u001B\\[[^m]*38;2;${rgb("brand.focus")}[^m]*m›`));
+  assert.match(patch, new RegExp(`\u001B\\[[^m]*48;2;${rgb("surface.searchMatch")}[^m]*mcache`));
+  assert.match(patch, new RegExp(`\u001B\\[[^m]*38;2;${rgb("status.danger")}[^m]*m✗`));
 });
 
 test("cc-grade aesthetic budget prevents single-color regression without rainbowing the surface", () => {
@@ -83,8 +87,7 @@ test("cc-grade aesthetic budget prevents single-color regression without rainbow
   const semanticAccents = [
     requiredColor("brand.focus"),
     requiredColor("status.running"),
-    requiredColor("role.tool"),
-    requiredColor("role.user"),
+    requiredColor("status.success"),
     requiredColor("status.danger")
   ];
 
@@ -95,10 +98,10 @@ test("cc-grade aesthetic budget prevents single-color regression without rainbow
   assert.equal(new Set(semanticAccents).size, semanticAccents.length);
   assert(backgrounds.has(requiredColor("surface.selection")));
   assert(backgrounds.has(requiredColor("surface.searchMatch")));
-  assert(backgrounds.has(requiredColor("surface.user")));
+  assert(!backgrounds.has(requiredColor("surface.user")), "a user's turn is marked by › alone, without a band");
   assert(foregrounds.size >= 5, "expected at least five foreground color channels");
-  assert(foregrounds.size <= 9, "foreground palette should stay within the cc-grade budget");
-  assert(backgrounds.size <= 4, "background palette should stay restrained");
+  assert(foregrounds.size <= 8, "foreground palette should stay within the cc-grade budget");
+  assert(backgrounds.size <= 2, "background palette is selection and search only");
 });
 
 test("cc-grade visual artifact exposes profile diff and inspectable ANSI snapshots", () => {
@@ -115,15 +118,15 @@ test("cc-grade visual artifact exposes profile diff and inspectable ANSI snapsho
   assert(dark);
   assert(contrast);
   assert(monochrome);
-  assert.match(dark.plainText, /❯ user\s+Find cache miss/);
-  assert.match(dark.ansiText, /\u001B\[[^m]*38;2;122;217;122m❯/);
-  assert.match(dark.ansiText, /\u001B\[[^m]*48;2;38;79;120[^m]*m\[cache:HIT 74%\]/);
+  assert.match(dark.plainText, /› Find cache miss/);
+  assert.match(dark.ansiText, new RegExp(`\u001B\\[[^m]*38;2;${rgb("brand.focus")}[^m]*m›`));
+  assert.match(dark.ansiText, new RegExp(`\u001B\\[[^m]*48;2;${rgb("surface.searchMatch")}[^m]*mcache`));
   assert.doesNotMatch(contrast.ansiText, /38;2|48;2/);
   assert.match(contrast.ansiText, /\u001B\[[^m]*9[0-7]m|\u001B\[[^m]*3[0-7]m/);
   assert.equal(stripAnsi(monochrome.ansiText).includes("Find cache miss"), true);
   assert.doesNotMatch(monochrome.ansiText, /38;2|38;5|48;2|48;5|\u001B\[[^m]*(?:3[0-7]|4[0-7]|9[0-7]|10[0-7])m/);
   assert.equal(dark.overflowIssues.length, 0);
-  assert(dark.foregrounds.some((entry) => entry.tokens.includes("role.user")));
+  assert(dark.foregrounds.some((entry) => entry.tokens.includes("brand.focus")));
   assert(dark.backgrounds.some((entry) => entry.tokens.includes("surface.selection")));
   assert(artifact.profileDiffs.some((diff) => diff.right === "swarm-monochrome" && diff.foregroundOnlyLeft.length > 0));
 
@@ -132,6 +135,15 @@ test("cc-grade visual artifact exposes profile diff and inspectable ANSI snapsho
   assert.match(summary, /swarm-dark: colored=/);
   assert.match(summary, /Profile Diff/);
 });
+
+/** A token's truecolor channels as an SGR sequence writes them, such as "224;151;88". */
+function rgb(token: Parameters<typeof resolveTuiColor>[0]): string {
+  const match = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(requiredColor(token));
+  if (!match) {
+    throw new Error(`expected ${token} to be an rgb() color`);
+  }
+  return match.slice(1).join(";");
+}
 
 function renderCcGradeSnapshot(columns: number, rows: number): TuiFrameSnapshot {
   return createFrameSnapshot(renderTuiToFrame(ccGradeVisualFixture({ columns, rows }), { columns, rows }));

@@ -1,11 +1,8 @@
 import React from "react";
 import { Box, Text } from "../ui.js";
-import { visualTokenColor, type TuiColorRef } from "../theme.js";
-import type { ResultCard as RuntimeResultCard } from "../../runtime/result-card.js";
+import { visualTokenColor } from "../theme.js";
 import { conversationRendererContract } from "../conversation-layout.js";
 import ScrollBox, { type RendererScrollBoxHandle as ScrollBoxHandle } from "../renderer/components/ScrollBox.js";
-import { shortcutPhrase } from "../shortcuts.js";
-import { statusBadge } from "../theme.js";
 
 export function ConversationFullscreenLayout(props: {
   columns: number;
@@ -85,41 +82,9 @@ export function ConversationFullscreenLayout(props: {
   );
 }
 
-const SPINNER_FRAMES = ["|", "/", "-", "\\"];
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-export function ConversationBottomChrome(props: {
-  input: React.ReactNode;
-  busy?: boolean;
-  activity?: string;
-  motionFrame?: number;
-  resultCard?: RuntimeResultCard;
-  detailAvailable?: boolean;
-  /** What waits for a person, above the status and the prompt; nothing while nothing waits. */
-  notice?: React.ReactNode;
-  /** The run's status while busy, in place of the one-line activity. */
-  status?: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <Box flexDirection="column" width="100%">
-      {props.notice}
-      {props.busy && props.status}
-      {props.busy && !props.status && (
-        <ConversationStatusLine
-          message={props.activity ?? "Starting..."}
-          motionFrame={props.motionFrame}
-        />
-      )}
-      {!props.busy && props.resultCard && (
-        <ConversationResultLine
-          card={props.resultCard}
-          detailAvailable={Boolean(props.detailAvailable)}
-        />
-      )}
-      {props.input}
-    </Box>
-  );
-}
-
+/** The activity line while a run is busy: what runs now, for how long, and the rest in a few words. */
 export function ConversationStatusLine(props: {
   message: string;
   motionFrame?: number;
@@ -128,51 +93,25 @@ export function ConversationStatusLine(props: {
   /** Counts and a key hint, such as "2 workers · Ctrl+C interrupts", shown last. */
   extra?: string;
 }): React.ReactElement {
-  const spinner = typeof props.motionFrame === "number"
-    ? SPINNER_FRAMES[props.motionFrame % SPINNER_FRAMES.length]
-    : "*";
-  const elapsed = props.elapsedMs !== undefined ? ` · ${formatStatusElapsed(props.elapsedMs)}` : "";
+  const spinner = SPINNER_FRAMES[(props.motionFrame ?? 0) % SPINNER_FRAMES.length];
+  const parts = [
+    props.elapsedMs !== undefined ? formatStatusElapsed(props.elapsedMs) : "",
+    props.extra ?? ""
+  ].filter(Boolean);
   return (
     <Text color={visualTokenColor("text.muted")} wrap="truncate">
       <Text color={visualTokenColor("status.running")}>{spinner} </Text>
-      {stripActivityPrefix(props.message)}
-      {elapsed}
-      {props.extra ? <Text color={visualTokenColor("text.muted")} dimColor>{`  ${props.extra}`}</Text> : null}
+      <Text color={visualTokenColor("text.primary")}>{stripActivityPrefix(props.message)}</Text>
+      {parts.length ? ` · ${parts.join(" · ")}` : ""}
     </Text>
   );
 }
 
 function formatStatusElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-export function ConversationResultLine(props: {
-  card: RuntimeResultCard;
-  detailAvailable: boolean;
-}): React.ReactElement {
-  const changed = props.card.changedFiles.length;
-  const checks = props.card.checks.length;
-  return (
-    <Box flexDirection="column" width="100%">
-      <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        <Text color={resultColor(props.card.status)}>{statusBadge(props.card.status)} </Text>
-        {props.card.summary}
-      </Text>
-      <Text color={visualTokenColor("text.muted")} wrap="truncate">
-        {changed} changed · {checks} checks
-        {props.detailAvailable ? ` · ${shortcutPhrase("detail.open", "details")}` : ""}
-      </Text>
-    </Box>
-  );
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 function stripActivityPrefix(value: string): string {
   return value.replace(/^#\d+\s+/, "").trim();
-}
-
-function resultColor(status: RuntimeResultCard["status"]): TuiColorRef {
-  if (status === "completed") return "status.success";
-  if (status === "failed") return "status.danger";
-  return "status.pending";
 }

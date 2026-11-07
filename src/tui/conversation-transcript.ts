@@ -1,30 +1,12 @@
 import type { RuntimeAgentIdentity, RuntimeEvent } from "../runtime/events.js";
 import type { ToolAction } from "../tools/types.js";
-import type { ConversationMessage } from "./conversation-layout.js";
+import type { ConversationMessage, TranscriptTool } from "./conversation-layout.js";
 
-export function createStartupLogoMessage(input: {
-  version?: string;
-  cwd?: string;
-  model?: string;
-} = {}): ConversationMessage {
-  const cwd = input.cwd ?? process.cwd();
-  const model = input.model?.trim() || "model not configured";
-  return {
-    role: "system",
-    kind: "logo",
-    title: input.version,
-    detail: model,
-    preview: cwd,
-    brief: [
-      "╭────────────────────────────╮",
-      "│        Symphony Swarm       │",
-      "╰────────────────────────────╯",
-      `Local Agent OS${input.version ? ` v${input.version}` : ""}`,
-      model,
-      compactPath(cwd)
-    ].join("\n")
-  };
-}
+/**
+ * The conversation transcript as runtime events change it. Each tool call is one row, added when it starts and updated
+ * in place as it waits for approval and returns; a subagent is one row from start to finish. Thinking and step
+ * notices are not kept: the activity line shows what runs now, and the answer's footer says how the run ended.
+ */
 
 export function slashCommandTranscriptMessage(commandLine: string): ConversationMessage {
   return {
@@ -36,120 +18,136 @@ export function slashCommandTranscriptMessage(commandLine: string): Conversation
 }
 
 export function slashToolUseTranscriptMessage(action: ToolAction): ConversationMessage {
+  const tool = toolForAction(action.type, describeToolTarget(action));
   return {
     role: "system",
     kind: "tool_use",
     status: "running",
-    brief: describeToolAction(action),
+    tool: { ...tool, startedAt: Date.now() },
+    brief: `${tool.verb} ${tool.target}`.trim(),
     detail: renderToolActionDetail(action),
-    preview: describeToolAction(action),
     title: "Tool use"
   };
 }
 
-export function runtimeEventTranscriptMessage(event: RuntimeEvent): ConversationMessage | undefined {
+/** The transcript after `event`: the same array when the event changes nothing that is shown. */
+export function applyRuntimeEventToTranscript(messages: ConversationMessage[], event: RuntimeEvent): ConversationMessage[] {
   if (event.type === "loop_activity") {
-    if (event.phase === "thinking") {
-      return {
-        role: "assistant",
-        kind: "thinking",
-        status: "running",
-        brief: withAgentPrefix(event.agent, collapseThinkingMessage(event.message)),
-        title: event.agent ? "Agent thinking" : "Thinking"
-      };
+    if (event.phase !== "running_tool" && event.phase !== "waiting_approval") {
+      return messages;
     }
-    if (event.phase === "running_tool" || event.phase === "running_tools" || event.phase === "waiting_approval") {
-      return {
-        role: "system",
-        kind: event.phase === "waiting_approval" ? "approval" : "tool_use",
-        status: "running",
-        brief: withAgentPrefix(event.agent, stripActivityPrefix(event.message)),
-        title: event.agent
-          ? event.phase === "waiting_approval" ? "Agent approval" : "Agent tool use"
-          : event.phase === "waiting_approval" ? "Approval" : "Tool use"
-      };
+    const id = event.task_id ? toolRowId(event.task_id) : undefined;
+    const existing = id ? findRow(messages, id) : undefined;
+    if (event.phase === "waiting_approval") {
+      return existing !== undefined ? updateRow(messages, existing, (row) => withTool(row, { approval: "pending" }, "pending")) : messages;
     }
-    if (event.phase === "failed" || event.phase === "stopped") {
-      return {
-        role: "system",
-        kind: "progress",
-        status: event.phase === "failed" ? "error" : "warning",
-        brief: withAgentPrefix(event.agent, stripActivityPrefix(event.message)),
-        title: event.agent ? "Agent progress" : "Progress"
-      };
+    if (existing !== undefined) {
+      return messages;
     }
-    return undefined;
-  }
-
-  if (event.type === "tool_result") {
-    const status = event.status === "failed"
-      ? "error"
-      : event.status === "partial"
-        ? "warning"
-        : "success";
-    return {
+    const action = event.tool ?? "";
+    const tool = toolForAction(action, activityTarget(event.message, action));
+    return [...messages, {
       role: "system",
-      kind: "tool_result",
-      status,
-      brief: withAgentPrefix(event.agent, `${event.action}: ${event.summary}`),
-      detail: event.content,
-      preview: withAgentPrefix(event.agent, toolResultPreview(event)),
-      title: event.agent ? "Agent tool result" : "Tool result"
-    };
+      kind: "tool_use",
+      status: "running",
+      ...(id ? { id } : {}),
+      tool: { ...tool, startedAt: Date.now() },
+      brief: withAgentPrefix(event.agent, `${tool.verb} ${tool.target}`.trim()),
+      title: event.agent ? "Agent tool use" : "Tool use"
+    }];
   }
 
   if (event.type === "approval") {
-    return {
+    const id = event.request.task_id ? toolRowId(event.request.task_id) : undefined;
+    const existing = id ? findRow(messages, id) : undefined;
+    const approval = event.status;
+    if (existing !== undefined) {
+      return updateRow(messages, existing, (row) => withTool(row, { approval }, approval === "denied" ? "error" : approval === "pending" ? "pending" : "running"));
+    }
+    const tool = toolForAction(String(event.request.action), event.request.target);
+    return [...messages, {
       role: "system",
-      kind: "approval",
-      status: event.status === "denied" ? "error" : event.status === "approved" ? "success" : "pending",
-      brief: `${event.status}: ${event.request.summary}`,
+      kind: "tool_use",
+      status: approval === "denied" ? "error" : approval === "pending" ? "pending" : "running",
+      ...(id ? { id } : {}),
+      tool: { ...tool, approval, startedAt: Date.now() },
+      brief: `${tool.verb} ${tool.target}`.trim(),
       detail: event.request.detail,
-      preview: `${event.status}: ${event.request.summary}`,
-      title: "Approval"
-    };
+      title: "Tool use"
+    }];
   }
 
-  if (event.type === "final" && event.status && event.status !== "completed") {
-    return {
+  if (event.type === "tool_result") {
+    const status: ConversationMessage["status"] = event.status === "failed" ? "error" : event.status === "partial" ? "warning" : "success";
+    const note = status === "success" ? undefined : firstLine(event.summary);
+    const id = toolRowId(event.task_id);
+    const existing = findRow(messages, id);
+    const detail = toolResultDetail(event);
+    if (existing !== undefined) {
+      return updateRow(messages, existing, (row) => ({
+        ...withTool(row, { ...(note ? { note } : {}), ms: row.tool?.startedAt ? Date.now() - row.tool.startedAt : undefined }, status),
+        detail,
+        preview: toolResultPreview(event)
+      }));
+    }
+    const tool = toolForAction(event.action, firstLine(event.title) || firstLine(event.summary));
+    return [...messages, {
       role: "system",
-      kind: "progress",
-      status: event.status === "failed" ? "error" : "warning",
-      brief: `${event.status}: ${firstLine(event.content) || "run ended"}`,
-      title: "Final status"
-    };
+      kind: "tool_use",
+      status,
+      id,
+      tool: { ...tool, ...(note ? { note } : {}) },
+      brief: withAgentPrefix(event.agent, `${tool.verb} ${tool.target}`.trim()),
+      detail,
+      preview: toolResultPreview(event),
+      title: event.agent ? "Agent tool result" : "Tool result"
+    }];
   }
 
   if (event.type === "agent_run_started") {
+    const id = agentRowId(event.worker.worker_id);
+    if (findRow(messages, id) !== undefined) {
+      return messages;
+    }
     const label = workerLabel(event.worker);
-    return {
+    return [...messages, {
       role: "system",
-      kind: "progress",
+      kind: "tool_use",
       status: "running",
-      brief: `${label}: started ${event.task_packet.objective}`,
+      id,
+      tool: { verb: "Agent", target: `${label}: ${firstLine(event.task_packet.objective)}`, startedAt: Date.now() },
+      brief: `Agent ${label}: ${firstLine(event.task_packet.objective)}`,
+      detail: event.task_packet.objective,
       title: "Agent started"
-    };
+    }];
   }
 
   if (event.type === "agent_run_completed") {
+    const id = agentRowId(event.worker.worker_id);
+    const status: ConversationMessage["status"] = event.worker.status === "failed" ? "error" : event.worker.status === "stopped" ? "warning" : "success";
     const label = workerLabel(event.worker);
-    const status = event.worker.status === "failed"
-      ? "error"
-      : event.worker.status === "stopped"
-        ? "warning"
-        : "success";
-    return {
-      role: "system",
-      kind: "progress",
-      status,
-      brief: `${label}: ${firstLine(event.result) || event.worker.status}`,
+    const note = status === "success" ? undefined : firstLine(event.result) || event.worker.status;
+    const existing = findRow(messages, id);
+    const completed = (row: ConversationMessage): ConversationMessage => ({
+      ...withTool(row, { ...(note ? { note } : {}), ms: row.tool?.startedAt ? Date.now() - row.tool.startedAt : undefined }, status),
       detail: event.result,
       preview: agentResultPreview(label, event.result),
       title: "Agent completed"
-    };
+    });
+    if (existing !== undefined) {
+      return updateRow(messages, existing, completed);
+    }
+    return [...messages, completed({
+      role: "system",
+      kind: "tool_use",
+      status,
+      id,
+      tool: { verb: "Agent", target: `${label}: ${firstLine(event.worker.objective)}` },
+      brief: `Agent ${label}: ${firstLine(event.worker.objective)}`
+    })];
   }
 
-  return undefined;
+  return messages;
 }
 
 export function appendTranscriptMessage(
@@ -172,97 +170,146 @@ export function transcriptMessageSignature(message: ConversationMessage): string
   ].join("|");
 }
 
-function describeToolAction(action: ToolAction): string {
-  switch (action.type) {
-    case "file.read":
-      return `Read ${previewValue(action.path ?? action.paths?.join(", ") ?? ".")}`;
-    case "file.list":
-      return `List ${previewValue(action.root)}`;
-    case "file.glob":
-      return `Glob ${previewValue(action.pattern)} in ${previewValue(action.root)}`;
-    case "file.grep":
-      return `Grep ${previewValue(action.pattern)} in ${previewValue(action.root)}`;
-    case "file.stat":
-      return `Stat ${previewValue(action.path)}`;
-    case "file.resolve":
-      return `Resolve ${previewValue(action.path)}`;
-    case "file.write":
-      return `Write ${previewValue(action.path)}`;
-    case "file.edit":
-      return `Edit ${previewValue(action.path)}`;
-    case "file.mkdir":
-      return `Mkdir ${previewValue(action.path)}`;
-    case "file.move":
-      return `Move ${previewValue(action.source)} -> ${previewValue(action.destination)}`;
-    case "file.copy":
-      return `Copy ${previewValue(action.source)} -> ${previewValue(action.destination)}`;
-    case "file.delete":
-      return `Delete ${previewValue(action.path)}`;
-    case "file.patch":
-      return `Patch ${previewValue(action.path)}`;
-    case "json.read":
-      return `Read JSON ${previewValue(action.path)}`;
-    case "json.edit":
-      return `Edit JSON ${previewValue(action.path)} ${previewValue(action.pointer)}`;
-    case "todo.write":
-      return `Update TODOs ${action.todos.length} item(s)`;
-    case "blackboard.write":
-      return `Blackboard write ${previewValue(action.key)}`;
-    case "blackboard.read":
-      return `Blackboard read ${previewValue(action.entryId ?? action.key ?? "entry")}`;
-    case "blackboard.search":
-      return `Blackboard search ${previewValue(action.query ?? action.keyPrefix ?? action.tag ?? "entries")}`;
-    case "blackboard.list":
-      return `Blackboard list ${previewValue(action.keyPrefix ?? action.tag ?? "entries")}`;
-    case "shell.exec":
-      return `Run shell command: ${previewValue(action.command, 180)}`;
-    case "exec":
-      return `Run exec command: ${previewValue(action.command, 180)}`;
-    case "process.start":
-      return `Start process: ${previewValue(action.command, 180)}`;
-    case "process.status":
-      return `Process status ${previewValue(action.processId ?? "recent")}`;
-    case "process.list":
-      return `List processes ${previewValue(action.status ?? action.sessionId ?? "recent")}`;
-    case "process.tail":
-      return `Tail process ${previewValue(action.processId)}`;
-    case "process.grep":
-      return `Grep process ${previewValue(action.pattern)} in ${previewValue(action.processId)}`;
-    case "process.stop":
-      return `Stop process ${previewValue(action.processId)}`;
-    case "web.search":
-      return `Search web: ${previewValue(action.query, 180)}`;
-    case "web.fetch":
-      return `Fetch web: ${previewValue(action.url, 180)}`;
-    case "notebook.edit":
-      return `Edit notebook ${previewValue(action.notebookPath)}`;
-    case "code.test":
-      return `Run test command: ${previewValue(action.command, 180)}`;
-    case "code.lint":
-      return `Run lint ${previewValue(action.root ?? action.include ?? ".")}`;
-    case "code.build":
-      return `Run build command: ${previewValue(action.command, 180)}`;
-    case "git.status":
-      return `Git status ${previewValue(action.cwd ?? ".")}`;
-    case "git.diff":
-      return `Git diff ${action.staged ? "--staged" : ""} ${previewValue(action.cwd ?? ".")}`.trim();
-    case "git.log":
-      return `Git log ${previewValue(action.cwd ?? ".")}`;
-    case "git.branch":
-      return `Git branch ${previewValue(action.action ?? "list")} ${previewValue(action.name ?? action.cwd ?? ".")}`;
-    case "git.show":
-      return `Git show ${previewValue(action.revision ?? "HEAD")}${action.path ? ` ${previewValue(action.path)}` : ""}`;
-    case "package.install":
-      return `Install packages: ${previewValue(action.command, 180)}`;
-    case "package.info":
-      return `Package info ${previewValue(action.manifest ?? action.cwd ?? ".")}`;
-    case "project.detect":
-      return `Detect project ${previewValue(action.root ?? ".")}`;
-    case "agent.delegate":
-      return `Delegate agent task: ${previewValue(action.task, 180)}`;
-    default:
-      return `Run ${(action as ToolAction).type}`;
+/** What a tool call does, in the words the transcript shows: a verb such as Read or Bash, and the kind of work it counts as. */
+export type ToolKind = "read" | "edit" | "run" | "search" | "fetch" | "git" | "agent" | "other";
+
+const VERBS: Record<string, { verb: string; kind: ToolKind }> = {
+  "file.read": { verb: "Read", kind: "read" },
+  "json.read": { verb: "Read", kind: "read" },
+  "file.stat": { verb: "Read", kind: "read" },
+  "file.resolve": { verb: "Read", kind: "read" },
+  "file.list": { verb: "List", kind: "search" },
+  "file.glob": { verb: "Find", kind: "search" },
+  "file.grep": { verb: "Search", kind: "search" },
+  "file.write": { verb: "Write", kind: "edit" },
+  "file.edit": { verb: "Edit", kind: "edit" },
+  "file.patch": { verb: "Edit", kind: "edit" },
+  "json.edit": { verb: "Edit", kind: "edit" },
+  "notebook.edit": { verb: "Edit", kind: "edit" },
+  "file.mkdir": { verb: "Create", kind: "edit" },
+  "file.move": { verb: "Move", kind: "edit" },
+  "file.copy": { verb: "Copy", kind: "edit" },
+  "file.delete": { verb: "Delete", kind: "edit" },
+  "shell.exec": { verb: "Bash", kind: "run" },
+  exec: { verb: "Bash", kind: "run" },
+  "process.start": { verb: "Bash", kind: "run" },
+  "code.test": { verb: "Test", kind: "run" },
+  "code.lint": { verb: "Lint", kind: "run" },
+  "code.build": { verb: "Build", kind: "run" },
+  "package.install": { verb: "Install", kind: "run" },
+  "web.search": { verb: "Search", kind: "fetch" },
+  "web.fetch": { verb: "Fetch", kind: "fetch" },
+  "agent.delegate": { verb: "Agent", kind: "agent" },
+  // The names capability calls report their results under.
+  Read: { verb: "Read", kind: "read" },
+  Write: { verb: "Write", kind: "edit" },
+  Edit: { verb: "Edit", kind: "edit" },
+  Bash: { verb: "Bash", kind: "run" },
+  Grep: { verb: "Search", kind: "search" },
+  Glob: { verb: "Find", kind: "search" },
+  WebFetch: { verb: "Fetch", kind: "fetch" },
+  WebSearch: { verb: "Search", kind: "fetch" }
+};
+
+export function toolKind(verbOrAction: string): ToolKind {
+  if (verbOrAction === "Agent") {
+    return "agent";
   }
+  const found = VERBS[verbOrAction] ?? Object.values(VERBS).find((entry) => entry.verb === verbOrAction);
+  if (found) {
+    return found.kind;
+  }
+  return verbOrAction === "Git" ? "git" : "other";
+}
+
+function toolForAction(action: string, target: string): TranscriptTool {
+  const known = VERBS[action];
+  if (known) {
+    return { verb: known.verb, target: oneLine(target) };
+  }
+  if (action.startsWith("git.")) {
+    return { verb: "Git", target: oneLine([action.slice(4), target].filter(Boolean).join(" ")) };
+  }
+  if (action.startsWith("process.")) {
+    return { verb: "Process", target: oneLine([action.slice(8), target].filter(Boolean).join(" ")) };
+  }
+  if (action.startsWith("blackboard.") || action === "todo.write") {
+    return { verb: "Note", target: oneLine(target) };
+  }
+  // A capability or deferred tool: its own name is the verb.
+  return { verb: action ? action.split(".").at(-1)!.replace(/^./, (first) => first.toUpperCase()) : "Step", target: oneLine(target) };
+}
+
+/** The target of a running tool from the loop's activity text, `Running <action> <target>`. */
+function activityTarget(message: string, action: string): string {
+  const text = message.replace(/^#\d+\s+/, "").replace(/^Running\s+/, "").trim();
+  return action && text.startsWith(`${action} `) ? text.slice(action.length + 1) : text === action ? "" : text;
+}
+
+/**
+ * The line a turn's settled tool calls fold into, such as "Read 2 files, ran 1 command · 1 failed". `failed` and
+ * `denied` count the calls that did not succeed.
+ */
+export function toolGroupSummary(rows: ReadonlyArray<Pick<ConversationMessage, "status" | "tool">>): { text: string; failed: number; denied: number } {
+  const counts = new Map<ToolKind, number>();
+  let failed = 0;
+  let denied = 0;
+  for (const row of rows) {
+    const kind = toolKind(row.tool?.verb ?? "");
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    if (row.tool?.approval === "denied") {
+      denied += 1;
+    } else if (row.status === "error") {
+      failed += 1;
+    }
+  }
+  const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
+  const parts = ([
+    ["read", (n: number) => `read ${plural(n, "file", "files")}`],
+    ["edit", (n: number) => `edited ${plural(n, "file", "files")}`],
+    ["run", (n: number) => `ran ${plural(n, "command", "commands")}`],
+    ["search", (n: number) => `searched ${n === 1 ? "once" : `${n} times`}`],
+    ["fetch", (n: number) => `fetched ${plural(n, "page", "pages")}`],
+    ["git", (n: number) => plural(n, "git step", "git steps")],
+    ["agent", (n: number) => plural(n, "agent", "agents")],
+    ["other", (n: number) => plural(n, "other step", "other steps")]
+  ] as const).flatMap(([kind, phrase]) => counts.get(kind) ? [phrase(counts.get(kind)!)] : []);
+  const text = parts.join(", ");
+  return { text: text.charAt(0).toUpperCase() + text.slice(1), failed, denied };
+}
+
+const toolRowId = (taskId: string): string => `tool:${taskId}`;
+const agentRowId = (workerId: string): string => `agent:${workerId}`;
+
+function findRow(messages: ConversationMessage[], id: string): number | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.id === id) {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function updateRow(messages: ConversationMessage[], index: number, change: (row: ConversationMessage) => ConversationMessage): ConversationMessage[] {
+  const next = messages.slice();
+  next[index] = change(messages[index]!);
+  return next;
+}
+
+function withTool(row: ConversationMessage, change: Partial<TranscriptTool>, status: ConversationMessage["status"]): ConversationMessage {
+  const defined = Object.fromEntries(Object.entries(change).filter(([, value]) => value !== undefined)) as Partial<TranscriptTool>;
+  return { ...row, status, tool: { ...row.tool ?? { verb: "Step", target: row.brief }, ...defined } };
+}
+
+function describeToolTarget(action: ToolAction): string {
+  const record = action as Record<string, unknown>;
+  for (const field of ["command", "path", "pattern", "url", "query", "task", "root", "notebookPath", "processId", "key"]) {
+    const value = record[field];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return Array.isArray(record.paths) ? record.paths.join(", ") : "";
 }
 
 function renderToolActionDetail(action: ToolAction): string {
@@ -286,6 +333,10 @@ function renderToolActionDetail(action: ToolAction): string {
     lines.push(`Query: ${action.query}`);
   }
   return lines.join("\n");
+}
+
+function toolResultDetail(event: Extract<RuntimeEvent, { type: "tool_result" }>): string {
+  return [`${event.action}: ${event.summary}`, event.content?.trim()].filter(Boolean).join("\n\n");
 }
 
 function toolResultPreview(event: Extract<RuntimeEvent, { type: "tool_result" }>): string {
@@ -330,27 +381,11 @@ function agentResultPreview(label: string, result: string): string {
   return [label, ...lines].join("\n");
 }
 
-function stripActivityPrefix(value: string): string {
-  return value.replace(/^#\d+\s+/, "").trim();
+function oneLine(value: string): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > 160 ? `${text.slice(0, 157).trimEnd()}...` : text;
 }
 
-function collapseThinkingMessage(value: string): string {
-  const message = stripActivityPrefix(value);
-  return message.includes("thinking") ? message : `Thinking: ${message}`;
-}
-
-function previewValue(value: unknown, maxLength = 120): string {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim() || "(none)";
-  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...` : text;
-}
-
-function firstLine(value: string): string {
-  return value.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
-}
-
-function compactPath(value: string): string {
-  if (value.length <= 80) {
-    return value;
-  }
-  return `...${value.slice(-77)}`;
+function firstLine(value: string | undefined): string {
+  return value?.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
 }

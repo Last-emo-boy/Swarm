@@ -16,7 +16,7 @@ test("renderer virtual transcript snapshots visible rows without mounting full h
   assert(snapshot.layout.mountedMessageCount < 24);
   assert(snapshot.layout.visibleMessageCount <= 12);
   assert.equal(snapshot.searchMatches.length, 1);
-  assert.equal(snapshot.searchMatches[0]?.row, 10);
+  assert.equal(snapshot.searchMatches[0]?.row, 9, "a blank line sets the last prompt apart from it");
 });
 
 function longMessages(count: number): ConversationMessage[] {

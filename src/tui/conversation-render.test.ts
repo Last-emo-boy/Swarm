@@ -5,161 +5,96 @@ import test from "node:test";
 import { render } from "./ui.js";
 import { ChatCommandCandidates, ChatInputArea } from "./ChatInputArea.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
-import { ConversationBottomChrome, ConversationFullscreenLayout } from "./components/ConversationFullscreenLayout.js";
+import { ConversationFullscreenLayout, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
+import { StatusLine } from "./components/StatusLine.js";
 import { createTuiRoot } from "./renderer/root.js";
 import { renderTuiToFrame } from "./renderer/testing.js";
 import { chatInputCompletionCandidates, createChatInputControllerState, selectedChatInputCompletionIndex } from "./chat-input-controller.js";
 import { displayWidth } from "./display-width.js";
 import { formatCompactIdleRows } from "./SwarmChatApp.js";
 import type { ConversationMessage } from "./conversation-layout.js";
+import { buildStatusLine, type StatusItemId } from "./status-line.js";
 import { resolveTuiColor } from "./theme.js";
-import type { ResultCard } from "../runtime/result-card.js";
 
 test("default conversation surface renders without dashboard chrome", async () => {
   const output = await renderConversationFrame();
   const plain = terminalFrameText(output);
 
-  assert.match(plain, /Swarm chat ready/);
-  assert.match(plain, /❯ user\s+Keep the default TUI simple/);
+  assert.match(plain, /^ *· Swarm chat ready/m);
+  assert.match(plain, /^ *› Keep the default TUI simple/m);
   assert.match(plain, /Done/);
   assert.match(plain, /- Markdown stays multi-line/);
-  assert.match(plain, /^\s*❯/m);
-  assert.match(plain, /Ask Swarm/);
-  assert.match(plain, /╭|─/);
+  assert.match(plain, /^ *› Ask Swarm$/m);
   assert.match(plain, /^─{20,}$/m);
+  assert.doesNotMatch(plain, /╭|❯|\buser\b|\bsystem\b|\[WORK|\[RW/);
   assert.doesNotMatch(plain, /StatusRail|CurrentAction|View\s+\|/);
   assert.doesNotMatch(plain, /Overview|Trace\s+\| Ctrl\+N\/P/);
-  assert.doesNotMatch(plain, /You Keep the default TUI simple|Note Swarm chat ready/);
 });
 
-test("default conversation surface shows a cc-style startup logo on empty chats", async () => {
-  const output = await renderConversationFrame({
-    messages: [{
-      role: "system",
-      kind: "logo",
-      brief: "logo",
-      title: "0.1.0",
-      detail: "openai/gpt",
-      preview: "E:\\Playground\\Swarm"
-    }]
-  });
-  const plain = terminalFrameText(output);
+test("an empty chat shows two quiet lines instead of a logo", async () => {
+  const plain = terminalFrameText(await renderConversationFrame({ messages: [], workspace: "~/Playground/swarm" }));
+  const rows = plainRows(plain);
 
-  assert.match(plain, /Symphony Swarm/);
-  assert.match(plain, /Local Agent OS|openai\/gpt/);
-  assert.match(plain, /E:\\Playground\\Swarm/);
+  assert.equal(rows[0], " Ask anything about ~/Playground/swarm.");
+  assert.equal(rows[1], " / commands · ? keys");
+  assert.doesNotMatch(plain, /Symphony Swarm|Local Agent OS/);
   assert.match(plain, /Ask Swarm/);
 });
 
-test("default conversation surface renders command and tool transcript rows", async () => {
-  const output = await renderConversationFrame({
+test("tool calls are one row each while the turn runs and fold into one line once it ends", async () => {
+  const running = terminalFrameText(await renderConversationFrame({
     columns: 70,
     messages: [
       { role: "user", kind: "command", brief: "/shell npm test" },
-      { role: "system", kind: "tool_use", status: "running", brief: "Run shell command: npm test" },
-      {
-        role: "system",
-        kind: "tool_result",
-        status: "success",
-        brief: "shell.exec: command exited 0",
-        preview: "shell.exec: command exited 0\n$ npm test\nok"
-      },
-      { role: "assistant", kind: "thinking", status: "running", brief: "Swarm is thinking" }
+      { role: "system", kind: "tool_use", status: "success", id: "tool:1", tool: { verb: "Read", target: "package.json" }, brief: "Read package.json" },
+      { role: "system", kind: "tool_use", status: "running", id: "tool:2", tool: { verb: "Bash", target: "npm test", approval: "approved" }, brief: "Bash npm test" }
     ]
-  });
-  const plain = terminalFrameText(output);
+  }));
+  assert.match(running, /^ *› \/shell npm test$/m);
+  assert.match(running, /^ *✓ Read {3}package\.json$/m);
+  assert.match(running, /^ *○ Bash {3}npm test · approved$/m);
+  assert.doesNotMatch(running, /file\.read|shell\.exec|Running/);
 
-  assert.match(plain, /❯ cmd\s+\/shell npm test/);
-  assert.match(plain, /Run shell command: npm test/);
-  assert.match(plain, /shell\.exec: command exited 0/);
-  assert.doesNotMatch(plain, /\$ npm test/);
-  assert.match(plain, /Swarm is thinking/);
+  const settled = terminalFrameText(await renderConversationFrame({
+    columns: 70,
+    messages: [
+      { role: "user", brief: "run the tests" },
+      { role: "system", kind: "tool_use", status: "success", id: "tool:1", tool: { verb: "Read", target: "package.json" }, brief: "Read package.json" },
+      { role: "system", kind: "tool_use", status: "error", id: "tool:2", tool: { verb: "Bash", target: "npm test", note: "command exited 1" }, brief: "Bash npm test" },
+      { role: "assistant", brief: "The tests fail in one place.", footer: { text: "✗ Failed · command exited 1 · Ctrl+O for details", status: "error" } }
+    ]
+  }));
+  assert.match(settled, /^ *▸ Read 1 file, ran 1 command · 1 failed$/m);
+  assert.doesNotMatch(settled, /package\.json/);
+  assert.match(settled, /^ The tests fail in one place\.$/m);
+  assert.match(settled, /^ ✗ Failed · command exited 1 · Ctrl\+O for details$/m);
 });
 
-test("default conversation surface exposes semantic color diversity", () => {
-  const frame = renderTuiToFrame(React.createElement(ConversationFullscreenLayout, {
-    columns: 82,
-    rows: 18,
-    bottomRows: 4,
-    scrollable: React.createElement(ConversationFirstPane, {
-      messages: [
-        { role: "user", kind: "command", brief: "/shell npm test" },
-        { role: "system", kind: "tool_use", status: "running", brief: "Run shell command: npm test" },
-        { role: "system", kind: "tool_result", status: "success", brief: "shell.exec: command exited 0" },
-        { role: "system", kind: "approval", status: "pending", brief: "Approve file.write" },
-        { role: "assistant", brief: "# Done\nThe result is ready." }
-      ],
-      rows: 14,
-      columns: 80
-    }),
-    bottom: React.createElement(ChatInputArea, {
-      onSubmit: () => undefined,
-      onCompletionRowsChange: () => undefined,
-      inputActive: false,
-      maxRows: 4,
-      footerItems: [
-        { id: "tasks", label: "tasks", value: "1/2", tone: "running" },
-        { id: "cache", label: "cache", value: "hit", tone: "success" },
-        { id: "gateway", label: "gateway", value: "local", tone: "neutral" }
-      ],
-      selectedFooterItem: "cache"
-    })
-  }), { columns: 82, rows: 18 });
-
-  const colors = new Set(frame.screen.cells.flatMap((row) => row.map((cell) => cell.style.color).filter(Boolean)));
-
-  assert(colors.has(resolveTuiColor("role.user")));
-  assert(colors.has(resolveTuiColor("role.tool")));
-  assert(colors.has(resolveTuiColor("status.pending")));
-  assert(colors.has(resolveTuiColor("brand.focus")));
-  assert(colors.has(resolveTuiColor("text.primary")));
-  assert(colors.size >= 5);
-});
-
-test("transcript rows color markers and labels without tinting neutral body text", () => {
+test("the conversation colours only what carries meaning: the turn marker and each call's state", () => {
   const frame = renderTuiToFrame(React.createElement(ConversationFirstPane, {
     messages: [
-      { role: "user", kind: "command", brief: "/shell npm test" },
-      { role: "system", kind: "tool_use", status: "running", brief: "Run shell command: npm test" },
-      { role: "system", kind: "tool_result", status: "success", brief: "shell.exec: command exited 0" },
-      { role: "assistant", brief: "The result is ready." }
+      { role: "user", brief: "/check the build" },
+      { role: "system", kind: "tool_use", status: "running", id: "tool:1", tool: { verb: "Bash", target: "npm test" }, brief: "Bash npm test" },
+      { role: "system", kind: "tool_use", status: "success", id: "tool:2", tool: { verb: "Read", target: "README.md" }, brief: "Read README.md" },
+      { role: "system", kind: "tool_use", status: "pending", id: "tool:3", tool: { verb: "Write", target: "a.txt", approval: "pending" }, brief: "Write a.txt" },
+      { role: "system", kind: "tool_use", status: "error", id: "tool:4", tool: { verb: "Bash", target: "ls nope", note: "command exited 1" }, brief: "Bash ls nope" }
     ],
-    rows: 8,
+    rows: 12,
     columns: 72
-  }), { columns: 72, rows: 8 });
+  }), { columns: 72, rows: 12 });
 
-  const commandRow = frameRowWithText(frame, "❯ cmd");
-  assert.equal(cellStyleAtText(commandRow, "❯")?.color, resolveTuiColor("role.user"));
-  assert.equal(cellStyleAtText(commandRow, "/shell")?.color, resolveTuiColor("text.primary"));
+  const userRow = frameRowWithText(frame, "› /check");
+  assert.equal(cellStyleAtText(userRow, "›")?.color, resolveTuiColor("brand.focus"));
+  assert.equal(cellStyleAtText(userRow, "/check")?.color, resolveTuiColor("text.primary"));
+  assert.equal(cellStyleAtText(userRow, "›")?.backgroundColor, undefined, "no band behind the user's turn");
 
-  const toolRow = frameRowWithText(frame, "Run shell command");
-  assert.equal(cellStyleAtText(toolRow, "●")?.color, resolveTuiColor("status.running"));
-  assert.equal(cellStyleAtText(toolRow, "Run shell")?.color, resolveTuiColor("text.primary"));
-
-  const resultRow = frameRowWithText(frame, "shell.exec");
-  assert.equal(cellStyleAtText(resultRow, "✓")?.color, resolveTuiColor("status.success"));
-  assert.equal(cellStyleAtText(resultRow, "shell.exec")?.color, resolveTuiColor("text.primary"));
-});
-
-test("transcript user rows use subtle background band while assistant body stays unbanded", () => {
-  const frame = renderTuiToFrame(React.createElement(ConversationFirstPane, {
-    messages: [
-      { role: "user", brief: "TUI 现在只有一个颜色了" },
-      { role: "assistant", brief: "I will keep body text neutral." }
-    ],
-    rows: 6,
-    columns: 72
-  }), { columns: 72, rows: 6 });
-
-  const userRow = frameRowWithText(frame, "❯ user");
-  const assistantRow = frameRowWithText(frame, "I will keep body text neutral.");
-
-  assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
-  assert.equal(cellStyleAtText(userRow, "TUI")?.color, resolveTuiColor("text.primary"));
-  assert.equal(cellStyleAtText(userRow, "❯")?.backgroundColor, resolveTuiColor("surface.user"));
-  assert.equal(cellStyleAtText(userRow, "TUI")?.backgroundColor, resolveTuiColor("surface.user"));
-  assert.equal(cellStyleAtText(assistantRow, "I will")?.color, resolveTuiColor("role.assistant"));
-  assert.equal(cellStyleAtText(assistantRow, "I will")?.backgroundColor, undefined);
+  assert.equal(cellStyleAtText(frameRowWithText(frame, "npm test"), "○")?.color, resolveTuiColor("status.running"));
+  assert.equal(cellStyleAtText(frameRowWithText(frame, "README.md"), "✓")?.color, resolveTuiColor("status.success"));
+  assert.equal(cellStyleAtText(frameRowWithText(frame, "a.txt"), "?")?.color, resolveTuiColor("status.pending"));
+  const failed = frameRowWithText(frame, "ls nope");
+  assert.equal(cellStyleAtText(failed, "✗")?.color, resolveTuiColor("status.danger"));
+  assert.equal(cellStyleAtText(failed, "ls nope")?.color, resolveTuiColor("text.primary"));
+  assert.equal(cellStyleAtText(failed, "command exited 1")?.color, resolveTuiColor("status.danger"));
 });
 
 test("selected transcript rows use selection background without inverse swallowing semantic foregrounds", () => {
@@ -173,13 +108,13 @@ test("selected transcript rows use selection background without inverse swallowi
     columns: 72
   }), { columns: 72, rows: 6 });
 
-  const userRow = frameRowWithText(frame, "❯ user");
+  const userRow = frameRowWithText(frame, "› select");
 
-  assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
+  assert.equal(cellStyleAtText(userRow, "›")?.color, resolveTuiColor("brand.focus"));
   assert.equal(cellStyleAtText(userRow, "select")?.color, resolveTuiColor("text.primary"));
-  assert.equal(cellStyleAtText(userRow, "❯")?.backgroundColor, resolveTuiColor("surface.selection"));
+  assert.equal(cellStyleAtText(userRow, "›")?.backgroundColor, resolveTuiColor("surface.selection"));
   assert.equal(cellStyleAtText(userRow, "select")?.backgroundColor, resolveTuiColor("surface.selection"));
-  assert.equal(cellStyleAtText(userRow, "❯")?.inverse, undefined);
+  assert.equal(cellStyleAtText(userRow, "›")?.inverse, undefined);
 });
 
 test("search match highlight uses local background without swallowing row semantics", () => {
@@ -194,10 +129,10 @@ test("search match highlight uses local background without swallowing row semant
     columns: 90
   }), { columns: 90, rows: 6 });
 
-  const userRow = frameRowWithText(frame, "❯ user");
+  const userRow = frameRowWithText(frame, "› Find");
 
-  assert.equal(cellStyleAtText(userRow, "❯")?.color, resolveTuiColor("role.user"));
-  assert.equal(cellStyleAtText(userRow, "❯")?.backgroundColor, resolveTuiColor("surface.selection"));
+  assert.equal(cellStyleAtText(userRow, "›")?.color, resolveTuiColor("brand.focus"));
+  assert.equal(cellStyleAtText(userRow, "›")?.backgroundColor, resolveTuiColor("surface.selection"));
   assert.equal(cellStyleAtText(userRow, "Find")?.backgroundColor, resolveTuiColor("surface.selection"));
   assert.equal(cellStyleAtText(userRow, "cache")?.backgroundColor, resolveTuiColor("surface.searchMatch"));
   assert.equal(cellStyleAtText(userRow, "cache")?.underline, true);
@@ -230,7 +165,7 @@ test("chat input reports desired multiline height before the bottom slot expands
 
 test("default conversation surface shows scroll chrome in the message area", async () => {
   const output = await renderConversationFrame({
-    bottomRows: 4,
+    bottomRows: 3,
     scrollOffset: 7,
     rows: 10,
     messages: scrolledConversationMessages()
@@ -239,13 +174,13 @@ test("default conversation surface shows scroll chrome in the message area", asy
 
   assert.match(plain, /Jump to bottom/);
   assert.match(plain, /Jump to bottom ↓/);
-  assert.match(plain, /^\s*❯/m);
-  assert.equal(plainRows(plain).filter((line) => /^\s*❯\s+Keep the default TUI simple\./u.test(line)).length, 1);
+  assert.match(plain, /^ *› Ask Swarm$/m);
+  assert.equal(plainRows(plain).filter((line) => /^\s*›\s+Keep the default TUI simple\./u.test(line)).length, 1);
 });
 
 test("default conversation surface shows new-message pill while scrolled away", async () => {
   const output = await renderConversationFrame({
-    bottomRows: 4,
+    bottomRows: 3,
     scrollOffset: 4,
     rows: 10,
     newMessageCount: 2,
@@ -255,7 +190,7 @@ test("default conversation surface shows new-message pill while scrolled away", 
 
   assert.match(plain, /2 new messages/);
   assert.match(plain, /2 new messages ↓/);
-  assert.match(plain, /--- 2 new messages ---/);
+  assert.match(plain, /── 2 new messages ──/);
 });
 
 test("default conversation surface fits a narrow viewport without horizontal overflow", async () => {
@@ -282,7 +217,7 @@ test("default conversation surface keeps bottom input visible on short viewports
   const output = await renderConversationFrame({
     columns: 58,
     rows: 8,
-    bottomRows: 4,
+    bottomRows: 3,
     scrollOffset: 6,
     newMessageCount: 1,
     unseenStartIndex: 2
@@ -291,7 +226,7 @@ test("default conversation surface keeps bottom input visible on short viewports
   const rows = plainRows(plain);
 
   assert.match(plain, /1 new message ↓|Jump to bottom ↓/);
-  assert(rows.slice(-4).some((line) => line.includes("❯") || line.includes("Ask Swarm")));
+  assert(rows.slice(-3).some((line) => line.includes("› Ask Swarm")));
   assert(rows.every((line) => displayWidth(line) <= 58));
 });
 
@@ -299,12 +234,12 @@ test("default conversation surface keeps prompt visible when slash completions o
   const closedOutput = await renderConversationFrame({
     columns: 58,
     rows: 8,
-    bottomRows: 4
+    bottomRows: 3
   });
   const output = await renderConversationFrame({
     columns: 58,
     rows: 8,
-    bottomRows: 4,
+    bottomRows: 3,
     completionPlacement: "overlay",
     inputValue: "/"
   });
@@ -315,303 +250,57 @@ test("default conversation surface keeps prompt visible when slash completions o
   assert.doesNotMatch(plain, /Command Palette|COMMAND PALETTE/);
   assert.match(plain, /\/help/);
   assert.equal(promptRowIndex(plain), closedPromptRow);
-  assert(rows.slice(-2).some((line) => line.includes("❯") || line.includes("/")));
+  assert(rows.slice(-2).some((line) => line.includes("›") || line.includes("/")));
   assert(rows.every((line) => displayWidth(line) <= 58));
 });
 
-test("chat input renders a stable focused mode hint without moving the prompt", async () => {
-  const plain = terminalFrameText(await renderConversationFrame({
-    columns: 64,
-    rows: 10,
-    bottomRows: 4,
-    promptLabel: "work",
-    sandboxLabel: "rw"
-  }));
-  const promptRow = plainRows(plain).find((line) => line.includes("❯") || line.includes("Ask Swarm")) ?? "";
+test("the prompt carries no mode tags: a mode that is not the default shows in the header instead", async () => {
+  const plain = terminalFrameText(await renderConversationFrame({ columns: 64, rows: 10, bottomRows: 3 }));
+  const promptRow = plainRows(plain).find((line) => line.includes("Ask Swarm")) ?? "";
 
-  assert.match(promptRow, /\[WORK RW\]/);
-  assert.match(promptRow, /❯\s+Ask Swarm/);
-  assert.equal(displayWidth(promptRow) <= 64, true);
-
-  const compact = terminalFrameText(await renderConversationFrame({
-    columns: 44,
-    rows: 10,
-    bottomRows: 4,
-    promptLabel: "coding-loop",
-    sandboxLabel: "workspace-write",
-    density: "compact"
-  }));
-  const compactPromptRow = plainRows(compact).find((line) => line.includes("❯") || line.includes("Ask Swarm")) ?? "";
-
-  assert.match(compactPromptRow, /\[CODING-LOO RW\]/);
-  assert.equal(displayWidth(compactPromptRow) <= 44, true);
+  assert.equal(promptRow, " › Ask Swarm");
+  assert.doesNotMatch(plain, /\[(WORK|RW|ASK|TEAM)\b/);
 });
 
-test("chat input footer renders cc-style semantic status pills and muted hint", () => {
-  const frame = renderTuiToFrame(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "WORK",
-    footerPermissionLabel: "YOLO",
-    footerPermissionTone: "status.danger",
-    footerSandboxLabel: "RW",
-    footerSandboxTone: "status.success",
-    footerItems: [
-      { id: "tasks", label: "tasks", value: "1/2", tone: "running" },
-      { id: "cache", label: "cache", value: "hit", tone: "success" },
-      { id: "lsp", label: "lsp", value: "ts", tone: "success" }
-    ],
-    selectedFooterItem: "cache",
-    footerHint: "Left/Right footer | [/] message | / search",
-    columns: 120,
-    maxRows: 4
-  }), { columns: 120, rows: 5 });
-  const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).join("\n");
-  const footerRow = frame.screen.cells.find((row) => row.some((cell) => cell.char === "[" && cell.style.color !== undefined));
-  assert(footerRow);
-
-  assert.match(plain, /\[WORK\]/);
-  assert.match(plain, /\[YOLO\]/);
-  assert.match(plain, /\[RW\]/);
-  assert.match(plain, /\[cache:hit\]/);
-  assert.match(plain, /Left\/Right footer \| \[\/\] message \| \/ search/);
-
-  const line = footerRow!.map((cell) => cell.char).join("");
-  const cacheIndex = line.indexOf("[cache:hit]");
-  const yoloIndex = line.indexOf("[YOLO]");
-  assert(cacheIndex >= 0);
-  assert(yoloIndex >= 0);
-  assert.equal(footerRow![cacheIndex]?.style.backgroundColor, resolveTuiColor("surface.selection"));
-  assert.equal(footerRow![cacheIndex]?.style.inverse, undefined);
-  assert.equal(footerRow![yoloIndex]?.style.color, resolveTuiColor("status.danger"));
-});
-
-test("chat input footer dispatches mouse clicks on service pills", () => {
-  const clicked: string[] = [];
-  const root = createTuiRoot({
-    columns: 120,
-    rows: 5,
-    terminalCapabilities: { mouse: true }
+test("the status line sits under the prompt, its hint at the right, and the hint gives way while typing", async () => {
+  const status = ({ promptEmpty }: { promptEmpty: boolean }) => React.createElement(StatusLine, {
+    ...buildStatusLine({ tickets: { needYou: 2, working: 1 }, spentToday: "$0.13", promptEmpty }),
+    columns: 80
   });
-  root.render(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "WORK",
-    footerSandboxLabel: "RW",
-    footerItems: [
-      { id: "tasks", label: "tasks", value: "1/2", tone: "running" },
-      { id: "cache", label: "cache", value: "HIT", tone: "success" }
-    ],
-    selectedFooterItem: "cache",
-    onFooterItemClick: (id) => clicked.push(id),
-    footerHint: "Left/Right footer | [/] message | / search",
-    columns: 120,
-    maxRows: 4
-  }));
+  const idle = plainRows(terminalFrameText(await renderConversationFrame({ rows: 12, bottomRows: 3, status })));
+  assert.match(idle.at(-1) ?? "", /^ {3}2 tickets need you · \$0\.13 today +\? keys$/);
+  assert.equal(idle.at(-2), " › Ask Swarm");
 
-  const frame = root.getFrame();
-  assert(frame);
-  const target = findCell(frame, "[cache:HIT]");
-  assert(target, "expected cache footer pill to render");
-
-  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
-
-  assert.deepEqual(clicked, ["cache"]);
-  root.unmount();
+  const typing = plainRows(terminalFrameText(await renderConversationFrame({ rows: 12, bottomRows: 3, status, inputValue: "hello" })));
+  assert.match(typing.at(-1) ?? "", /^ {3}2 tickets need you · \$0\.13 today$/, "? would be typed into the prompt, so the hint goes");
 });
 
-test("chat input footer mouse clicks are disabled with terminal mouse capability off", () => {
-  const clicked: string[] = [];
-  const root = createTuiRoot({
-    columns: 120,
-    rows: 5,
-    terminalCapabilities: { mouse: false }
-  });
-  root.render(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerItems: [
-      { id: "cache", label: "cache", value: "HIT", tone: "success" }
-    ],
-    onFooterItemClick: (id) => clicked.push(id),
-    columns: 120,
-    maxRows: 4
-  }));
-
-  const frame = root.getFrame();
-  assert(frame);
-  const target = findCell(frame, "[cache:HIT]");
-  assert(target, "expected cache footer pill to render");
-
-  root.dispatchMouse({ x: target.x, y: target.y, button: "left", action: "press" });
-
-  assert.deepEqual(clicked, []);
-  root.unmount();
-});
-
-test("chat input footer uses a two-zone service surface on wide terminals", () => {
-  const frame = renderTuiToFrame(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "WORK",
-    footerPermissionLabel: "YOLO",
-    footerPermissionTone: "status.danger",
-    footerSandboxLabel: "RW",
-    footerSandboxTone: "status.success",
-    footerItems: [
-      { id: "tasks", label: "tasks", value: "1/2", tone: "running" },
-      { id: "cache", label: "cache", value: "HIT", tone: "success" },
-      { id: "lsp", label: "lsp", value: "TS", tone: "success" },
-      { id: "gateway", label: "gateway", value: "local", tone: "success" },
-      { id: "symphony", label: "symphony", value: "2 run", tone: "running" }
-    ],
-    selectedFooterItem: "lsp",
-    footerHint: "Left/Right footer | [/] message | / search",
-    columns: 140,
-    maxRows: 4
-  }), { columns: 140, rows: 5 });
-  const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).join("\n");
-  const footerRow = frameRowWithText(frame, "[lsp:TS]");
-  const line = rowText(footerRow);
-  const hintIndex = line.indexOf("Left/Right footer");
-  const lspIndex = line.indexOf("[lsp:TS]");
-
-  assert.match(plain, /\[cache:HIT\]/);
-  assert.match(plain, /\[gateway:local\]/);
-  assert.match(plain, /\[symphony:2 run\]/);
-  assert(hintIndex > lspIndex, "hint should render as the right footer zone");
-  assert.equal(cellStyleAtText(footerRow, "[lsp:TS]")?.backgroundColor, resolveTuiColor("surface.selection"));
-});
-
-test("chat input footer hides shortcut hint while typing", () => {
-  const frame = renderTuiToFrame(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "WORK",
-    footerPermissionLabel: "YOLO",
-    footerPermissionTone: "status.danger",
-    footerItems: [
-      { id: "cache", label: "cache", value: "HIT", tone: "success" }
-    ],
-    footerHint: "Left/Right footer | [/] message | / search",
-    columns: 120,
-    maxRows: 4,
-    controllerStateRef: {
-      current: {
-        ...createChatInputControllerState(),
-        input: { value: "hello", cursor: 5 }
-      }
+test("a status-line item opens its view when clicked, and only when the terminal reports the mouse", () => {
+  for (const mouse of [true, false]) {
+    const clicked: StatusItemId[] = [];
+    const root = createTuiRoot({ columns: 100, rows: 3, terminalCapabilities: { mouse } });
+    root.render(React.createElement(ChatInputArea, {
+      onSubmit: () => undefined,
+      onCompletionRowsChange: () => undefined,
+      inputActive: false,
+      status: ({ promptEmpty }: { promptEmpty: boolean }) => React.createElement(StatusLine, {
+        ...buildStatusLine({ approvalsWaiting: 1, tickets: { needYou: 2, working: 0 }, promptEmpty }),
+        columns: 100,
+        onItemClick: (id: StatusItemId) => clicked.push(id)
+      }),
+      maxRows: 3
+    }));
+    try {
+      const frame = root.getFrame();
+      assert(frame);
+      const target = findCell(frame, "2 tickets need you");
+      assert(target, "expected the tickets item to render");
+      root.dispatchMouse({ x: target.x + 2, y: target.y, button: "left", action: "press" });
+      assert.deepEqual(clicked, mouse ? ["tickets"] : []);
+    } finally {
+      root.unmount();
     }
-  }), { columns: 120, rows: 5 });
-  const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).join("\n");
-
-  assert.match(plain, /\[WORK\]/);
-  assert.match(plain, /\[cache:HIT\]/);
-  assert.doesNotMatch(plain, /Left\/Right footer/);
-});
-
-test("chat input footer compresses search state into the left surface", () => {
-  const frame = renderTuiToFrame(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "WORK",
-    footerPermissionLabel: "YOLO",
-    footerPermissionTone: "status.danger",
-    footerSandboxLabel: "RW",
-    footerSandboxTone: "status.success",
-    footerActivityLabel: "search",
-    footerActivityValue: "1/3 cache miss",
-    footerActivityTone: "surface.searchMatch",
-    footerItems: [
-      { id: "cache", label: "cache", value: "HIT", tone: "success" },
-      { id: "lsp", label: "lsp", value: "TS", tone: "success" },
-      { id: "gateway", label: "gateway", value: "LOCAL", tone: "success" },
-      { id: "symphony", label: "symphony", value: "2 run", tone: "running" }
-    ],
-    selectedFooterItem: "gateway",
-    footerHint: "search 1/3 cache miss | Enter jump | Esc close",
-    columns: 80,
-    maxRows: 4
-  }), { columns: 80, rows: 5 });
-  const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).join("\n");
-  const searchRow = frameRowWithText(frame, "[search:1/3");
-
-  assert.match(plain, /\[search:1\/3 cache miss\]/);
-  assert.match(plain, /\[gateway:LOCAL\]|\[gw:LOCAL\]/);
-  assert.doesNotMatch(plain, /Enter jump|Esc close/);
-  assert.equal(cellStyleAtText(searchRow, "[search")?.color, resolveTuiColor("surface.searchMatch"));
-  assert.equal(cellStyleAtText(searchRow, rowText(searchRow).includes("[gateway:") ? "gateway" : "gw")?.backgroundColor, resolveTuiColor("surface.selection"));
-  assert(frame.screen.cells.map((row) => rowText(row).trimEnd()).every((line) => displayWidth(line) <= 80));
-});
-
-test("chat input footer drops low-priority pills before overflowing narrow terminals", () => {
-  const frame = renderTuiToFrame(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "coding-loop",
-    footerPermissionLabel: "FULL-AUTO",
-    footerPermissionTone: "status.warning",
-    footerSandboxLabel: "workspace-write",
-    footerSandboxTone: "status.success",
-    footerItems: [
-      { id: "tasks", label: "tasks", value: "123/456", tone: "running" },
-      { id: "cache", label: "cache", value: "cache_miss 0%", tone: "pending" },
-      { id: "gateway", label: "gateway", value: "local-provider", tone: "neutral" },
-      { id: "symphony", label: "symphony", value: "10 run", tone: "running" },
-      { id: "lsp", label: "lsp", value: "unknown", tone: "muted" }
-    ],
-    footerHint: "Left/Right footer | [/] message | / search",
-    columns: 44,
-    maxRows: 4,
-    density: "compact"
-  }), { columns: 44, rows: 5 });
-  const lines = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).filter(Boolean);
-
-  assert(lines.every((line) => displayWidth(line) <= 44));
-  assert(lines.some((line) => line.includes("[CODING-LOO]")));
-  assert(lines.some((line) => line.includes("[FULL-AUTO]")));
-  assert.doesNotMatch(lines.join("\n"), /Left\/Right footer/);
-});
-
-test("chat input footer reserves space for selected service on compact terminals", () => {
-  const frame = renderTuiToFrame(React.createElement(ChatInputArea, {
-    onSubmit: () => undefined,
-    onCompletionRowsChange: () => undefined,
-    inputActive: false,
-    footerModeLabel: "coding-loop",
-    footerPermissionLabel: "FULL-AUTO",
-    footerPermissionTone: "status.warning",
-    footerSandboxLabel: "workspace-write",
-    footerSandboxTone: "status.success",
-    footerItems: [
-      { id: "tasks", label: "tasks", value: "123/456", tone: "running" },
-      { id: "approvals", label: "approvals", value: "3", tone: "pending" },
-      { id: "cache", label: "cache", value: "MISS 0%", tone: "pending" },
-      { id: "gateway", label: "gateway", value: "LOCAL", tone: "success" },
-      { id: "symphony", label: "symphony", value: "2 run/1 retry", tone: "running" },
-      { id: "lsp", label: "lsp", value: "NO PROVIDER", tone: "muted" }
-    ],
-    selectedFooterItem: "symphony",
-    footerHint: "Left/Right footer | [/] message | / search",
-    columns: 44,
-    maxRows: 4,
-    density: "compact"
-  }), { columns: 44, rows: 5 });
-  const lines = frame.screen.cells.map((row) => rowText(row).trimEnd()).filter(Boolean);
-  const footerText = lines.join("\n");
-  const selectedRow = frameRowWithText(frame, "[sym:");
-
-  assert.match(footerText, /\[sym:2 run\/1 r\]/);
-  assert.doesNotMatch(footerText, /Left\/Right footer/);
-  assert.equal(cellStyleAtText(selectedRow, "[sym:")?.backgroundColor, resolveTuiColor("surface.selection"));
-  assert(lines.every((line) => displayWidth(line) <= 44));
+  }
 });
 
 test("slash command candidates use cc-style selected background and aligned columns", () => {
@@ -705,7 +394,7 @@ test("slash completion overlay centers the selected command without title chrome
   assert.match(plain, /\/capabilities/);
   assert(rows.some((line) => line.trimStart().startsWith("› /capabilities")));
   assert(rows.some((line) => line.includes("[Config]")));
-  assert(rows.slice(-2).some((line) => line.includes("❯") || line.includes("/cap")));
+  assert(rows.slice(-2).some((line) => line.includes("› /cap")));
   assert(rows.every((line) => displayWidth(line) <= 72));
 });
 
@@ -721,7 +410,7 @@ test("default conversation surface hides slash completions before they can displ
   const rows = plainRows(plain);
 
   assert.doesNotMatch(plain, /Command Palette/);
-  assert(rows.slice(-2).some((line) => line.includes("❯") || line.includes("/")));
+  assert(rows.slice(-2).some((line) => line.includes("›") || line.includes("/")));
   assert(rows.every((line) => displayWidth(line) <= 58));
 });
 
@@ -762,30 +451,36 @@ test("default conversation surface renders long markdown as multiple terminal ro
   assert(plainRows(plain).every((line) => displayWidth(line) <= 64));
 });
 
-test("default conversation surface keeps activity and result in fixed bottom chrome", async () => {
+test("while busy the activity line sits between the rule and the prompt, under the transcript", async () => {
   const running = terminalFrameText(await renderConversationFrame({
     rows: 12,
-    bottomRows: 5,
-    bottomChrome: {
-      busy: true,
-      activity: "#4 running verification",
-      motionFrame: 1
-    }
+    bottomRows: 4,
+    activity: React.createElement(ConversationStatusLine, {
+      message: "#4 Running code.test npm test",
+      motionFrame: 1,
+      elapsedMs: 14_000,
+      extra: "2 workers · Ctrl+C interrupts"
+    })
   }));
-  assert.match(running, /\/ running verification/);
-  assert(running.indexOf("running verification") > running.indexOf("Done"));
+  const rows = plainRows(running);
+  assert.match(running, /^ ⠙ Running code\.test npm test · 14s · 2 workers · Ctrl\+C interrupts$/m, "no #turn prefix");
+  const activityRow = rows.findIndex((line) => line.includes("Running code.test"));
+  assert.match(rows[activityRow - 1] ?? "", /^─+$/);
+  assert.equal(rows[activityRow + 1], " › Ask Swarm");
+  assert(running.indexOf("Running code.test") > running.indexOf("Done"));
+});
 
-  const completed = terminalFrameText(await renderConversationFrame({
-    rows: 13,
-    bottomRows: 6,
-    bottomChrome: {
-      resultCard: sampleResultCard(),
-      detailAvailable: true
-    }
+test("a settled answer ends with one footer line instead of a result card", async () => {
+  const plain = terminalFrameText(await renderConversationFrame({
+    messages: [
+      { role: "user", brief: "Tidy the layout." },
+      { role: "assistant", brief: "Updated the TUI layout.", footer: { text: "2 files changed · 1 check passed", status: "success" } }
+    ]
   }));
-  assert.match(completed, /\[OK\] Updated the TUI layout/);
-  assert.match(completed, /2 changed · 1 checks · Ctrl\+O for details/);
-  assert(completed.indexOf("Updated the TUI layout") > completed.indexOf("Done"));
+  const rows = plainRows(plain);
+  const answer = rows.findIndex((line) => line === " Updated the TUI layout.");
+  assert.equal(rows[answer + 1], " 2 files changed · 1 check passed");
+  assert.doesNotMatch(plain, /\[OK\]/);
 });
 
 test("compact idle rows keep attention-first scan order in narrow text", () => {
@@ -823,19 +518,14 @@ test("compact idle rows keep attention-first scan order in narrow text", () => {
   assert(rows.every((line) => !line.includes("123456789")));
 });
 
-test("default conversation status hides turn-budget metadata", async () => {
-  const output = await renderConversationFrame({
+test("the activity line leaves out turn numbers", async () => {
+  const plain = terminalFrameText(await renderConversationFrame({
     rows: 12,
-    bottomRows: 5,
-    bottomChrome: {
-      busy: true,
-      activity: "Swarm is thinking",
-      motionFrame: 2
-    }
-  });
-  const plain = terminalFrameText(output);
+    bottomRows: 4,
+    activity: React.createElement(ConversationStatusLine, { message: "#12 Swarm is thinking", motionFrame: 2 })
+  }));
 
-  assert.match(plain, /- Swarm is thinking/);
+  assert.match(plain, /⠹ Swarm is thinking/);
   assert.doesNotMatch(plain, /#12|turn\s+12|thinking:/i);
 });
 
@@ -846,34 +536,26 @@ async function renderConversationFrame(options: {
   rows?: number;
   inputValue?: string;
   completionPlacement?: "inline" | "overlay";
-  promptLabel?: string;
-  sandboxLabel?: string;
-  density?: "compact" | "default" | "comfortable";
   newMessageCount?: number;
   unseenStartIndex?: number;
   messages?: ConversationMessage[];
-  bottomChrome?: {
-    busy?: boolean;
-    activity?: string;
-    motionFrame?: number;
-    resultCard?: ResultCard;
-    detailAvailable?: boolean;
-  };
+  workspace?: string;
+  activity?: React.ReactNode;
+  status?: (input: { promptEmpty: boolean }) => React.ReactNode;
 } = {}): Promise<string> {
   const {
     columns = 80,
-    bottomRows = 4,
+    bottomRows = 3,
     scrollOffset = 0,
     rows = 20,
     inputValue = "",
     completionPlacement = "inline",
-    promptLabel,
-    sandboxLabel,
-    density,
     newMessageCount = 0,
     unseenStartIndex,
     messages = defaultConversationMessages(),
-    bottomChrome
+    workspace,
+    activity,
+    status
   } = options;
   const stream = new PassThrough();
   let output = "";
@@ -906,34 +588,19 @@ async function renderConversationFrame(options: {
         columns: Math.max(20, columns - 2),
         scrollOffset,
         newMessageCount,
-        unseenStartIndex
+        unseenStartIndex,
+        workspace
       }),
-      bottom: bottomChrome
-        ? React.createElement(ConversationBottomChrome, {
-          ...bottomChrome,
-          input: React.createElement(ChatInputArea, {
-            onSubmit: () => undefined,
-            onCompletionRowsChange: () => undefined,
-            controllerStateRef: controllerState,
-            inputActive: false,
-            completionPlacement,
-            promptLabel,
-            sandboxLabel,
-            density,
-            maxRows: Math.max(1, bottomRows - (bottomChrome.busy ? 1 : bottomChrome.resultCard ? 2 : 0))
-          })
-        })
-        : React.createElement(ChatInputArea, {
-          onSubmit: () => undefined,
-          onCompletionRowsChange: () => undefined,
-          controllerStateRef: controllerState,
-          inputActive: false,
-          completionPlacement,
-          promptLabel,
-          sandboxLabel,
-          density,
-          maxRows: bottomRows
-        })
+      bottom: React.createElement(ChatInputArea, {
+        onSubmit: () => undefined,
+        onCompletionRowsChange: () => undefined,
+        controllerStateRef: controllerState,
+        inputActive: false,
+        completionPlacement,
+        activity,
+        status,
+        maxRows: bottomRows
+      })
     }),
     { stdout: stream as unknown as NodeJS.WriteStream, stderr: stream as unknown as NodeJS.WriteStream, patchConsole: false }
   );
@@ -1006,21 +673,6 @@ function scrolledConversationMessages(): ConversationMessage[] {
       brief: Array.from({ length: 14 }, (_, index) => `assistant line ${index + 1}`).join("\n")
     }
   ];
-}
-
-function sampleResultCard(): ResultCard {
-  return {
-    sessionId: "session-1",
-    status: "completed",
-    route: "work",
-    summary: "Updated the TUI layout",
-    changedFiles: ["src/tui/SwarmChatApp.tsx", "src/tui/components/ConversationFullscreenLayout.tsx"],
-    checks: [{ command: "npm test", status: "passed" }],
-    review: { status: "skipped", summary: "not recorded" },
-    risks: [],
-    artifacts: [],
-    next: []
-  };
 }
 
 function stripAnsi(value: string): string {
@@ -1119,7 +771,7 @@ function promptRowIndex(value: string): number {
   const rows = terminalRows(value);
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const line = rows[index] ?? "";
-    if (line.includes("❯") || line.includes("Ask Swarm")) {
+    if (line.includes("› ") || line.includes("Ask Swarm")) {
       return index;
     }
   }
@@ -1139,7 +791,7 @@ test("wrapped transcript rows with inline formatting keep every word", () => {
   for (const columns of [60, 80, 110]) {
     const frame = renderTuiToFrame(React.createElement(ConversationFirstPane, { messages: [{ role: "system", brief }], rows: 10, columns: columns - 4 }), { columns, rows: 10 });
     const rows = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).filter(Boolean);
-    const shown = rows.join(" ").replace(/^·\s+system\s+/u, "").replace(/\s+/gu, " ");
+    const shown = rows.join(" ").replace(/^·\s+/u, "").replace(/\s+/gu, " ");
     const expected = brief.replace(/[`*]/gu, "").replace(/\s+/gu, " ");
     assert.equal(shown.trim(), expected, `at ${columns} columns`);
   }

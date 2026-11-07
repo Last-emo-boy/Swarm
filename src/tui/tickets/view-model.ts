@@ -23,7 +23,7 @@ const markerFor = (row: TicketRow): NeedsYouItem["marker"] =>
 const toneFor = (marker: NeedsYouItem["marker"]): TuiColorRef =>
   marker === "×" ? "status.danger" : marker === "?" ? "status.pending" : "status.warning";
 
-/** The tickets that wait for a person, as the strip above the prompt lists them, newest first. */
+/** The tickets that wait for a person, newest first, each with the command that answers it. */
 export function needsYouItems(rows: readonly TicketRow[]): NeedsYouItem[] {
   return rows.filter((row) => row.group === "person").map((row) => {
     const marker = markerFor(row);
@@ -35,28 +35,13 @@ export function needsYouItems(rows: readonly TicketRow[]): NeedsYouItem[] {
   });
 }
 
-/** How many rows the strip takes: a heading and up to `limit` items, then "+N more"; none when nothing waits. */
-export function needsYouRows(items: readonly NeedsYouItem[], limit = 3): number {
-  if (!items.length) return 0;
-  return 1 + Math.min(items.length, limit) + (items.length > limit ? 1 : 0);
-}
-
-/** The footer pill's value: who waits on whom, such as "1 need you · 2 working". */
+/** The tickets pane's summary: who waits on whom, such as "1 need you · 2 working". */
 export function ticketsPillValue(status: Pick<HostStatus, "counts" | "running"> | undefined): string {
   if (!status) return "off";
   const { person, working, queued } = status.counts;
   const parts = [person ? `${person} need you` : "", working ? `${working} working` : "", queued ? `${queued} queued` : ""].filter(Boolean);
   if (!parts.length) return status.running ? "idle" : "no host";
   return parts.join(" · ");
-}
-
-/** The footer pill's short value: the most urgent count only, so the pill fits beside the others. */
-export function ticketsFooterValue(status: Pick<HostStatus, "counts" | "running">): string {
-  const { person, working, queued } = status.counts;
-  if (person) return `${person} need you`;
-  if (working) return `${working} working`;
-  if (queued) return `${queued} queued`;
-  return status.running ? "idle" : "no host";
 }
 
 export const GROUP_TITLES: Record<TicketGroup, string> = {

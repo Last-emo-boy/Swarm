@@ -94,16 +94,17 @@ import { InspectorPane } from "./components/InspectorPane.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
 import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
-import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
+import { ConversationFullscreenLayout, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
 import { ConversationHeader } from "./components/ConversationHeader.js";
-import { NeedsYouStrip } from "./components/NeedsYouStrip.js";
-import { BudgetStrip, budgetNoticeRows } from "./components/BudgetStrip.js";
-import { reachedBudgetNotices, usageView } from "./usage-view.js";
+import type { SemanticTextSpan } from "./components/SemanticTextLine.js";
+import { StatusLine } from "./components/StatusLine.js";
+import { buildStatusLine, type StatusItemId } from "./status-line.js";
+import { usageStatus, usageView } from "./usage-view.js";
 import { TicketsPane } from "./components/TicketsPane.js";
 import { TuiTickets, type TicketSnapshot } from "./tickets/controller.js";
 import { runTicketCommand } from "./tickets/commands.js";
 import { TuiMesh } from "./mesh-commands.js";
-import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPillValue, rowHandle } from "./tickets/view-model.js";
+import { paneOrder, ticketDetailText, ticketsPillValue, rowHandle } from "./tickets/view-model.js";
 import {
   compactValue,
   policyBadge,
@@ -122,15 +123,15 @@ import {
   type TuiResolvedColor,
   type TuiTone
 } from "./theme.js";
-import { formatExecutionResultDisplay } from "./result-display.js";
+import { answerFooter, formatExecutionResultDisplay } from "./result-display.js";
 import {
   appendTranscriptMessage,
-  createStartupLogoMessage,
-  runtimeEventTranscriptMessage,
+  applyRuntimeEventToTranscript,
   slashCommandTranscriptMessage,
   slashToolUseTranscriptMessage
 } from "./conversation-transcript.js";
 import {
+  conversationBottomStatusRows,
   conversationPromptRows,
   conversationBottomRows as conversationBottomRowsForTerminal,
   conversationInputCapacity,
@@ -164,15 +165,6 @@ import { mcpSettingsSnapshot } from "../extensions/mcp-report.js";
 import { skillSettingsSnapshot } from "../extensions/skill-report.js";
 import { getGlobalLspManager, type LspStatusReport } from "../lsp/manager.js";
 import { lspHealthStatusFromReport, lspStatusSummaryFromReport } from "./lsp-status.js";
-import {
-  buildFooterPills,
-  createFooterNavigationState,
-  footerNavigationReducer,
-  selectedFooterPill,
-  type FooterNavigationState,
-  type FooterPill,
-  type FooterPillId
-} from "./footer-navigation.js";
 import { formatServiceStatusSection } from "./status-surface.js";
 import {
   buildSwarmSurfaceProjection,
@@ -193,7 +185,7 @@ import {
   updateTranscriptSearch,
   type TranscriptSearchState
 } from "./transcript-search.js";
-import { appendDetailShortcut, detailOpenHint, transcriptSearchHint } from "./shortcuts.js";
+import { appendDetailShortcut, detailOpenHint } from "./shortcuts.js";
 import {
   createMessageCursorState,
   messageCursorReducer,
@@ -329,16 +321,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const startupReadiness = useMemo(() => new OpenAIProvider().readiness(), []);
   const needsOnboarding = forceOnboarding || startupReadiness.some((item) => !item.configured);
   const initialProblem = startupReadiness.find((item) => !item.configured);
-  const initialSystemBrief = needsOnboarding
-    ? `Provider setup required.${initialProblem?.role ? ` ${initialProblem.role}: ${initialProblem.reason}` : ""}`
-    : "Swarm chat ready. Enter an objective.";
-  const initialSystemMessage: ChatMessage = needsOnboarding
-    ? { role: "system", brief: initialSystemBrief }
-    : createStartupLogoMessage({
-      version: "0.1.0",
-      cwd: process.cwd(),
-      model: settingsSnapshot.models.worker || settingsSnapshot.models.planner || settingsSnapshot.models.defaultProvider || "model not configured"
-    });
+  // A new conversation is empty, and shows how to start; only missing provider setup is said up front.
+  const initialMessages: ChatMessage[] = needsOnboarding
+    ? [{ role: "system", brief: `Provider setup required.${initialProblem?.role ? ` ${initialProblem.role}: ${initialProblem.reason}` : ""}` }]
+    : [];
   const approvalResolver = useRef<((approved: boolean) => void) | undefined>();
   const sessionApprovalAllow = useRef<Set<string>>(new Set());
   const chatSessionId = useRef(createChatSessionId());
@@ -346,9 +332,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [approval, setApproval] = useState<ToolApprovalRequest | undefined>();
   const [runtime, setRuntime] = useState<SwarmRuntime | undefined>(() => (needsOnboarding ? undefined : createRuntime()));
   const runtimeRef = useRef<SwarmRuntime | undefined>(runtime);
-  const [messages, setMessages] = useState<ChatMessage[]>([initialSystemMessage]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
-  const [actionLogRows, setActionLogRows] = useState<TuiActionRow[]>(() => [messageToActionRow(initialSystemMessage, 0)]);
+  const [actionLogRows, setActionLogRows] = useState<TuiActionRow[]>(() => initialMessages.map((message, index) => messageToActionRow(message, index)));
   const [pendingPlan, setPendingPlan] = useState<PlannedSession | undefined>();
   const [busy, setBusy] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -388,7 +374,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const idlePaneSnapshotSignatureRef = useRef(idlePaneSnapshotSignature(idlePaneSnapshot));
   const [completionRows, setCompletionRows] = useState(0);
   const [chatCompletion, setChatCompletion] = useState<ChatCompletionState>(() => emptyChatCompletionState());
-  const [footerNavigation, setFooterNavigation] = useState<FooterNavigationState>(() => createFooterNavigationState());
   const [transcriptSearch, setTranscriptSearch] = useState<TranscriptSearchState>(() => createTranscriptSearchState());
   const [messageCursor, setMessageCursor] = useState<MessageCursorState>(() => createMessageCursorState());
   const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
@@ -401,8 +386,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const meshRef = useRef<TuiMesh | undefined>(undefined);
   const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | undefined>(undefined);
   const ticketSignatureRef = useRef("");
-  const [budgetNotices, setBudgetNotices] = useState<string[]>([]);
-  const budgetSignatureRef = useRef("");
+  const [usageLine, setUsageLine] = useState<ReturnType<typeof usageStatus>>({ budgetsReached: [] });
+  const usageSignatureRef = useRef("");
   const busySinceRef = useRef<number | undefined>(undefined);
   const [ticketSelection, setTicketSelection] = useState(0);
 
@@ -584,20 +569,21 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     busySinceRef.current = busy ? Date.now() : undefined;
   }, [busy]);
 
-  // Reached budgets: read when a run starts or ends and every 15 seconds, with the settings as they are now.
+  // Reached budgets and today's spend for the status line: read when a run starts or ends and every 15 seconds, with
+  // the settings as they are now.
   useEffect(() => {
     if (!runtime) return;
     const refresh = () => {
-      let notices: string[] = [];
+      let next: ReturnType<typeof usageStatus> = { budgetsReached: [] };
       try {
-        notices = reachedBudgetNotices(loadSwarmSettings(runtime.workspaceRoot()), runtime.database.db);
+        next = usageStatus(loadSwarmSettings(runtime.workspaceRoot()), runtime.database.db);
       } catch (error) {
-        runtime.debug?.warn("usage", `budget notice read failed: ${error instanceof Error ? error.message : String(error)}`);
+        runtime.debug?.warn("usage", `usage status read failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const signature = JSON.stringify(notices);
-      if (signature !== budgetSignatureRef.current) {
-        budgetSignatureRef.current = signature;
-        setBudgetNotices(notices);
+      const signature = JSON.stringify(next);
+      if (signature !== usageSignatureRef.current) {
+        usageSignatureRef.current = signature;
+        setUsageLine(next);
       }
     };
     refresh();
@@ -814,12 +800,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     });
   }
 
-  function replaceChatTranscript(message: ChatMessage): void {
-    setMessages([message]);
+  function replaceChatTranscript(next: ChatMessage[]): void {
+    setMessages(next);
     setConversationViewport(resetConversationViewport());
     setTranscriptSearch(createTranscriptSearchState());
     setMessageCursor(createMessageCursorState());
-    setActionLogRows([messageToActionRow(message, 0)]);
+    setActionLogRows(next.map((message, index) => messageToActionRow(message, index)));
     setActionLogScrollOffset(0);
     lastActionLogEventSignatureRef.current = undefined;
   }
@@ -833,12 +819,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setActionLogRows((previous) => [...previous, runtimeEventToActionRow(event, previous.length)]);
   }
 
+  /** A tool call or subagent adds its row once and updates it in place; other events leave the transcript as it is. */
   function appendRuntimeTranscriptEvent(event: RuntimeEvent): void {
-    const message = runtimeEventTranscriptMessage(event);
-    if (!message) {
-      return;
-    }
-    appendChatTranscriptMessage(message, { preserveSearch: true });
+    setMessages((previous) => {
+      const next = applyRuntimeEventToTranscript(previous, event);
+      if (next === previous) {
+        return previous;
+      }
+      if (next.length > previous.length) {
+        setConversationViewport((state) => conversationViewportAfterAppend({
+          state,
+          message: next.at(-1)!,
+          messageIndex: previous.length,
+          columns: conversationTextColumns()
+        }));
+      }
+      setTranscriptSearch((state) => refreshTranscriptSearch(state, buildTranscriptSearchIndex(next)));
+      return next;
+    });
   }
 
   function emitTuiFocusTransition(
@@ -1034,10 +1032,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return;
     }
 
-    if (handleFooterNavigationInput(character, key)) {
-      return;
-    }
-
     if (handleMessageCursorInput(character, key)) {
       return;
     }
@@ -1091,7 +1085,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         role: "assistant",
         brief: display.brief,
         detail: display.detail,
-        preview: display.preview
+        preview: display.preview,
+        footer: answerFooter(result.result_card)
       });
     } catch (error) {
       pushError(error);
@@ -1121,7 +1116,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         role: "assistant",
         brief: display.brief,
         detail: display.detail,
-        preview: display.preview
+        preview: display.preview,
+        footer: answerFooter(result.result_card)
       });
     } catch (error) {
       pushError(error);
@@ -1420,45 +1416,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return true;
   }
 
-  function handleFooterNavigationInput(
-    character: string | undefined,
-    key: { ctrl?: boolean; leftArrow?: boolean; rightArrow?: boolean; return?: boolean; escape?: boolean; tab?: boolean }
-  ): boolean {
-    if (mainPane !== "chat" || footerItems.length === 0) {
-      return false;
-    }
-    if (chatInputState.current.input.value.length > 0) {
-      return false;
-    }
-    const normalized = normalizeActionLogControlCharacter(character);
-    if (key.escape) {
-      setFooterNavigation((state) => footerNavigationReducer(state, { type: "clear" }, footerItems));
-      return true;
-    }
-    if (key.leftArrow || (key.ctrl && normalized === "p")) {
-      setFooterNavigation((state) => footerNavigationReducer(state, { type: "previous" }, footerItems));
-      return true;
-    }
-    if (key.rightArrow || key.tab || (key.ctrl && normalized === "n")) {
-      setFooterNavigation((state) => footerNavigationReducer(state, { type: "next" }, footerItems));
-      return true;
-    }
-    const detailIntent = detailOpenInputIntent({ character, key });
-    if (shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: Boolean(selectedFooterPill(footerNavigation, footerItems)) })) {
-      const id = selectedFooterPill(footerNavigation, footerItems)?.id;
-      if (id) {
-        emitTuiFocusTransition(
-          focusDecisionForInput(character, key, { focusBefore: "footer", hasFocusedTarget: true }),
-          tuiKeyEventForInput(character, key),
-          `footer:${id}`
-        );
-        void openFooterDetail(id);
-        return true;
-      }
-    }
-    return false;
-  }
-
   function handleTranscriptSearchInput(
     character: string | undefined,
     key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; backspace?: boolean; delete?: boolean; upArrow?: boolean; downArrow?: boolean }
@@ -1566,10 +1523,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   function conversationBottomRows(): number {
     return conversationBottomRowsForTerminal({
       terminalRows: terminalRows - CONVERSATION_HEADER_ROWS,
-      contentRows: conversationPromptRows(0) + completionRows + budgetNoticeRows(budgetNotices) + needsYouRows(needsYouItems(ticketSnapshot?.rows ?? [])) + conversationBottomStatusRows({
-        busy,
-        hasResult: false
-      }),
+      contentRows: conversationPromptRows(0) + completionRows + conversationBottomStatusRows({ busy }),
       approval: Boolean(approval),
       pendingPlan: Boolean(pendingPlan)
     });
@@ -1609,116 +1563,29 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     ].join("\n");
   }
 
-  async function openFooterDetail(id: FooterPillId): Promise<void> {
+  /** Opens what a status-line item is about: the tickets pane, the usage of this session, or the approval records. */
+  function openStatusItem(id: StatusItemId): void {
+    if (id === "search") {
+      return;
+    }
     if (id === "tickets") {
       setTicketSelection(0);
       setMainPane("tickets");
       return;
     }
-    setFooterNavigation((state) => footerNavigationReducer(state, { type: "select", id }, footerItems));
-    try {
-      const detail = await renderFooterDetail(id);
-      const presentation = footerDetailPresentation(id);
-      setLatestDetail(detail);
-      setLatestDetailSource(presentation.source);
-      setDetailScroll(0);
-      setDetailOpen(true);
-    } catch (error) {
-      pushError(error);
-    }
-  }
-
-  function footerDetailPresentation(id: FooterPillId): {
-    source: "task" | "event";
-  } {
-    return {
-      source: id === "tasks" ? "task" : "event"
-    };
-  }
-
-  async function renderFooterDetail(id: FooterPillId): Promise<string> {
-    if (id === "tasks") {
-      return renderTaskDetail();
-    }
+    let detail: string;
     if (id === "approvals") {
       const rows = runtime?.listRecentApprovalsForWorkspace(80) ?? [];
-      return rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
+      detail = rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
+    } else if (runtime) {
+      detail = usageView({ database: runtime.database.db, settings: loadSwarmSettings(runtime.workspaceRoot()), sessionId: lastSessionId }).detail;
+    } else {
+      detail = "Runtime is not ready.";
     }
-    if (id === "cache") {
-      return formatPromptCacheDetailWithTrend(promptCacheStatus, runtime?.getPromptCacheTrend());
-    }
-    if (id === "gateway") {
-      return renderGatewayStatusDetail();
-    }
-    if (id === "mcp") {
-      return renderMcpStatusDetail();
-    }
-    if (id === "skills") {
-      return renderSkillStatusDetail();
-    }
-    if (id === "symphony") {
-      if (!runtime) {
-        return "Runtime is not ready.";
-      }
-      return formatSymphonyStatus(getSymphonyStatus({ runtime, limit: 20 }));
-    }
-    return renderLspStatusDetail();
-  }
-
-  function renderGatewayStatusDetail(): string {
-    const sessions = runtime?.listRecentSessionsForWorkspace(20) ?? [];
-    const gatewaySessions = sessions.filter((session) => sessionSourceKind(session.source_json) === "gateway");
-    return [
-      "Gateway",
-      "status=local",
-      "mode=TUI local process; HTTP Gateway status is available when `swarm serve` is running.",
-      "",
-      "Recent gateway sessions",
-      ...(gatewaySessions.length
-        ? gatewaySessions.slice(0, 10).map((session) => `${session.session_id} [${session.status}] ${session.objective}`)
-        : ["(none)"]),
-      "",
-      "Routes",
-      "/v1/sessions",
-      "/v1/capabilities",
-      "/v1/approvals",
-      "/v1/symphony",
-      "/mcp"
-    ].join("\n");
-  }
-
-  function renderMcpStatusDetail(): string {
-    if (!runtime) {
-      return "Runtime is not ready.";
-    }
-    const servers = runtime.listMcpServers();
-    const settings = mcpSettingsSnapshot(runtime);
-    const summary = summarizeMcpCatalog(servers, settings);
-    return [
-      "MCP",
-      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
-      summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
-      summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
-      "",
-      formatMcpServersSummary(servers)
-    ].filter(Boolean).join("\n");
-  }
-
-  function renderSkillStatusDetail(): string {
-    if (!runtime) {
-      return "Runtime is not ready.";
-    }
-    const skills = runtime.listSkills();
-    const settings = skillSettingsSnapshot(runtime);
-    const summary = summarizeSkillCatalog(skills, settings);
-    return [
-      "Skills",
-      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
-      summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
-      summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
-      "",
-      formatSkillsSummary(skills)
-    ].filter(Boolean).join("\n");
+    setLatestDetail(detail);
+    setLatestDetailSource("event");
+    setDetailScroll(0);
+    setDetailOpen(true);
   }
 
   async function renderLspStatusDetail(): Promise<string> {
@@ -1764,7 +1631,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const nextRuntime = createRuntime();
         setRuntime(nextRuntime);
         refreshSettingsSurface(nextRuntime);
-        replaceChatTranscript({ role: "system", brief: message });
+        replaceChatTranscript([{ role: "system", brief: message }]);
         setOnboard((state) => ({ ...state, enabled: false }));
       }).catch((error: unknown) => {
         setOnboard((state) => ({
@@ -1961,6 +1828,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           workspace
         });
         return { ...diagnosis, detailSource: "event" };
+      }
+      if (subcommand === "lsp") {
+        return { brief: appendDetailShortcut("Language servers"), detail: await renderLspStatusDetail() };
       }
       if (subcommand === "cache") {
         if (!runtime) throw new Error("Runtime is not ready.");
@@ -2259,7 +2129,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setPendingPlan(undefined);
         setRunBoardState(createInitialRunBoardState());
         setEvents([]);
-        replaceChatTranscript(initialSystemMessage);
+        replaceChatTranscript([]);
         lastActionLogEventSignatureRef.current = undefined;
         clearDetailState();
         setTaskWorkState({ taskStates: new Map(), taskTotal: 0, taskCompleted: 0 });
@@ -3678,10 +3548,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const inspectorColumns = Math.max(40, terminalColumns - primaryColumns - 3);
   const selectedActionRow = actionLogRows[selectedActionIndex] ?? actionLogRows.at(-1);
   const activeSearchMatch = currentTranscriptSearchMatch(transcriptSearch);
-  const activeSearchSummary = transcriptSearchSummary(transcriptSearch);
-  const bottomFooterHint = transcriptSearch.active
-    ? transcriptSearchHint(activeSearchSummary)
-    : "Left/Right footer | [/] message | / search";
   const inlineInspectorTarget = inlineInspectorTargetForPane({
     pane: mainPane,
     selectedAction: Boolean(selectedActionRow),
@@ -3691,87 +3557,54 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const inlineInspectorContent = inlineInspectorTarget.enabled && latestDetailSource !== "none" && latestDetail
     ? latestDetail
     : renderActionRowDetail(selectedActionRow);
-  const footerItems = buildFooterPills({
-    taskCompleted,
-    taskTotal,
-    pendingApprovals: footerPendingApprovalCount(approval, idlePaneSnapshot.approvals),
-    cacheStatus,
-    cacheHitRate,
-    gatewayStatus: "local",
-    mcpStatus: mcpRuntimeSummary?.state,
-    skillStatus: skillRuntimeSummary?.state,
-    symphonyRunning: symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length,
-    symphonyRetrying: 0,
-    lspStatus: lspHealthStatus,
-    ...(ticketSnapshot ? { tickets: { value: ticketsFooterValue(ticketSnapshot.status), waiting: ticketSnapshot.status.counts.person } } : {})
+  const statusLine = (promptEmpty: boolean) => buildStatusLine({
+    search: transcriptSearch.active
+      ? {
+        query: transcriptSearch.query.trim(),
+        position: !transcriptSearch.query.trim() ? undefined : transcriptSearch.matches.length
+          ? `${transcriptSearch.currentIndex + 1}/${transcriptSearch.matches.length}`
+          : "no matches"
+      }
+      : undefined,
+    budgetsReached: usageLine.budgetsReached,
+    approvalsWaiting: idlePaneSnapshot.approvals.filter((record) => record.status === "pending").length - (approval ? 1 : 0),
+    tickets: ticketSnapshot ? { needYou: ticketSnapshot.status.counts.person, working: ticketSnapshot.status.counts.working } : undefined,
+    spentToday: usageLine.spentToday,
+    promptEmpty
   });
-  const selectedFooterItem = selectedFooterPill(footerNavigation, footerItems)?.id;
+  const renderStatusLine = ({ promptEmpty }: { promptEmpty: boolean }) => (
+    <StatusLine {...statusLine(promptEmpty)} columns={terminalColumns} onItemClick={openStatusItem} />
+  );
+  const runningWorkers = [...workers.values()].filter((worker) => worker.status === "running").length;
+  const activityLine = busy ? (
+    <ConversationStatusLine
+      message={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : "Starting"}
+      motionFrame={shouldAnimate ? motionTick : undefined}
+      elapsedMs={busySinceRef.current ? Date.now() - busySinceRef.current : undefined}
+      extra={[runningWorkers ? `${runningWorkers} worker${runningWorkers === 1 ? "" : "s"}` : "", "Ctrl+C interrupts"].filter(Boolean).join(" · ")}
+    />
+  ) : undefined;
   if (screenMode.primarySurface === "conversation") {
     const bottomRows = conversationBottomRows();
     const conversationRows = fullscreenConversationRows(terminalRows - CONVERSATION_HEADER_ROWS, bottomRows);
-    const waiting = needsYouItems(ticketSnapshot?.rows ?? []);
-    const runningWorkers = [...workers.values()].filter((worker) => worker.status === "running").length;
     const inputCapacity = chatInputCapacity();
     const bottom = approval ? (
       <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
     ) : pendingPlan ? (
       <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
     ) : (
-      <ConversationBottomChrome
-        busy={busy}
-        activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
-        motionFrame={shouldAnimate ? motionTick : undefined}
-        detailAvailable={latestDetailSource !== "none"}
-        notice={<>
-          <BudgetStrip notices={budgetNotices} columns={terminalColumns} />
-          <NeedsYouStrip items={waiting} columns={terminalColumns} />
-        </>}
-        status={
-          <Box paddingX={1}>
-            <ConversationStatusLine
-              message={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : "Starting"}
-              motionFrame={shouldAnimate ? motionTick : undefined}
-              elapsedMs={busySinceRef.current ? Date.now() - busySinceRef.current : undefined}
-              extra={[runningWorkers ? `${runningWorkers} workers` : "", "Ctrl+C interrupts"].filter(Boolean).join(" · ")}
-            />
-          </Box>
-        }
-        input={
-          <ChatInputArea
-            onSubmit={submitObjective}
-            onCompletionRowsChange={setCompletionRows}
-            onCompletionStateChange={setChatCompletion}
-            controllerStateRef={chatInputState}
-            extraCommands={extensionCommandCandidates}
-            promptLabel={routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase()}
-            sandboxLabel={runSandboxMode === "workspace-write" ? undefined : sandboxBadge(runSandboxMode).toLowerCase()}
-            footerHint={bottomFooterHint}
-            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
-            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
-            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
-            footerItems={footerItems}
-            selectedFooterItem={selectedFooterItem}
-            footerModeLabel={routeBadge(routeLabel)}
-            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
-            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
-            footerSandboxLabel={sandboxBadge(runSandboxMode)}
-            footerSandboxTone={sandboxTone(runSandboxMode)}
-            onFooterItemClick={(id) => {
-              emitTuiFocusTransition(
-                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
-                "other",
-                `footer:${id}`
-              );
-              void openFooterDetail(id);
-            }}
-            onInputTelemetry={logTuiInputTelemetry}
-            completionPlacement="overlay"
-            density={screenDensity}
-            columns={terminalColumns}
-            maxRows={bottomRows}
-            maxInputRows={inputCapacity.maxInputRows}
-          />
-        }
+      <ChatInputArea
+        onSubmit={submitObjective}
+        onCompletionRowsChange={setCompletionRows}
+        onCompletionStateChange={setChatCompletion}
+        controllerStateRef={chatInputState}
+        extraCommands={extensionCommandCandidates}
+        activity={activityLine}
+        status={renderStatusLine}
+        onInputTelemetry={logTuiInputTelemetry}
+        completionPlacement="overlay"
+        maxRows={bottomRows}
+        maxInputRows={inputCapacity.maxInputRows}
       />
     );
     const completionOverlay = !approval && !pendingPlan && chatCompletion.candidates.length > 0
@@ -3796,11 +3629,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             columns={terminalColumns}
             model={settingsSnapshot.models.worker || settingsSnapshot.models.planner || "no model"}
             workspace={displayWorkspace(process.cwd())}
-            right={[
-              { text: routeBadge(routeLabel).toLowerCase(), color: "brand.focus" },
-              { text: ` · ${policyBadge(settingsSnapshot.permissions.defaultMode).toLowerCase()}`, color: "text.muted" },
-              { text: ` · ${sandboxBadge(runSandboxMode).toLowerCase()}`, color: "text.muted" }
-            ]}
+            right={headerModeSpans({ runMode, permissionMode: settingsSnapshot.permissions.defaultMode, sandboxMode: runSandboxMode })}
           />
         }
         completionOverlay={completionOverlay}
@@ -3817,14 +3646,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             selectedMessageIndex={messageCursor.selectedIndex}
             searchMatchMessageIndex={activeSearchMatch?.messageIndex}
             searchMatchQuery={transcriptSearch.query}
-            tailRows={conversationTailRows({ busy: false, hasResult: !busy && Boolean(displayedResultCard) })}
-            tail={conversationTail({
-              busy: false,
-              activity: loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined,
-              motionFrame: shouldAnimate ? motionTick : undefined,
-              resultCard: busy ? undefined : displayedResultCard,
-              detailAvailable: latestDetailSource !== "none"
-            })}
+            workspace={displayWorkspace(process.cwd())}
           />
         }
         bottom={bottom}
@@ -3941,30 +3763,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             onCompletionRowsChange={setCompletionRows}
             controllerStateRef={chatInputState}
             extraCommands={extensionCommandCandidates}
-            promptLabel={routeBadge(routeLabel).toLowerCase()}
-            sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
-            footerHint={bottomFooterHint}
-            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
-            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
-            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
-            footerItems={footerItems}
-            selectedFooterItem={selectedFooterItem}
-            footerModeLabel={routeBadge(routeLabel)}
-            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
-            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
-            footerSandboxLabel={sandboxBadge(runSandboxMode)}
-            footerSandboxTone={sandboxTone(runSandboxMode)}
-            onFooterItemClick={(id) => {
-              emitTuiFocusTransition(
-                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
-                "other",
-                `footer:${id}`
-              );
-              void openFooterDetail(id);
-            }}
+            activity={activityLine}
+            status={renderStatusLine}
             onInputTelemetry={logTuiInputTelemetry}
-            density={screenDensity}
-            columns={terminalColumns}
           />
         )}
       </Box>
@@ -4961,52 +4762,6 @@ function runtimeAgentLabel(agent: NonNullable<LoopActivityState["agent"]>): stri
   return role ? `${name} / ${role}` : name;
 }
 
-function conversationBottomStatusRows(_input: {
-  busy?: boolean;
-  hasResult?: boolean;
-}): number {
-  return 0;
-}
-
-function conversationTailRows(input: {
-  busy?: boolean;
-  hasResult?: boolean;
-}): number {
-  if (input.busy) {
-    return 1;
-  }
-  if (input.hasResult) {
-    return 2;
-  }
-  return 0;
-}
-
-function conversationTail(input: {
-  busy?: boolean;
-  activity?: string;
-  motionFrame?: number;
-  resultCard?: RuntimeResultCard;
-  detailAvailable?: boolean;
-}): React.ReactNode {
-  if (input.busy) {
-    return (
-      <ConversationStatusLine
-        message={input.activity ?? "Working"}
-        motionFrame={input.motionFrame}
-      />
-    );
-  }
-  if (input.resultCard) {
-    return (
-      <ConversationResultLine
-        card={input.resultCard}
-        detailAvailable={Boolean(input.detailAvailable)}
-      />
-    );
-  }
-  return undefined;
-}
-
 function normalizeActionLogControlCharacter(character: string | undefined): string {
   if (!character) {
     return "";
@@ -5251,12 +5006,26 @@ function extensionRuntimeDiagnostics(runtime: SwarmRuntime | undefined): {
   };
 }
 
-function footerPendingApprovalCount(
-  activeApproval: ToolApprovalRequest | undefined,
-  recentApprovals: readonly { status?: string }[]
-): number {
-  const persisted = recentApprovals.filter((approval) => approval.status === "pending").length;
-  return Math.max(persisted, activeApproval ? 1 : 0);
+/**
+ * The header's right side: only modes that are not the default, such as a run mode picked with /mode, a permission
+ * mode that skips approvals, or a read-only sandbox.
+ */
+function headerModeSpans(input: { runMode: string; permissionMode: string; sandboxMode: string }): SemanticTextSpan[] {
+  const spans: SemanticTextSpan[] = [];
+  const add = (text: string, color: TuiColorRef): void => {
+    spans.push(...(spans.length ? [{ text: "  " }] : []), { text, color });
+  };
+  if (input.runMode !== "auto") {
+    add(routeBadge(input.runMode).toLowerCase(), "brand.focus");
+  }
+  if (input.permissionMode !== "ask") {
+    const tone = policyTone(input.permissionMode);
+    add(policyBadge(input.permissionMode).toLowerCase(), tone === "danger" ? "status.danger" : tone === "warning" ? "status.warning" : "status.pending");
+  }
+  if (input.sandboxMode !== "workspace-write") {
+    add(input.sandboxMode, input.sandboxMode === "read-only" ? "status.pending" : "status.warning");
+  }
+  return spans;
 }
 
 function runBoardWorkerIdFromRuntimeEvent(event: RuntimeEvent): string | undefined {

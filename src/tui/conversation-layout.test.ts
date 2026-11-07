@@ -31,8 +31,10 @@ import {
   shouldOpenDetailFromInput,
   stickyPromptForMessages,
   tuiFocusTransitionForInput,
+  toolGroupFoldKey,
   tuiScreenMode,
-  validateConversationDomLayout
+  validateConversationDomLayout,
+  type ConversationMessage
 } from "./conversation-layout.js";
 import { displayWidth } from "./display-width.js";
 import {
@@ -56,18 +58,67 @@ test("conversation-first layout keeps transcript as the default surface", () => 
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· system     Swarm chat ready.",
-    "❯ user       Simplify the TUI.",
-    "· assistant  I will make the default view quieter."
+    "· Swarm chat ready.",
+    "",
+    "› Simplify the TUI.",
+    "",
+    "I will make the default view quieter."
   ]);
   assert.deepEqual(layout.activity, []);
 });
 
-test("conversation-first layout renders command and tool transcript rows", () => {
+test("conversation-first layout renders a tool call as one row: what it did, on what, and how it went", () => {
   const layout = buildConversationFirstLayout({
     messages: [
       { role: "user", kind: "command", brief: "/shell npm test" },
-      { role: "system", kind: "tool_use", status: "running", brief: "Run shell command: npm test" },
+      { role: "system", kind: "tool_use", status: "success", brief: "Bash npm test", tool: { verb: "Bash", target: "npm test", approval: "approved", ms: 12_400 } },
+      { role: "system", kind: "tool_use", status: "error", brief: "Edit src/a.ts", tool: { verb: "Edit", target: "src/a.ts", note: "found 2 matches" } },
+      { role: "system", kind: "tool_use", status: "pending", brief: "Bash rm -rf build", tool: { verb: "Bash", target: "rm -rf build", approval: "pending" } },
+      { role: "system", kind: "tool_use", status: "running", brief: "Read README.md", tool: { verb: "Read", target: "README.md" } }
+    ],
+    activity: [],
+    rows: 12,
+    busy: true,
+    hasResult: false
+  });
+
+  assert.deepEqual(layout.transcript.map((line) => line.text), [
+    "› /shell npm test",
+    "  ✓ Bash   npm test · approved · 12s",
+    "  ✗ Edit   src/a.ts · found 2 matches",
+    "  ? Bash   rm -rf build · waiting for approval",
+    "  ○ Read   README.md"
+  ]);
+});
+
+test("conversation-first layout folds a settled turn's tool calls into one line until it is expanded", () => {
+  const messages: ConversationMessage[] = [
+    { role: "user", brief: "Fix the test" },
+    { role: "system", kind: "tool_use", status: "success", brief: "Read a.ts", tool: { verb: "Read", target: "a.ts" } },
+    { role: "system", kind: "tool_use", status: "error", brief: "Bash npm test", tool: { verb: "Bash", target: "npm test", note: "exit 1" } },
+    { role: "assistant", brief: "The test still fails." }
+  ];
+  const render = (expandedMessageKeys?: Set<string>) =>
+    buildVirtualConversationLayout({ messages, rows: 12, columns: 80, expandedMessageKeys }).transcript.map((line) => line.text);
+  assert.deepEqual(render(), [
+    "› Fix the test",
+    "  ▸ Read 1 file, ran 1 command · 1 failed",
+    "",
+    "The test still fails."
+  ]);
+  assert.deepEqual(render(new Set([toolGroupFoldKey(messages[1]!, 1)])), [
+    "› Fix the test",
+    "  ▾ Read 1 file, ran 1 command · 1 failed",
+    "  ✓ Read   a.ts",
+    "  ✗ Bash   npm test · exit 1",
+    "",
+    "The test still fails."
+  ]);
+});
+
+test("conversation-first layout keeps the older rows of recorded sessions as quiet one-liners", () => {
+  const layout = buildConversationFirstLayout({
+    messages: [
       { role: "system", kind: "tool_result", status: "success", brief: "shell.exec: command exited 0" },
       { role: "assistant", kind: "thinking", status: "running", brief: "Swarm is thinking" }
     ],
@@ -78,13 +129,9 @@ test("conversation-first layout renders command and tool transcript rows", () =>
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "❯ cmd        /shell npm test",
-    "● tool       Run shell command: npm test",
-    "✓ result     shell.exec: command exited 0",
-    "· think      Swarm is thinking"
+    "  ✓ shell.exec: command exited 0",
+    "· Swarm is thinking"
   ]);
-  assert.equal(layout.transcript[1]?.dim, true);
-  assert.equal(layout.transcript[3]?.dim, true);
 });
 
 test("conversation-first layout keeps activity out of the transcript budget", () => {
@@ -110,21 +157,20 @@ test("conversation-first layout keeps status and result rows in bottom chrome", 
   assert.equal(conversationTranscriptLimit(12, false, true), conversationTranscriptLimit(12, false, false));
   assert.equal(conversationTranscriptLimit(24, false, false), 24);
   assert.equal(conversationTranscriptLimit(24, true, false), 24);
-  assert.equal(conversationBottomStatusRows({ busy: true, hasResult: true }), 1);
-  assert.equal(conversationBottomStatusRows({ busy: false, hasResult: true }), 2);
-  assert.equal(conversationBottomStatusRows({ busy: false, hasResult: false }), 0);
+  assert.equal(conversationBottomStatusRows({ busy: true }), 1, "the activity line");
+  assert.equal(conversationBottomStatusRows({ busy: false }), 0, "a settled answer's footer is in the transcript");
 });
 
 test("fullscreen conversation rows leave only bottom input chrome", () => {
-  assert.equal(conversationPromptRows(0), 4);
-  assert.equal(conversationPromptRows(3), 7);
-  assert.equal(fullscreenConversationRows(24, conversationPromptRows(0)), 20);
-  assert.equal(fullscreenConversationRows(24, conversationPromptRows(3)), 17);
+  assert.equal(conversationPromptRows(0), 3, "the rule, the prompt and the status line");
+  assert.equal(conversationPromptRows(3), 6);
+  assert.equal(fullscreenConversationRows(24, conversationPromptRows(0)), 21);
+  assert.equal(fullscreenConversationRows(24, conversationPromptRows(3)), 18);
   assert.equal(fullscreenConversationRows(5, conversationPromptRows(4)), 4);
 });
 
 test("fullscreen conversation bottom slot keeps completions out of the prompt budget", () => {
-  assert.equal(conversationBottomRows({ terminalRows: 24, contentRows: conversationPromptRows(0) }), 4);
+  assert.equal(conversationBottomRows({ terminalRows: 24, contentRows: conversationPromptRows(0) }), 3);
   assert.equal(conversationBottomRows({ terminalRows: 24, contentRows: conversationPromptRows(0) + 20 }), 12);
   assert.equal(conversationBottomRows({ terminalRows: 8, contentRows: conversationPromptRows(0) + 20 }), 4);
   assert.equal(conversationBottomRows({ terminalRows: 20, contentRows: 3, pendingPlan: true }), 3);
@@ -280,7 +326,7 @@ test("conversation renderer contract clamps tiny terminals without overlapping c
 
 test("conversation input capacity can request multiline height before the bottom slot expands", () => {
   assert.deepEqual(conversationInputCapacity({ bottomRows: conversationPromptRows(0) }), {
-    maxCompletionRows: 1,
+    maxCompletionRows: 0,
     maxInputRows: 4
   });
 });
@@ -299,7 +345,7 @@ test("conversation-first layout does not inline command details into the default
     hasResult: false
   });
 
-  assert.deepEqual(layout.transcript.map((line) => line.text), ["· system     3 recent tool outputs. Ctrl+O for details."]);
+  assert.deepEqual(layout.transcript.map((line) => line.text), ["· 3 recent tool outputs. Ctrl+O for details."]);
   assert(!layout.transcript.some((line) => line.text.includes("tool output line")));
   assert.deepEqual(layout.activity, []);
 });
@@ -333,15 +379,15 @@ test("conversation-first layout renders assistant markdown and preserves newline
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· assistant  Done",
-    "             First line",
-    "             Second line",
+    "Done",
+    "First line",
+    "Second line",
     "",
-    "             - item one",
-    "             - item two",
+    "- item one",
+    "- item two",
     "",
-    "             [ts]",
-    "               const value = 1;"
+    "[ts]",
+    "  const value = 1;"
   ]);
   assert.equal(layout.transcript[0]?.kind, "heading");
   assert.equal(layout.transcript[8]?.kind, "code");
@@ -392,7 +438,7 @@ test("conversation-first markdown rendering keeps technical identifiers intact",
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· assistant  Use worker_loop_state and keep foo_bar_baz unchanged."
+    "Use worker_loop_state and keep foo_bar_baz unchanged."
   ]);
 });
 
@@ -417,13 +463,13 @@ test("conversation-first markdown rendering keeps tables and dividers readable",
   });
 
   assert.deepEqual(layout.transcript.map((line) => line.text), [
-    "· assistant  Area  Status",
-    "             ---  ---",
-    "             TUI  Done",
+    "Area  Status",
+    "---  ---",
+    "TUI  Done",
     "",
-    "             ---",
+    "---",
     "",
-    "             Next"
+    "Next"
   ]);
   assert.equal(layout.transcript[0]?.kind, "table");
   assert.equal(layout.transcript[1]?.kind, "table");
@@ -446,7 +492,7 @@ test("conversation-first layout crops by rendered line budget instead of message
   });
 
   assert.equal(layout.transcript.length, conversationTranscriptLimit(8, false, false));
-  assert.equal(layout.transcript[0]?.text, "             line 13");
+  assert.equal(layout.transcript[0]?.text, "line 13");
   assert(layout.transcript.at(-1)?.text.includes("line 20"));
 });
 
@@ -480,8 +526,8 @@ test("conversation-first transcript supports scrollback windows", () => {
   assert.equal(scrolled.stickyPrompt, undefined);
   assert.equal(scrolled.bottomPill, "Jump to bottom");
   assert.equal(scrolled.transcript.length, 6);
-  assert(scrolled.transcript[0]?.text.includes("line 9"));
-  assert(scrolled.transcript.at(-1)?.text.includes("line 14"));
+  // Turns are set apart by a blank line, so six rows hold three of them.
+  assert.deepEqual(scrolled.transcript.map((line) => line.text), ["", "› line 15", "", "line 16", "", "› line 17"]);
   assert(!scrolled.transcript.some((line) => line.text.includes("transcript line")));
 });
 
@@ -563,7 +609,7 @@ test("conversation scrollback inserts an in-transcript new messages divider", ()
 
   const dividerIndex = layout.transcript.findIndex((line) => line.kind === "divider");
   assert(dividerIndex >= 0);
-  assert.equal(layout.transcript[dividerIndex]?.text, "--- 2 new messages ---");
+  assert.equal(layout.transcript[dividerIndex]?.text, "── 2 new messages ──");
   assert(layout.transcript.some((line) => line.text.includes("Fresh answer")));
   assert.equal(layout.hiddenBelow, 1);
   assert(!layout.transcript.some((line) => line.text.includes("transcript line")));
@@ -593,7 +639,7 @@ test("conversation divider stays anchored to the first unseen message after wrap
 
   assert(dividerIndex >= 0);
   assert(firstFreshIndex > dividerIndex);
-  assert.equal(layout.transcript[dividerIndex]?.text, "--- 1 new message ---");
+  assert.equal(layout.transcript[dividerIndex]?.text, "── 1 new message ──");
 });
 
 test("conversation sticky prompt is hidden while the prompt row is visible", () => {
@@ -762,7 +808,7 @@ test("virtual conversation layout mounts only visible long-session messages", ()
     scrollOffset: 0,
     cache
   });
-  assert.equal(appended.transcript.at(-1)?.text, "· assistant  fresh tail");
+  assert.equal(appended.transcript.at(-1)?.text, "fresh tail");
   assert.equal(cache.stats().misses, 1);
   assert(cache.stats().hits >= 1000);
 });

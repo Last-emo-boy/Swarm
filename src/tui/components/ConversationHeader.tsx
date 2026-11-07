@@ -4,27 +4,31 @@ import { displayWidth, sliceByDisplayWidth } from "../display-width.js";
 import { SemanticTextLine, type SemanticTextSpan } from "./SemanticTextLine.js";
 
 /**
- * The conversation's one-line header: Swarm, the model and the workspace on the left, the route, permission and sandbox
- * on the right. The left side gives way first when the terminal is narrow.
+ * The conversation's one-line header: swarm, the model and the workspace on the left; on the right only what is not
+ * the default, such as a permission mode that skips approvals or a read-only sandbox. The workspace gives way first
+ * when the terminal is narrow.
  */
 export function ConversationHeader(props: {
   columns: number;
   model: string;
   workspace: string;
-  right: SemanticTextSpan[];
+  right?: SemanticTextSpan[];
 }): React.ReactElement {
   const width = Math.max(10, props.columns - 2);
-  const rightText = props.right.map((span) => span.text).join("");
-  const room = Math.max(0, width - displayWidth(rightText) - 2);
-  const leftText = `Swarm · ${props.model} · ${props.workspace}`;
-  const left = displayWidth(leftText) > room ? `${sliceByDisplayWidth(leftText, Math.max(0, room - 1)).head}…` : leftText;
-  const gap = Math.max(1, width - displayWidth(left) - displayWidth(rightText));
-  const swarmEnd = Math.min(left.length, "Swarm".length);
+  const right = props.right ?? [];
+  const rightText = right.map((span) => span.text).join("");
+  const lead = `swarm  ${props.model}  `;
+  const room = Math.max(0, width - displayWidth(lead) - displayWidth(rightText) - 2);
+  const workspace = displayWidth(props.workspace) > room
+    ? room > 1 ? `…${sliceByDisplayWidth(props.workspace, Math.max(0, displayWidth(props.workspace) - room + 1)).tail}` : ""
+    : props.workspace;
+  const gap = Math.max(1, width - displayWidth(lead) - displayWidth(workspace) - displayWidth(rightText));
   const spans: SemanticTextSpan[] = [
-    { text: left.slice(0, swarmEnd), color: "brand.focus", bold: true },
-    { text: left.slice(swarmEnd), color: "text.muted" },
+    { text: "swarm", color: "brand.focus", bold: true },
+    { text: `  ${props.model}  `, color: "text.primary" },
+    { text: workspace, color: "text.muted" },
     { text: " ".repeat(gap) },
-    ...props.right
+    ...right
   ];
   return (
     <Box width="100%" paddingX={1}>

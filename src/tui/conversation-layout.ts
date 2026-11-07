@@ -1,6 +1,7 @@
 import { renderMarkdownLines, type MarkdownLine } from "./markdown-rendering.js";
 import { displayWidth, sliceByDisplayWidth } from "./display-width.js";
-import { transcriptEventToken, type TuiColorRef, type TuiTone } from "./theme.js";
+import { type TuiColorRef, type TuiTone } from "./theme.js";
+import { toolGroupSummary } from "./conversation-transcript.js";
 import { splitSearchHighlightText } from "./renderer/search-highlight.js";
 
 export type ConversationMessage = {
@@ -8,9 +9,27 @@ export type ConversationMessage = {
   brief: string;
   detail?: string;
   preview?: string;
-  kind?: "message" | "logo" | "command" | "tool_use" | "tool_result" | "thinking" | "approval" | "progress";
+  kind?: "message" | "command" | "tool_use" | "tool_result" | "thinking" | "approval" | "progress";
   title?: string;
   status?: "running" | "pending" | "success" | "warning" | "error" | "info";
+  /** Names a row that is updated in place, such as a tool call by its task id or a subagent by its worker id. */
+  id?: string;
+  /** A tool call or subagent row: what it does, and how it went. */
+  tool?: TranscriptTool;
+  /** One line under an answer: what the run changed and checked, or how it ended when it did not complete. */
+  footer?: { text: string; status: "success" | "warning" | "error" | "info" };
+};
+
+export type TranscriptTool = {
+  /** What the call does in a word (Read, Edit, Bash, Agent…), and what it acts on. */
+  verb: string;
+  target: string;
+  /** Whether it asked for approval and what was decided. */
+  approval?: "pending" | "approved" | "denied";
+  /** Why it failed or stopped, in a few words. */
+  note?: string;
+  startedAt?: number;
+  ms?: number;
 };
 
 export type ConversationLineSpan = {
@@ -229,7 +248,8 @@ export function conversationActivityLimit(rows: number, busy: boolean, hasResult
   return busy ? 1 : 0;
 }
 
-export const CONVERSATION_PROMPT_CHROME_ROWS = 4;
+/** The rule above the prompt, the prompt line and the status line. */
+export const CONVERSATION_PROMPT_CHROME_ROWS = 3;
 export const CONVERSATION_MIN_TRANSCRIPT_ROWS = 4;
 export const CONVERSATION_MAX_INPUT_ROWS = 4;
 
@@ -247,17 +267,9 @@ export function conversationPromptRows(completionRows: number): number {
   return CONVERSATION_PROMPT_CHROME_ROWS + Math.max(0, completionRows);
 }
 
-export function conversationBottomStatusRows(input: {
-  busy?: boolean;
-  hasResult?: boolean;
-}): number {
-  if (input.busy) {
-    return 1;
-  }
-  if (input.hasResult) {
-    return 2;
-  }
-  return 0;
+/** The activity line above the prompt while a run is busy. */
+export function conversationBottomStatusRows(input: { busy?: boolean }): number {
+  return input.busy ? 1 : 0;
 }
 
 export function conversationBottomRows(input: {
@@ -557,9 +569,8 @@ export function conversationMessageFoldKey(message: ConversationMessage, index: 
     index,
     message.role,
     message.kind ?? "message",
-    message.status ?? "",
     message.title ?? "",
-    message.brief.slice(0, 120)
+    message.id ?? message.brief.slice(0, 120)
   ].join("|");
 }
 
@@ -571,88 +582,260 @@ export function isFoldableConversationMessage(message: ConversationMessage): boo
     message.kind === "progress";
 }
 
-function renderConversationMessage(message: ConversationMessage, index: number, options: ConversationRenderOptions): ConversationLine[] {
-  if (message.kind === "logo") {
-    return markSelectedLines(renderConversationLogoMessage(message, index), index, options);
+/** A row of the transcript to render: one message, or a turn's settled tool calls folded into one line (or unfolded). */
+export type ConversationRenderEntry =
+  | { kind: "message"; index: number }
+  | { kind: "group"; first: number; indices: number[]; expanded: boolean };
+
+const isToolRow = (message: ConversationMessage | undefined): boolean => message?.kind === "tool_use" && Boolean(message.tool);
+
+/** The fold key of the tool-call group that starts at `index`. */
+export function toolGroupFoldKey(message: ConversationMessage, index: number): string {
+  return `group|${conversationMessageFoldKey(message, index)}`;
+}
+
+/**
+ * How the transcript renders: a run of two or more tool calls that something follows (the answer, the next prompt) is
+ * settled and folds into one line until it is expanded, or holds the selected or searched row.
+ */
+export function conversationRenderPlan(
+  messages: readonly ConversationMessage[],
+  options: { expandedMessageKeys?: ReadonlySet<string>; reveal?: ReadonlyArray<number | undefined> } = {}
+): ConversationRenderEntry[] {
+  const entries: ConversationRenderEntry[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    if (isToolRow(messages[index])) {
+      let end = index;
+      while (end + 1 < messages.length && isToolRow(messages[end + 1])) {
+        end += 1;
+      }
+      if (end > index && end + 1 < messages.length) {
+        const indices = Array.from({ length: end - index + 1 }, (_, offset) => index + offset);
+        const revealed = options.reveal?.some((target) => target !== undefined && target > index && target <= end) ?? false;
+        entries.push({
+          kind: "group",
+          first: index,
+          indices,
+          expanded: revealed || Boolean(options.expandedMessageKeys?.has(toolGroupFoldKey(messages[index]!, index)))
+        });
+        index = end + 1;
+        continue;
+      }
+    }
+    entries.push({ kind: "message", index });
+    index += 1;
   }
-  if (message.kind && message.kind !== "message") {
-    return markSelectedLines(renderConversationEventMessage(message, index, options), index, options);
-  }
-  const content = conversationMessageContent(message);
-  const markdownLines = renderMarkdownLines(content);
-  const baseKey = `${message.role}:${index}`;
-  if (markdownLines.length === 0) {
+  return entries;
+}
+
+/** The lines of a folded or unfolded group of tool calls: its summary line, then its rows when unfolded. */
+export function renderToolGroupLines(
+  messages: readonly ConversationMessage[],
+  entry: Extract<ConversationRenderEntry, { kind: "group" }>,
+  columns: number | undefined,
+  options: ConversationRenderOptions = {}
+): ConversationLine[] {
+  const rows = entry.indices.map((index) => messages[index]!);
+  const summary = toolGroupSummary(rows);
+  const failures = [
+    summary.failed ? `${summary.failed} failed` : "",
+    summary.denied ? `${summary.denied} denied` : ""
+  ].filter(Boolean).join(" · ");
+  const marker = entry.expanded ? "▾" : "▸";
+  const text = `${TOOL_INDENT}${marker} ${summary.text}${failures ? ` · ${failures}` : ""}`;
+  const header: ConversationLine = {
+    key: `group:${entry.first}`,
+    role: "system",
+    messageIndex: entry.first,
+    text,
+    kind: "paragraph",
+    continuationPrefix: `${TOOL_INDENT}  `,
+    spans: [
+      { text: `${TOOL_INDENT}${marker} `, color: "text.muted" },
+      { text: summary.text, color: "text.muted" },
+      ...(failures ? [{ text: ` · ${failures}`, color: "status.danger" } satisfies ConversationLineSpan] : [])
+    ]
+  };
+  const lines = [header, ...(entry.expanded ? entry.indices.flatMap((index) =>
+    renderConversationMessage(messages[index]!, index, options, { spaced: false })) : [])];
+  return markSelectedLines([header], entry.first, options).concat(lines.slice(1))
+    .flatMap((line) => wrapConversationLine(line, columns));
+}
+
+function renderConversationMessage(
+  message: ConversationMessage,
+  index: number,
+  options: ConversationRenderOptions,
+  layout: { spaced?: boolean } = {}
+): ConversationLine[] {
+  const lines = isToolRow(message)
+    ? renderToolRow(message, index, options)
+    : message.kind && message.kind !== "message" && message.kind !== "command"
+      ? renderNoticeRow(message, index, options)
+      : renderTextMessage(message, index);
+  if (lines.length === 0) {
     return [];
   }
+  const spaced = (layout.spaced ?? true) && index > 0 && startsBlock(message)
+    ? [{ key: `${message.role}:${index}:space`, role: message.role, messageIndex: index, text: "", kind: "blank" as const }, ...lines]
+    : lines;
+  return markSelectedLines(spaced, index, options);
+}
 
-  if (markdownLines.length === 1 && markdownLines[0]?.kind === "paragraph") {
-    const inline = conversationMessageRowLine(message.role, markdownLines[0], 0);
-    return [{
-      key: `${baseKey}:0`,
+/** User turns and answers start a block, set off from what came before by a blank line. */
+function startsBlock(message: ConversationMessage): boolean {
+  if (message.role === "user") {
+    return true;
+  }
+  return message.role === "assistant" && (message.kind === undefined || message.kind === "message");
+}
+
+const TOOL_INDENT = "  ";
+const VERB_WIDTH = 7;
+
+function renderTextMessage(message: ConversationMessage, index: number): ConversationLine[] {
+  const markdownLines = renderMarkdownLines(conversationMessageContent(message));
+  const baseKey = `${message.role}:${index}`;
+  const marker = message.role === "user"
+    ? "› "
+    : message.role === "system"
+      ? message.status === "error" ? "✗ " : message.status === "warning" ? "! " : "· "
+      : "";
+  const markerColor: TuiColorRef = message.role === "user"
+    ? "brand.focus"
+    : message.status === "error" ? "status.danger" : message.status === "warning" ? "status.warning" : "text.muted";
+  const indent = " ".repeat(marker.length);
+  const lines: ConversationLine[] = markdownLines.map((line, lineIndex) => {
+    if (line.kind === "blank") {
+      return { key: `${baseKey}:${lineIndex}`, role: message.role, messageIndex: index, text: "", kind: "blank" };
+    }
+    const prefix = lineIndex === 0 ? marker : indent;
+    return {
+      key: `${baseKey}:${lineIndex}`,
       role: message.role,
       messageIndex: index,
-      text: inline.text,
-      spans: inline.spans,
-      firstPrefixText: inline.firstPrefixText,
-      continuationPrefix: inline.continuationPrefix,
+      text: `${prefix}${line.text}`,
+      firstPrefixText: prefix,
+      continuationPrefix: line.kind === "list" ? `${indent}${line.text.match(/^\s*/u)?.[0] ?? ""}  ` : indent,
+      spans: [
+        ...(prefix ? [{ text: prefix, color: lineIndex === 0 ? markerColor : "text.muted", bold: lineIndex === 0 } satisfies ConversationLineSpan] : []),
+        { text: line.text, color: markdownBodyColor(message.role, line, "text.primary"), dim: line.dim }
+      ],
+      kind: line.kind,
+      bold: line.bold,
+      dim: line.dim
+    };
+  });
+  if (message.footer) {
+    const color: TuiColorRef = message.footer.status === "error"
+      ? "status.danger"
+      : message.footer.status === "warning" ? "status.warning" : "text.muted";
+    lines.push({
+      key: `${baseKey}:footer`,
+      role: message.role,
+      messageIndex: index,
+      text: message.footer.text,
       kind: "paragraph",
-      bold: false,
-      backgroundColor: roleBackground(message.role, isSelectedConversationMessage(index, options)),
-      selected: isSelectedConversationMessage(index, options)
-    }];
+      continuationPrefix: "",
+      spans: [{ text: message.footer.text, color }]
+    });
   }
-
-  return markSelectedLines([
-    ...markdownLines.map((line, lineIndex) => {
-      const rendered = conversationMessageRowLine(message.role, line, lineIndex);
-      return {
-        key: `${baseKey}:${lineIndex}`,
-        role: message.role,
-        messageIndex: index,
-        text: rendered.text,
-        spans: rendered.spans,
-        firstPrefixText: rendered.firstPrefixText,
-        continuationPrefix: rendered.continuationPrefix,
-        kind: line.kind,
-        bold: line.bold,
-        dim: line.dim,
-        backgroundColor: roleBackground(message.role, isSelectedConversationMessage(index, options))
-      };
-    })
-  ], index, options);
+  return lines;
 }
 
-function renderConversationLogoMessage(message: ConversationMessage, index: number): ConversationLine[] {
-  const baseKey = `logo:${index}`;
-  return renderMarkdownLines(message.brief).map((line, lineIndex) => ({
-    key: `${baseKey}:${lineIndex}`,
+function renderToolRow(message: ConversationMessage, index: number, options: ConversationRenderOptions): ConversationLine[] {
+  const tool = message.tool!;
+  const glyph = toolGlyph(message);
+  const suffix = [
+    tool.approval === "approved" ? "approved" : tool.approval === "denied" ? "denied" : tool.approval === "pending" ? "waiting for approval" : "",
+    tool.note ?? "",
+    tool.ms !== undefined && tool.ms >= 2_000 ? formatSeconds(tool.ms) : ""
+  ].filter(Boolean).join(" · ");
+  const verb = tool.verb.padEnd(VERB_WIDTH);
+  const lead = `${TOOL_INDENT}${glyph.text} `;
+  const text = `${lead}${verb}${tool.target}${suffix ? ` · ${suffix}` : ""}`;
+  const row: ConversationLine = {
+    key: `tool:${index}`,
     role: message.role,
     messageIndex: index,
-    text: line.text,
-    kind: line.kind,
-    bold: line.bold,
-    dim: line.dim
-  }));
+    text,
+    firstPrefixText: lead,
+    continuationPrefix: " ".repeat(lead.length + VERB_WIDTH),
+    kind: "paragraph",
+    spans: [
+      { text: TOOL_INDENT },
+      { text: `${glyph.text} `, color: glyph.color },
+      { text: verb, color: "text.primary", bold: true },
+      { text: tool.target, color: "text.primary" },
+      ...(suffix ? [{ text: ` · ${suffix}`, color: message.status === "error" || tool.approval === "denied" ? "status.danger" : "text.muted" } satisfies ConversationLineSpan] : [])
+    ]
+  };
+  if (!isConversationMessageExpanded(message, index, options)) {
+    return [row];
+  }
+  return [row, ...detailLines(message, index)];
 }
 
-function renderConversationEventMessage(message: ConversationMessage, index: number, options: ConversationRenderOptions): ConversationLine[] {
-  const content = conversationEventContent(message, isConversationMessageExpanded(message, index, options));
-  const markdownLines = renderMarkdownLines(content);
-  const baseKey = `${message.kind}:${index}`;
-  if (markdownLines.length === 0) {
+function toolGlyph(message: ConversationMessage): { text: string; color: TuiColorRef } {
+  if (message.tool?.approval === "denied" || message.status === "error") {
+    return { text: "✗", color: "status.danger" };
+  }
+  if (message.tool?.approval === "pending" || message.status === "pending") {
+    return { text: "?", color: "status.pending" };
+  }
+  if (message.status === "warning") {
+    return { text: "!", color: "status.warning" };
+  }
+  if (message.status === "success") {
+    return { text: "✓", color: "status.success" };
+  }
+  return { text: "○", color: "status.running" };
+}
+
+/** Thinking, approvals, progress and old-style results from sessions recorded before tool rows: one quiet line each. */
+function renderNoticeRow(message: ConversationMessage, index: number, options: ConversationRenderOptions): ConversationLine[] {
+  const expanded = isConversationMessageExpanded(message, index, options);
+  const text = firstNonEmptyLine(message.preview ?? message.brief) || firstNonEmptyLine(message.detail) || message.brief;
+  if (!text) {
     return [];
   }
-  return markdownLines.map((line, lineIndex) => ({
-    key: `${baseKey}:${lineIndex}`,
+  const glyph = message.status === "error" ? "✗" : message.status === "warning" ? "!" : message.status === "success" ? "✓" : "·";
+  const color: TuiColorRef = message.status === "error" ? "status.danger" : message.status === "warning" ? "status.warning" : "text.muted";
+  const lead = `${message.kind === "tool_result" || message.kind === "tool_use" ? TOOL_INDENT : ""}${glyph} `;
+  const row: ConversationLine = {
+    key: `${message.kind}:${index}`,
     role: message.role,
     messageIndex: index,
-    ...renderConversationEventLine(message, line, lineIndex),
-    kind: line.kind,
-    bold: line.bold,
-    dim: line.dim ?? (message.status === "running" || message.kind === "thinking"),
-    tone: transcriptEventToken(message.kind, message.status).tone,
-    backgroundColor: isSelectedConversationMessage(index, options) ? "surface.selection" : undefined
+    text: `${lead}${text}`,
+    firstPrefixText: lead,
+    continuationPrefix: " ".repeat(lead.length),
+    kind: "paragraph",
+    spans: [{ text: lead, color }, { text, color: "text.muted" }]
+  };
+  return expanded ? [row, ...detailLines(message, index)] : [row];
+}
+
+/** An expanded row's detail, indented under it and kept short; Ctrl+O shows all of it. */
+function detailLines(message: ConversationMessage, index: number): ConversationLine[] {
+  const detail = (message.detail ?? message.preview ?? "").split(/\r?\n/u);
+  const shown = detail.slice(0, 12);
+  const more = detail.length - shown.length;
+  return [...shown, ...(more > 0 ? [`… ${more} more lines (Ctrl+O)`] : [])].map((text, lineIndex) => ({
+    key: `detail:${index}:${lineIndex}`,
+    role: message.role,
+    messageIndex: index,
+    text: `${TOOL_INDENT}    ${text}`,
+    continuationPrefix: `${TOOL_INDENT}    `,
+    kind: "code",
+    dim: true,
+    spans: [{ text: `${TOOL_INDENT}    ${text}`, color: "text.muted" }]
   }));
+}
+
+function formatSeconds(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 export type ConversationRenderOptions = {
@@ -669,8 +852,13 @@ function renderConversationLines(
   columns?: number,
   options: ConversationRenderOptions = {}
 ): ConversationLine[] {
-  const rawLines = messages
-    .flatMap((message, index) => renderConversationMessage(message, index, options))
+  const plan = conversationRenderPlan(messages, {
+    expandedMessageKeys: options.expandedMessageKeys,
+    reveal: [options.selectedMessageIndex, options.searchMatchMessageIndex]
+  });
+  const rawLines = plan.flatMap((entry) => entry.kind === "group"
+    ? renderToolGroupLines(messages, entry, undefined, options)
+    : renderConversationMessage(messages[entry.index]!, entry.index, options));
   const withDivider = insertUnseenDivider(rawLines, messages.length, options);
   return withDivider.flatMap((line) => wrapConversationLine(line, columns));
 }
@@ -708,7 +896,7 @@ function unseenDividerLine(unseenStartIndex: number, newMessageCount: number): C
   return {
     key: `transcript:unseen-divider:${unseenStartIndex}`,
     role: "system",
-    text: `--- ${count} new message${count === 1 ? "" : "s"} ---`,
+    text: `── ${count} new message${count === 1 ? "" : "s"} ──`,
     kind: "divider",
     dim: true
   };
@@ -719,16 +907,6 @@ function conversationMessageContent(message: ConversationMessage): string {
     return message.brief;
   }
   return extractFullOutput(message.detail) ?? message.detail ?? message.preview ?? message.brief;
-}
-
-function conversationEventContent(message: ConversationMessage, expanded: boolean): string {
-  if (expanded) {
-    return message.detail ?? message.preview ?? message.brief;
-  }
-  if (!isFoldableConversationMessage(message)) {
-    return message.preview ?? message.detail ?? message.brief;
-  }
-  return firstNonEmptyLine(message.preview ?? message.brief) || firstNonEmptyLine(message.detail) || message.brief;
 }
 
 function latestUserPrompt(messages: ConversationMessage[]): string | undefined {
@@ -796,96 +974,6 @@ function extractFullOutput(detail: string | undefined): string | undefined {
   return output || undefined;
 }
 
-const TRANSCRIPT_LABEL_WIDTH = 10;
-
-type TranscriptRowChrome = {
-  marker: string;
-  label: string;
-  markerColor: TuiColorRef;
-  labelColor: TuiColorRef;
-  bodyColor: TuiColorRef;
-};
-
-function transcriptPrefix(marker: string, label: string): string {
-  return `${marker} ${label.padEnd(TRANSCRIPT_LABEL_WIDTH)} `;
-}
-
-function transcriptContinuationPrefix(): string {
-  return " ".repeat(2 + TRANSCRIPT_LABEL_WIDTH + 1);
-}
-
-function conversationMessageRowLine(role: ConversationMessage["role"], line: MarkdownLine, lineIndex: number): {
-  text: string;
-  spans?: ConversationLineSpan[];
-  firstPrefixText?: string;
-  continuationPrefix?: string;
-} {
-  if (line.kind === "blank") {
-    return { text: "", continuationPrefix: "" };
-  }
-  const chrome = conversationRoleChrome(role);
-  const body = line.text;
-  const backgroundColor = roleBackground(role, false);
-  const prefix = lineIndex === 0
-    ? transcriptPrefix(chrome.marker, chrome.label)
-    : transcriptContinuationPrefix();
-  const rendered = `${prefix}${body}`;
-  return {
-    text: rendered,
-    firstPrefixText: prefix,
-    continuationPrefix: transcriptContinuationPrefix(),
-    spans: [
-      {
-        text: lineIndex === 0 ? `${chrome.marker} ` : prefix,
-        color: lineIndex === 0 ? chrome.markerColor : "text.muted",
-        backgroundColor,
-        bold: lineIndex === 0,
-        dim: lineIndex !== 0
-      },
-      ...(lineIndex === 0 ? [{
-        text: `${chrome.label.padEnd(TRANSCRIPT_LABEL_WIDTH)} `,
-        color: chrome.labelColor,
-        backgroundColor,
-        bold: true
-      } satisfies ConversationLineSpan] : []),
-      {
-        text: body,
-        color: markdownBodyColor(role, line, chrome.bodyColor),
-        backgroundColor,
-        dim: line.dim
-      }
-    ]
-  };
-}
-
-function conversationRoleChrome(role: ConversationMessage["role"]): TranscriptRowChrome {
-  if (role === "user") {
-    return {
-      marker: "❯",
-      label: "user",
-      markerColor: "role.user",
-      labelColor: "role.user",
-      bodyColor: "text.primary"
-    };
-  }
-  if (role === "assistant") {
-    return {
-      marker: "·",
-      label: "assistant",
-      markerColor: "text.muted",
-      labelColor: "text.muted",
-      bodyColor: "role.assistant"
-    };
-  }
-  return {
-    marker: "·",
-    label: "system",
-    markerColor: "text.muted",
-    labelColor: "text.muted",
-    bodyColor: "text.primary"
-  };
-}
-
 function markdownBodyColor(role: ConversationMessage["role"], line: MarkdownLine, defaultColor: TuiColorRef): TuiColorRef {
   if (line.kind === "heading") {
     return "brand.focus";
@@ -900,97 +988,6 @@ function markdownBodyColor(role: ConversationMessage["role"], line: MarkdownLine
     return "role.assistant";
   }
   return defaultColor;
-}
-
-function renderConversationEventLine(message: ConversationMessage, line: MarkdownLine, lineIndex: number): { text: string; spans?: ConversationLineSpan[]; firstPrefixText?: string; continuationPrefix?: string } {
-  if (line.kind === "blank") {
-    return { text: "" };
-  }
-  const chrome = conversationEventChrome(message);
-  const prefix = lineIndex === 0
-    ? transcriptPrefix(chrome.marker, chrome.label)
-    : transcriptContinuationPrefix();
-  const rendered = `${prefix}${line.text}`;
-  return {
-    text: rendered,
-    firstPrefixText: prefix,
-    continuationPrefix: transcriptContinuationPrefix(),
-    spans: [
-      {
-        text: lineIndex === 0 ? `${chrome.marker} ` : prefix,
-        color: lineIndex === 0 ? chrome.markerColor : "text.muted",
-        bold: lineIndex === 0,
-        dim: lineIndex !== 0
-      },
-      ...(lineIndex === 0 ? [{
-        text: `${chrome.label.padEnd(TRANSCRIPT_LABEL_WIDTH)} `,
-        color: chrome.labelColor,
-        bold: true
-      } satisfies ConversationLineSpan] : []),
-      {
-        text: line.text,
-        color: markdownBodyColor(message.role, line, chrome.bodyColor),
-        dim: message.kind === "thinking" || line.dim
-      }
-    ]
-  };
-}
-
-function conversationEventChrome(message: ConversationMessage): TranscriptRowChrome {
-  const token = transcriptEventToken(message.kind, message.status);
-  const runningMarker = message.status === "running" ? "●" : token.prefix.trim().slice(0, 1);
-  switch (message.kind) {
-    case "command":
-      return {
-        marker: "❯",
-        label: "cmd",
-        markerColor: "role.user",
-        labelColor: "role.user",
-        bodyColor: "text.primary"
-      };
-    case "tool_use":
-      return {
-        marker: message.status === "running" ? "●" : "⏵",
-        label: "tool",
-        markerColor: message.status === "running" ? "status.running" : token.tone,
-        labelColor: token.tone,
-        bodyColor: "text.primary"
-      };
-    case "tool_result":
-      return {
-        marker: runningMarker || "⎿",
-        label: token.label,
-        markerColor: token.tone,
-        labelColor: token.tone,
-        bodyColor: "text.primary"
-      };
-    case "thinking":
-      return {
-        marker: message.status === "running" ? "·" : "∴",
-        label: "think",
-        markerColor: message.status === "running" ? "status.running" : "text.muted",
-        labelColor: "text.muted",
-        bodyColor: "text.muted"
-      };
-    case "approval":
-      return {
-        marker: "?",
-        label: "approval",
-        markerColor: "status.pending",
-        labelColor: "status.pending",
-        bodyColor: "text.primary"
-      };
-    case "progress":
-      return {
-        marker: "·",
-        label: "progress",
-        markerColor: token.tone,
-        labelColor: token.tone,
-        bodyColor: "text.primary"
-      };
-    default:
-      return conversationRoleChrome(message.role);
-  }
 }
 
 function isConversationMessageExpanded(
@@ -1021,16 +1018,12 @@ function markSelectedLines(lines: ConversationLine[], index: number, options: Co
     return lines;
   }
   return lines.map((line) => {
+    if (line.kind === "blank") {
+      return line;
+    }
     const selectedLine = selected ? { ...line, selected: true, backgroundColor: "surface.selection" } : line;
     return searchHighlighted ? highlightConversationLine(selectedLine, options.searchMatchQuery) : selectedLine;
   });
-}
-
-function roleBackground(role: ConversationMessage["role"], selected: boolean): TuiColorRef | undefined {
-  if (selected) {
-    return "surface.selection";
-  }
-  return role === "user" ? "surface.user" : undefined;
 }
 
 function highlightConversationLine(line: ConversationLine, query: string | undefined): ConversationLine {

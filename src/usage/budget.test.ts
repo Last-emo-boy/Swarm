@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import { defaultSwarmConfig, defaultSwarmSettings, loadSwarmSettings, type UsageSettings } from "../config/settings.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { UsageStore } from "../storage/usage-store.js";
-import { reachedBudgetNotices } from "../tui/usage-view.js";
+import { usageStatus } from "../tui/usage-view.js";
 import { BudgetReached, budgetStatus } from "./budget.js";
 import { openUsageDatabase } from "./ledger.js";
 
@@ -88,7 +88,7 @@ test("a provider whose daily budget is reached takes no new calls until the cap 
   assert.equal(requests.length, 1);
 });
 
-test("budgets show what each cap has spent, and the TUI notice names a reached one", () => {
+test("budgets show what each cap has spent, and the TUI status line names a reached one and today's spend", () => {
   writeSettings({ providers: { deepseek: { daily: 0.01, monthly: 5, currency: "USD" }, kimi: { monthlyTokens: 1_000_000 } }, harnesses: { claude: { daily: 3 } } });
   const settings = loadSwarmSettings(root);
   const database = openUsageDatabase(databasePath);
@@ -98,8 +98,7 @@ test("budgets show what each cap has spent, and the TUI notice names a reached o
       ["provider", "deepseek", "daily", "USD", true], ["provider", "deepseek", "monthly", "USD", false],
       ["provider", "kimi", "monthly", "tokens", false], ["harness", "claude", "daily", "USD", false]
     ]);
-    assert.deepEqual(reachedBudgetNotices(settings, database),
-      ["provider deepseek: daily budget reached ($0.0200 of $0.0100), new calls stop · raise usage.budgets.providers.deepseek.daily"]);
+    assert.deepEqual(usageStatus(settings, database), { budgetsReached: ["deepseek daily budget reached"], spentToday: "$0.0200" });
   } finally {
     database?.close();
   }

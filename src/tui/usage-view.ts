@@ -1,13 +1,13 @@
 /**
- * `/usage` and `/budget` in the TUI, and the notice of a reached budget above the prompt: a session's model calls as the
+ * `/usage` and `/budget` in the TUI, and what the status line says about usage: a session's model calls as the
  * ledger counts them (each once), this device's calls today, and the budgets' state.
  */
 import type { DatabaseSync } from "node:sqlite";
 import { getSwarmPaths, type SwarmSettings } from "../config/settings.js";
-import { budgetStatus, capSetting, type CapStatus } from "../usage/budget.js";
+import { budgetStatus } from "../usage/budget.js";
 import { groupLedger, priceLedger, readLedger, totalOf, type LedgerTotal } from "../usage/ledger.js";
 import { mergedPrices } from "../usage/prices.js";
-import { budgetLines, costText, formatMoney, formatTokens, usageTable } from "../usage/report.js";
+import { budgetLines, costText, formatTokens, usageTable } from "../usage/report.js";
 
 const startOfDay = (now: Date): Date => new Date(now.getFullYear(), now.getMonth(), now.getDate());
 const totalLine = (total: LedgerTotal): string =>
@@ -33,11 +33,18 @@ export function usageView(input: { database: DatabaseSync; settings: SwarmSettin
   return { brief, detail: lines.join("\n") };
 }
 
-/** One short line per reached cap: which, how much went, and the setting that raises it. */
-export function reachedBudgetNotices(settings: SwarmSettings, database: DatabaseSync | undefined, now = new Date()): string[] {
+/**
+ * What the status line says about usage: each reached budget in a few words (`/usage` names the setting that raises it),
+ * and what this device spent today, or how many calls it made when they have no price.
+ */
+export function usageStatus(settings: SwarmSettings, database: DatabaseSync | undefined, now = new Date()): { budgetsReached: string[]; spentToday?: string } {
+  if (!database) return { budgetsReached: [] };
   const caps = Object.keys(settings.usage.budgets.providers).length + Object.keys(settings.usage.budgets.harnesses).length;
-  if (!caps || !database) return [];
-  const amount = (cap: CapStatus, value: number) => cap.unit === "tokens" ? `${formatTokens(value)} tokens` : formatMoney(value, cap.unit);
-  return budgetStatus(settings, database, { now }).filter((cap) => cap.reached).map((cap) =>
-    `${cap.kind} ${cap.id}: ${cap.period} budget reached (${amount(cap, cap.spent)} of ${amount(cap, cap.limit)}), new ${cap.kind === "provider" ? "calls" : "turns"} stop · raise ${capSetting(cap)}`);
+  const budgetsReached = caps
+    ? budgetStatus(settings, database, { now }).filter((cap) => cap.reached).map((cap) => `${cap.id} ${cap.period} budget reached`)
+    : [];
+  const today = totalOf(priceLedger(readLedger(database, "this device", { since: startOfDay(now) }), mergedPrices(settings.usage.prices)));
+  if (!today.calls) return { budgetsReached };
+  const spentToday = Object.keys(today.cost).length ? costText(today) : `${today.calls} call${today.calls === 1 ? "" : "s"}`;
+  return { budgetsReached, spentToday };
 }

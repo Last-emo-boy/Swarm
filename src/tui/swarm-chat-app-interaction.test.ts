@@ -43,8 +43,8 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   try {
     await waitFor(() => stripAnsi(output).includes("Ask Swarm"), "initial prompt render");
     await waitFor(
-      () => stripAnsi(output).includes("Left/Right footer | [/] message | / search"),
-      "footer hint render"
+      () => /\? keys/.test(stripAnsi(output)),
+      "status line hint render"
     );
     const secretPrompt = "secret phrase 123";
     stdin.emit("data", secretPrompt);
