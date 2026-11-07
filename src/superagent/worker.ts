@@ -11,6 +11,7 @@ import { createLocalPolicy } from "../runtime/policy-configuration.js";
 import type { SwarmSession } from "../protocol/types.js";
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import { listBackgroundProcesses, stopBackgroundProcess } from "../tools/background-processes.js";
+import { BudgetReached } from "../usage/budget.js";
 import { latestReport, runningAssignment, waitsForPerson, type Ticket } from "./core/index.js";
 import { SessionLost } from "./harness.js";
 import { batchLine, inputMessage, inputResource, transient, triggerMessage, workerSessionId } from "./messages.js";
@@ -309,7 +310,7 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
           lost = prompt;
           continue;
         }
-        if (transient(error) && tries < TRANSIENT_TRIES && !stopping) {
+        if (transient(error) && !(error instanceof BudgetReached) && tries < TRANSIENT_TRIES && !stopping) {
           tries += 1;
           await sleep(TRANSIENT_BACKOFF_MS * 2 ** (tries - 1));
           retryNote = `Your last turn failed for a passing reason (${String(error).slice(0, 200)}). Continue the assignment where it stopped.`;
@@ -364,9 +365,11 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     }
   } catch (error) {
     const ticket = stopping ? undefined : await current().catch(() => undefined);
-    const summary = `The worker failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 4000);
+    // A reached budget stops the worker until a person raises it and retries the ticket.
+    const capped = error instanceof BudgetReached;
+    const summary = (capped ? `${error.message} Retry the ticket once it is raised.` : `The worker failed: ${error instanceof Error ? error.message : String(error)}`).slice(0, 4000);
     // A report that cannot be filed, such as while the owner node does not answer, leaves the failure to the exit code.
-    const filed = !!ticket && await link.report({ state: "failed", summary }).then(() => true, () => false);
+    const filed = !!ticket && await link.report({ state: capped ? "blocked" : "failed", summary }).then(() => true, () => false);
     if (!filed) exitCode = stopping ? 0 : 1;
   } finally {
     try { turns.dispose(); } catch { /* The process exits next; a failed cleanup changes nothing the ticket records. */ }

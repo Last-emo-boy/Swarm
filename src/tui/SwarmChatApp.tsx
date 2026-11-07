@@ -97,6 +97,8 @@ import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
 import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
 import { ConversationHeader } from "./components/ConversationHeader.js";
 import { NeedsYouStrip } from "./components/NeedsYouStrip.js";
+import { BudgetStrip, budgetNoticeRows } from "./components/BudgetStrip.js";
+import { reachedBudgetNotices, usageView } from "./usage-view.js";
 import { TicketsPane } from "./components/TicketsPane.js";
 import { TuiTickets, type TicketSnapshot } from "./tickets/controller.js";
 import { runTicketCommand } from "./tickets/commands.js";
@@ -399,6 +401,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const meshRef = useRef<TuiMesh | undefined>(undefined);
   const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | undefined>(undefined);
   const ticketSignatureRef = useRef("");
+  const [budgetNotices, setBudgetNotices] = useState<string[]>([]);
+  const budgetSignatureRef = useRef("");
   const busySinceRef = useRef<number | undefined>(undefined);
   const [ticketSelection, setTicketSelection] = useState(0);
 
@@ -579,6 +583,28 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   useEffect(() => {
     busySinceRef.current = busy ? Date.now() : undefined;
   }, [busy]);
+
+  // Reached budgets: read when a run starts or ends and every 15 seconds, with the settings as they are now.
+  useEffect(() => {
+    if (!runtime) return;
+    const refresh = () => {
+      let notices: string[] = [];
+      try {
+        notices = reachedBudgetNotices(loadSwarmSettings(runtime.workspaceRoot()), runtime.database.db);
+      } catch (error) {
+        runtime.debug?.warn("usage", `budget notice read failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const signature = JSON.stringify(notices);
+      if (signature !== budgetSignatureRef.current) {
+        budgetSignatureRef.current = signature;
+        setBudgetNotices(notices);
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 15_000);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [runtime, busy]);
 
   // Tickets: their state every two seconds, and replies to tickets filed here appended to the transcript.
   useEffect(() => {
@@ -1540,7 +1566,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   function conversationBottomRows(): number {
     return conversationBottomRowsForTerminal({
       terminalRows: terminalRows - CONVERSATION_HEADER_ROWS,
-      contentRows: conversationPromptRows(0) + completionRows + needsYouRows(needsYouItems(ticketSnapshot?.rows ?? [])) + conversationBottomStatusRows({
+      contentRows: conversationPromptRows(0) + completionRows + budgetNoticeRows(budgetNotices) + needsYouRows(needsYouItems(ticketSnapshot?.rows ?? [])) + conversationBottomStatusRows({
         busy,
         hasResult: false
       }),
@@ -2498,19 +2524,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (command === "budget" || command === "usage") {
       if (!runtime) throw new Error("Runtime is not ready.");
       const sessionId = args[0] ?? lastSessionId;
-      if (!sessionId) throw new Error(`Usage: /${command} [session_id]`);
-      const session = runtime.sessionStore.get(sessionId);
-      const summary = runtime.usageStore.summarize(sessionId);
-      const detail = [
-        `${sessionId}`,
-        "",
-        "Policy budget",
-        session?.policy_json ? JSON.stringify(JSON.parse(session.policy_json).budget ?? {}, null, 2) : "(no persisted session policy)",
-        "",
-        "Usage",
-        JSON.stringify(summary, null, 2)
-      ].join("\n");
-      return { brief: appendDetailShortcut(`${sessionId} usage: ${Object.keys(summary).length} counters`), detail };
+      const session = sessionId ? runtime.sessionStore.get(sessionId) : undefined;
+      const view = usageView({
+        database: runtime.database.db,
+        settings: loadSwarmSettings(runtime.workspaceRoot()),
+        sessionId,
+        policyBudget: sessionId ? (session?.policy_json ? JSON.stringify(JSON.parse(session.policy_json).budget ?? {}, null, 2) : "(no persisted session policy)") : undefined
+      });
+      return { brief: appendDetailShortcut(view.brief), detail: view.detail };
     }
 
     if (command === "output") {
@@ -3701,7 +3722,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
         motionFrame={shouldAnimate ? motionTick : undefined}
         detailAvailable={latestDetailSource !== "none"}
-        notice={<NeedsYouStrip items={waiting} columns={terminalColumns} />}
+        notice={<>
+          <BudgetStrip notices={budgetNotices} columns={terminalColumns} />
+          <NeedsYouStrip items={waiting} columns={terminalColumns} />
+        </>}
         status={
           <Box paddingX={1}>
             <ConversationStatusLine

@@ -16,6 +16,7 @@ import {
   type SwarmSettings
 } from "../config/settings.js";
 import type { ToolResult, WebSearchAction } from "../tools/types.js";
+import { assertBudget } from "../usage/budget.js";
 
 const WEB_SEARCH_MAX_OUTPUT_TOKENS = 4_000;
 const MAX_CACHE_DIAGNOSTIC_SOURCES = 10;
@@ -83,6 +84,8 @@ export class OpenAIProvider {
         `Missing API key for provider "${resolved.providerId}". Run "swarm onboard" or "swarm auth set-key ${resolved.providerId} <api-key>".`
       );
     }
+    // A provider whose budget (usage.budgets in the settings) is reached takes no new calls.
+    assertBudget({ provider: resolved.providerId }, this.workspace);
 
     if (resolved.provider.protocol === "openai-responses") {
       return this.generateWithResponses(resolved, input);
@@ -106,6 +109,7 @@ export class OpenAIProvider {
         `Missing API key for provider "${resolved.providerId}". Run "swarm onboard" or "swarm auth set-key ${resolved.providerId} <api-key>".`
       );
     }
+    assertBudget({ provider: resolved.providerId }, this.workspace);
 
     if (resolved.provider.protocol === "openai-responses") {
       return this.webSearchWithResponses(resolved, action);

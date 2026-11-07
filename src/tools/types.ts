@@ -350,6 +350,8 @@ export type AgentDelegateAction = {
   preferred_mode?: "call_subagent" | "handoff" | "parallel";
   run_in_background?: boolean;
   file_scope?: string[];
+  /** An agent harness profile, such as claude, codex, kimi or opencode, to run the worker on instead of Swarm's coding loop. */
+  harness?: string;
 };
 
 export type AgentListAction = {

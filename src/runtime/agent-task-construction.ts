@@ -64,6 +64,9 @@ export function evaluateDelegationRoi(request: AgentInvocationRequest): { allow:
   if (readOnlyCapability) {
     return { allow: true, reason: "read-only capability is a good delegation fit." };
   }
+  if (request.harness) {
+    return { allow: true, reason: "the caller named an agent harness to run the worker on." };
+  }
   if (request.preferred_mode === "handoff") {
     return { allow: true, reason: "handoff requests are allowed when the caller explicitly wants a focused worker." };
   }

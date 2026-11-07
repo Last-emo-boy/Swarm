@@ -1334,7 +1334,8 @@ export class CodingAgentLoop {
         preferred_agent_spec_id: action.preferred_agent_spec_id,
         preferred_mode: action.run_in_background ? "parallel" : action.preferred_mode,
         file_scope: action.file_scope,
-        spawn_reason: `agent.delegate from ${parentTaskId}`
+        spawn_reason: `agent.delegate from ${parentTaskId}`,
+        harness: action.harness
       });
     }
 
@@ -1632,7 +1633,7 @@ function codingLoopSystemPrompt(input: {
       ? "You may dynamically upgrade the coding loop into an internal swarm by using Agent when the task naturally splits into independent roles, workstreams, or expert checks. The main Swarm remains responsible for user-facing synthesis and final decisions."
       : "Do not use Agent in this loop.",
     input.delegateAvailable && input.role === "main"
-      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, run_in_background, and file_scope when known. Use run_in_background=true or preferred_mode=parallel for independent side work that should not block the main agent. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns."
+      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, run_in_background, and file_scope when known. Use run_in_background=true or preferred_mode=parallel for independent side work that should not block the main agent. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns. Pass harness (an agent harness profile such as claude, codex, kimi or opencode) only when the user asks for a subagent on that agent CLI."
       : undefined,
     "Keep message grounded in actual tool results. Mention verification commands that were run.",
     input.role === "main"

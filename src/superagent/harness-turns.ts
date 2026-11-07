@@ -9,21 +9,23 @@ import { dirname, join } from "node:path";
 import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { UsageStore } from "../storage/usage-store.js";
-import { checkHarness, HarnessSetupError, resolveHarness, runTurn, SessionLost, type Harness, type TurnLimits, type TurnOutcome } from "./harness.js";
+import { assertBudget } from "../usage/budget.js";
+import { checkHarness, harnessUsageRows, HarnessSetupError, resolveHarness, runTurn, SessionLost, type Harness, type HarnessKind, type TurnLimits, type TurnOutcome } from "./harness.js";
 import { transient, workerSessionId } from "./messages.js";
 import { readSettings, settingsPath } from "./settings.js";
 import type { WorkLink, WorkStart } from "./work-link.js";
 import type { WorkerTurns } from "./worker.js";
 
-const UNREPORTED = "Your turn ended without calling the mcp__ticket__report tool, so nobody knows what happened: your final message is not a report. Call mcp__ticket__report now: state ready with message_for_person if the work is done and verified, progress if you wait for something such as CI or a review (say what), blocked or failed with what stops you, or dropped if there is nothing to do.";
+/** The reminder for a turn that ended without a report, naming the report tool as the harness names it. */
+const unreported = (report: string): string => `Your turn ended without calling the ${report} tool, so nobody knows what happened: your final message is not a report. Call ${report} now: state ready with message_for_person if the work is done and verified, progress if you wait for something such as CI or a review (say what), blocked or failed with what stops you, or dropped if there is nothing to do.`;
 
 /** What a harness reads after Swarm's worker instructions, which were written for Swarm's own coding loop. */
-const harnessSection = (label: string): string => [
+const harnessSection = ({ label, tool }: HarnessKind): string => [
   `## Working in ${label}`,
   "",
   `You run in ${label} as this ticket's worker. Swarm's ticket host starts you for one turn at a time and resumes this session when the ticket has news.`,
-  "Swarm's ticket tools are the MCP server `ticket`: mcp__ticket__read, mcp__ticket__ack, mcp__ticket__report, mcp__ticket__handback, mcp__ticket__thread_follow and mcp__ticket__thread_unrelated.",
-  `Where the sections above mention tool_calls or a final JSON, call the tools as ${label} calls tools. Your final message is not a report and reaches nobody: end every turn with mcp__ticket__report.`,
+  `Swarm's ticket tools are the MCP server \`ticket\`: ${["read", "ack", "report", "handback", "thread_follow"].map(tool).join(", ")} and ${tool("thread_unrelated")}.`,
+  `Where the sections above mention tool_calls or a final JSON, call the tools as ${label} calls tools. Your final message is not a report and reaches nobody: end every turn with ${tool("report")}.`,
   "Nobody can answer a permission prompt: an action that is denied stays denied, so choose another way, or report blocked with human_action naming what it needs.",
   "Commit only what you changed for this ticket: stage those files by path, never with `git add -A` or `git add .`, and leave files you did not make, such as a tool's untracked state directory, out of every commit and where they are.",
   "Commits and pull requests carry no attribution to an agent, model or harness: no Co-Authored-By trailer and no \"Generated with\" line."
@@ -49,29 +51,12 @@ function writeSaved(ticketId: string, saved: Saved): void {
 
 /** Writes a turn's usage as Swarm's provider calls write theirs: one count row and its token rows, with the harness and model. */
 function recordUsage(directory: string, sessionId: string, ticketId: string, harness: Harness, outcome: TurnOutcome): void {
-  const usage = outcome.usage;
-  if (!usage) return;
-  const anthropic = harness.kind.protocol === "anthropic-messages";
-  const total = anthropic ? usage.inputTokens + usage.cachedInputTokens + usage.cacheCreationInputTokens : usage.inputTokens;
-  const metadata = {
-    providerId: `harness:${harness.id}`, protocol: harness.kind.protocol, model: outcome.model ?? harness.model ?? "unknown",
-    purpose: "superagent_worker", sessionId, ticketId, harness: harness.id, harnessKind: harness.kind.program,
-    ...(outcome.session ? { harnessSession: outcome.session } : {}), status: outcome.status, durationMs: outcome.durationMs,
-    inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens, totalInputWithCacheTokens: total,
-    uncachedInputTokens: Math.max(0, total - usage.cachedInputTokens),
-    ...(usage.reasoningOutputTokens ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
-    ...(usage.costUsd !== undefined ? { reportedCostUsd: usage.costUsd } : {}),
-    ...(usage.partial ? { usagePartial: true } : {})
-  };
+  const rows = harnessUsageRows(harness, outcome, { purpose: "superagent_worker", sessionId, ticketId });
+  if (!rows.length) return;
   const database = new SwarmDatabase(loadSwarmSettings(directory).runtime.databasePath);
   try {
     const store = new UsageStore(database);
-    store.append({ session_id: sessionId, kind: "llm_call", amount: 1, unit: "count", metadata: { ...metadata, event: "harness_turn" } });
-    for (const [name, amount] of [["input", usage.inputTokens], ["output", usage.outputTokens], ["cached_input", usage.cachedInputTokens],
-      ["cache_creation_input", usage.cacheCreationInputTokens]] as const) {
-      if (amount > 0) store.append({ session_id: sessionId, kind: "llm_call", amount, unit: "tokens", metadata: { ...metadata, token_type: name } });
-    }
+    for (const row of rows) store.append({ session_id: sessionId, ...row });
   } finally {
     database.close();
   }
@@ -108,7 +93,7 @@ export async function harnessTurns(input: HarnessTurnsInput): Promise<WorkerTurn
   const [node, ...entry] = input.entry;
   const tools = { command: node!, args: [...entry, ...link.tools.args], env: link.tools.env };
   const request = {
-    directory, instructions: `${start.prompt}\n\n${harnessSection(harness.kind.label)}`, tools,
+    directory, instructions: `${start.prompt}\n\n${harnessSection(harness.kind)}`, tools,
     permission: process.env.SWARM_PERMISSION_MODE === "yolo" ? "yolo" as const : "full-auto" as const,
     blockedCommands: start.blockedCommands,
     variables: Object.keys(harness.env).filter((name) => harness.env[name] !== undefined)
@@ -118,6 +103,8 @@ export async function harnessTurns(input: HarnessTurnsInput): Promise<WorkerTurn
   return {
     fresh: !session,
     run: async (prompt) => {
+      // A harness's turns stop at its budget (usage.budgets.harnesses), as model calls stop at their provider's.
+      assertBudget({ harness: harness.id }, directory);
       const outcome = await runTurn(harness, { ...request, ...(session ? { session } : {}) }, prompt, input.limits, abort.signal);
       try { recordUsage(directory, sessionId, ticketId, harness, outcome); }
       catch (error) { process.stderr.write(`superagent: could not record the harness turn's usage: ${String(error)}\n`); }
@@ -139,7 +126,7 @@ export async function harnessTurns(input: HarnessTurnsInput): Promise<WorkerTurn
       return { failed: true, words: why.slice(0, 4000) };
     },
     settle: async () => [],
-    unreported: UNREPORTED,
+    unreported: unreported(harness.kind.tool("report")),
     stop: () => abort.abort(),
     dispose: () => {}
   };

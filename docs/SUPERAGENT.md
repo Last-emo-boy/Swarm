@@ -26,7 +26,8 @@ The domain is upstream's, ported unchanged in `src/superagent/core/` with its en
 | Routing, assessment, follow-up stop check | `assessor.ts`, `prompts.ts` | Host |
 | Executor: slots, prepare command, worker processes | `executor.ts` | Host |
 | Worker: coding loop on the ticket's session | `worker.ts` | One child process per running ticket |
-| Harness turns: Claude Code or Codex in place of the coding loop | `harness.ts`, `harness-turns.ts` | One child of the worker per turn |
+| Harness turns: Claude Code, Codex, Kimi Code or OpenCode in place of the coding loop | `harness.ts`, `harness-turns.ts` | One child of the worker per turn |
+| `swarm harness list\|check`: the harness profiles of this machine | `harness-cli.ts` | CLI |
 | Ticket tools (`mcp__ticket__*`) | `ticket-tools.ts` | MCP stdio child of the worker |
 | Sources | `sources/local.ts`, `sources/github*.ts`, `sources/feishu*.ts` | Host polls; the TUI and CLI write local Triggers |
 

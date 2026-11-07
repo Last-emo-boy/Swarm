@@ -496,7 +496,7 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     description: "Delegate a bounded task to an internal specialist agent.",
     riskClass: "r1",
     permissionName: "Agent",
-    inputSchema: objectSchema({ description: "short task description", prompt: "task prompt", subagent_type: "optional agent type", model: "optional model", run_in_background: "boolean", capability: "compat capability", task: "compat task", file_scope: "string[]" })
+    inputSchema: objectSchema({ description: "short task description", prompt: "task prompt", subagent_type: "optional agent type", model: "optional model", run_in_background: "boolean", capability: "compat capability", task: "compat task", file_scope: "string[]", harness: "optional agent harness profile id" })
   }
 ];
 

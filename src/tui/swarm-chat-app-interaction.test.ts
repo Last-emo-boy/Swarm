@@ -15,8 +15,9 @@ test("SwarmChatApp renders prompt chrome, accepts stdin, logs redacted telemetry
   const previousDebug = process.env.SWARM_DEBUG;
   const previousDebugSessionId = process.env.SWARM_DEBUG_SESSION_ID;
   const home = mkdtempSync(join(tmpdir(), "swarm-tui-interaction-"));
-  createConfiguredSwarmHome(home);
+  // Before the settings are made: their default databasePath comes from SWARM_HOME.
   process.env.SWARM_HOME = home;
+  createConfiguredSwarmHome(home);
   process.env.SWARM_DEBUG = "true";
   process.env.SWARM_DEBUG_SESSION_ID = "swarm-tui-interaction-test";
   resetDebugLogger();

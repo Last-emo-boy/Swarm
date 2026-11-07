@@ -176,7 +176,7 @@ test("/ticket --harness files a request whose ticket runs on that harness, and t
     client.close();
     assert.equal(row.harness, "codex");
     assert.match(ticketDetailText(row, []), / · via codex · ticket /);
-    await assert.rejects(runTicketCommand(tickets, "ticket", ["--harness", "kimi", "rename"]), /No harness "kimi"/);
+    await assert.rejects(runTicketCommand(tickets, "ticket", ["--harness", "ghost", "rename"]), /No harness "ghost"/);
     await assert.rejects(runTicketCommand(tickets, "ticket", ["--harness", "codex"]), /Usage: \/ticket --harness/);
   } finally {
     await tickets.close();
