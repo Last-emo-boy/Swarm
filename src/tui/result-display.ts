@@ -39,8 +39,9 @@ export function answerFooter(card: ResultCard | undefined): ConversationMessage[
   } else if (passedChecks) {
     parts.push(`${passedChecks} ${passedChecks === 1 ? "check" : "checks"} passed`);
   }
+  // What the review said is in the details; the footer only says that it wants changes.
   if (card.review.status === "failed" || card.review.status === "warning") {
-    parts.push(`review: ${card.review.summary.split(/\r?\n/u)[0]?.trim() || card.review.status}`);
+    parts.push(card.review.status === "failed" ? "review failed" : "review asks for changes");
   }
   if (card.status !== "completed") {
     const reason = /Failed tool:\s*(.+)$/u.exec(card.summary)?.[1]?.trim();

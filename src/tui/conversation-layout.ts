@@ -276,11 +276,13 @@ export function conversationBottomRows(input: {
   terminalRows: number;
   contentRows: number;
   approval?: boolean;
+  /** The rows the approval card takes; without them it gets the old fixed share of the screen. */
+  approvalRows?: number;
   pendingPlan?: boolean;
 }): number {
   const terminalRows = Math.max(1, Math.floor(input.terminalRows));
   if (input.approval) {
-    return clampConversationBottomRows(Math.max(8, Math.floor(terminalRows * 0.45)), terminalRows);
+    return clampConversationBottomRows(input.approvalRows ?? Math.max(8, Math.floor(terminalRows * 0.45)), terminalRows);
   }
   if (input.pendingPlan) {
     return clampConversationBottomRows(3, terminalRows);

@@ -32,14 +32,13 @@ test("workbench visual snapshot covers result approval inspector action log and 
     const text = snapshotText(snapshot);
     assert.match(text, /Swarm/);
     assert.match(text, /RESULT/);
-    assert.match(text, /APPROVAL|DECISION/);
+    assert.match(text, /Run a command/);
     assert.match(text, /COMMAND OUTPUT/);
     assert.match(text, /ACTION LOG/);
     assert.match(text, /Ask Swarm/);
 
     assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "Swarm"), "Swarm")?.color, resolveTuiColor("brand.focus"));
     assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "CHECKS"), "CHECKS")?.color, resolveTuiColor("status.danger"));
-    assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "TARGET"), "TARGET")?.color, resolveTuiColor("role.gateway"));
     assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "COMMAND OUTPUT"), "COMMAND OUTPUT")?.color, resolveTuiColor("text.primary"));
     assert.equal(cellStyleAtText(snapshotRowWithText(snapshot, "ACTION LOG"), "ACTION LOG")?.color, resolveTuiColor("text.primary"));
   }

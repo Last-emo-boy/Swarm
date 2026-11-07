@@ -3,7 +3,8 @@ import test from "node:test";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import type { ReviewResult, WorkSnapshot } from "../protocol/types.js";
-import { briefForExecutionResult, formatExecutionResultDisplay } from "./result-display.js";
+import type { ResultCard } from "../runtime/result-card.js";
+import { answerFooter, briefForExecutionResult, formatExecutionResultDisplay } from "./result-display.js";
 
 test("formatExecutionResultDisplay preserves Review / Verification evidence in preview and detail", () => {
   const { result, runtime } = buildFixture("failed");
@@ -151,3 +152,35 @@ function reviewResult(input: {
 
 const SESSION_ID = "session-result-display";
 const AT = "2026-05-13T00:00:00.000Z";
+
+test("answerFooter says in one line what changed and what was checked, and how a failed run ended", () => {
+  const card = (overrides: Partial<ResultCard>): ResultCard => ({
+    sessionId: "session-1",
+    status: "completed",
+    route: "work",
+    summary: "Updated the layout",
+    changedFiles: [],
+    checks: [],
+    review: { status: "skipped", summary: "not recorded" },
+    risks: [],
+    artifacts: [],
+    next: [],
+    ...overrides
+  });
+
+  assert.equal(answerFooter(undefined), undefined);
+  assert.equal(answerFooter(card({})), undefined, "an answer that changed and checked nothing has no footer");
+  assert.deepEqual(answerFooter(card({
+    changedFiles: ["a.ts", "b.ts"],
+    checks: [{ command: "npm test", status: "passed" }],
+    review: { status: "warning", summary: "needs_revision 60 - two nits" }
+  })), { text: "2 files changed · 1 check passed · review asks for changes", status: "info" });
+  assert.deepEqual(answerFooter(card({
+    changedFiles: ["a.ts"],
+    checks: [{ command: "npm test", status: "failed" }, { command: "npm run lint", status: "passed" }]
+  })), { text: "1 file changed · 1 of 2 checks failed", status: "warning" });
+  assert.deepEqual(answerFooter(card({ status: "failed", summary: "Run failed. Failed tool: command exited 1" })),
+    { text: "✗ Failed · command exited 1 · Ctrl+O for details", status: "error" });
+  assert.deepEqual(answerFooter(card({ status: "stopped", summary: "Stopped by the user." })),
+    { text: "! Stopped · Ctrl+O for details", status: "warning" });
+});

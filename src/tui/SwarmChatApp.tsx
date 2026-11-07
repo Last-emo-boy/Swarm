@@ -88,7 +88,7 @@ import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWri
 import { ActionLog } from "./components/ActionLog.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
 import { ActivityTimeline } from "./components/ActivityTimeline.js";
-import { ApprovalOverlay, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
+import { ApprovalOverlay, approvalCardRows, approvalExpandedRows, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
 import { CurrentActionRow } from "./components/CurrentActionRow.js";
 import { InspectorPane } from "./components/InspectorPane.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
@@ -374,6 +374,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const idlePaneSnapshotSignatureRef = useRef(idlePaneSnapshotSignature(idlePaneSnapshot));
   const [completionRows, setCompletionRows] = useState(0);
   const [chatCompletion, setChatCompletion] = useState<ChatCompletionState>(() => emptyChatCompletionState());
+  const [approvalExpanded, setApprovalExpanded] = useState(false);
   const [transcriptSearch, setTranscriptSearch] = useState<TranscriptSearchState>(() => createTranscriptSearchState());
   const [messageCursor, setMessageCursor] = useState<MessageCursorState>(() => createMessageCursorState());
   const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
@@ -568,6 +569,11 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   useEffect(() => {
     busySinceRef.current = busy ? Date.now() : undefined;
   }, [busy]);
+
+  // Each approval card opens folded; `?` unfolds that one only.
+  useEffect(() => {
+    setApprovalExpanded(false);
+  }, [approval]);
 
   // Reached budgets and today's spend for the status line: read when a run starts or ends and every 15 seconds, with
   // the settings as they are now.
@@ -1525,6 +1531,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       terminalRows: terminalRows - CONVERSATION_HEADER_ROWS,
       contentRows: conversationPromptRows(0) + completionRows + conversationBottomStatusRows({ busy }),
       approval: Boolean(approval),
+      approvalRows: approval ? (approvalExpanded ? approvalExpandedRows(approval) : approvalCardRows(approval)) : undefined,
       pendingPlan: Boolean(pendingPlan)
     });
   }
@@ -3371,6 +3378,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleApprovalInput(character: string | undefined, key: { ctrl?: boolean; escape?: boolean }): boolean {
+    if (character === "?" && !key.ctrl) {
+      setApprovalExpanded((expanded) => !expanded);
+      return true;
+    }
     const decision = approvalInputDecision(character ?? "", key);
     if (!decision.handled) {
       return false;
@@ -3589,7 +3600,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     const conversationRows = fullscreenConversationRows(terminalRows - CONVERSATION_HEADER_ROWS, bottomRows);
     const inputCapacity = chatInputCapacity();
     const bottom = approval ? (
-      <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
+      <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} expanded={approvalExpanded} maxRows={conversationBottomRows()} />
     ) : pendingPlan ? (
       <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
     ) : (
@@ -3754,7 +3765,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
 
       <Box flexShrink={0} width="100%" marginTop={1}>
         {approval ? (
-          <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
+          <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} expanded={approvalExpanded} maxRows={conversationBottomRows()} />
         ) : pendingPlan ? (
           <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
         ) : (

@@ -109,26 +109,26 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
   },
   "approval.approve_once": {
     id: "approval.approve_once",
-    keys: ["Y"],
-    label: "Y approve once",
+    keys: ["y"],
+    label: "y yes",
     scope: "approval"
   },
   "approval.allow_target": {
     id: "approval.allow_target",
-    keys: ["S"],
-    label: "S allow target",
+    keys: ["a", "s"],
+    label: "a always",
     scope: "approval"
   },
   "approval.deny": {
     id: "approval.deny",
-    keys: ["N"],
-    label: "N deny",
+    keys: ["n"],
+    label: "n no",
     scope: "approval"
   },
   "approval.cancel": {
     id: "approval.cancel",
     keys: ["Esc"],
-    label: "Esc cancel",
+    label: "Esc no",
     scope: "approval"
   },
   "action.select": {
