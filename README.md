@@ -503,7 +503,7 @@ Swarm run loop and `$ARGUMENTS` is replaced with the slash command arguments.
 Project commands follow the same trusted-workspace posture as other project
 extensions.
 
-The TUI header shows the active permission mode and sandbox mode. `/sandbox`
+The TUI header shows the permission mode and sandbox mode when they are not the default. `/sandbox`
 now reports the current TUI-only sandbox scope, read roots, and the interaction
 between sandbox and permissions. `/sandbox read-only` routes runs through the
 local coding loop sandbox so write-like tool actions are denied at execution
@@ -512,8 +512,9 @@ permission policy.
 
 ### Result Card
 
-Normal runs now finish with a result card before the raw assistant output. The
-card shows:
+Normal runs now finish with a result card. In the conversation it is one line under the answer, such as
+`2 files changed · 1 check passed · /revert last undoes it` or `✗ Failed · command exited 1`; Ctrl+O opens the
+card, which shows:
 
 - session id and completion status;
 - changed files;
@@ -529,31 +530,46 @@ visible instead of silently trusted.
 
 ### Layout
 
-The chat pane is conversation-first in every state: while work runs, while an
-approval or plan waits, and after a result, the transcript stays on screen. A
-one-line header names the model, workspace, mode, permission and sandbox; while
-busy, one status line shows the current activity, elapsed time and running
-workers; the latest result is a compact line at the end of the transcript. A
-"needs you" strip appears above the prompt only when a ticket waits for a
-person, each line naming the command that answers it.
-The operator surface lives in the other panes.
+The main screen is the conversation, from top to bottom:
+
+- a one-line header: `swarm`, the model and the workspace; on the right only a mode that is not the default, such as
+  a run mode set with `/mode`, the `yolo` permission mode or a `read-only` sandbox;
+- the transcript: your turns start with `›` and answers are plain markdown. Each tool call is one row, with a verb
+  (Read, Edit, Bash, Search, Fetch, Agent…), its target and how it went (`✓`, `✗` with the reason, `approved`,
+  `denied`, seconds), updated in place while it runs; once the turn ends its calls fold into one line such as
+  `▸ Read 2 files, ran 1 command · 1 failed`, which Enter unfolds. An empty session shows two quiet lines;
+- while work runs, an activity line above the prompt: what runs now, for how long, how many workers, and that
+  Ctrl+C interrupts. Ctrl+R lists the running workers above it;
+- the prompt, `›`;
+- the status line: only what needs attention or tells where things stand (a reached budget, approvals other sessions
+  wait for, tickets that need you, what this device spent today) and `? keys` on the right. Clicking an item opens its
+  view.
+
+An approval takes the prompt's place as a short card: what the call does and to what, the rule that asked, and
+`y yes · a always · n no · ? details`. An edit shows the first lines of its diff, a high-risk call a red `!` and why;
+`?` opens everything the request carries (risk class, review focus, why now, permission, governance, impact,
+rollback) inside the card. A plan waiting to run uses the same card.
+
 Use `/view` for focused Kernel panes such as Trace, Overview, Output, Sessions,
-Attempts, Activity, and Blackboard. Overview keeps the prompt surface quiet; the
-Activity pane summarizes workers, approvals, and background work without making
-agent internals the default view. The other panes expose the fuller local state
-when needed. The header and Kernel overview show the latest actual route selected by auto mode,
-such as `coding_loop` or `full_swarm`, with confidence and the router reason.
+Attempts, Activity, and Blackboard; `/tickets` opens the tickets. Each is a full-screen view with a title, its body and
+the keys that work there; Esc or `q` returns to the conversation and `/` returns with a command started. An approval
+that arrives meanwhile shows at the foot of the view. Overview shows the running tasks and their write policies and the
+latest actual route selected by auto mode, such as `coding_loop` or `full_swarm`, with confidence and the router
+reason; the Activity pane summarizes workers, approvals, and background work without making agent internals the
+default view. Model, permissions, gateway, cache, LSP, MCP and Symphony health are in `/status`.
 
 The TUI creates a local Work Kernel session for the current chat state. Slash
 tool approvals and tool results are recorded against that session, so `/session`,
 `/attempts`, `/approvals`, `/audit`, and `/usage` can inspect TUI-local work
 instead of showing detached tool events.
 
-While work is running, the TUI keeps a stable current-action row plus a short
-activity timeline. Thinking turns, read-only tool batches, individual tools,
-approval waits, and turn completion stay visible without opening the full trace.
-Prompt-cache status stays in the result card and `/debug cache` detail surface
-instead of crowding the default conversation.
+### Keys
+
+Keys go to one of two places. The prompt types; on an empty prompt `?` lists every key and Esc moves to the
+transcript, selecting its last row. In the transcript ↑↓ (or `j`/`k`) pick a row, Enter or `x` folds and unfolds it,
+`o` or Ctrl+O opens its detail, `/` searches, and Esc or typing goes back to the prompt. Ctrl+F (or `/search [text]`)
+searches the transcript from anywhere, Ctrl+O opens the latest detail, Ctrl+T the task detail, and Ctrl+C interrupts a
+run or quits when idle.
 
 ### Input
 
@@ -578,7 +594,7 @@ Modal views own their keyboard input. Approval and detail views consume
 Escape/Ctrl+C/Ctrl+O before global shortcuts, so closing an overlay does not
 interrupt active work or change the underlying pane.
 
-The input prompt is rendered by Ink from local input state rather than by a
+The input prompt is rendered by the TUI's own renderer from local input state rather than by a
 manual stdout repaint loop. This keeps deletion and cursor movement predictable
 and prevents the main dashboard from being redrawn by every byte typed.
 
@@ -640,8 +656,8 @@ The approval view shows why the tool is needed, predicted impact, rollback
 guidance, target details, and diff-style previews for proposed write, edit, and
 JSON changes when Swarm can derive them before execution. Previews for sensitive
 targets such as `.env`, secrets, tokens, credentials, and keys are redacted in
-approval records. Use `y` or `a` to allow once, `s` to allow the same action and
-target for the current TUI session, or `n` or `d` to deny.
+approval records. Use `y` to allow once, `a` (or `s`) to allow the same action and
+target for the rest of the TUI session, or `n`, `d` or Esc to deny; `?` shows the whole request.
 
 Permission modes:
 
@@ -1041,7 +1057,7 @@ each other member with the key it shares with that member, and the new device's 
 it. A device removed with `swarm mesh remove` is forgotten by every member that hears of it, and its old
 introductions are refused.
 
-Paired devices' tickets appear beside this node's in the TUI (`/tickets`, the needs-you strip) and in
+Paired devices' tickets appear beside this node's in the TUI (`/tickets`, and the status line counts those that need you) and in
 `swarm superagent tickets --all-devices`, addressed as `<device>:<id>`. Answering, stopping and retrying one goes to
 the device that owns it, and `/ticket @<device> <request>` (or `swarm superagent request --device <name>`) files
 work there. A paired device acts as that device's own operator, so pair only devices you control.
@@ -1158,7 +1174,7 @@ Budgets cap a provider's calls, or a harness's turns, per day (from local midnig
 `monthlyTokens`, counting input and output tokens. Each device counts its own calls. Once a cap is reached, new model
 calls on that provider fail, and a harness's next turn, or a subagent delegated to it, does not start, with a message
 that names the cap, what went, and the setting that raises it; a ticket whose worker hits it gets a blocked report
-saying so, to retry once the cap is raised, and the TUI shows a notice above the prompt. Caps are read again before
+saying so, to retry once the cap is raised, and the TUI's status line names it. Caps are read again before
 every call, so raising one applies at once. They are checked before a call, not during it: calls already running
 finish, and parallel calls can pass a cap by what they use. `swarm usage` and `/usage` show each cap's state and how
 many calls a money cap could not count for lack of a price.

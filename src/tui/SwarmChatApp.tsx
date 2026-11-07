@@ -84,7 +84,7 @@ import {
 import { approvalInputDecision } from "./approval-input.js";
 import { editOnboardFieldInput } from "./onboard-input.js";
 import { messageToActionRow, renderActionRowDetail, runtimeEventToActionRow, type TuiActionRow } from "./action-log.js";
-import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, type TuiTaskState, type TuiWorkState } from "./work-state.js";
+import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiTaskState, type TuiWorkState } from "./work-state.js";
 import { ActionLog } from "./components/ActionLog.js";
 import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature } from "./tui-event-buffer.js";
 import { ApprovalOverlay, approvalCardRows, approvalExpandedRows, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
@@ -3574,6 +3574,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           lastSessionId={lastSessionId}
           lastRoute={lastRoute}
           lastSnapshot={latestSnapshot}
+          work={{ taskStates, taskCompleted, taskTotal }}
         />
       )}
     </ViewFrame>
@@ -3716,6 +3717,8 @@ function IdleKernelView(input: {
   lastSessionId?: string;
   lastRoute?: RouteState;
   lastSnapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>;
+  /** The run's tasks, for the overview's Work section. */
+  work?: { taskStates: Map<string, TaskState>; taskCompleted: number; taskTotal: number };
 }): React.ReactElement {
   if (input.pane === "chat") {
     return (
@@ -3787,6 +3790,10 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
             swarm {formatSwarmTopologySummary(input.swarmSurface)}
           </Text>
         )}
+      </PaneSection>
+
+      <PaneSection title="Work">
+        <OverviewWork work={input.work} toolOutputs={input.toolOutputs} />
       </PaneSection>
 
       {(input.approvals.length > 0 || activeDaemons.length > 0) && (
@@ -4258,6 +4265,26 @@ function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProje
         </Text>
       ))}
     </PaneSection>
+  );
+}
+
+/** What the current run's tasks are doing and what they may write, or that nothing runs. */
+function OverviewWork({ work, toolOutputs }: { work?: { taskStates: Map<string, TaskState>; taskCompleted: number; taskTotal: number }; toolOutputs: ToolResultState[] }): React.ReactElement {
+  if (!work || work.taskTotal === 0) {
+    return <Text color={mutedColor()}>No active background work.</Text>;
+  }
+  const latestTask = [...work.taskStates.entries()].at(-1);
+  const policies = summarizeTaskWritePolicies(work.taskStates);
+  const scope = policies.scopedTargets.slice(0, 3).join(", ") + (policies.scopedTargets.length > 3 ? ` +${policies.scopedTargets.length - 3} more` : "");
+  return (
+    <>
+      <Text color={mutedColor()} wrap="truncate">tasks {work.taskCompleted}/{work.taskTotal} · tool outputs {toolOutputs.length}</Text>
+      <Text color={mutedColor()} wrap="truncate">policies: ro {policies.readOnly} · scoped {policies.scopedWrite} · workspace {policies.workspaceWrite}</Text>
+      {scope ? <Text color={mutedColor()} wrap="truncate">scope: {scope}</Text> : null}
+      <Text color={mutedColor()} wrap="truncate">
+        task: {latestTask ? `${statusIcon(latestTask[1].status)} ${latestTask[1].title || latestTask[0]}${formatTaskStatePolicyHint(latestTask[1])}` : "(waiting)"}
+      </Text>
+    </>
   );
 }
 
