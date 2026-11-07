@@ -42,7 +42,6 @@ import {
   createConversationRenderCache
 } from "./components/VirtualConversationList.js";
 import { mainPaneLabels, mainPaneOrder } from "./main-panes.js";
-import { statusRailSummary } from "./components/StatusRail.js";
 
 test("conversation-first layout keeps transcript as the default surface", () => {
   const layout = buildConversationFirstLayout({
@@ -992,110 +991,12 @@ test("inline inspector avoids command-output chrome unless real command detail i
   assert.equal(detailTitleForSource("event", true), "Trace Detail");
 });
 
-test("chat status rail hides operator metadata unless it is actionable", () => {
-  const idle = statusRailSummary({
-    appName: "Swarm",
-    state: "idle",
-    route: "auto",
-    permissionMode: "ask",
-    sandboxMode: "workspace-write",
-    model: "openai/gpt",
-    view: "Chat",
-    compact: true
-  });
-  assert.deepEqual(idle, {
-    showRoute: false,
-    showPermission: false,
-    showSandbox: false,
-    showModel: false,
-    showCache: false,
-    details: []
-  });
-
-  const trace = statusRailSummary({
-    appName: "Swarm",
-    state: "idle",
-    route: "auto",
-    permissionMode: "ask",
-    sandboxMode: "workspace-write",
-    model: "openai/gpt",
-    view: "Trace",
-    compact: false
-  });
-  assert.equal(trace.showRoute, true);
-  assert.equal(trace.showPermission, true);
-  assert.equal(trace.showSandbox, true);
-  assert.equal(trace.showModel, true);
-  assert.equal(trace.showCache, false);
-  assert.deepEqual(trace.details, ["Trace"]);
-});
-
 test("TUI density resolves from pane, width, and explicit overrides", () => {
   assert.equal(resolveTuiDensity({ density: "auto", pane: "chat", columns: 160 }), "compact");
   assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 100 }), "compact");
   assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 120 }), "default");
   assert.equal(resolveTuiDensity({ density: "auto", pane: "log", columns: 160 }), "comfortable");
   assert.equal(resolveTuiDensity({ density: "compact", pane: "log", columns: 160 }), "compact");
-});
-
-test("chat status rail shows approval metadata when user action is needed", () => {
-  const approval = statusRailSummary({
-    appName: "Swarm",
-    state: "awaiting approval",
-    route: "swarm",
-    permissionMode: "ask",
-    sandboxMode: "read-only",
-    model: "openai/gpt",
-    sessionId: "session-123456789",
-    view: "Chat",
-    compact: true
-  });
-
-  assert.equal(approval.showRoute, true);
-  assert.equal(approval.showPermission, false);
-  assert.equal(approval.showSandbox, true);
-  assert.equal(approval.showModel, false);
-  assert.equal(approval.showCache, false);
-  assert.deepEqual(approval.details, ["session session-"]);
-});
-
-test("status rail density keeps compact terse and comfortable fully labeled", () => {
-  const compact = statusRailSummary({
-    appName: "Swarm",
-    state: "running",
-    route: "coding_loop",
-    permissionMode: "ask",
-    sandboxMode: "workspace-write",
-    model: "openai/gpt",
-    sessionId: "session-123456789",
-    view: "Trace",
-    cacheStatus: "cache_miss",
-    density: "compact"
-  });
-  assert.equal(compact.showRoute, false);
-  assert.equal(compact.showModel, false);
-  assert.equal(compact.showCache, true);
-  assert.deepEqual(compact.details, ["session session-"]);
-
-  const comfortable = statusRailSummary({
-    appName: "Swarm",
-    state: "running",
-    route: "coding_loop",
-    permissionMode: "ask",
-    sandboxMode: "workspace-write",
-    model: "openai/gpt",
-    sessionId: "session-123456789",
-    view: "Trace",
-    cacheStatus: "cache_miss",
-    checkpoint: "before-tui-polish",
-    density: "comfortable"
-  });
-  assert.equal(comfortable.showRoute, true);
-  assert.equal(comfortable.showPermission, true);
-  assert.equal(comfortable.showSandbox, true);
-  assert.equal(comfortable.showModel, true);
-  assert.equal(comfortable.showCache, true);
-  assert.deepEqual(comfortable.details, ["Trace", "session session-", "checkpoint before-tui-polish"]);
 });
 
 test("screen mode keeps the default TUI conversation-first", () => {

@@ -36,6 +36,7 @@ export function ChatInputArea({
   extraCommands = [],
   placeholder = "Ask Swarm",
   activity,
+  activityRows = 1,
   status,
   inputActive = true,
   completionPlacement = "inline",
@@ -50,8 +51,9 @@ export function ChatInputArea({
   controllerStateRef?: React.MutableRefObject<ChatInputControllerState>;
   extraCommands?: SlashCommandSpec[];
   placeholder?: string;
-  /** The activity line, shown between the rule and the prompt while a run is busy. */
+  /** The activity line, shown between the rule and the prompt while a run is busy; `activityRows` is its height. */
   activity?: React.ReactNode;
+  activityRows?: number;
   /** The status line under the prompt; told whether the prompt is empty, since its hint gives way while typing. */
   status?: (input: { promptEmpty: boolean }) => React.ReactNode;
   inputActive?: boolean;
@@ -67,7 +69,7 @@ export function ChatInputArea({
   const completionOptions = { extraCommands };
   const rowBudget = maxRows === undefined
     ? Number.POSITIVE_INFINITY
-    : Math.max(0, Math.floor(maxRows) - CHAT_INPUT_CHROME_ROWS - (activity ? 1 : 0));
+    : Math.max(0, Math.floor(maxRows) - CHAT_INPUT_CHROME_ROWS - (activity ? activityRows : 0));
   const inputRowLimit = maxRows === undefined
     ? maxInputRows
     : Math.max(1, Math.min(maxInputRows ?? INPUT_RENDER_ROWS, rowBudget + 1));

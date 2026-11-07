@@ -27,10 +27,13 @@ export function ActionLog(props: {
   onScrollOffsetChange: (offset: number) => void;
   motionFrame?: number;
   selectedIndex?: number;
+  /** The title row with counts and keys; off inside a view frame, which has its own. */
+  header?: boolean;
 }): React.ReactElement {
   const { rows, columns, scrollOffset, onScrollOffsetChange, motionFrame, selectedIndex } = props;
-  const height = Math.max(4, props.height);
-  const bodyHeight = Math.max(1, height - 1);
+  const header = props.header ?? true;
+  const height = Math.max(header ? 4 : 1, props.height);
+  const bodyHeight = Math.max(1, height - (header ? 1 : 0));
   const lines = useMemo(() => flattenRows(rows, columns, selectedIndex), [rows, columns, selectedIndex]);
   const previousLineCount = useRef(lines.length);
 
@@ -66,12 +69,14 @@ export function ActionLog(props: {
 
   return (
     <Box flexDirection="column" width="100%" height={height} overflow="hidden">
-      <Text wrap="truncate">
-        <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Action Log")}</Text>
-        <Text color={visualTokenColor("text.muted")}>  {rows.length} actions | {lines.length} lines | {bottomState}</Text>
-        {spinner ? <Text color={visualTokenColor("status.running")}> {spinner}</Text> : null}
-        <Text color={visualTokenColor("text.muted")}> | {shortcutHint(["action.select", "action.details", "action.page"])}</Text>
-      </Text>
+      {header ? (
+        <Text wrap="truncate">
+          <Text color={visualTokenColor("text.primary")} bold>{sectionLabel("Action Log")}</Text>
+          <Text color={visualTokenColor("text.muted")}>  {rows.length} actions | {lines.length} lines | {bottomState}</Text>
+          {spinner ? <Text color={visualTokenColor("status.running")}> {spinner}</Text> : null}
+          <Text color={visualTokenColor("text.muted")}> | {shortcutHint(["action.select", "action.details", "action.page"])}</Text>
+        </Text>
+      ) : null}
       {visible.map((line) => (
         <SemanticTextLine
           key={line.key}

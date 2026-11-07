@@ -8,8 +8,8 @@ import { createEnvelope } from "../protocol/envelope.js";
 import type { AgentTaskPacket } from "../runtime/agent-specs.js";
 import { SwarmRuntime } from "../runtime/runtime.js";
 import type { SwarmPolicy } from "../protocol/types.js";
-import { Box } from "./ui.js";
-import { InspectorPane } from "./components/InspectorPane.js";
+import { Box, Text } from "./ui.js";
+import { ViewFrame } from "./components/ViewFrame.js";
 import { displayWidth } from "./display-width.js";
 import { frameLines, renderTuiToFrame } from "./renderer/testing.js";
 import {
@@ -477,16 +477,14 @@ test("swarm workbench renders protocol topology ownership mailbox decisions and 
       const lines = frame.split(/\r?\n/);
       assert(lines.every((line) => displayWidth(line) <= columns), `line exceeded ${columns} columns:\n${frame}`);
       assert.doesNotMatch(frame, /\u001B\[/);
-      const rendered = renderTuiToFrame(React.createElement(Box, { width: columns, height: 60, flexDirection: "column", overflow: "hidden" },
-        React.createElement(InspectorPane, {
-          title: "Swarm Workbench",
-          sessionId: "session-surface-1",
-          route: "swarm",
-          selected: `${columns} columns`,
-          density: columns === 80 ? "compact" : "comfortable",
-          content: frame
-        })
-      ), { columns, rows: 60 });
+      const rendered = renderTuiToFrame(React.createElement(ViewFrame, {
+        title: "Swarm Workbench",
+        summary: `session-surface-1 · ${columns} columns`,
+        columns,
+        height: 60,
+        keys: "Esc back",
+        children: lines.map((line, index) => React.createElement(Text, { key: index, wrap: "truncate" }, line || " "))
+      }), { columns, rows: 60 });
       const renderedLines = frameLines(rendered);
       const renderedText = renderedLines.join("\n");
       assert.equal(rendered.metadata.invalidLayout, false);

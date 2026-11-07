@@ -11,7 +11,7 @@ import { createTuiRoot } from "./renderer/root.js";
 import { renderTuiToFrame } from "./renderer/testing.js";
 import { chatInputCompletionCandidates, createChatInputControllerState, selectedChatInputCompletionIndex } from "./chat-input-controller.js";
 import { displayWidth } from "./display-width.js";
-import { formatCompactIdleRows } from "./SwarmChatApp.js";
+import { formatCompactIdleRows, headerModeSpans } from "./SwarmChatApp.js";
 import type { ConversationMessage } from "./conversation-layout.js";
 import { buildStatusLine, type StatusItemId } from "./status-line.js";
 import { resolveTuiColor } from "./theme.js";
@@ -260,6 +260,14 @@ test("the prompt carries no mode tags: a mode that is not the default shows in t
 
   assert.equal(promptRow, " › Ask Swarm");
   assert.doesNotMatch(plain, /\[(WORK|RW|ASK|TEAM)\b/);
+});
+
+test("the header names a mode only when it is not the default", () => {
+  const text = (input: Parameters<typeof headerModeSpans>[0]) => headerModeSpans(input).map((span) => span.text).join("");
+  assert.equal(text({ runMode: "auto", permissionMode: "ask", sandboxMode: "workspace-write" }), "");
+  assert.equal(text({ runMode: "full_swarm", permissionMode: "yolo", sandboxMode: "read-only" }), "team  yolo  read-only");
+  const spans = headerModeSpans({ runMode: "auto", permissionMode: "yolo", sandboxMode: "workspace-write" });
+  assert.deepEqual(spans, [{ text: "yolo", color: "status.danger" }]);
 });
 
 test("the status line sits under the prompt, its hint at the right, and the hint gives way while typing", async () => {

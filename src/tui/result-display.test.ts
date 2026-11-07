@@ -179,6 +179,10 @@ test("answerFooter says in one line what changed and what was checked, and how a
     changedFiles: ["a.ts"],
     checks: [{ command: "npm test", status: "failed" }, { command: "npm run lint", status: "passed" }]
   })), { text: "1 file changed · 1 of 2 checks failed", status: "warning" });
+  assert.equal(answerFooter(card({
+    changedFiles: ["a.ts"],
+    checkpoint: { id: "cp-1", name: "before-edit", mode: "git", revertAvailable: true }
+  }))?.text, "1 file changed · /revert last undoes it");
   assert.deepEqual(answerFooter(card({ status: "failed", summary: "Run failed. Failed tool: command exited 1" })),
     { text: "✗ Failed · command exited 1 · Ctrl+O for details", status: "error" });
   assert.deepEqual(answerFooter(card({ status: "stopped", summary: "Stopped by the user." })),

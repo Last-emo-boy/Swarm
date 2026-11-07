@@ -267,9 +267,9 @@ export function conversationPromptRows(completionRows: number): number {
   return CONVERSATION_PROMPT_CHROME_ROWS + Math.max(0, completionRows);
 }
 
-/** The activity line above the prompt while a run is busy. */
-export function conversationBottomStatusRows(input: { busy?: boolean }): number {
-  return input.busy ? 1 : 0;
+/** The activity line above the prompt while a run is busy, and the worker list Ctrl+R shows over it. */
+export function conversationBottomStatusRows(input: { busy?: boolean; workerRows?: number }): number {
+  return input.busy ? 1 + Math.max(0, input.workerRows ?? 0) : 0;
 }
 
 export function conversationBottomRows(input: {
