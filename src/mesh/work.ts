@@ -21,7 +21,7 @@ import type { HealthEntry } from "../superagent/health.js";
 import type { SuperagentHost } from "../superagent/host.js";
 import { KV } from "../superagent/kv.js";
 import { sourceTrigger } from "../superagent/messages.js";
-import { leaseOf, placementOf, updatePlacement, type Lease, type NodeRef, type Placement } from "../superagent/placement.js";
+import { leaseOf, placementOf, updatePlacement, workNeeds, type Lease, type NodeRef, type Placement } from "../superagent/placement.js";
 import { settingsPath } from "../superagent/settings.js";
 import { SetupError, commandProbe, defaultMachine, resolveGithub, type Deployment } from "../superagent/setup.js";
 import { ticketTools, type TicketTool } from "../superagent/ticket-tools.js";
@@ -207,7 +207,7 @@ export class MeshWork implements RemoteWork {
       // An Assignment that started here goes on here; one whose node let its lease lapse is placed again.
       const assignment = ticket.assignments.find((item) => item.id === assignmentId);
       if (assignment?.state === "running" && placement?.ran?.assignmentId !== assignmentId) return false;
-      node = await this.choose(placement);
+      node = await this.choose(placement, workNeeds(ticket, placement));
     }
     if (!node) return false;
     await this.offer(node, ticket, assignmentId);
@@ -221,10 +221,9 @@ export class MeshWork implements RemoteWork {
   }
 
   /** The paired node a placement names, or the one fit for what the work needs; undefined to run it here. */
-  private async choose(placement: Placement | undefined): Promise<Peer | undefined> {
-    if (!placement || placement.on === "here") return undefined;
-    if (placement.on) return this.peer(placement.on);
-    const needs = placement.needs ?? [];
+  private async choose(placement: Placement | undefined, needs: string[]): Promise<Peer | undefined> {
+    if (placement?.on === "here") return undefined;
+    if (placement?.on) return this.peer(placement.on);
     // Work this node is fit for runs here; other work on the paired node fit for it with the most free slots.
     if (needs.every((need) => this.options.abilities.includes(need))) return undefined;
     const cards = (await peerHealth(this.options.home, 3000)).flatMap((health) => health.card ? [health.card] : []);
@@ -323,7 +322,7 @@ export class MeshWork implements RemoteWork {
     if (placement?.on) return undefined;
     const { effects } = this.client;
     if (!effects.pending("launch", latest.id) || effects.running("launch", latest.id)) return undefined;
-    return { ticketId: ticket.id, assignmentId: latest.id, title: ticket.title, repository, needs: placement?.needs ?? [], since: latest.createdAt };
+    return { ticketId: ticket.id, assignmentId: latest.id, title: ticket.title, repository, needs: workNeeds(ticket, placement), since: latest.createdAt };
   }
 
   /** This node's Assignments that wait for a worker and that paired nodes may pull, oldest first. */

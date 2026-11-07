@@ -1023,15 +1023,18 @@ opens one while the TUI runs and `/mesh` lists the swarm.
 Each pair of devices shares a key, agreed during pairing with a password-authenticated key exchange (CPace): the code
 proves both devices saw it, without the code or the key ever crossing the network. Every connection between two
 devices is TLS keyed with their shared key, so only the two of them can read it or finish its handshake, and the key
-tells a node which peer is calling. Devices connect directly when one reaches the other (a LAN, a tailnet, a
-forwarded port set with `swarm mesh advertise`) and through the relay otherwise; the first link to finish its
-handshake wins. The relay (`wss://swarm-relay.w33d.xyz` unless `swarm mesh relay <url>` names another, or
-`swarm mesh relay off` turns it off) only joins streams: it sees which device names connect, when and how much,
-never what they say. A device listens there under a name only its key can claim, and every dial to a device is signed
-with the dialing device's key, so the relay limits each device as well as each address; a device that is pairing
-dials the code's mailbox unsigned, under a tighter limit. `swarm mesh relay serve` runs one, and its `/v1/health`
-answers counts; a code made on a device using another relay names it (`K7QM-4ZX2@relay.example`), so joining needs no
-setting. Without a relay, `swarm mesh invite --direct` prints a long one-time code with this node's addresses.
+tells a node which peer is calling. Devices connect directly when one reaches the other (a LAN, a tailnet, a forwarded
+port set with `swarm mesh advertise`) and through the relay otherwise; the first link to finish its handshake wins. A
+node names itself in the handshake, so a link that leads back to the device that dialed (an address or relay name of
+its own) is refused rather than answered by that device as if it were the peer, and a device updates its record of a
+peer only from that peer's own card. The relay (`wss://swarm-relay.w33d.xyz` unless `swarm mesh relay <url>` names
+another, or `swarm mesh relay off` turns it off) only joins streams: it sees which device names connect, when and how
+much, never what they say. A device listens there under a name only its key can claim, and every dial to a device is
+signed with the dialing device's key, so the relay limits each device as well as each address; a device that is
+pairing dials the code's mailbox unsigned, under a tighter limit. `swarm mesh relay serve` runs one, and its
+`/v1/health` answers counts; a code made on a device using another relay names it (`K7QM-4ZX2@relay.example`), so
+joining needs no setting. Without a relay, `swarm mesh invite --direct` prints a long one-time code with this node's
+addresses.
 
 A device joining through a member is introduced to the others by vouchers: the member seals the new pair's key for
 each other member with the key it shares with that member, and the new device's first connection to a member shows
@@ -1052,14 +1055,17 @@ every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_fi
 `swarm node run` over Streamable HTTP on the link to that peer. Borrowed tools count as remote, so in `ask` mode each
 call waits for approval; a peer that does not answer is skipped.
 
-A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>`
-(or `/ticket --on <node> <request>`) files it that way, `swarm superagent place <id> <node>|here` moves its next
-worker, and when the router says the work needs `gpu` or `macos`, the worker goes to a paired node that has that
-ability and a free slot. The node that accepted the ticket remains its record and the only writer of its store. The
-other node prepares its own ticket directory with its own prepare command and credentials (a node that runs GitHub
-tickets needs the agent account's CLI signed in there) and holds a lease it renews; if the lease lapses, the owner
-treats the worker as lost and places the work again. `swarm superagent ticket` shows where a worker runs. Placement
-takes effect on a node run as `swarm node run`.
+A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>` (or
+`/ticket --on <node> <request>`) files it that way, `swarm superagent place <id> <node>|here` moves its next worker,
+and when the router says the work needs `gpu` or `macos`, the worker goes to a paired node that has that ability and a
+free slot. Work on a harness (`--harness claude`, or `executor.harness`) needs it the same way: a node lists
+`harness:<id>` among its abilities for each harness profile that is installed and signed in there, with its keys set,
+and checks again every 10 minutes, so a ticket on Claude Code runs on a device where Claude Code is signed in. The
+node that accepted the ticket remains its record and the only writer of its store. The other node prepares its own
+ticket directory with its own prepare command and credentials (a node that runs GitHub tickets needs the agent
+account's CLI signed in there) and holds a lease it renews; if the lease lapses, the owner treats the worker as lost
+and places the work again. `swarm superagent ticket` shows where a worker runs. Placement takes effect on a node run
+as `swarm node run`.
 
 A node with free worker slots can also pull work instead of waiting to be handed it. Pulling is off until
 `swarm mesh pull on` (add `--repo owner/name`, repeatable, to take only those repositories' work); the node then asks

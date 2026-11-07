@@ -871,6 +871,20 @@ export async function harnessStatus(id: string, configured: Readonly<Record<stri
   return status;
 }
 
+/** The ability a node lists for a harness profile it can run, which work on that harness needs of its machine. */
+export const harnessAbility = (id: string): string => `harness:${id}`;
+
+/**
+ * The harness abilities of this machine: one per profile that is installed and signed in here, with its keys set. A
+ * profile whose check fails is not listed.
+ */
+export async function harnessAbilities(configured: Readonly<Record<string, HarnessProfile>>, where: string,
+  base: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const statuses = await Promise.all(harnessIds(configured).map((id) =>
+    harnessStatus(id, configured, where, { signIn: true, base }).catch((error: unknown) => ({ id, problem: String(error) }))));
+  return statuses.flatMap((status) => status.problem ? [] : [harnessAbility(status.id)]);
+}
+
 /**
  * A turn's usage as rows of Swarm's usage records, as its provider calls write theirs: one count row and its token rows,
  * with the harness, its model and what else `context` says, such as the session, ticket and purpose.

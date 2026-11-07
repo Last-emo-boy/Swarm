@@ -1,10 +1,11 @@
 /**
  * Placing a ticket's worker on another node, end to end with no paid model: an owner node and a runner node on localhost,
  * each a real superagent host and mesh server, a worker process on the runner with its ticket tools' proxy, and a scripted
- * OpenAI-compatible model. A third node takes work and then goes silent, so its lease lapses.
+ * OpenAI-compatible model. A third node takes work and then goes silent, so its lease lapses. The runner also lists Claude
+ * Code (a fake one on PATH) among its abilities, so work on that harness goes to it.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ import type { Ticket } from "../superagent/core/index.js";
 import type { SuperagentHost } from "../superagent/host.js";
 import { KV } from "../superagent/kv.js";
 import { requestOn } from "../superagent/placement.js";
+import { writeFakeHarnesses } from "../superagent/testing/fake-harness.js";
 import { startFakeModel, writeFakeModelHome, type ModelRequest } from "../superagent/testing/fake-model.js";
 import { ticketRow } from "../superagent/views.js";
 import { nodeCard, type NodeCard } from "./card.js";
@@ -28,6 +30,8 @@ process.env.SWARM_MESH_RELAY = "off";
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const root = mkdtempSync(join(tmpdir(), "swarm-mesh-work-"));
 const saved = process.env.SWARM_HOME;
+const savedPath = process.env.PATH;
+const fakes = writeFakeHarnesses(join(root, "bin"), join(root, "harness"));
 const workerCommand = [process.execPath, "--import", import.meta.resolve("tsx"), join(repo, "src/index.ts")];
 
 interface TestNode { host: SuperagentHost; server: MeshServer; url: string; mesh: string; state: string }
@@ -43,7 +47,7 @@ const reported = (request: ModelRequest) => request.user.includes("\"reported\":
 let configAnswered = false;
 
 /**
- * The router accepts every request, saying all but the training one need a GPU. The hello.txt worker writes the file, checks
+ * The router accepts every request, saying all but the training and harness note ones need a GPU. The hello.txt worker writes the file, checks
  * it and reports; the config worker reports progress and goes idle, then answers a person's question with its result.
  */
 function answer(request: ModelRequest): string {
@@ -52,6 +56,8 @@ function answer(request: ModelRequest): string {
     if (request.user.includes("config file")) {
       return JSON.stringify({ kind: "accept", title: "Rename the config file", worktree_name: "rename-config", acknowledgement: "On it: renaming the config file.", needs: ["gpu"] });
     }
+    // Last: the router sees open tickets' titles, so every later request mentions the harness note.
+    if (request.user.includes("harness note")) return JSON.stringify({ kind: "accept", title: "Write the harness note", worktree_name: "harness-note", acknowledgement: "On it: writing the harness note." });
     return JSON.stringify({ kind: "accept", title: "Create hello.txt", worktree_name: "create-hello", acknowledgement: "On it: creating hello.txt.", needs: ["GPU"] });
   }
   if (request.system.includes("rename-config-")) {
@@ -117,10 +123,11 @@ async function until<T>(read: () => T | undefined, ms = 100_000): Promise<T> {
 
 before(async () => {
   process.env.SWARM_HOME = root;
+  process.env.PATH = `${join(root, "bin")}:${savedPath}`;
   model = await startFakeModel(answer);
   writeFakeModelHome(root, model.url);
   ovh = await startNode("ovh", ["linux"]);
-  gpu = await startNode("gpu", ["linux", "gpu"]);
+  gpu = await startNode("gpu", ["linux", "gpu", "harness:claude"]);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), gpu.mesh);
 
   // A node that takes the work it is offered, says it started, and is never heard from again.
@@ -148,6 +155,7 @@ after(async () => {
   }
   await ghost?.server.stop();
   await model?.close();
+  process.env.PATH = savedPath;
   if (saved === undefined) delete process.env.SWARM_HOME;
   else process.env.SWARM_HOME = saved;
   rmSync(root, { recursive: true, force: true });
@@ -185,6 +193,23 @@ test("a ticket that needs a GPU runs on the paired node that has one, in its dir
   assert.deepEqual(replies.map((reply) => [reply.kind, reply.text]), [["acknowledgement", "On it: creating hello.txt."], ["reply", "hello.txt is ready."]]);
   const worker = model.requests.find((request) => request.system.includes("## Swarm superagent"));
   assert.ok(worker?.system.includes(directory), "the worker's environment names its directory on the runner");
+  await until(() => client.store.get(KV.mesh.lease(ticket.id)) ? undefined : true, 10_000);
+});
+
+test("a ticket on a harness runs on the paired node that lists that harness, though the router named no needs", { timeout: 120_000 }, async () => {
+  const { client } = ovh.host;
+  client.request("write the harness note", undefined, { harness: "claude" });
+  const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Write the harness note");
+  const ticket = await until(() => find()?.ended ? find() : undefined);
+  assert.equal(ticket.ended?.outcome, "completed", `ticket ended: ${JSON.stringify(ticket.ended)} report: ${JSON.stringify(ticket.assignments.at(-1)?.report)}`);
+  assert.equal(ticket.execution?.harness, "claude");
+  assert.equal(client.store.get(KV.mesh.placement(ticket.id))?.needs, undefined, "the router named none");
+  assert.equal(ticketRow(client, ticket).runsOn, "gpu");
+
+  const directory = join(gpu.state, "remote", readMesh(ovh.mesh).node.id, "work", ticket.execution!.name);
+  const turns = fakes.calls().filter((call) => call.tools);
+  assert.deepEqual(turns.map((call) => [call.kind, call.cwd]), [["claude", realpathSync(directory)]], "Claude Code ran there, in the runner's directory");
+  assert.ok(existsSync(join(directory, "harness.txt")));
   await until(() => client.store.get(KV.mesh.lease(ticket.id)) ? undefined : true, 10_000);
 });
 
