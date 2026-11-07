@@ -3740,21 +3740,16 @@ function IdleKernelView(input: {
 
 function PaneSection({
   title,
-  tone = "text.primary",
   children,
   marginTop = 1
 }: {
   title: string;
-  tone?: TuiColorRef;
   children: React.ReactNode;
   marginTop?: number;
 }): React.ReactElement {
   return (
     <Box flexDirection="column" width="100%" marginTop={marginTop}>
-      <Text wrap="truncate">
-        <Text color={resolveTuiColor(tone)} bold>{sectionLabel(title)}</Text>
-        <Text color={mutedColor()}> {"─".repeat(96)}</Text>
-      </Text>
+      <Text wrap="truncate" color={visualTokenColor("text.primary")} bold>{sectionLabel(title)}</Text>
       {children}
     </Box>
   );
@@ -3778,7 +3773,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
   const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
   return (
     <>
-      <PaneSection title="Status" tone="role.gateway">
+      <PaneSection title="Status">
         <Text color={mutedColor()}>
           {`sessions=${input.sessions.length} attempts=${input.attempts.length} outputs=${input.toolOutputs.length} approvals=${input.approvals.length} symphony=${activeDaemons.length} last=${shortId(input.lastSessionId ?? "-")}`}
         </Text>
@@ -3795,7 +3790,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
       </PaneSection>
 
       {(input.approvals.length > 0 || activeDaemons.length > 0) && (
-        <PaneSection title="Attention" tone="status.pending">
+        <PaneSection title="Attention">
           {input.approvals.slice(0, 2).map((approval) => (
             <Text key={approval.approval_id} wrap="truncate" color={pendingColor()}>
               approval {approval.risk_class}/{approval.risk} {approval.action} {firstLine(approval.target, 60)}
@@ -3810,7 +3805,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
       )}
 
       {input.lastSessionId && (
-        <PaneSection title="Latest Session" tone="brand.focus">
+        <PaneSection title="Latest Session">
           {lastSnapshot
             ? compactWorkSnapshotLines(lastSnapshot).slice(0, 2).map((line) => (
                 <Text key={line} wrap="truncate" color={mutedColor()}>
@@ -3821,7 +3816,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
         </PaneSection>
       )}
 
-      <PaneSection title="Recent Messages" tone="text.primary">
+      <PaneSection title="Recent Messages">
         {input.messages.length ? input.messages.slice(-recentMessages).map((message, index) => (
           <Box key={`${message.role}-${index}`} flexDirection="column">
             <Text wrap="truncate" color={roleColor(message.role)}>
@@ -3832,7 +3827,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
       </PaneSection>
 
       {input.toolOutputs.length > 0 && (
-        <PaneSection title="Latest Output" tone="role.tool">
+        <PaneSection title="Latest Output">
           {input.toolOutputs.slice(-1).map((result, index) => {
             return (
               <Box key={`${result.task_id}-${index}`} flexDirection="column">
@@ -3854,7 +3849,7 @@ function IdleOutputPane({ rows, outputs }: { rows: number; outputs: ToolResultSt
   const outputLimit = rows >= 48 ? 5 : rows >= 36 ? 3 : 2;
   const outputRows = orderCompactIdleRows(outputs.map((result, index) => compactIdleOutputRow(result, index))).slice(0, outputLimit);
   return (
-    <PaneSection title="Command Output" tone="role.tool">
+    <PaneSection title="Command Output">
       {outputRows.length ? outputRows.map(({ row, source }) => (
         <Box key={row.key} flexDirection="column">
           <CompactIdleRow row={row} />
@@ -3982,7 +3977,7 @@ function compactIdleLeaseRow(lease: WorkspaceLease, index: number): CompactIdleR
     id: lease.session_id,
     title: shortPath(lease.workspace_path),
     status: lease.write_boundary,
-    badge: lease.write_boundary === "read_only" ? "[RO]" : lease.write_boundary === "workspace" ? "[RW]" : "[FS]",
+    badge: lease.write_boundary === "read_only" ? "ro" : lease.write_boundary === "workspace" ? "rw" : "fs",
     tone: lease.write_boundary === "read_only" ? "warning" : "muted",
     meta: [
       lease.scope.length ? compactScope(lease.scope) : undefined,
@@ -4153,14 +4148,14 @@ function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
   const leaseRows = orderCompactIdleRows(leases.map((lease, index) => compactIdleLeaseRow(lease, index))).slice(0, leaseLimit);
   return (
     <>
-      <PaneSection title="Recent Sessions" tone="role.gateway">
+      <PaneSection title="Recent Sessions">
         {lastSessionId && <Text color={mutedColor()}>last={shortId(lastSessionId)}</Text>}
         {sessionRows.length ? sessionRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Workspace Leases" tone="role.gateway">
+      <PaneSection title="Workspace Leases">
         {leaseRows.length ? leaseRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
@@ -4174,7 +4169,7 @@ function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttem
   const attemptRows = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
   const attemptById = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]));
   return (
-    <PaneSection title="Recent Attempts" tone="status.warning">
+    <PaneSection title="Recent Attempts">
       {attemptRows.length ? attemptRows.map((row) => {
         const attempt = attemptById.get(row.key);
         return (
@@ -4206,7 +4201,7 @@ function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
     <>
       <SwarmSurfacePanel surface={swarmSurface} limit={rows >= 48 ? 5 : 3} />
 
-      <PaneSection title="Active Work" tone="role.swarm">
+      <PaneSection title="Active Work">
         {workerRows.length ? workerRows.map((row) => {
           const worker = workerById.get(row.key);
           return (
@@ -4219,13 +4214,13 @@ function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
         }) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Approvals" tone="status.pending">
+      <PaneSection title="Approvals">
         {approvalRows.length ? approvalRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Background Work" tone="role.swarm">
+      <PaneSection title="Background Work">
         {daemonRows.length ? daemonRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
@@ -4243,7 +4238,7 @@ function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProje
   const ownership = surface.ownership.slice(0, visibleLimit);
   const conflicts = surface.conflicts.slice(0, visibleLimit);
   return (
-    <PaneSection title="Swarm Surface" tone={tone}>
+    <PaneSection title="Swarm Surface">
       <Text color={mutedColor()} wrap="truncate">
         {formatSwarmTopologySummary(surface)}
       </Text>
@@ -4285,13 +4280,13 @@ function IdleBlackboardPane({ rows, blackboard, messages }: {
   const blackboardRows = orderCompactIdleRows(blackboard.map((entry, index) => compactIdleBlackboardRow(entry, index))).slice(0, blackboardLimit);
   return (
     <>
-      <PaneSection title="Blackboard" tone="role.swarm">
+      <PaneSection title="Blackboard">
         {blackboardRows.length ? blackboardRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Recent Messages" tone="text.primary">
+      <PaneSection title="Recent Messages">
         {messages.length ? messages.slice(-recentMessages).map((message, index) => (
           <Text key={`${message.role}-${index}`} wrap="truncate" color={roleColor(message.role)}>
             {message.role}: {message.brief}

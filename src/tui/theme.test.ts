@@ -31,5 +31,5 @@ test("TUI theme exposes semantic tokens for transcript, approvals, cache, servic
     id: "session-123456789",
     title: "Long running objective",
     metadata: ["agent=worker", undefined, "cache=hit"]
-  }), "[RUN] SESSION session... Long running objective (agent=worker | cache=hit)");
+  }), "○ session session... Long running objective (agent=worker | cache=hit)");
 });

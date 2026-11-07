@@ -519,9 +519,9 @@ test("compact idle rows keep attention-first scan order in narrow text", () => {
     }
   ]);
 
-  assert.match(rows[0] ?? "", /\[ASK\] approval-/);
-  assert.match(rows[1] ?? "", /\[RUN\] worker-/);
-  assert.match(rows[2] ?? "", /\[OK\] task-output/);
+  assert.match(rows[0] ?? "", /^\? approval-/);
+  assert.match(rows[1] ?? "", /^○ worker-/);
+  assert.match(rows[2] ?? "", /^✓ task-output/);
   assert(rows.every((line) => displayWidth(line) <= 132));
   assert(rows.every((line) => !line.includes("123456789")));
 });

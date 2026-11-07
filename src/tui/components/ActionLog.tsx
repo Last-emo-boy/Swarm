@@ -115,15 +115,15 @@ function windowLines(lines: ActionLogLine[], start: number, bodyHeight: number):
 function flattenRows(rows: TuiActionRow[], columns: number, selectedIndex: number | undefined): ActionLogLine[] {
   const contentWidth = Math.max(32, columns - 4);
   return rows.flatMap((row, rowIndex) => {
-    const prefix = statusIconText(row.status, "badge");
+    const prefix = statusIconText(row.status);
     const kind = kindLabel(row.kind);
     const selected = rowIndex === selectedIndex;
     const lines: ActionLogLine[] = [{
       key: `${row.id}:head:${rowIndex}`,
       spans: trimSpans([
-        { text: selected ? "> " : "  ", color: selected ? "brand.focus" : "text.muted", bold: selected },
+        { text: selected ? "▸ " : "  ", color: selected ? "brand.focus" : "text.muted", bold: selected },
         { text: `${prefix} `, color: statusColor(row.status), bold: row.status !== "info" },
-        { text: `${kind} `, color: kindColor(row.kind), bold: true },
+        { text: `${kind} `, color: "text.muted" },
         { text: row.title, color: "text.primary", bold: selected }
       ], contentWidth)
     }];
@@ -259,5 +259,5 @@ function detailLimit(status: TuiActionStatus): number {
 function kindLabel(kind: string): string {
   const normalized = kind.replace(/^work:/, "").replace(/^message:/, "");
   const short = normalized.length > 10 ? normalized.slice(0, 10) : normalized;
-  return `[${short.toUpperCase()}]`;
+  return short.toLowerCase().padEnd(10);
 }

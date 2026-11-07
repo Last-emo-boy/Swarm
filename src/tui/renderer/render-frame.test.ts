@@ -7,6 +7,7 @@ import { Progress } from "./components/Progress.js";
 import { RawAnsi } from "./components/RawAnsi.js";
 import { Text } from "./components/Text.js";
 import { stripAnsi } from "./ansi.js";
+import { renderTuiToFrame } from "./testing.js";
 import { createElement, updateScrollFields } from "./dom.js";
 import { buildTerminalPatch, diffScreens, terminalPatchToString } from "./output.js";
 import { renderReactTreeToDom } from "./reconciler.js";
@@ -335,4 +336,18 @@ test("renderer bounds Progress output to the available width", () => {
   assert.equal(line.length, 12);
   assert.match(line, /^cache \[/);
   assert.equal(frame.screen.damage?.width, 12);
+});
+
+test("a truncated text with several spans stops at its own edge instead of wrapping onto the rows below", () => {
+  const frame = renderTuiToFrame(React.createElement(Box, { flexDirection: "column", width: 30 },
+    React.createElement(Text, { wrap: "truncate" },
+      React.createElement(Text, null, "[RW]"),
+      React.createElement(Text, null, ` ${"x".repeat(40)}`),
+      React.createElement(Text, null, " · tail")
+    )
+  ), { columns: 40, rows: 3 });
+  const rows = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd());
+
+  assert.equal(rows[0], `[RW] ${"x".repeat(25)}`);
+  assert.equal(rows[1], "", "nothing spills onto the next row");
 });

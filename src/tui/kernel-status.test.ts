@@ -169,10 +169,10 @@ test("compact idle rows prioritize attention states and shorten noisy ids", () =
     }
   ]);
 
-  assert.match(rows[0] ?? "", /\[ERR\] session-fai/);
-  assert.match(rows[1] ?? "", /\[WARN\] attempt-bl/);
-  assert.match(rows[2] ?? "", /\[RUN\] worker-run/);
-  assert.match(rows[3] ?? "", /\[OK\] session-hea/);
+  assert.match(rows[0] ?? "", /^✗ session-fai/);
+  assert.match(rows[1] ?? "", /^! attempt-bl/);
+  assert.match(rows[2] ?? "", /^○ worker-run/);
+  assert.match(rows[3] ?? "", /^✓ session-hea/);
   assert(rows.every((line) => !line.includes("123456789")));
   assert(rows.every((line) => line.length < 150));
 });

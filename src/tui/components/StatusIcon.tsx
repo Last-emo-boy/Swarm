@@ -19,7 +19,7 @@ const STATUS_CONFIG: Record<TuiPrimitiveStatus, { icon: string; badge: string; c
   warning: { icon: "!", badge: "[WARN]", color: "status.warning" },
   info: { icon: "·", badge: "[--]", color: "text.muted", dim: true },
   pending: { icon: "?", badge: "[ASK]", color: "status.pending" },
-  loading: { icon: "…", badge: "[RUN]", color: "status.running" }
+  loading: { icon: "○", badge: "[RUN]", color: "status.running" }
 };
 
 export function StatusIcon({ status, withSpace = false, label = "icon" }: StatusIconProps): React.ReactElement {

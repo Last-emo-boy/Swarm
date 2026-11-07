@@ -380,8 +380,8 @@ test("ActionLog renders status and kind accents without tinting neutral titles",
     selectedIndex: 0
   }), { columns: 96, rows: 8 });
 
-  assert.equal(colorAtText(frame, "[ERR]"), resolveTuiColor("status.danger"));
-  assert.equal(colorAtText(frame, "[TOOL]"), resolveTuiColor("role.tool"));
+  assert.equal(colorAtText(frame, "✗"), resolveTuiColor("status.danger"));
+  assert.equal(colorAtText(frame, "tool"), resolveTuiColor("text.muted"), "the kind is a quiet word, not a badge");
   assert.equal(colorAtText(frame, "Tool shell.exec"), resolveTuiColor("text.primary"));
   assert.equal(colorAtText(frame, "⏵"), resolveTuiColor("role.tool"));
   assert.equal(colorAtTextAfter(frame, "⏵", "shell"), resolveTuiColor("role.tool"));
