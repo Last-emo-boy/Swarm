@@ -3,6 +3,8 @@
  * key that lists everything else. Model, permissions, gateway, cache, LSP and the like live in /status.
  */
 
+import { shortcutLabel } from "./shortcuts.js";
+
 export type StatusItemId = "search" | "budget" | "approvals" | "tickets" | "usage";
 export type StatusItemTone = "accent" | "danger" | "warning" | "muted";
 export type StatusItem = { id: StatusItemId; text: string; tone: StatusItemTone };
@@ -18,6 +20,8 @@ export function buildStatusLine(input: {
   /** What this device spent today, such as "$0.13". */
   spentToday?: string;
   promptEmpty: boolean;
+  /** Keys go to the transcript rather than the prompt. */
+  transcriptFocus?: boolean;
 }): { items: StatusItem[]; hint: string } {
   const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
   const items: StatusItem[] = [];
@@ -39,6 +43,10 @@ export function buildStatusLine(input: {
   if (input.spentToday) {
     items.push({ id: "usage", text: `${input.spentToday} today`, tone: "muted" });
   }
-  const hint = input.search ? "Enter jump · Esc close" : input.promptEmpty ? "? keys" : "";
+  const hint = input.search
+    ? "Enter jump · Esc close"
+    : input.transcriptFocus
+      ? "↑↓ pick · Enter fold · o open · Esc prompt"
+      : input.promptEmpty ? shortcutLabel("prompt.shortcuts") : "";
   return { items, hint };
 }

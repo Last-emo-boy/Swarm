@@ -52,6 +52,7 @@ test("the status line puts what needs attention first, fits the terminal, and ke
   ]);
   assert.equal(line.hint, "? keys");
   assert.equal(buildStatusLine({ promptEmpty: false }).hint, "", "the hint gives way while typing: ? would be typed");
+  assert.equal(buildStatusLine({ promptEmpty: true, transcriptFocus: true }).hint, "↑↓ pick · Enter fold · o open · Esc prompt");
   assert.deepEqual(buildStatusLine({ search: { query: "pair", position: "1/3" }, promptEmpty: true }),
     { items: [{ id: "search", text: "search \"pair\" 1/3", tone: "accent" }], hint: "Enter jump · Esc close" });
 

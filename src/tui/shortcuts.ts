@@ -19,7 +19,7 @@ export type TuiShortcutId =
   | "action.select"
   | "action.details"
   | "action.page"
-  | "run-board.toggle_rail";
+  | "workers.toggle";
 
 export type TuiShortcut = {
   id: TuiShortcutId;
@@ -32,7 +32,7 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
   "prompt.shortcuts": {
     id: "prompt.shortcuts",
     keys: ["?"],
-    label: "? for shortcuts",
+    label: "? keys",
     scope: "prompt"
   },
   "detail.open": {
@@ -149,8 +149,8 @@ export const TUI_SHORTCUTS: Readonly<Record<TuiShortcutId, TuiShortcut>> = Objec
     label: "PgUp/PgDn",
     scope: "action"
   },
-  "run-board.toggle_rail": {
-    id: "run-board.toggle_rail",
+  "workers.toggle": {
+    id: "workers.toggle",
     keys: ["Ctrl+R"],
     label: "Ctrl+R workers",
     scope: "global"
@@ -189,3 +189,58 @@ export function detailOpenHint(): string {
 export function transcriptSearchHint(summary: string | undefined): string {
   return `${summary ?? "search"} | ${shortcutHint(["search.jump", "command.close"])}`;
 }
+
+/** Every key the TUI answers to, by where it works: what the keys view (? on an empty prompt) lists. */
+export const KEYS_VIEW: ReadonlyArray<{ where: string; keys: ReadonlyArray<readonly [key: string, does: string]> }> = [
+  {
+    where: "Prompt",
+    keys: [
+      ["Enter", "send"],
+      ["Alt+Enter  Ctrl+J", "new line"],
+      ["↑ ↓", "earlier prompts"],
+      ["Tab", "complete a command"],
+      ["/", "commands"],
+      ["?", "these keys, on an empty prompt"],
+      ["Esc", "move to the transcript, on an empty prompt"]
+    ]
+  },
+  {
+    where: "Transcript",
+    keys: [
+      ["↑ ↓  j k", "pick a row"],
+      ["Enter  x", "fold or unfold it"],
+      ["o  Ctrl+O", "open its detail"],
+      ["/", "search"],
+      ["PgUp PgDn", "scroll"],
+      ["Esc, or type", "back to the prompt"]
+    ]
+  },
+  {
+    where: "Approval",
+    keys: [
+      ["y", "yes, this once"],
+      ["a", "always: this target, for the rest of the session"],
+      ["n  Esc", "no"],
+      ["?", "everything the request carries"]
+    ]
+  },
+  {
+    where: "Anywhere",
+    keys: [
+      ["Ctrl+C", "interrupt a run, or quit when idle"],
+      ["Ctrl+O", "the latest detail"],
+      ["Ctrl+F", "search the transcript"],
+      ["Ctrl+R", "running workers, while a run is busy"],
+      ["Ctrl+T", "task detail"],
+      ["/view <name>", "trace, overview, output, sessions, attempts, agents, blackboard"],
+      ["/tickets", "tickets"]
+    ]
+  },
+  {
+    where: "Views",
+    keys: [
+      ["Esc  q", "back to the conversation"],
+      ["/", "back, with a command started"]
+    ]
+  }
+];

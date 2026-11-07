@@ -38,6 +38,7 @@ export function ChatInputArea({
   activity,
   activityRows = 1,
   status,
+  yieldKey,
   inputActive = true,
   completionPlacement = "inline",
   maxRows,
@@ -56,6 +57,8 @@ export function ChatInputArea({
   activityRows?: number;
   /** The status line under the prompt; told whether the prompt is empty, since its hint gives way while typing. */
   status?: (input: { promptEmpty: boolean }) => React.ReactNode;
+  /** Keys the prompt leaves to the app, such as ? and Esc on an empty prompt; told what the prompt holds. */
+  yieldKey?: (character: string | undefined, key: ChatInputKey, value: string) => boolean;
   inputActive?: boolean;
   completionPlacement?: "inline" | "overlay";
   maxRows?: number;
@@ -94,7 +97,7 @@ export function ChatInputArea({
   const promptTone = promptFocused ? visualTokenColor("brand.focus") : visualTokenColor("surface.line");
 
   function handlePromptInput(character: string | undefined, key: ChatInputKey): boolean {
-    if (!inputActive || !isChatInputPromptKey(character, key)) {
+    if (!inputActive || !isChatInputPromptKey(character, key) || yieldKey?.(character, key, controllerState.current.input.value)) {
       return false;
     }
     const previousState = controllerState.current;

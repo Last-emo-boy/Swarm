@@ -21,9 +21,9 @@ test("TUI shortcut registry formats detail and modal hints consistently", () => 
 });
 
 test("worker rail toggle is registered with a discoverable Ctrl+R label", () => {
-  const railToggle = TUI_SHORTCUTS["run-board.toggle_rail"];
+  const railToggle = TUI_SHORTCUTS["workers.toggle"];
   assert.deepEqual(railToggle.keys, ["Ctrl+R"]);
-  assert.match(shortcutLabel("run-board.toggle_rail"), /Ctrl\+R/);
-  assert.equal(shortcutHint(["run-board.toggle_rail"]), "Ctrl+R workers");
+  assert.match(shortcutLabel("workers.toggle"), /Ctrl\+R/);
+  assert.equal(shortcutHint(["workers.toggle"]), "Ctrl+R workers");
 });
 

@@ -176,13 +176,15 @@ import {
   updateTranscriptSearch,
   type TranscriptSearchState
 } from "./transcript-search.js";
-import { appendDetailShortcut } from "./shortcuts.js";
+import { appendDetailShortcut, KEYS_VIEW } from "./shortcuts.js";
 import {
   createMessageCursorState,
   messageCursorReducer,
+  selectableMessageIndexes,
   selectedConversationMessage,
   type MessageCursorState
 } from "./message-folding.js";
+import { displayWidth } from "./display-width.js";
 
 type ChatMessage = ConversationMessage;
 
@@ -352,6 +354,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [completionRows, setCompletionRows] = useState(0);
   const [chatCompletion, setChatCompletion] = useState<ChatCompletionState>(() => emptyChatCompletionState());
   const [approvalExpanded, setApprovalExpanded] = useState(false);
+  // Where keys go in the conversation: the prompt types, the transcript picks and folds rows (Esc on an empty prompt).
+  const [transcriptFocus, setTranscriptFocus] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
   const [transcriptSearch, setTranscriptSearch] = useState<TranscriptSearchState>(() => createTranscriptSearchState());
   const [messageCursor, setMessageCursor] = useState<MessageCursorState>(() => createMessageCursorState());
   const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
@@ -911,6 +916,17 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return;
     }
 
+    if (keysOpen) {
+      if (key.escape || character === "q" || character === "?" || (key.ctrl && character === "c")) {
+        setKeysOpen(false);
+        return;
+      }
+      if (approval) {
+        handleApprovalInput(character, key);
+      }
+      return;
+    }
+
     if (key.ctrl && (character === "r" || character === "R") && busy) {
       setShowActivityRail((prev) => !prev);
       return;
@@ -953,6 +969,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       logTuiExitTelemetry("exit");
       exit();
+      return;
+    }
+
+    if (mainPane === "chat" && key.ctrl && (character === "f" || character === "F")) {
+      openTranscriptSearch();
+      return;
+    }
+
+    if (handleChatFocusInput(character, key)) {
       return;
     }
 
@@ -1013,10 +1038,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
 
     if (handleActionLogInput(character, key)) {
-      return;
-    }
-
-    if (handleMessageCursorInput(character, key)) {
       return;
     }
 
@@ -1287,11 +1308,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   ): boolean {
     const normalized = normalizeActionLogControlCharacter(character);
     if (!transcriptSearch.active) {
-      if (character === "/" && chatInputState.current.input.value.length === 0) {
-        const index = buildTranscriptSearchIndex(messages);
-        setTranscriptSearch(updateTranscriptSearch(createTranscriptSearchState(), index, ""));
-        return true;
-      }
       return false;
     }
     const index = buildTranscriptSearchIndex(messages);
@@ -1304,6 +1320,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (match) {
         jumpToConversationMessage(match.messageIndex);
         setMessageCursor((state) => messageCursorReducer(state, { type: "select", index: match.messageIndex }, messages));
+        setTranscriptFocus(true);
       }
       setTranscriptSearch((state) => closeTranscriptSearch(state));
       return true;
@@ -1327,37 +1344,112 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return true;
   }
 
-  function handleMessageCursorInput(
+  /** Opens transcript search (Ctrl+F, / in the transcript, /search), with a query when one is given. */
+  function openTranscriptSearch(query = ""): void {
+    setTranscriptSearch(updateTranscriptSearch(createTranscriptSearchState(), buildTranscriptSearchIndex(messages), query));
+  }
+
+  /**
+   * The conversation's two places for keys. The prompt types; on an empty prompt ? shows the keys and Esc moves to the
+   * transcript, selecting its last row. There ↑↓ or j/k pick a row, Enter or x folds and unfolds it, o or Ctrl+O opens
+   * its detail, / searches, ? shows the keys, and Esc or typing goes back to the prompt (what is typed lands there).
+   */
+  function handleChatFocusInput(
     character: string | undefined,
-    key: { ctrl?: boolean; return?: boolean }
+    key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean; pageUp?: boolean; pageDown?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean }
   ): boolean {
-    if (mainPane !== "chat" || chatInputState.current.input.value.length > 0) {
+    if (mainPane !== "chat" || transcriptSearch.active || approval || pendingPlan) {
       return false;
     }
-    const normalized = normalizeActionLogControlCharacter(character);
-    if (normalized === "[") {
-      setMessageCursor((state) => messageCursorReducer(state, { type: "previous" }, messages));
+    const candidates = selectableMessageIndexes(messages, messageCursor.expandedKeys);
+    if (!transcriptFocus) {
+      if (chatInputState.current.input.value.length > 0 || key.ctrl || key.meta) {
+        return false;
+      }
+      if (character === "?") {
+        setKeysOpen(true);
+        return true;
+      }
+      if (key.escape && candidates.length > 0) {
+        setTranscriptFocus(true);
+        selectMessage(candidates.at(-1)!);
+        return true;
+      }
+      return false;
+    }
+    const selected = messageCursor.selectedIndex !== undefined && candidates.includes(messageCursor.selectedIndex)
+      ? messageCursor.selectedIndex
+      : candidates.at(-1);
+    const position = selected === undefined ? -1 : candidates.indexOf(selected);
+    if (key.escape || candidates.length === 0) {
+      leaveTranscript();
+      return Boolean(key.escape);
+    }
+    if (key.upArrow || character === "k" || character === "[") {
+      selectMessage(candidates[Math.max(0, position - 1)]!);
       return true;
     }
-    if (normalized === "]") {
-      setMessageCursor((state) => messageCursorReducer(state, { type: "next" }, messages));
+    if (key.downArrow || character === "j" || character === "]") {
+      if (position >= candidates.length - 1) {
+        leaveTranscript();
+      } else {
+        selectMessage(candidates[position + 1]!);
+      }
       return true;
     }
-    if (normalized === "x") {
-      setMessageCursor((state) => messageCursorReducer(state, { type: "toggle" }, messages));
+    if (key.return || character === "x") {
+      setMessageCursor((state) => messageCursorReducer({ ...state, selectedIndex: selected }, { type: "toggle" }, messages));
       return true;
     }
-    const detailIntent = detailOpenInputIntent({ character, key });
-    if (shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: messageCursor.selectedIndex !== undefined })) {
+    if (character === "o" || (key.ctrl && character === "o")) {
       emitTuiFocusTransition(
         focusDecisionForInput(character, key, { focusBefore: "message", hasFocusedTarget: true }),
         tuiKeyEventForInput(character, key),
-        messageCursor.selectedIndex === undefined ? undefined : `message:${messageCursor.selectedIndex}`
+        selected === undefined ? undefined : `message:${selected}`
       );
       openSelectedMessageDetail();
       return true;
     }
+    if (character === "/") {
+      openTranscriptSearch();
+      return true;
+    }
+    if (character === "?") {
+      setKeysOpen(true);
+      return true;
+    }
+    if (key.pageUp || key.pageDown || key.ctrl || key.meta) {
+      return false;
+    }
+    // Typing goes back to the prompt, with what was typed in it.
+    if ((character && !key.tab) || key.backspace || key.delete) {
+      chatInputState.current = applyChatInputKey(chatInputState.current, character, key).state;
+      leaveTranscript();
+      return true;
+    }
     return false;
+  }
+
+  function leaveTranscript(): void {
+    setTranscriptFocus(false);
+    setMessageCursor((state) => messageCursorReducer(state, { type: "clear" }, messages));
+  }
+
+  /** Selects a transcript row and scrolls just enough to show all of it. */
+  function selectMessage(index: number): void {
+    setMessageCursor((state) => messageCursorReducer(state, { type: "select", index }, messages));
+    const options = { expandedMessageKeys: messageCursor.expandedKeys };
+    const below = conversationRenderedLineCount(messages.slice(index + 1), conversationTextColumns(), options);
+    const height = conversationRenderedLineCount(messages.slice(index, index + 1), conversationTextColumns(), options);
+    const rows = fullscreenConversationRows(terminalRows - CONVERSATION_HEADER_ROWS, conversationBottomRows());
+    setConversationViewport((state) => {
+      const offset = state.scrollOffset > below
+        ? below
+        : state.scrollOffset < below + height - rows
+          ? Math.max(0, below + height - rows)
+          : state.scrollOffset;
+      return offset === state.scrollOffset ? state : { ...state, scrollOffset: offset };
+    });
   }
 
   function jumpToConversationMessage(messageIndex: number): void {
@@ -1776,6 +1868,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setConversationViewport(resetConversationViewport());
       }
       return { brief: `Switched to ${mainPaneLabels[pane]}.` };
+    }
+
+    if (command === "search") {
+      setMainPane("chat");
+      openTranscriptSearch(args.join(" "));
+      return { brief: "Searching the transcript: Enter jumps to a match, Esc closes." };
     }
 
     if (command === "provider") {
@@ -3276,6 +3374,36 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     );
   }
 
+  if (keysOpen) {
+    const keyWidth = Math.max(...KEYS_VIEW.flatMap((group) => group.keys.map(([keys]) => displayWidth(keys)))) + 2;
+    const lines = KEYS_VIEW.flatMap((group, index) => [
+      ...(index ? [{ kind: "blank" as const, text: "" }] : []),
+      { kind: "where" as const, text: group.where },
+      ...group.keys.map(([keys, does]) => ({ kind: "key" as const, text: `${keys}${" ".repeat(Math.max(1, keyWidth - displayWidth(keys)))}${does}` }))
+    ]);
+    return (
+      <ViewFrame
+        title="Keys"
+        columns={terminalColumns}
+        height={terminalRows}
+        keys="Esc back"
+        bottom={decisionCard}
+        bottomRows={decisionCardRows}
+      >
+        {lines.slice(0, viewBodyRows(terminalRows, decisionCardRows)).map((line, index) => (
+          <Text
+            key={`keys:${index}`}
+            wrap="truncate"
+            bold={line.kind === "where"}
+            color={visualTokenColor(line.kind === "where" ? "text.primary" : "text.muted")}
+          >
+            {line.kind === "key" ? `  ${line.text}` : line.text || " "}
+          </Text>
+        ))}
+      </ViewFrame>
+    );
+  }
+
   if (onboard.enabled) {
     return (
       <Box width={terminalColumns} height={terminalRows} flexDirection="column" overflow="hidden" paddingX={1}>
@@ -3315,7 +3443,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     approvalsWaiting: idlePaneSnapshot.approvals.filter((record) => record.status === "pending").length - (approval ? 1 : 0),
     tickets: ticketSnapshot ? { needYou: ticketSnapshot.status.counts.person, working: ticketSnapshot.status.counts.working } : undefined,
     spentToday: usageLine.spentToday,
-    promptEmpty
+    promptEmpty,
+    transcriptFocus
   });
   const renderStatusLine = ({ promptEmpty }: { promptEmpty: boolean }) => (
     <StatusLine {...statusLine(promptEmpty)} columns={terminalColumns} onItemClick={openStatusItem} />
@@ -3351,6 +3480,8 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         activity={activityLine}
         activityRows={activityRows}
         status={renderStatusLine}
+        inputActive={!transcriptFocus && !transcriptSearch.active}
+        yieldKey={(character, key, value) => value.length === 0 && !key.ctrl && !key.meta && (character === "?" || Boolean(key.escape))}
         onInputTelemetry={logTuiInputTelemetry}
         completionPlacement="overlay"
         maxRows={bottomRows}
