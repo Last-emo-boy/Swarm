@@ -3,6 +3,9 @@
  * through the relay, carrying TLS keyed with the secret the two nodes share: only they can finish the handshake, and the
  * key TLS names tells the receiving node which peer is calling. The mesh's HTTP routes run inside.
  *
+ * The receiving node names itself in the handshake (TLS's identity hint, its relay name), so a node whose dial led back to
+ * itself, through an address or a relay name that is its own, refuses the link instead of talking to itself as a peer.
+ *
  * A stream's first byte tells the receiving node what it carries: a TLS handshake, or one opener line, `SWARM/1 pair <id>`
  * (a device pairing with a code, pair.ts) or `SWARM/1 intro <voucher>` (a member introduced by another, then TLS).
  */
@@ -12,7 +15,7 @@ import { Duplex, Readable } from "node:stream";
 import { connect as tlsConnect, createServer as createTlsServer, type TLSSocket, type Server as TlsServer } from "node:tls";
 import { parseListen } from "./listen.js";
 import { RelayError, relayDial, type RelayStream } from "./relay.js";
-import { meshHome, peerByIdentity, pskIdentity, readMesh, type Peer } from "./state.js";
+import { meshHome, peerByIdentity, pskIdentity, readMesh, relayName, type Peer } from "./state.js";
 
 const TLS = { ciphers: "ECDHE-PSK-CHACHA20-POLY1305", minVersion: "TLSv1.2", maxVersion: "TLSv1.2" } as const;
 export const OPENER = "SWARM/1 ";
@@ -69,6 +72,7 @@ export class LinkServer {
   constructor(private readonly home: string, private readonly http: HttpServer, private readonly handlers: LinkHandlers) {
     this.tls = createTlsServer({
       ...TLS,
+      pskIdentityHint: relayName(readMesh(home).node.keys.publicKey),
       pskCallback: (socket: TLSSocket, identity: string) => {
         const peer = peerByIdentity(readMesh(this.home), identity);
         if (!peer) return null;
@@ -136,13 +140,20 @@ function dialDirect(address: string): Promise<Socket> {
   });
 }
 
-/** TLS for a pair over `raw`, after the peer's introduction when this node still carries one. */
-function handshake(peer: Peer, raw: Duplex): Promise<TLSSocket> {
+/**
+ * TLS for a pair over `raw`, after the peer's introduction when this node still carries one. `own` is this node's relay
+ * name: a node that answers with it is this node.
+ */
+function handshake(peer: Peer, raw: Duplex, own: string): Promise<TLSSocket> {
   return new Promise((resolve, reject) => {
     if (peer.voucher) raw.write(`${OPENER}intro ${peer.voucher}\n`);
+    let self = false;
     const socket = tlsConnect({
       socket: raw, ...TLS, checkServerIdentity: () => undefined,
-      pskCallback: () => ({ psk: Buffer.from(peer.key, "base64url"), identity: pskIdentity(peer.key) })
+      pskCallback: (hint) => {
+        if (hint === own) { self = true; return null; }
+        return { psk: Buffer.from(peer.key, "base64url"), identity: pskIdentity(peer.key) };
+      }
     });
     const timer = setTimeout(() => socket.destroy(new Error("the TLS handshake timed out")), HANDSHAKE_MS);
     socket.once("secureConnect", () => { clearTimeout(timer); socket.off("error", reject); resolve(socket); });
@@ -151,7 +162,8 @@ function handshake(peer: Peer, raw: Duplex): Promise<TLSSocket> {
     socket.once("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
       raw.destroy();
-      reject(error.code === "ERR_SSL_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY" ? new HandshakeRefused(error.message) : error);
+      reject(self ? new Error("it led back to this node itself")
+        : error.code === "ERR_SSL_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY" ? new HandshakeRefused(error.message) : error);
     });
   });
 }
@@ -168,6 +180,8 @@ export const pathTo = (peerId: string): LinkPath | undefined => paths.get(peerId
  * is signed with the key of the node whose mesh home the peer record came from.
  */
 export function connectPeer(peer: Peer): Promise<TLSSocket> {
+  const { keys } = readMesh(peer.home ?? meshHome()).node;
+  const own = relayName(keys.publicKey);
   return new Promise((resolve, reject) => {
     const open = new Set<Duplex>();
     const failures: string[] = [];
@@ -183,7 +197,7 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
           raw = await dial();
           if (settled) return void raw.destroy();
           open.add(raw);
-          const socket = await handshake(peer, raw);
+          const socket = await handshake(peer, raw, own);
           if (settled) return void socket.destroy();
           if (path.kind === "relay") relayUnder.set(socket, raw as RelayStream);
           settled = true;
@@ -208,7 +222,7 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
       if (relayStarted || settled) return;
       relayStarted = true;
       if (peer.relay && peer.relayName) {
-        attempt({ kind: "relay", relay: peer.relay }, () => relayDial(peer.relay!, peer.relayName!, readMesh(peer.home ?? meshHome()).node.keys));
+        attempt({ kind: "relay", relay: peer.relay }, () => relayDial(peer.relay!, peer.relayName!, keys));
       }
     };
     const finish = (): void => {

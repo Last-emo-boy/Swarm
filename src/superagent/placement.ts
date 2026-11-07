@@ -5,6 +5,7 @@
  */
 import { latestAssignment, type Ticket } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
+import { harnessAbility } from "./harness.js";
 import { KV } from "./kv.js";
 
 /** A paired node by its id, with the name it had when it was chosen. */
@@ -43,6 +44,15 @@ export function updatePlacement(client: Records, id: string, change: Partial<Omi
 export function placementOf(client: Records, ticket: Ticket): Placement | undefined {
   const records = [...ticket.origin.triggerIds, ticket.id].flatMap((id) => client.store.get(KV.mesh.placement(id)) ?? []);
   return records.length ? Object.assign({}, ...records) as Placement : undefined;
+}
+
+/**
+ * What a ticket's worker needs of its machine: what the router said, and the harness the ticket runs on, which only a node
+ * that lists it (installed and signed in there) can run.
+ */
+export function workNeeds(ticket: Ticket, placement: Placement | undefined): string[] {
+  const harness = ticket.execution?.harness;
+  return [...new Set([...placement?.needs ?? [], ...(harness ? [harnessAbility(harness)] : [])])];
 }
 
 export const leaseOf = (client: Records, ticketId: string): Lease | undefined => client.store.get(KV.mesh.lease(ticketId));

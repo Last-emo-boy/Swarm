@@ -48,6 +48,9 @@ Run \`swarm node run\` on a device so its peers can reach it; a device without i
 of devices shares a key that encrypts everything between them: direct on a shared network, through the relay
 otherwise, which passes the bytes on without reading them. State lives in ${meshHome()}.`;
 
+/** How often a running node checks again which harnesses are installed and signed in. */
+const HARNESS_CHECK_MS = 10 * 60_000;
+
 const NODE_USAGE = `Usage: swarm node <command>
 
 Commands:
@@ -423,6 +426,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   }
   const home = meshHome();
   const abilities = await detectAbilities();
+  let harnessTimer: NodeJS.Timeout | undefined;
   let facts: () => { repository?: string; load?: NodeLoad } = () => ({});
   let stopHost = async (): Promise<void> => {};
   let serveHost = (_server: MeshServer): void => {};
@@ -431,6 +435,18 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     const { providerComplete } = await import("../superagent/provider.js");
     const { selfCommand } = await import("../superagent/cli.js");
     const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete() });
+    // The harnesses this node can run its workers on, as abilities work on a harness needs. Sign-ins lapse and are renewed,
+    // so they are checked again every few minutes; the array is updated in place for the card and the work that share it.
+    const { harnessAbilities } = await import("../superagent/harness.js");
+    const { settingsPath } = await import("../superagent/settings.js");
+    const machine = [...abilities];
+    const checkHarnesses = async (): Promise<void> => {
+      const found = await harnessAbilities(host.client.settings().executor.harnesses, settingsPath(host.stateDir));
+      abilities.splice(0, abilities.length, ...machine, ...found);
+    };
+    await checkHarnesses();
+    harnessTimer = setInterval(() => void checkHarnesses().catch((error: unknown) => console.log(`Could not check this node's harnesses: ${String(error)}`)), HARNESS_CHECK_MS);
+    harnessTimer.unref();
     const { MeshWork } = await import("./work.js");
     const work = new MeshWork(host, { home, abilities, workerCommand: selfCommand() });
     await host.start();
@@ -461,7 +477,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     }, 10_000).unref();
   }
   await new Promise<void>((resolve) => {
-    const stop = () => { void server.stop().then(stopHost).then(resolve); };
+    const stop = () => { clearInterval(harnessTimer); void server.stop().then(stopHost).then(resolve); };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
   });

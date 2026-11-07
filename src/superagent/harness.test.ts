@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
-import { HARNESS_KINDS, HarnessProfileSchema, HarnessSetupError, harnessIds, harnessProfiles, harnessStatus, harnessUsageRows, readOnlyProblem, resolveHarness, runTurn,
+import { HARNESS_KINDS, HarnessProfileSchema, HarnessSetupError, harnessAbilities, harnessIds, harnessProfiles, harnessStatus, harnessUsageRows, readOnlyProblem, resolveHarness, runTurn,
   type TurnEvents, type TurnRequest } from "./harness.js";
 import { SettingsSchema, settingsPath, writeSettings } from "./settings.js";
 import { writeFakeHarnesses } from "./testing/fake-harness.js";
@@ -417,6 +417,19 @@ test("`swarm harness` statuses name each profile's command, kind, model and keys
     assert.match(away.problem ?? "", /not signed in: run `.+\/opencode auth login`/);
     const missing = await harnessStatus("codex", {}, "settings.json", { base: { PATH: "/nowhere" } });
     assert.deepEqual([missing.installed, missing.problem], [false, "Codex is not installed: no `codex` on PATH."]);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("a node lists as abilities the harnesses it can run: installed, signed in, and with their keys set", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "swarm-harness-bin-"));
+  try {
+    writeFakeHarnesses(bin, join(bin, "home"));
+    const signedOut = { opencode: HarnessProfileSchema.parse({ env: { FAKE_HARNESS_SIGNED_OUT: "1" } }) };
+    assert.deepEqual(await harnessAbilities(signedOut, "settings.json", { PATH: bin, HOME: bin, DEEPSEEK_API_KEY: "test" }),
+      ["harness:claude", "harness:codex", "harness:kimi", "harness:claude-deepseek"], "opencode is signed out and claude-glm has no ZHIPU_API_KEY");
+    assert.deepEqual(await harnessAbilities({}, "settings.json", { PATH: "/nowhere" }), []);
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }

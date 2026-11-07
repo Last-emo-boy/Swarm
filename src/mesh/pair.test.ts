@@ -183,3 +183,29 @@ test("a device removed from the swarm is forgotten by every member, which then r
   await joinByCode(ovh, box);
   assert.equal((await callPeer<NodeCard>(findPeer(readMesh(box), "gpu"), "GET", "/mesh/v1/node")).name, "gpu");
 });
+
+test("a record that leads back to its own node is refused there, not answered by that node as if it were the peer", async () => {
+  const ovh = await node("ovh", true);
+  await joinByCode(ovh, device("mac"));
+  const own = readMesh(ovh).node;
+  // How OVH's record of a Mac once read: its own relay name and address, so every call reached itself.
+  updateMesh((state) => ({ ...state, peers: state.peers.map((peer) => peer.name === "mac"
+    ? { ...peer, relayName: relayName(own.keys.publicKey), addresses: [own.advertise!] } : peer) }), ovh);
+  await assert.rejects(callPeer(findPeer(readMesh(ovh), "mac"), "GET", "/mesh/v1/node"),
+    /^Error: mac is unreachable: 127\.0\.0\.1:\d+: it led back to this node itself; relay: it led back to this node itself$/);
+});
+
+test("a health check takes a card only from the peer it names, so a record never turns into another node's", async () => {
+  const liar = device("liar");
+  const server = new MeshServer({ home: liar, card: async () => ({ ...await nodeCard(readMesh(liar).node, { abilities: ["test"] }), id: "someone-else", name: "other" }) });
+  await server.start("127.0.0.1:0", { relay: relayUrl });
+  servers.push(server);
+  await until(() => relay.stats().listeners >= servers.length);
+  const mac = device("mac");
+  await joinByCode(liar, mac);
+  const [health] = await peerHealth(mac);
+  assert.deepEqual([health?.peer.name, health?.reachable], ["liar", false]);
+  assert.equal(health?.error, "it answered as other, another node: this record of liar leads elsewhere, so pair again");
+  const record = findPeer(readMesh(mac), "liar");
+  assert.deepEqual([record.relayName, record.addresses], [relayName(readMesh(liar).node.keys.publicKey), ["127.0.0.1:9"]]);
+});
