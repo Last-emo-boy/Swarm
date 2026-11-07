@@ -37,6 +37,8 @@ export async function peerHealth(home = meshHome(), timeoutMs = 5000): Promise<P
     const about = { id: peer.id, name: peer.name, addresses: peer.addresses };
     try {
       const card = await callPeer<NodeCard>(peer, "GET", "/mesh/v1/node", undefined, timeoutMs);
+      // Another node's card means the record leads somewhere else: taking its addresses would point the record there for good.
+      if (card.id !== peer.id) return { peer: about, reachable: false, error: `it answered as ${card.name}, another node: this record of ${peer.name} leads elsewhere, so pair again` };
       return { peer: about, reachable: true, path: describePath(pathTo(peer.id)), ms: Date.now() - started, card };
     } catch (error) {
       return { peer: about, reachable: false, error: error instanceof Error ? error.message : String(error) };
