@@ -39,12 +39,12 @@ export function answerFooter(card: ResultCard | undefined): ConversationMessage[
   } else if (passedChecks) {
     parts.push(`${passedChecks} ${passedChecks === 1 ? "check" : "checks"} passed`);
   }
-  if (changed && card.checkpoint?.revertAvailable) {
-    parts.push("/revert last undoes it");
-  }
   // What the review said is in the details; the footer only says that it wants changes.
   if (card.review.status === "failed" || card.review.status === "warning") {
     parts.push(card.review.status === "failed" ? "review failed" : "review asks for changes");
+  }
+  if (changed && card.checkpoint?.revertAvailable) {
+    parts.push("/revert last undoes it");
   }
   if (card.status !== "completed") {
     const reason = /Failed tool:\s*(.+)$/u.exec(card.summary)?.[1]?.trim();
