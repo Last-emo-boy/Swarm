@@ -14,9 +14,16 @@ export type TuiTerminalInputDelivery = {
   malformed: number;
 };
 
+/**
+ * How long a lone Esc waits for the rest of an escape sequence before it counts as the Esc key. Terminals send a
+ * sequence (an arrow, Alt+key) in one write, so only a key press leaves Esc alone at the end of a chunk.
+ */
+export const ESC_KEY_DELAY_MS = 50;
+
 export class TuiTerminalInputController {
   readonly parser: TuiInputParser;
   readonly querier: TuiTerminalQuerier;
+  private escTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly sink: TuiTerminalInputSink,
@@ -27,11 +34,28 @@ export class TuiTerminalInputController {
   }
 
   feed(chunk: string | Buffer, options: { flush?: boolean } = {}): TuiTerminalInputDelivery {
-    return deliverParsedInput(this.parser.parse(chunk, options), this.sink, this.querier);
+    this.cancelEscTimer();
+    const delivery = deliverParsedInput(this.parser.parse(chunk, options), this.sink, this.querier);
+    if (this.parser.pending() === "\u001b") {
+      this.escTimer = setTimeout(() => {
+        this.escTimer = undefined;
+        this.flush();
+      }, ESC_KEY_DELAY_MS);
+      this.escTimer.unref?.();
+    }
+    return delivery;
   }
 
   flush(): TuiTerminalInputDelivery {
+    this.cancelEscTimer();
     return deliverParsedInput(this.parser.flush(), this.sink, this.querier);
+  }
+
+  private cancelEscTimer(): void {
+    if (this.escTimer) {
+      clearTimeout(this.escTimer);
+      this.escTimer = undefined;
+    }
   }
 
   deliver(events: readonly TuiParsedInput[]): TuiTerminalInputDelivery {

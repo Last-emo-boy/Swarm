@@ -1,6 +1,7 @@
 import type { ExecutionResult } from "../runtime/orchestrator.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
-import { buildResultCard, formatResultCardText } from "../runtime/result-card.js";
+import { buildResultCard, formatResultCardText, type ResultCard } from "../runtime/result-card.js";
+import type { ConversationMessage } from "./conversation-layout.js";
 
 export type ExecutionResultDisplay = {
   brief: string;
@@ -16,6 +17,44 @@ export function formatExecutionResultDisplay(result: ExecutionResult, runtime?: 
     detail: [resultCard, "", "Full Output", result.content].join("\n"),
     preview: resultCard
   };
+}
+
+/**
+ * The line under an answer: how the run ended when it did not complete, and what it changed and checked. Nothing when
+ * the run completed without changing or checking anything: the answer says it all.
+ */
+export function answerFooter(card: ResultCard | undefined): ConversationMessage["footer"] {
+  if (!card) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  const changed = card.changedFiles.length;
+  if (changed) {
+    parts.push(`${changed} ${changed === 1 ? "file" : "files"} changed`);
+  }
+  const failedChecks = card.checks.filter((check) => check.status === "failed").length;
+  const passedChecks = card.checks.filter((check) => check.status === "passed").length;
+  if (failedChecks) {
+    parts.push(`${failedChecks} of ${card.checks.length} checks failed`);
+  } else if (passedChecks) {
+    parts.push(`${passedChecks} ${passedChecks === 1 ? "check" : "checks"} passed`);
+  }
+  // What the review said is in the details; the footer only says that it wants changes.
+  if (card.review.status === "failed" || card.review.status === "warning") {
+    parts.push(card.review.status === "failed" ? "review failed" : "review asks for changes");
+  }
+  if (changed && card.checkpoint?.revertAvailable) {
+    parts.push("/revert last undoes it");
+  }
+  if (card.status !== "completed") {
+    const reason = /Failed tool:\s*(.+)$/u.exec(card.summary)?.[1]?.trim();
+    const ended = card.status === "failed" ? "✗ Failed" : "! Stopped";
+    return { text: [ended, ...(reason ? [reason] : []), ...parts, "Ctrl+O for details"].join(" · "), status: card.status === "failed" ? "error" : "warning" };
+  }
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return { text: parts.join(" · "), status: failedChecks || card.review.status === "failed" ? "warning" : "info" };
 }
 
 export function briefForExecutionResult(

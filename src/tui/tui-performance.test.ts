@@ -42,7 +42,8 @@ test("TUI viewport gates keep transcript room across short, narrow, normal, and 
     assert(transcriptRows >= 4, `expected transcript room for ${viewport.rows}x${viewport.columns}`);
     assert(bottomRows <= Math.max(4, Math.floor(viewport.rows * 0.5)));
     assert(capacity.maxInputRows >= 1);
-    assert(capacity.maxCompletionRows >= 1);
+    // Completions open over the transcript, so the prompt keeps its rule, line and status line at every size.
+    assert.equal(bottomRows, conversationPromptRows(0), `prompt rows for ${viewport.rows}x${viewport.columns}`);
   }
 });
 
@@ -200,7 +201,7 @@ test("virtual transcript preserves inspector handoff targets for priority rows",
 
 test("expanded fold rows update virtual height without losing cache isolation", () => {
   const messages = longConversationMessages(100);
-  messages[90] = {
+  messages[97] = {
     role: "system",
     kind: "tool_result",
     status: "success",
@@ -222,8 +223,8 @@ test("expanded fold rows update virtual height without losing cache isolation", 
     messages,
     rows: 12,
     columns: 88,
-    expandedMessageKeys: new Set([conversationMessageFoldKey(messages[90]!, 90)]),
-    selectedMessageIndex: 90,
+    expandedMessageKeys: new Set([conversationMessageFoldKey(messages[97]!, 97)]),
+    selectedMessageIndex: 97,
     cache
   });
   const expandedText = expanded.transcript.map((line) => line.text).join("\n");
@@ -232,7 +233,7 @@ test("expanded fold rows update virtual height without losing cache isolation", 
   assert.match(expandedText, /full output line/);
   assert(expanded.totalRows > compact.totalRows);
   assert(cache.stats().misses >= 1);
-  assert(expanded.transcript.some((line) => line.messageIndex === 90 && line.selected));
+  assert(expanded.transcript.some((line) => line.messageIndex === 97 && line.selected));
 });
 
 function longConversationMessages(count: number): ConversationMessage[] {

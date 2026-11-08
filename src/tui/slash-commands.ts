@@ -98,6 +98,7 @@ export const slashCommands: SlashCommandSpec[] = [
   { name: "takeback", group: "Agents", usage: "/takeback <handoff_id>", description: "Take back an active handoff." },
   { name: "work-items", group: "Symphony", usage: "/work-items [workflow_path]", description: "Inspect local active and terminal Symphony work items." },
   { name: "ticket", group: "Agents", usage: "/ticket <request>|<id>|say <id> <text>|stop <id>|retry <id>", description: "File a request as a ticket for a background worker, or act on a ticket." },
+  { name: "search", group: "Core", usage: "/search [text]", description: "Search the transcript (also Ctrl+F): Enter jumps to a match." },
   { name: "tickets", group: "Agents", usage: "/tickets", description: "Open the tickets pane: what waits for you first." },
   { name: "mesh", group: "Agents", usage: "/mesh [invite [stop]|join <code>]", description: "See this device's swarm, open a pairing code, or join another device's swarm." },
   { name: "symphony", group: "Symphony", usage: "/symphony [workflow_path]", description: "Inspect Symphony scheduler/session status." },
@@ -195,6 +196,7 @@ const SLASH_NAMESPACE_SUBCOMMANDS: Record<string, SlashCommandSpec[]> = {
     { name: "audit", group: "Kernel", usage: "/debug audit", description: "List audit records.", completionPriority: 30 },
     { name: "usage", group: "Kernel", usage: "/debug usage", description: "Model calls, tokens and cost for a session and this device today.", completionPriority: 40 },
     { name: "cache", group: "Kernel", usage: "/debug cache", description: "Inspect prompt cache status.", completionPriority: 50 },
+    { name: "lsp", group: "Kernel", usage: "/debug lsp", description: "Show language server status and diagnostics.", completionPriority: 55 },
     { name: "timeline", group: "Kernel", usage: "/debug timeline [actor:<id>|task:<id>|correlation:<id>|category:<kind>]", description: "Show the shared protocol debug timeline.", completionPriority: 15 },
     { name: "events", group: "Kernel", usage: "/debug events", description: "Show recent runtime events.", completionPriority: 60 },
     { name: "latest", group: "Kernel", usage: "/debug latest", description: "Diagnose the latest run, detail target, failures, cache, and artifacts.", completionPriority: 5 }

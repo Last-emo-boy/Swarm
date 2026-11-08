@@ -1,6 +1,6 @@
 import React from "react";
-import { Box } from "../ui.js";
 import { SemanticTextLine, truncateSpans, type SemanticTextSpan } from "./SemanticTextLine.js";
+import { ViewFrame, viewBodyRows } from "./ViewFrame.js";
 import { ticketsPaneLines, type TicketsPaneLine } from "../tickets/view-model.js";
 import type { TicketGroup, TicketRow } from "../../superagent/views.js";
 import type { TuiColorRef } from "../theme.js";
@@ -39,26 +39,36 @@ function lineSpans(line: TicketsPaneLine): SemanticTextSpan[] {
 }
 
 /**
- * The tickets pane: tickets grouped by what each waits for, what needs a person first, with the selected one marked and
+ * The tickets view: tickets grouped by what each waits for, what needs a person first, with the selected one marked and
  * kept in view. Keys: ↑↓ select, Enter open, s stop, r retry, Esc back to the conversation.
  */
-export function TicketsPane(props: { rows: readonly TicketRow[]; selected: number; columns: number; height: number; summary: string; hosting: boolean }): React.ReactElement {
+export function TicketsPane(props: {
+  rows: readonly TicketRow[];
+  selected: number;
+  columns: number;
+  height: number;
+  summary: string;
+  hosting: boolean;
+  /** An approval or plan card shown in place of the key row. */
+  bottom?: React.ReactNode;
+  bottomRows?: number;
+}): React.ReactElement {
   const lines = ticketsPaneLines(props.rows, props.selected);
-  const body = Math.max(1, props.height - 3);
+  const body = viewBodyRows(props.height, props.bottom ? props.bottomRows : 1);
   const at = Math.max(0, lines.findIndex((line) => line.kind === "ticket" && line.selected));
   const start = Math.max(0, Math.min(at - Math.floor(body / 2), lines.length - body));
   const visible = lines.slice(start, start + body);
   return (
-    <Box flexDirection="column" width={props.columns} height={props.height} paddingX={1} overflow="hidden">
-      <SemanticTextLine wrap="truncate" spans={[
-        { text: "Tickets", color: "brand.focus", bold: true },
-        { text: ` · ${props.summary}${props.hosting ? " · host in this TUI" : ""}`, color: "text.muted" }
-      ]} />
-      <SemanticTextLine wrap="truncate" spans={[{ text: "─".repeat(Math.max(0, props.columns - 2)), color: "surface.line" }]} />
-      <Box flexDirection="column" flexGrow={1} overflow="hidden">
-        {visible.map((line, index) => <SemanticTextLine key={`${start + index}`} wrap="truncate" spans={truncateSpans(lineSpans(line), props.columns - 2)} />)}
-      </Box>
-      <SemanticTextLine wrap="truncate" spans={[{ text: "↑↓ select · ⏎ open · s stop · r retry · Esc back · /ticket <request> files one", color: "text.muted" }]} />
-    </Box>
+    <ViewFrame
+      title="Tickets"
+      summary={`${props.summary}${props.hosting ? " · host in this TUI" : ""}`}
+      columns={props.columns}
+      height={props.height}
+      keys="↑↓ select · Enter open · s stop · r retry · Esc back · /ticket <request> files one"
+      bottom={props.bottom}
+      bottomRows={props.bottomRows}
+    >
+      {visible.map((line, index) => <SemanticTextLine key={`${start + index}`} wrap="truncate" spans={truncateSpans(lineSpans(line), props.columns - 2)} />)}
+    </ViewFrame>
   );
 }

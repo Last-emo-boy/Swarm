@@ -7,35 +7,23 @@ const UI_SURFACE_FILES = [
   "src/tui/ChatInputArea.tsx",
   "src/tui/SwarmChatApp.tsx",
   "src/tui/components/ActionLog.tsx",
-  "src/tui/components/ActivityTimeline.tsx",
   "src/tui/components/ApprovalOverlay.tsx",
   "src/tui/components/ConversationFirstPane.tsx",
   "src/tui/components/ConversationFullscreenLayout.tsx",
-  "src/tui/components/ConversationLogo.tsx",
-  "src/tui/components/CurrentActionRow.tsx",
-  "src/tui/components/InspectorPane.tsx",
+  "src/tui/components/ConversationHeader.tsx",
   "src/tui/components/PlanApprovalOverlay.tsx",
-  "src/tui/components/ResultCard.tsx",
-  "src/tui/components/RoleMarker.tsx",
   "src/tui/components/SemanticTextLine.tsx",
   "src/tui/components/StatusIcon.tsx",
-  "src/tui/components/StatusRail.tsx",
-  "src/tui/components/ThemedBox.tsx",
-  "src/tui/components/ThemedText.tsx",
-  "src/tui/components/TonePill.tsx",
+  "src/tui/components/StatusLine.tsx",
+  "src/tui/components/TicketsPane.tsx",
   "src/tui/components/TranscriptRow.tsx",
+  "src/tui/components/ViewFrame.tsx",
   "src/tui/components/VirtualConversationList.tsx"
 ] as const;
 
 const BARE_COLOR_LITERAL = /(?<quote>["'])(?:cyan|gray|yellow|red|green|magenta|blue|white|brightCyan|brightGreen|brightYellow|brightRed|brightMagenta|brightBlue|brightWhite)\k<quote>/gu;
 
 const ALLOWED_BARE_COLOR_CONTEXTS: Record<string, readonly RegExp[]> = {
-  "src/tui/components/CurrentActionRow.tsx": [
-    /color === defaultToneColor\("success"\)/u,
-    /color === defaultToneColor\("pending"\)/u,
-    /color === defaultToneColor\("danger"\)/u,
-    /color === defaultToneColor\("running"\)/u
-  ]
 };
 
 test("TUI UI surfaces use semantic visual tokens instead of bare ANSI colors", () => {

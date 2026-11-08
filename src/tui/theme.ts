@@ -88,11 +88,12 @@ const SWARM_DARK_PROFILE: TuiThemeProfile = {
     pending: "rgb(245,190,80)",
     warning: "rgb(245,190,80)",
     danger: "rgb(255,107,128)",
-    agent: "rgb(212,140,255)",
-    user: "rgb(122,217,122)",
-    tool: "rgb(212,140,255)",
-    gateway: "rgb(130,168,255)",
-    swarm: "rgb(229,191,92)",
+    // Roles are not colours of their own: a user's turn takes the accent, everything else the muted text.
+    agent: "rgb(145,145,145)",
+    user: "rgb(224,151,88)",
+    tool: "rgb(145,145,145)",
+    gateway: "rgb(145,145,145)",
+    swarm: "rgb(145,145,145)",
     surface: "rgb(82,82,82)",
     muted: "rgb(145,145,145)",
     neutral: "rgb(232,232,232)"
@@ -108,11 +109,11 @@ const SWARM_DARK_PROFILE: TuiThemeProfile = {
     "surface.selection": "rgb(38,79,120)",
     "surface.searchMatch": "rgb(92,70,24)",
     "brand.focus": "rgb(224,151,88)",
-    "role.user": "rgb(122,217,122)",
+    "role.user": "rgb(224,151,88)",
     "role.assistant": "rgb(232,232,232)",
-    "role.tool": "rgb(212,140,255)",
-    "role.gateway": "rgb(130,168,255)",
-    "role.swarm": "rgb(229,191,92)",
+    "role.tool": "rgb(145,145,145)",
+    "role.gateway": "rgb(145,145,145)",
+    "role.swarm": "rgb(145,145,145)",
     "status.success": "rgb(104,208,134)",
     "status.running": "rgb(92,200,215)",
     "status.pending": "rgb(245,190,80)",
@@ -122,10 +123,10 @@ const SWARM_DARK_PROFILE: TuiThemeProfile = {
     "diff.removed": "rgb(255,107,128)",
     "diff.added.bg": "rgb(34,92,43)",
     "diff.removed.bg": "rgb(122,41,54)",
-    "service.cache": "rgb(104,208,134)",
-    "service.lsp": "rgb(130,168,255)",
-    "service.gateway": "rgb(130,168,255)",
-    "service.symphony": "rgb(229,191,92)"
+    "service.cache": "rgb(145,145,145)",
+    "service.lsp": "rgb(145,145,145)",
+    "service.gateway": "rgb(145,145,145)",
+    "service.symphony": "rgb(145,145,145)"
   },
   raw: {}
 };
@@ -139,11 +140,11 @@ const SWARM_CONTRAST_PROFILE: TuiThemeProfile = {
     pending: "brightYellow",
     warning: "brightYellow",
     danger: "brightRed",
-    agent: "brightMagenta",
-    user: "brightGreen",
-    tool: "brightMagenta",
-    gateway: "brightBlue",
-    swarm: "brightYellow",
+    agent: "brightWhite",
+    user: "brightYellow",
+    tool: "brightWhite",
+    gateway: "brightWhite",
+    swarm: "brightWhite",
     surface: "brightWhite",
     muted: "brightWhite",
     neutral: "brightWhite"
@@ -159,11 +160,11 @@ const SWARM_CONTRAST_PROFILE: TuiThemeProfile = {
     "surface.selection": "brightBlue",
     "surface.searchMatch": "brightYellow",
     "brand.focus": "brightYellow",
-    "role.user": "brightGreen",
+    "role.user": "brightYellow",
     "role.assistant": "brightWhite",
-    "role.tool": "brightMagenta",
-    "role.gateway": "brightBlue",
-    "role.swarm": "brightYellow",
+    "role.tool": "brightWhite",
+    "role.gateway": "brightWhite",
+    "role.swarm": "brightWhite",
     "status.success": "brightGreen",
     "status.running": "brightCyan",
     "status.pending": "brightYellow",
@@ -173,10 +174,10 @@ const SWARM_CONTRAST_PROFILE: TuiThemeProfile = {
     "diff.removed": "brightRed",
     "diff.added.bg": "green",
     "diff.removed.bg": "red",
-    "service.cache": "brightGreen",
-    "service.lsp": "brightBlue",
-    "service.gateway": "brightBlue",
-    "service.symphony": "brightYellow"
+    "service.cache": "brightWhite",
+    "service.lsp": "brightWhite",
+    "service.gateway": "brightWhite",
+    "service.symphony": "brightWhite"
   },
   raw: {
     cyan: "brightCyan",
@@ -232,17 +233,6 @@ export function resolveTuiThemeProfile(input: string | undefined = process.env.S
     return "swarm-monochrome";
   }
   return "swarm-dark";
-}
-
-// Phase-1 redesign flag: when on, the active-run view renders the new
-// conversation-result-first activity line instead of the dense Swarm Board.
-// Off (default) keeps the current board byte-identical.
-export function resolveNewActiveLayout(input: string | undefined = process.env.SWARM_TUI_NEW_ACTIVE_LAYOUT): boolean {
-  // Phase 2: the conversation-result-first active layout is the default.
-  // Set SWARM_TUI_NEW_ACTIVE_LAYOUT=0 (or off/false) to fall back to the Swarm Board.
-  if (input === undefined) return true;
-  const normalized = input.toLowerCase();
-  return !(normalized === "0" || normalized === "off" || normalized === "false");
 }
 
 export function withTuiThemeProfile<T>(profile: TuiThemeProfileName | string, run: () => T): T {
@@ -394,27 +384,28 @@ export function statusTone(status: string | undefined): TuiTone {
   return "muted";
 }
 
+/** A status as the glyph tool rows use: ✓ done, ○ running, ? waiting, – skipped, ! warning, ✗ failed, · anything else. */
 export function statusBadge(status: string | undefined): string {
   const normalized = (status ?? "info").toLowerCase();
   if (["completed", "complete", "success", "approved", "pass", "passed", "done", "ok"].includes(normalized)) {
-    return "[OK]";
+    return "✓";
   }
   if (["running", "started", "processing", "applied", "thinking", "executing"].includes(normalized)) {
-    return "[RUN]";
+    return "○";
   }
   if (["pending", "queued", "assigned", "waiting", "received", "awaiting approval"].includes(normalized)) {
-    return "[ASK]";
+    return "?";
   }
   if (["skipped", "skip"].includes(normalized)) {
-    return "[SKIP]";
+    return "–";
   }
   if (["partial", "stopped", "blocked", "needs_revision", "warn", "warning"].includes(normalized)) {
-    return "[WARN]";
+    return "!";
   }
   if (["failed", "failure", "error", "denied", "reject", "cancelled"].includes(normalized)) {
-    return "[ERR]";
+    return "✗";
   }
-  return "[--]";
+  return "·";
 }
 
 export function statusMarker(status: string | undefined): string {
@@ -569,8 +560,9 @@ export function compactValue(value: string | undefined, maxLength: number): stri
   return `${input.slice(0, maxLength - 3)}...`;
 }
 
+/** A section's title as it is written, in sentence case: titles are not shouted. */
 export function sectionLabel(label: string): string {
-  return label.toUpperCase();
+  return label;
 }
 
 export function compactId(value: string | undefined, maxLength = 10): string {

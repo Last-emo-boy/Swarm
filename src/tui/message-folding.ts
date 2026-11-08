@@ -1,6 +1,8 @@
 import {
   conversationMessageFoldKey,
+  conversationRenderPlan,
   isFoldableConversationMessage,
+  toolGroupFoldKey,
   type ConversationMessage
 } from "./conversation-layout.js";
 
@@ -39,7 +41,7 @@ export function messageCursorReducer(
   action: MessageCursorAction,
   messages: readonly ConversationMessage[]
 ): MessageCursorState {
-  const candidates = selectableMessageIndexes(messages);
+  const candidates = selectableMessageIndexes(messages, state.expandedKeys);
   if (candidates.length === 0) {
     return { expandedKeys: new Set(state.expandedKeys) };
   }
@@ -67,6 +69,19 @@ export function messageCursorReducer(
   if (action.type === "toggle" || action.type === "open") {
     const selectedIndex = current;
     const message = messages[selectedIndex];
+    // The first row of a settled group of tool calls folds and unfolds the whole group.
+    const group = message && conversationRenderPlan(messages, { expandedMessageKeys: state.expandedKeys })
+      .some((entry) => entry.kind === "group" && entry.first === selectedIndex);
+    if (message && group) {
+      const key = toolGroupFoldKey(message, selectedIndex);
+      const expandedKeys = new Set(state.expandedKeys);
+      if (action.type === "toggle" && expandedKeys.has(key)) {
+        expandedKeys.delete(key);
+      } else {
+        expandedKeys.add(key);
+      }
+      return { selectedIndex, expandedKeys };
+    }
     if (!message || !isFoldableConversationMessage(message)) {
       return {
         ...state,
@@ -90,7 +105,7 @@ export function selectedConversationMessage(
   state: MessageCursorState,
   messages: readonly ConversationMessage[]
 ): { index: number; message: ConversationMessage } | undefined {
-  const candidates = selectableMessageIndexes(messages);
+  const candidates = selectableMessageIndexes(messages, state.expandedKeys);
   if (candidates.length === 0) {
     return undefined;
   }
@@ -99,11 +114,10 @@ export function selectedConversationMessage(
   return message ? { index, message } : undefined;
 }
 
-export function selectableMessageIndexes(messages: readonly ConversationMessage[]): number[] {
-  return messages
-    .map((message, index) => ({ message, index }))
-    .filter(({ message }) => message.kind !== "logo")
-    .map(({ index }) => index);
+/** The rows that can be selected: every shown message, and the first row of a folded group of tool calls. */
+export function selectableMessageIndexes(messages: readonly ConversationMessage[], expandedKeys?: ReadonlySet<string>): number[] {
+  return conversationRenderPlan(messages, { expandedMessageKeys: expandedKeys }).flatMap((entry) =>
+    entry.kind === "message" ? [entry.index] : entry.expanded ? entry.indices : [entry.first]);
 }
 
 export function priorityConversationMessageReason(

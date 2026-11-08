@@ -31,8 +31,8 @@ import { buildSessionWorkBoard, buildWorkspaceWorkBoard, formatWorkBoard, isWork
 import { buildLatestRunDiagnosis } from "../runtime/latest-diagnosis.js";
 import { buildProtocolDebugTimeline, formatProtocolDebugTimeline, type ProtocolTimelineCategory, type ProtocolTimelineFilter } from "../runtime/protocol-debug-timeline.js";
 import type { RunMode, RunSandboxMode } from "../runtime/execution-router.js";
-import type { ExecutionResult, PlannedSession } from "../runtime/orchestrator.js";
-import { buildResultCardFromSnapshot, type ResultCard as RuntimeResultCard } from "../runtime/result-card.js";
+import type { PlannedSession } from "../runtime/orchestrator.js";
+import { type ResultCard as RuntimeResultCard } from "../runtime/result-card.js";
 import { formatPromptCacheBrief, formatPromptCacheDetailWithTrend } from "../runtime/prompt-cache-status.js";
 import type { PromptCacheRuntimeStatus } from "../runtime/prompt-cache-status.js";
 import { formatToolFailureContent } from "../runtime/coding-agent-loop.js";
@@ -48,7 +48,7 @@ import { createToolApprovalRequest, decideToolPermission } from "../tools/permis
 import type { ToolApprovalRequest, ToolResult } from "../tools/types.js";
 import type { PermissionMode } from "../config/settings.js";
 import { readTaskOutput, writeTaskOutput } from "../storage/task-output-store.js";
-import type { BlackboardEntry, GeneratedPlan, RunAttempt, SwarmSession, WorkItem, WorkspaceLease } from "../protocol/types.js";
+import type { BlackboardEntry, GeneratedPlan, RunAttempt, WorkItem, WorkspaceLease } from "../protocol/types.js";
 import { workerDisplayLabel, type WorkerRecord } from "../storage/worker-state-store.js";
 import type { HandoffSessionRecord } from "../storage/handoff-store.js";
 import { buildDoctorReport } from "../doctor/report.js";
@@ -60,7 +60,7 @@ import { runSymphonyTick, type SymphonyTickResult } from "../symphony/scheduler.
 import { workItemLabel } from "../symphony/work-item.js";
 import { loadWorkflow, normalizeWorkflowConfig, type WorkflowLoadResult } from "../symphony/workflow.js";
 import { createWorkSourceFromConfig } from "../symphony/work-source.js";
-import { mainPaneLabels, mainPaneOrder, mainPaneShortLabels, type MainPaneId } from "./main-panes.js";
+import { mainPaneLabels, mainPaneOrder, type MainPaneId } from "./main-panes.js";
 import { applySandboxModeCommand, buildSandboxReport } from "./sandbox-control.js";
 import {
   commandOutputPreview,
@@ -73,7 +73,7 @@ import {
 } from "./slash-commands.js";
 import { buildResumeCommandResult, decideResumeExecution } from "./resume-control.js";
 import { ChatCommandCandidates, ChatInputArea, emptyChatCompletionState, type ChatCompletionState, type ChatInputTelemetryEvent } from "./ChatInputArea.js";
-import { createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
+import { applyChatInputKey, createChatInputControllerState, type ChatInputControllerState } from "./chat-input-controller.js";
 import {
   emptyIdlePaneSnapshot,
   idlePaneSnapshotSignature,
@@ -86,32 +86,27 @@ import { editOnboardFieldInput } from "./onboard-input.js";
 import { messageToActionRow, renderActionRowDetail, runtimeEventToActionRow, type TuiActionRow } from "./action-log.js";
 import { applyTaskAttemptToTuiState, applyWorkRecordToTuiState, summarizeTaskWritePolicies, type TuiTaskState, type TuiWorkState } from "./work-state.js";
 import { ActionLog } from "./components/ActionLog.js";
-import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature, sameRuntimeEventDisplay } from "./tui-event-buffer.js";
-import { ActivityTimeline } from "./components/ActivityTimeline.js";
-import { ApprovalOverlay, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
-import { CurrentActionRow } from "./components/CurrentActionRow.js";
-import { InspectorPane } from "./components/InspectorPane.js";
+import { appendTuiLoopActivity, appendTuiRuntimeEvent, runtimeEventDisplaySignature } from "./tui-event-buffer.js";
+import { ApprovalOverlay, approvalCardRows, approvalExpandedRows, type ApprovalOverlayDecision } from "./components/ApprovalOverlay.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
-import { StatusRail } from "./components/StatusRail.js";
 import { ConversationFirstPane } from "./components/ConversationFirstPane.js";
-import { ConversationBottomChrome, ConversationFullscreenLayout, ConversationResultLine, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
+import { ConversationFullscreenLayout, ConversationStatusLine } from "./components/ConversationFullscreenLayout.js";
 import { ConversationHeader } from "./components/ConversationHeader.js";
-import { NeedsYouStrip } from "./components/NeedsYouStrip.js";
-import { BudgetStrip, budgetNoticeRows } from "./components/BudgetStrip.js";
-import { reachedBudgetNotices, usageView } from "./usage-view.js";
+import type { SemanticTextSpan } from "./components/SemanticTextLine.js";
+import { StatusLine } from "./components/StatusLine.js";
+import { buildStatusLine, type StatusItemId } from "./status-line.js";
+import { usageStatus, usageView } from "./usage-view.js";
 import { TicketsPane } from "./components/TicketsPane.js";
+import { ViewFrame, viewBodyRows } from "./components/ViewFrame.js";
 import { TuiTickets, type TicketSnapshot } from "./tickets/controller.js";
 import { runTicketCommand } from "./tickets/commands.js";
 import { TuiMesh } from "./mesh-commands.js";
-import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPillValue, rowHandle } from "./tickets/view-model.js";
+import { paneOrder, ticketDetailText, ticketsPillValue, rowHandle } from "./tickets/view-model.js";
 import {
   compactValue,
   policyBadge,
   policyTone,
-  progressBar,
   routeBadge,
-  sandboxBadge,
-  sandboxTone,
   sectionLabel,
   resolveTuiColor,
   statusBadge,
@@ -122,15 +117,15 @@ import {
   type TuiResolvedColor,
   type TuiTone
 } from "./theme.js";
-import { formatExecutionResultDisplay } from "./result-display.js";
+import { answerFooter, formatExecutionResultDisplay } from "./result-display.js";
 import {
   appendTranscriptMessage,
-  createStartupLogoMessage,
-  runtimeEventTranscriptMessage,
+  applyRuntimeEventToTranscript,
   slashCommandTranscriptMessage,
   slashToolUseTranscriptMessage
 } from "./conversation-transcript.js";
 import {
+  conversationBottomStatusRows,
   conversationPromptRows,
   conversationBottomRows as conversationBottomRowsForTerminal,
   conversationInputCapacity,
@@ -141,12 +136,10 @@ import {
   detailTitleForSource,
   detailOpenTargetForPane,
   fullscreenConversationRows,
-  inlineInspectorTargetForPane,
   resetConversationViewport,
   shouldOpenDetailFromInput,
   tuiFocusTransitionForInput,
   resolveTuiDensity,
-  tuiScreenMode,
   type TuiDensity,
   type TuiDensityPreference,
   type ConversationViewportState,
@@ -164,15 +157,6 @@ import { mcpSettingsSnapshot } from "../extensions/mcp-report.js";
 import { skillSettingsSnapshot } from "../extensions/skill-report.js";
 import { getGlobalLspManager, type LspStatusReport } from "../lsp/manager.js";
 import { lspHealthStatusFromReport, lspStatusSummaryFromReport } from "./lsp-status.js";
-import {
-  buildFooterPills,
-  createFooterNavigationState,
-  footerNavigationReducer,
-  selectedFooterPill,
-  type FooterNavigationState,
-  type FooterPill,
-  type FooterPillId
-} from "./footer-navigation.js";
 import { formatServiceStatusSection } from "./status-surface.js";
 import {
   buildSwarmSurfaceProjection,
@@ -189,29 +173,18 @@ import {
   currentTranscriptSearchMatch,
   refreshTranscriptSearch,
   stepTranscriptSearch,
-  transcriptSearchSummary,
   updateTranscriptSearch,
   type TranscriptSearchState
 } from "./transcript-search.js";
-import { appendDetailShortcut, detailOpenHint, transcriptSearchHint } from "./shortcuts.js";
+import { appendDetailShortcut, KEYS_VIEW } from "./shortcuts.js";
 import {
   createMessageCursorState,
   messageCursorReducer,
+  selectableMessageIndexes,
   selectedConversationMessage,
   type MessageCursorState
 } from "./message-folding.js";
-import { createInitialRunBoardState, reduceRunBoardActions } from "./run-board/run-board-reducer.js";
-import { runBoardActionsFromRuntimeEvent } from "./run-board/runtime-event-to-run-board.js";
-import { selectDebugRefsForRow, selectRunBoardSurface } from "./run-board/run-board-selectors.js";
-import { selectProductResultCardView } from "./run-board/product-result-card-selectors.js";
-import { runBoardAttentionActionForKey } from "./run-board/attention-key-routing.js";
-import { RunBoardSurface } from "./run-board/RunBoardSurface.js";
-import { RunStatusLine } from "./run-board/RunStatusLine.js";
-import { ActivityRail } from "./run-board/ActivityRail.js";
-import { resolveNewActiveLayout } from "./theme.js";
-import { ProductResultCard } from "./run-board/ProductResultCard.js";
-import { formatElapsed } from "./run-board/run-board-row-format.js";
-import type { AttentionAction, AttentionItemView, RunBoardPhase, RunBoardResultAction, RunBoardState, WorkerBoardRow } from "./run-board/run-board-types.js";
+import { displayWidth } from "./display-width.js";
 
 type ChatMessage = ConversationMessage;
 
@@ -329,16 +302,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const startupReadiness = useMemo(() => new OpenAIProvider().readiness(), []);
   const needsOnboarding = forceOnboarding || startupReadiness.some((item) => !item.configured);
   const initialProblem = startupReadiness.find((item) => !item.configured);
-  const initialSystemBrief = needsOnboarding
-    ? `Provider setup required.${initialProblem?.role ? ` ${initialProblem.role}: ${initialProblem.reason}` : ""}`
-    : "Swarm chat ready. Enter an objective.";
-  const initialSystemMessage: ChatMessage = needsOnboarding
-    ? { role: "system", brief: initialSystemBrief }
-    : createStartupLogoMessage({
-      version: "0.1.0",
-      cwd: process.cwd(),
-      model: settingsSnapshot.models.worker || settingsSnapshot.models.planner || settingsSnapshot.models.defaultProvider || "model not configured"
-    });
+  // A new conversation is empty, and shows how to start; only missing provider setup is said up front.
+  const initialMessages: ChatMessage[] = needsOnboarding
+    ? [{ role: "system", brief: `Provider setup required.${initialProblem?.role ? ` ${initialProblem.role}: ${initialProblem.reason}` : ""}` }]
+    : [];
   const approvalResolver = useRef<((approved: boolean) => void) | undefined>();
   const sessionApprovalAllow = useRef<Set<string>>(new Set());
   const chatSessionId = useRef(createChatSessionId());
@@ -346,9 +313,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [approval, setApproval] = useState<ToolApprovalRequest | undefined>();
   const [runtime, setRuntime] = useState<SwarmRuntime | undefined>(() => (needsOnboarding ? undefined : createRuntime()));
   const runtimeRef = useRef<SwarmRuntime | undefined>(runtime);
-  const [messages, setMessages] = useState<ChatMessage[]>([initialSystemMessage]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
-  const [actionLogRows, setActionLogRows] = useState<TuiActionRow[]>(() => [messageToActionRow(initialSystemMessage, 0)]);
+  const [actionLogRows, setActionLogRows] = useState<TuiActionRow[]>(() => initialMessages.map((message, index) => messageToActionRow(message, index)));
   const [pendingPlan, setPendingPlan] = useState<PlannedSession | undefined>();
   const [busy, setBusy] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -365,7 +332,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const taskTotal = taskWorkState.taskTotal;
   const taskCompleted = taskWorkState.taskCompleted;
   const [toolResults, setToolResults] = useState<ToolResultState[]>([]);
-  const [loopActivity, setLoopActivity] = useState<LoopActivityState | undefined>();
   const [loopActivityTimeline, setLoopActivityTimeline] = useState<LoopActivityState[]>([]);
   const [workers, setWorkers] = useState<Map<string, WorkerRecord>>(new Map());
   const [handoffs, setHandoffs] = useState<Map<string, HandoffSessionRecord>>(new Map());
@@ -374,7 +340,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const [lastSessionId, setLastSessionId] = useState<string | undefined>();
   const [lastRoute, setLastRoute] = useState<RouteState | undefined>();
   const [latestResultCard, setLatestResultCard] = useState<RuntimeResultCard | undefined>();
-  const [runBoardState, setRunBoardState] = useState<RunBoardState>(() => createInitialRunBoardState());
   const [runMode, setRunMode] = useState<RunMode>("auto");
   const [runSandboxMode, setRunSandboxMode] = useState<RunSandboxMode>("workspace-write");
   const [tuiDensity, setTuiDensity] = useState<TuiDensityPreference>("auto");
@@ -388,7 +353,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const idlePaneSnapshotSignatureRef = useRef(idlePaneSnapshotSignature(idlePaneSnapshot));
   const [completionRows, setCompletionRows] = useState(0);
   const [chatCompletion, setChatCompletion] = useState<ChatCompletionState>(() => emptyChatCompletionState());
-  const [footerNavigation, setFooterNavigation] = useState<FooterNavigationState>(() => createFooterNavigationState());
+  const [approvalExpanded, setApprovalExpanded] = useState(false);
+  // Where keys go in the conversation: the prompt types, the transcript picks and folds rows (Esc on an empty prompt).
+  const [transcriptFocus, setTranscriptFocus] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
   const [transcriptSearch, setTranscriptSearch] = useState<TranscriptSearchState>(() => createTranscriptSearchState());
   const [messageCursor, setMessageCursor] = useState<MessageCursorState>(() => createMessageCursorState());
   const symphonyDaemonRecordsSignatureRef = useRef(symphonyDaemonRecordsSignature(symphonyDaemons));
@@ -401,15 +369,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   const meshRef = useRef<TuiMesh | undefined>(undefined);
   const [ticketSnapshot, setTicketSnapshot] = useState<TicketSnapshot | undefined>(undefined);
   const ticketSignatureRef = useRef("");
-  const [budgetNotices, setBudgetNotices] = useState<string[]>([]);
-  const budgetSignatureRef = useRef("");
+  const [usageLine, setUsageLine] = useState<ReturnType<typeof usageStatus>>({ budgetsReached: [] });
+  const usageSignatureRef = useRef("");
   const busySinceRef = useRef<number | undefined>(undefined);
   const [ticketSelection, setTicketSelection] = useState(0);
 
   const terminalRows = stdoutRows || 32;
   const terminalColumns = stdoutColumns || 100;
   const screenDensity = resolveTuiDensity({ density: tuiDensity, pane: mainPane, columns: terminalColumns });
-  const detailHeight = Math.max(12, terminalRows - 6);
+  const detailHeight = viewBodyRows(terminalRows);
   const actionLogPageRows = Math.max(4, terminalRows - 12 - completionRows);
   const shouldAnimate = !detailOpen && !onboard.enabled && (busy || Boolean(approval) || Boolean(pendingPlan));
   const extensionCommandCandidates = runtime
@@ -418,13 +386,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       ...pluginSlashCommandCandidates(runtime.listPlugins())
     ]
     : [];
-  const lspHealthStatus = lspHealthStatusFromReport(lspStatusReport);
-  const mcpRuntimeSummary = runtime
-    ? summarizeMcpCatalog(runtime.listMcpServers(), mcpSettingsSnapshot(runtime)).runtime
-    : undefined;
-  const skillRuntimeSummary = runtime
-    ? summarizeSkillCatalog(runtime.listSkills(), skillSettingsSnapshot(runtime)).runtime
-    : undefined;
   runtimeRef.current = runtime;
 
   function refreshSettingsSurface(targetRuntime = runtime): ReturnType<typeof loadSwarmSettings> {
@@ -458,20 +419,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       // each setState would drive the whole render pipeline independently.
       batch(() => {
       setEvents((previous) => appendTuiRuntimeEvent(previous, event));
-      setRunBoardState((previous) => {
-        const workerId = runBoardWorkerIdFromRuntimeEvent(event);
-        const withResolvedSlow = workerId
-          ? reduceRunBoardActions(previous, [{
-              type: "attention/archive-derived-slow",
-              at: eventTimestampForRunBoard(event),
-              workerIds: [workerId],
-              resolution: "Worker produced new evidence after the slow period."
-            }])
-          : previous;
-        return reduceRunBoardActions(withResolvedSlow, runBoardActionsFromRuntimeEvent(event, {
-          latestResultCard
-        }));
-      });
       appendRuntimeLogEvent(event);
       appendRuntimeTranscriptEvent(event);
       const work = buildWorkRecordFromRuntimeEvent(event, new Date().toISOString());
@@ -488,7 +435,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
           : { ...previous, taskCompleted: event.completed, taskTotal: event.total });
       }
       if (event.type === "loop_activity") {
-        setLoopActivity((previous) => sameRuntimeEventDisplay(previous, event) ? previous : event);
         setLoopActivityTimeline((previous) => appendTuiLoopActivity(previous, event, LOOP_ACTIVITY_TIMELINE_LIMIT));
       }
       if (event.type === "controller") {
@@ -522,10 +468,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setLastSessionId(event.session_id);
         setTaskWorkState({ taskStates: new Map(), taskTotal: event.plan.tasks.length, taskCompleted: 0 });
         setToolResults([]);
-        setRunBoardState((previous) => reduceRunBoardActions(previous, [
-          { type: "run/reset", runId: event.session_id, at: new Date().toISOString() },
-          ...runBoardActionsFromRuntimeEvent(event)
-        ]));
       }
       if (event.type === "final") {
         setLastSessionId(event.session_id);
@@ -584,20 +526,26 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     busySinceRef.current = busy ? Date.now() : undefined;
   }, [busy]);
 
-  // Reached budgets: read when a run starts or ends and every 15 seconds, with the settings as they are now.
+  // Each approval card opens folded; `?` unfolds that one only.
+  useEffect(() => {
+    setApprovalExpanded(false);
+  }, [approval]);
+
+  // Reached budgets and today's spend for the status line: read when a run starts or ends and every 15 seconds, with
+  // the settings as they are now.
   useEffect(() => {
     if (!runtime) return;
     const refresh = () => {
-      let notices: string[] = [];
+      let next: ReturnType<typeof usageStatus> = { budgetsReached: [] };
       try {
-        notices = reachedBudgetNotices(loadSwarmSettings(runtime.workspaceRoot()), runtime.database.db);
+        next = usageStatus(loadSwarmSettings(runtime.workspaceRoot()), runtime.database.db);
       } catch (error) {
-        runtime.debug?.warn("usage", `budget notice read failed: ${error instanceof Error ? error.message : String(error)}`);
+        runtime.debug?.warn("usage", `usage status read failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const signature = JSON.stringify(notices);
-      if (signature !== budgetSignatureRef.current) {
-        budgetSignatureRef.current = signature;
-        setBudgetNotices(notices);
+      const signature = JSON.stringify(next);
+      if (signature !== usageSignatureRef.current) {
+        usageSignatureRef.current = signature;
+        setUsageLine(next);
       }
     };
     refresh();
@@ -739,6 +687,28 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     });
   }
 
+  /**
+   * Keys every full-screen view shares: Esc or q back to the conversation (the tickets view handles its own), and / back
+   * to the conversation with a command started.
+   */
+  function handleViewInput(character: string | undefined, key: { ctrl?: boolean; meta?: boolean; escape?: boolean }): boolean {
+    if (mainPane === "chat" || onboard.enabled || key.ctrl || key.meta) {
+      return false;
+    }
+    if (character === "/") {
+      chatInputState.current = applyChatInputKey(chatInputState.current, "/", {}).state;
+      setMainPane("chat");
+      setConversationViewport(resetConversationViewport());
+      return true;
+    }
+    if (mainPane !== "tickets" && (key.escape || character === "q")) {
+      setMainPane("chat");
+      setConversationViewport(resetConversationViewport());
+      return true;
+    }
+    return false;
+  }
+
   /** The tickets pane's keys: select, open, stop, retry, and back to the conversation. */
   function handleTicketsPaneInput(character: string | undefined, key: { upArrow?: boolean; downArrow?: boolean; return?: boolean; escape?: boolean; ctrl?: boolean }): boolean {
     if (key.ctrl) return false;
@@ -814,12 +784,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     });
   }
 
-  function replaceChatTranscript(message: ChatMessage): void {
-    setMessages([message]);
+  function replaceChatTranscript(next: ChatMessage[]): void {
+    setMessages(next);
     setConversationViewport(resetConversationViewport());
     setTranscriptSearch(createTranscriptSearchState());
     setMessageCursor(createMessageCursorState());
-    setActionLogRows([messageToActionRow(message, 0)]);
+    setActionLogRows(next.map((message, index) => messageToActionRow(message, index)));
     setActionLogScrollOffset(0);
     lastActionLogEventSignatureRef.current = undefined;
   }
@@ -833,12 +803,24 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setActionLogRows((previous) => [...previous, runtimeEventToActionRow(event, previous.length)]);
   }
 
+  /** A tool call or subagent adds its row once and updates it in place; other events leave the transcript as it is. */
   function appendRuntimeTranscriptEvent(event: RuntimeEvent): void {
-    const message = runtimeEventTranscriptMessage(event);
-    if (!message) {
-      return;
-    }
-    appendChatTranscriptMessage(message, { preserveSearch: true });
+    setMessages((previous) => {
+      const next = applyRuntimeEventToTranscript(previous, event);
+      if (next === previous) {
+        return previous;
+      }
+      if (next.length > previous.length) {
+        setConversationViewport((state) => conversationViewportAfterAppend({
+          state,
+          message: next.at(-1)!,
+          messageIndex: previous.length,
+          columns: conversationTextColumns()
+        }));
+      }
+      setTranscriptSearch((state) => refreshTranscriptSearch(state, buildTranscriptSearchIndex(next)));
+      return next;
+    });
   }
 
   function emitTuiFocusTransition(
@@ -926,24 +908,40 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setDetailOpen(false);
         return;
       }
+      // An approval that arrives while the detail is open shows at its foot and takes its keys there.
+      if (approval && handleApprovalInput(character, key)) {
+        return;
+      }
       handleDetailInput(key);
       return;
     }
 
-    if (mainPane === "tickets" && !onboard.enabled && handleTicketsPaneInput(character, key)) {
+    if (keysOpen) {
+      if (key.escape || character === "q" || character === "?" || (key.ctrl && character === "c")) {
+        setKeysOpen(false);
+        return;
+      }
+      if (approval) {
+        handleApprovalInput(character, key);
+      }
       return;
     }
 
-    if (handleRunBoardAttentionKey(character, key)) {
-      return;
-    }
-
-    if (key.ctrl && (character === "r" || character === "R") && busy && resolveNewActiveLayout()) {
+    if (key.ctrl && (character === "r" || character === "R") && busy) {
       setShowActivityRail((prev) => !prev);
       return;
     }
 
-    if (approval && handleApprovalInput(character, key)) {
+    // In a view Esc goes back to the conversation, so it never denies an approval by accident.
+    if (approval && !(mainPane !== "chat" && key.escape) && handleApprovalInput(character, key)) {
+      return;
+    }
+
+    if (handleViewInput(character, key)) {
+      return;
+    }
+
+    if (mainPane === "tickets" && !onboard.enabled && handleTicketsPaneInput(character, key)) {
       return;
     }
 
@@ -971,6 +969,15 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       }
       logTuiExitTelemetry("exit");
       exit();
+      return;
+    }
+
+    if (mainPane === "chat" && key.ctrl && (character === "f" || character === "F")) {
+      openTranscriptSearch();
+      return;
+    }
+
+    if (handleChatFocusInput(character, key)) {
       return;
     }
 
@@ -1034,14 +1041,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return;
     }
 
-    if (handleFooterNavigationInput(character, key)) {
-      return;
-    }
-
-    if (handleMessageCursorInput(character, key)) {
-      return;
-    }
-
     if (handleConversationScrollInput(character, key)) {
       return;
     }
@@ -1076,7 +1075,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
 
     setBusy(true);
-    setLoopActivity(undefined);
     setLoopActivityTimeline([]);
     setLatestResultCard(undefined);
     appendChatMessage({ role: "user", brief: objective });
@@ -1085,13 +1083,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode, tuiChatSessionId: chatSessionId.current });
       const display = formatExecutionResultDisplay(result, runtime);
       setLatestResultCard(result.result_card);
-      recordRunBoardResultCard(result.result_card);
       recordAiDetail(display.detail);
       appendChatMessage({
         role: "assistant",
         brief: display.brief,
         detail: display.detail,
-        preview: display.preview
+        preview: display.preview,
+        footer: answerFooter(result.result_card)
       });
     } catch (error) {
       pushError(error);
@@ -1107,7 +1105,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     const planned = pendingPlan;
     setPendingPlan(undefined);
     setBusy(true);
-    setLoopActivity(undefined);
     setLoopActivityTimeline([]);
     setLatestResultCard(undefined);
     appendChatMessage({ role: "system", brief: "Executing approved swarm plan." });
@@ -1115,13 +1112,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       const result = await runtime.execute(planned);
       const display = formatExecutionResultDisplay(result, runtime);
       setLatestResultCard(result.result_card);
-      recordRunBoardResultCard(result.result_card);
       recordAiDetail(display.detail);
       appendChatMessage({
         role: "assistant",
         brief: display.brief,
         detail: display.detail,
-        preview: display.preview
+        preview: display.preview,
+        footer: answerFooter(result.result_card)
       });
     } catch (error) {
       pushError(error);
@@ -1129,8 +1126,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       setBusy(false);
       setTaskWorkState({ taskStates: new Map(), taskTotal: 0, taskCompleted: 0 });
       setToolResults([]);
-      setLoopActivity(undefined);
-      setLoopActivityTimeline([]);
+        setLoopActivityTimeline([]);
     }
   }
 
@@ -1149,22 +1145,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     setLatestDetailSource("ai");
     setDetailScroll(0);
     setDetailOpen(false);
-  }
-
-  function recordRunBoardResultCard(card: RuntimeResultCard | undefined): void {
-    if (!card) {
-      return;
-    }
-    const at = new Date().toISOString();
-    setRunBoardState((previous) => reduceRunBoardActions(previous, [{
-      type: "attention/archive-derived-slow",
-      at,
-      resolution: "Run completed after the slow period."
-    }, {
-      type: "result/final",
-      card,
-      at
-    }]));
   }
 
   function recordCommandDetail(detail: string, open = false): void {
@@ -1241,104 +1221,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (fullscreen) {
       setDetailOpen(true);
     }
-  }
-
-  function openRunBoardWorkerDetail(row: WorkerBoardRow): void {
-    const refs = selectDebugRefsForRow(runBoardState, row.id);
-    const lines = [
-      `${row.label} ${row.status}`,
-      "",
-      `Action: ${row.currentAction}`,
-      `Age: ${formatElapsed(row.elapsedMs)}`,
-      `Risk: ${row.risk}`,
-      row.waitingOn ? `Waiting on: ${row.waitingOn}` : undefined,
-      row.lastEvidence ? `Evidence: ${row.lastEvidence}` : undefined,
-      row.owns.length ? `Owns: ${row.owns.join(", ")}` : undefined,
-      refs.length ? "" : undefined,
-      refs.length ? "Debug refs:" : undefined,
-      ...refs.map((ref) => `  ${ref}`)
-    ].filter((line): line is string => line !== undefined);
-    setLatestDetail(lines.join("\n"));
-    setLatestDetailSource("event");
-    setDetailScroll(0);
-    setDetailOpen(true);
-  }
-
-  function executeRunBoardAttentionAction(item: AttentionItemView, action: AttentionAction): void {
-    if (action.enabled === false) {
-      return;
-    }
-    if (action.command) {
-      void handleSlashCommand(action.command);
-      return;
-    }
-    if (item.kind === "approval" && approval) {
-      if (action.key === "y") {
-        resolveApprovalDecision({ approved: true, rememberForSession: false });
-        return;
-      }
-      if (action.key === "n") {
-        resolveApprovalDecision({ approved: false, rememberForSession: false });
-        return;
-      }
-    }
-    const detail = [
-      item.title,
-      "",
-      item.summary,
-      "",
-      `Recommendation: ${item.recommendation}`,
-      ...item.evidence.map((evidence) => `Evidence: ${evidence}`)
-    ].join("\n");
-    recordEventDetail(detail);
-    setDetailOpen(true);
-  }
-
-  function handleRunBoardAttentionAction(item: AttentionItemView, action: AttentionAction): void {
-    executeRunBoardAttentionAction(item, action);
-  }
-
-  function handleRunBoardAttentionKey(character: string | undefined, key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean }): boolean {
-    if (onboard.enabled) {
-      return false;
-    }
-    if (key.ctrl || key.meta || key.return || key.escape) {
-      return false;
-    }
-    if (chatInputState.current.input.value.length > 0) {
-      return false;
-    }
-    // Resolve the route from early-declared state only: `routeLabel` is a const
-    // defined far later in the component body and is in the temporal dead zone
-    // when this input handler fires during an early-return render (onboarding /
-    // no-model), which previously crashed on the first keypress.
-    const mode = latestResultCard?.route ?? lastRoute?.mode ?? (runMode === "chat" ? "ask" : runMode === "full_swarm" ? "team" : "work");
-    const item = selectRunBoardSurface(runBoardState, {
-      now: new Date().toISOString(),
-      repo: "Swarm",
-      mode,
-      risk: runSandboxMode,
-      session: latestResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
-    }).attention[0];
-    const action = runBoardAttentionActionForKey(item, character, key);
-    if (!action) {
-      return false;
-    }
-    executeRunBoardAttentionAction(item, action);
-    return true;
-  }
-
-  function handleRunBoardResultAction(action: RunBoardResultAction): void {
-    if (action.command.startsWith("/")) {
-      void handleSlashCommand(action.command);
-      return;
-    }
-    recordEventDetail([
-      `Next action: ${action.label}`,
-      "",
-      action.command
-    ].join("\n"));
-    setDetailOpen(true);
   }
 
   function handleActionLogInput(character: string | undefined, key: { ctrl?: boolean; pageUp?: boolean; pageDown?: boolean; upArrow?: boolean; downArrow?: boolean; return?: boolean }): boolean {
@@ -1420,56 +1302,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return true;
   }
 
-  function handleFooterNavigationInput(
-    character: string | undefined,
-    key: { ctrl?: boolean; leftArrow?: boolean; rightArrow?: boolean; return?: boolean; escape?: boolean; tab?: boolean }
-  ): boolean {
-    if (mainPane !== "chat" || footerItems.length === 0) {
-      return false;
-    }
-    if (chatInputState.current.input.value.length > 0) {
-      return false;
-    }
-    const normalized = normalizeActionLogControlCharacter(character);
-    if (key.escape) {
-      setFooterNavigation((state) => footerNavigationReducer(state, { type: "clear" }, footerItems));
-      return true;
-    }
-    if (key.leftArrow || (key.ctrl && normalized === "p")) {
-      setFooterNavigation((state) => footerNavigationReducer(state, { type: "previous" }, footerItems));
-      return true;
-    }
-    if (key.rightArrow || key.tab || (key.ctrl && normalized === "n")) {
-      setFooterNavigation((state) => footerNavigationReducer(state, { type: "next" }, footerItems));
-      return true;
-    }
-    const detailIntent = detailOpenInputIntent({ character, key });
-    if (shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: Boolean(selectedFooterPill(footerNavigation, footerItems)) })) {
-      const id = selectedFooterPill(footerNavigation, footerItems)?.id;
-      if (id) {
-        emitTuiFocusTransition(
-          focusDecisionForInput(character, key, { focusBefore: "footer", hasFocusedTarget: true }),
-          tuiKeyEventForInput(character, key),
-          `footer:${id}`
-        );
-        void openFooterDetail(id);
-        return true;
-      }
-    }
-    return false;
-  }
-
   function handleTranscriptSearchInput(
     character: string | undefined,
     key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; backspace?: boolean; delete?: boolean; upArrow?: boolean; downArrow?: boolean }
   ): boolean {
     const normalized = normalizeActionLogControlCharacter(character);
     if (!transcriptSearch.active) {
-      if (character === "/" && chatInputState.current.input.value.length === 0) {
-        const index = buildTranscriptSearchIndex(messages);
-        setTranscriptSearch(updateTranscriptSearch(createTranscriptSearchState(), index, ""));
-        return true;
-      }
       return false;
     }
     const index = buildTranscriptSearchIndex(messages);
@@ -1482,6 +1320,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       if (match) {
         jumpToConversationMessage(match.messageIndex);
         setMessageCursor((state) => messageCursorReducer(state, { type: "select", index: match.messageIndex }, messages));
+        setTranscriptFocus(true);
       }
       setTranscriptSearch((state) => closeTranscriptSearch(state));
       return true;
@@ -1505,37 +1344,112 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return true;
   }
 
-  function handleMessageCursorInput(
+  /** Opens transcript search (Ctrl+F, / in the transcript, /search), with a query when one is given. */
+  function openTranscriptSearch(query = ""): void {
+    setTranscriptSearch(updateTranscriptSearch(createTranscriptSearchState(), buildTranscriptSearchIndex(messages), query));
+  }
+
+  /**
+   * The conversation's two places for keys. The prompt types; on an empty prompt ? shows the keys and Esc moves to the
+   * transcript, selecting its last row. There ↑↓ or j/k pick a row, Enter or x folds and unfolds it, o or Ctrl+O opens
+   * its detail, / searches, ? shows the keys, and Esc or typing goes back to the prompt (what is typed lands there).
+   */
+  function handleChatFocusInput(
     character: string | undefined,
-    key: { ctrl?: boolean; return?: boolean }
+    key: { ctrl?: boolean; meta?: boolean; return?: boolean; escape?: boolean; upArrow?: boolean; downArrow?: boolean; pageUp?: boolean; pageDown?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean }
   ): boolean {
-    if (mainPane !== "chat" || chatInputState.current.input.value.length > 0) {
+    if (mainPane !== "chat" || transcriptSearch.active || approval || pendingPlan) {
       return false;
     }
-    const normalized = normalizeActionLogControlCharacter(character);
-    if (normalized === "[") {
-      setMessageCursor((state) => messageCursorReducer(state, { type: "previous" }, messages));
+    const candidates = selectableMessageIndexes(messages, messageCursor.expandedKeys);
+    if (!transcriptFocus) {
+      if (chatInputState.current.input.value.length > 0 || key.ctrl || key.meta) {
+        return false;
+      }
+      if (character === "?") {
+        setKeysOpen(true);
+        return true;
+      }
+      if (key.escape && candidates.length > 0) {
+        setTranscriptFocus(true);
+        selectMessage(candidates.at(-1)!);
+        return true;
+      }
+      return false;
+    }
+    const selected = messageCursor.selectedIndex !== undefined && candidates.includes(messageCursor.selectedIndex)
+      ? messageCursor.selectedIndex
+      : candidates.at(-1);
+    const position = selected === undefined ? -1 : candidates.indexOf(selected);
+    if (key.escape || candidates.length === 0) {
+      leaveTranscript();
+      return Boolean(key.escape);
+    }
+    if (key.upArrow || character === "k" || character === "[") {
+      selectMessage(candidates[Math.max(0, position - 1)]!);
       return true;
     }
-    if (normalized === "]") {
-      setMessageCursor((state) => messageCursorReducer(state, { type: "next" }, messages));
+    if (key.downArrow || character === "j" || character === "]") {
+      if (position >= candidates.length - 1) {
+        leaveTranscript();
+      } else {
+        selectMessage(candidates[position + 1]!);
+      }
       return true;
     }
-    if (normalized === "x") {
-      setMessageCursor((state) => messageCursorReducer(state, { type: "toggle" }, messages));
+    if (key.return || character === "x") {
+      setMessageCursor((state) => messageCursorReducer({ ...state, selectedIndex: selected }, { type: "toggle" }, messages));
       return true;
     }
-    const detailIntent = detailOpenInputIntent({ character, key });
-    if (shouldOpenDetailFromInput({ intent: detailIntent, hasFocusedTarget: messageCursor.selectedIndex !== undefined })) {
+    if (character === "o" || (key.ctrl && character === "o")) {
       emitTuiFocusTransition(
         focusDecisionForInput(character, key, { focusBefore: "message", hasFocusedTarget: true }),
         tuiKeyEventForInput(character, key),
-        messageCursor.selectedIndex === undefined ? undefined : `message:${messageCursor.selectedIndex}`
+        selected === undefined ? undefined : `message:${selected}`
       );
       openSelectedMessageDetail();
       return true;
     }
+    if (character === "/") {
+      openTranscriptSearch();
+      return true;
+    }
+    if (character === "?") {
+      setKeysOpen(true);
+      return true;
+    }
+    if (key.pageUp || key.pageDown || key.ctrl || key.meta) {
+      return false;
+    }
+    // Typing goes back to the prompt, with what was typed in it.
+    if ((character && !key.tab) || key.backspace || key.delete) {
+      chatInputState.current = applyChatInputKey(chatInputState.current, character, key).state;
+      leaveTranscript();
+      return true;
+    }
     return false;
+  }
+
+  function leaveTranscript(): void {
+    setTranscriptFocus(false);
+    setMessageCursor((state) => messageCursorReducer(state, { type: "clear" }, messages));
+  }
+
+  /** Selects a transcript row and scrolls just enough to show all of it. */
+  function selectMessage(index: number): void {
+    setMessageCursor((state) => messageCursorReducer(state, { type: "select", index }, messages));
+    const options = { expandedMessageKeys: messageCursor.expandedKeys };
+    const below = conversationRenderedLineCount(messages.slice(index + 1), conversationTextColumns(), options);
+    const height = conversationRenderedLineCount(messages.slice(index, index + 1), conversationTextColumns(), options);
+    const rows = fullscreenConversationRows(terminalRows - CONVERSATION_HEADER_ROWS, conversationBottomRows());
+    setConversationViewport((state) => {
+      const offset = state.scrollOffset > below
+        ? below
+        : state.scrollOffset < below + height - rows
+          ? Math.max(0, below + height - rows)
+          : state.scrollOffset;
+      return offset === state.scrollOffset ? state : { ...state, scrollOffset: offset };
+    });
   }
 
   function jumpToConversationMessage(messageIndex: number): void {
@@ -1566,11 +1480,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   function conversationBottomRows(): number {
     return conversationBottomRowsForTerminal({
       terminalRows: terminalRows - CONVERSATION_HEADER_ROWS,
-      contentRows: conversationPromptRows(0) + completionRows + budgetNoticeRows(budgetNotices) + needsYouRows(needsYouItems(ticketSnapshot?.rows ?? [])) + conversationBottomStatusRows({
-        busy,
-        hasResult: false
-      }),
+      contentRows: conversationPromptRows(0) + completionRows + conversationBottomStatusRows({ busy, workerRows: busy && showActivityRail ? workerListLines([...workers.values()].filter((worker) => worker.status === "running")).length : 0 }),
       approval: Boolean(approval),
+      approvalRows: approval ? (approvalExpanded ? approvalExpandedRows(approval) : approvalCardRows(approval)) : undefined,
       pendingPlan: Boolean(pendingPlan)
     });
   }
@@ -1609,116 +1521,29 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     ].join("\n");
   }
 
-  async function openFooterDetail(id: FooterPillId): Promise<void> {
+  /** Opens what a status-line item is about: the tickets pane, the usage of this session, or the approval records. */
+  function openStatusItem(id: StatusItemId): void {
+    if (id === "search") {
+      return;
+    }
     if (id === "tickets") {
       setTicketSelection(0);
       setMainPane("tickets");
       return;
     }
-    setFooterNavigation((state) => footerNavigationReducer(state, { type: "select", id }, footerItems));
-    try {
-      const detail = await renderFooterDetail(id);
-      const presentation = footerDetailPresentation(id);
-      setLatestDetail(detail);
-      setLatestDetailSource(presentation.source);
-      setDetailScroll(0);
-      setDetailOpen(true);
-    } catch (error) {
-      pushError(error);
-    }
-  }
-
-  function footerDetailPresentation(id: FooterPillId): {
-    source: "task" | "event";
-  } {
-    return {
-      source: id === "tasks" ? "task" : "event"
-    };
-  }
-
-  async function renderFooterDetail(id: FooterPillId): Promise<string> {
-    if (id === "tasks") {
-      return renderTaskDetail();
-    }
+    let detail: string;
     if (id === "approvals") {
       const rows = runtime?.listRecentApprovalsForWorkspace(80) ?? [];
-      return rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
+      detail = rows.length ? rows.map(formatApprovalRecord).join("\n\n") : "No approvals recorded.";
+    } else if (runtime) {
+      detail = usageView({ database: runtime.database.db, settings: loadSwarmSettings(runtime.workspaceRoot()), sessionId: lastSessionId }).detail;
+    } else {
+      detail = "Runtime is not ready.";
     }
-    if (id === "cache") {
-      return formatPromptCacheDetailWithTrend(promptCacheStatus, runtime?.getPromptCacheTrend());
-    }
-    if (id === "gateway") {
-      return renderGatewayStatusDetail();
-    }
-    if (id === "mcp") {
-      return renderMcpStatusDetail();
-    }
-    if (id === "skills") {
-      return renderSkillStatusDetail();
-    }
-    if (id === "symphony") {
-      if (!runtime) {
-        return "Runtime is not ready.";
-      }
-      return formatSymphonyStatus(getSymphonyStatus({ runtime, limit: 20 }));
-    }
-    return renderLspStatusDetail();
-  }
-
-  function renderGatewayStatusDetail(): string {
-    const sessions = runtime?.listRecentSessionsForWorkspace(20) ?? [];
-    const gatewaySessions = sessions.filter((session) => sessionSourceKind(session.source_json) === "gateway");
-    return [
-      "Gateway",
-      "status=local",
-      "mode=TUI local process; HTTP Gateway status is available when `swarm serve` is running.",
-      "",
-      "Recent gateway sessions",
-      ...(gatewaySessions.length
-        ? gatewaySessions.slice(0, 10).map((session) => `${session.session_id} [${session.status}] ${session.objective}`)
-        : ["(none)"]),
-      "",
-      "Routes",
-      "/v1/sessions",
-      "/v1/capabilities",
-      "/v1/approvals",
-      "/v1/symphony",
-      "/mcp"
-    ].join("\n");
-  }
-
-  function renderMcpStatusDetail(): string {
-    if (!runtime) {
-      return "Runtime is not ready.";
-    }
-    const servers = runtime.listMcpServers();
-    const settings = mcpSettingsSnapshot(runtime);
-    const summary = summarizeMcpCatalog(servers, settings);
-    return [
-      "MCP",
-      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
-      summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
-      summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
-      "",
-      formatMcpServersSummary(servers)
-    ].filter(Boolean).join("\n");
-  }
-
-  function renderSkillStatusDetail(): string {
-    if (!runtime) {
-      return "Runtime is not ready.";
-    }
-    const skills = runtime.listSkills();
-    const settings = skillSettingsSnapshot(runtime);
-    const summary = summarizeSkillCatalog(skills, settings);
-    return [
-      "Skills",
-      summary.runtime ? `${summary.runtime.label} state=${summary.runtime.state} severity=${summary.runtime.severity} evidence=${summary.runtime.evidence}` : undefined,
-      summary.runtime ? `reason=${summary.runtime.reason}` : undefined,
-      summary.runtime ? `next=${summary.runtime.nextAction}` : undefined,
-      "",
-      formatSkillsSummary(skills)
-    ].filter(Boolean).join("\n");
+    setLatestDetail(detail);
+    setLatestDetailSource("event");
+    setDetailScroll(0);
+    setDetailOpen(true);
   }
 
   async function renderLspStatusDetail(): Promise<string> {
@@ -1764,7 +1589,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         const nextRuntime = createRuntime();
         setRuntime(nextRuntime);
         refreshSettingsSurface(nextRuntime);
-        replaceChatTranscript({ role: "system", brief: message });
+        replaceChatTranscript([{ role: "system", brief: message }]);
         setOnboard((state) => ({ ...state, enabled: false }));
       }).catch((error: unknown) => {
         setOnboard((state) => ({
@@ -1962,6 +1787,9 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         });
         return { ...diagnosis, detailSource: "event" };
       }
+      if (subcommand === "lsp") {
+        return { brief: appendDetailShortcut("Language servers"), detail: await renderLspStatusDetail() };
+      }
       if (subcommand === "cache") {
         if (!runtime) throw new Error("Runtime is not ready.");
         const cache = runtime.getPromptCacheStatus();
@@ -2040,6 +1868,12 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         setConversationViewport(resetConversationViewport());
       }
       return { brief: `Switched to ${mainPaneLabels[pane]}.` };
+    }
+
+    if (command === "search") {
+      setMainPane("chat");
+      openTranscriptSearch(args.join(" "));
+      return { brief: "Searching the transcript: Enter jumps to a match, Esc closes." };
     }
 
     if (command === "provider") {
@@ -2257,15 +2091,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         chatSessionId.current = createChatSessionId();
         resetDebugLogger();
         setPendingPlan(undefined);
-        setRunBoardState(createInitialRunBoardState());
         setEvents([]);
-        replaceChatTranscript(initialSystemMessage);
+        replaceChatTranscript([]);
         lastActionLogEventSignatureRef.current = undefined;
         clearDetailState();
         setTaskWorkState({ taskStates: new Map(), taskTotal: 0, taskCompleted: 0 });
         setToolResults([]);
-        setLoopActivity(undefined);
-        setWorkers(new Map());
+            setWorkers(new Map());
         setHandoffs(new Map());
         setLastSessionId(undefined);
         if (runtime) {
@@ -2331,8 +2163,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         route: execution.route
       });
       setBusy(true);
-      setLoopActivity(undefined);
-      setLoopActivityTimeline([]);
+        setLoopActivityTimeline([]);
       setLatestResultCard(undefined);
       appendChatMessage({ role: "system", brief: `Resuming ${sessionId}.` });
       const storedPlan = row.plan_json;
@@ -2346,7 +2177,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       void runPromise.then((result) => {
         const display = formatExecutionResultDisplay(result, runtime);
         setLatestResultCard(result.result_card);
-        recordRunBoardResultCard(result.result_card);
         recordAiDetail(display.detail);
         setLastSessionId(result.session_id);
         appendChatMessage({
@@ -3366,7 +3196,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     if (!runtime) throw new Error("Runtime is not ready.");
     const objective = renderPluginSlashCommandObjective(command.plugin, command.contribution, rawArgs);
     setBusy(true);
-    setLoopActivity(undefined);
     setLoopActivityTimeline([]);
     try {
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode });
@@ -3388,7 +3217,6 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     }
     const objective = renderCustomCommandObjective(command, rawArgs);
     setBusy(true);
-    setLoopActivity(undefined);
     setLoopActivityTimeline([]);
     try {
       const result = await runtime.run(objective, { mode: runMode, sandboxMode: runSandboxMode });
@@ -3501,6 +3329,10 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function handleApprovalInput(character: string | undefined, key: { ctrl?: boolean; escape?: boolean }): boolean {
+    if (character === "?" && !key.ctrl) {
+      setApprovalExpanded((expanded) => !expanded);
+      return true;
+    }
     const decision = approvalInputDecision(character ?? "", key);
     if (!decision.handled) {
       return false;
@@ -3512,18 +3344,63 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
     return true;
   }
 
+  // A decision that waits shows at the foot of whatever is on screen: in place of the prompt, or of a view's key row.
+  const decisionCard = approval
+    ? <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} expanded={approvalExpanded} maxRows={conversationBottomRows()} />
+    : pendingPlan
+      ? <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
+      : undefined;
+  const decisionCardRows = decisionCard ? conversationBottomRows() : undefined;
+
   if (detailOpen) {
+    const lines = (latestDetail || "No detail output yet.").split(/\r?\n/u);
+    const bodyRows = viewBodyRows(terminalRows, decisionCardRows);
+    const first = Math.min(detailScroll + 1, lines.length);
+    const last = Math.min(detailScroll + bodyRows, lines.length);
     return (
-      <Box width={terminalColumns} height={terminalRows} flexDirection="column" overflow="hidden">
-        <DetailView
-          content={latestDetail || "No detail output yet."}
-          scroll={detailScroll}
-          height={detailHeight}
-          sessionId={lastSessionId}
-          route={lastRoute?.mode}
-          source={latestDetailSource === "none" ? undefined : latestDetailSource}
-        />
-      </Box>
+      <ViewFrame
+        title={detailTitleForSource(latestDetailSource === "none" ? undefined : latestDetailSource)}
+        summary={`lines ${first}-${last} of ${lines.length}${lastSessionId ? ` · ${lastSessionId}` : ""}`}
+        columns={terminalColumns}
+        height={terminalRows}
+        keys="↑↓ scroll · PgUp/PgDn page · Esc back"
+        bottom={decisionCard}
+        bottomRows={decisionCardRows}
+      >
+        {lines.slice(detailScroll, detailScroll + bodyRows).map((line, index) => (
+          <Text key={`${detailScroll + index}`} wrap="truncate" color={visualTokenColor("text.primary")}>{line || " "}</Text>
+        ))}
+      </ViewFrame>
+    );
+  }
+
+  if (keysOpen) {
+    const keyWidth = Math.max(...KEYS_VIEW.flatMap((group) => group.keys.map(([keys]) => displayWidth(keys)))) + 2;
+    const lines = KEYS_VIEW.flatMap((group, index) => [
+      ...(index ? [{ kind: "blank" as const, text: "" }] : []),
+      { kind: "where" as const, text: group.where },
+      ...group.keys.map(([keys, does]) => ({ kind: "key" as const, text: `${keys}${" ".repeat(Math.max(1, keyWidth - displayWidth(keys)))}${does}` }))
+    ]);
+    return (
+      <ViewFrame
+        title="Keys"
+        columns={terminalColumns}
+        height={terminalRows}
+        keys="Esc back"
+        bottom={decisionCard}
+        bottomRows={decisionCardRows}
+      >
+        {lines.slice(0, viewBodyRows(terminalRows, decisionCardRows)).map((line, index) => (
+          <Text
+            key={`keys:${index}`}
+            wrap="truncate"
+            bold={line.kind === "where"}
+            color={visualTokenColor(line.kind === "where" ? "text.primary" : "text.muted")}
+          >
+            {line.kind === "key" ? `  ${line.text}` : line.text || " "}
+          </Text>
+        ))}
+      </ViewFrame>
     );
   }
 
@@ -3544,234 +3421,71 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         height={terminalRows}
         summary={`${ticketsPillValue(ticketSnapshot?.status)}${ticketSnapshot?.unreachable?.length ? ` · ${ticketSnapshot.unreachable.join(", ")} unreachable` : ""}`}
         hosting={ticketsRef.current?.hosting() ?? false}
+        bottom={decisionCard}
+        bottomRows={decisionCardRows}
       />
     );
   }
 
   const latestSnapshot = runtime && lastSessionId ? safeWorkSnapshot(runtime, lastSessionId) : undefined;
-  const displayedResultCard = latestResultCard
-    ?? (latestSnapshot?.final_outcome ? buildResultCardFromSnapshot(latestSnapshot) : undefined);
   const swarmSurface = runtime ? safeSwarmSurface(runtime, 12) : undefined;
-  const promptCacheStatus = runtime?.getPromptCacheStatus();
-  const cacheStatus = promptCacheStatus?.status ?? displayedResultCard?.cache?.status;
-  const cacheHitRate = promptCacheStatus?.hitRate ?? displayedResultCard?.cache?.hitRate;
-  const checkpointLabel = runtime?.getLastCheckpoint()?.name ?? displayedResultCard?.checkpoint?.name;
-  const routeLabel = displayedResultCard?.route
-    ?? lastRoute?.mode
-    ?? (runMode === "chat" ? "ask" : runMode === "full_swarm" ? "team" : "work");
-  const runBoardView = selectRunBoardSurface(runBoardState, {
-    now: new Date().toISOString(),
-    repo: "Swarm",
-    mode: routeLabel,
-    risk: runSandboxMode,
-    session: displayedResultCard?.sessionId ?? lastSessionId ?? runBoardState.runId
-  });
-  const runBoardPhase = runBoardView.phase;
-  const shouldRenderRunBoard = busy
-    || Boolean(approval)
-    || Boolean(pendingPlan)
-    || isActiveRunBoardPhase(runBoardPhase);
-  const displayedRunBoardPhase = approval || pendingPlan
-    ? "waiting-attention"
-    : shouldRenderRunBoard && runBoardPhase === "idle"
-      ? "planning"
-      : runBoardPhase;
-  const currentAction = loopActivity
-    ? formatLoopActivityLine(loopActivity)
-    : runBoardView.focus
-      ? runBoardView.focus
-      : busy
-        ? "Starting local coding loop..."
-        : pendingPlan
-          ? "Awaiting approval for the plan."
-          : displayedResultCard
-            ? displayedResultCard.summary
-            : "Idle";
-  const currentPhase = displayedRunBoardPhase === "idle" && displayedResultCard
-    ? displayedResultCard.status
-    : displayedRunBoardPhase;
-  const screenMode = tuiScreenMode({
-    pane: mainPane,
-    columns: terminalColumns,
-    busy,
-    hasApproval: Boolean(approval),
-    hasPendingPlan: Boolean(pendingPlan),
-    hasResult: Boolean(displayedResultCard),
-    hasRunBoard: shouldRenderRunBoard,
-    density: tuiDensity
-  });
-  // The new active layout already shows focus/progress in the RunStatusLine, so
-  // suppress the duplicate CurrentActionRow ("now …") while it's on screen.
-  const showCurrentAction = screenMode.showCurrentAction && !(shouldRenderRunBoard && resolveNewActiveLayout());
-  const runBoardElapsedMs = runBoardState.startedAt ? Math.max(0, Date.now() - Date.parse(runBoardState.startedAt)) : 0;
-  const needYou = approval
-    ? `Approve ${approval.summary}`
-    : pendingPlan
-      ? "approve with y or cancel with n"
-      : runBoardView.attention[0]
-        ? runBoardView.attention[0].recommendation
-        : "no";
-  const progress = `${progressBar(runBoardView.resultPreview.checks.filter((check) => check.status === "passed").length, runBoardView.resultPreview.checks.length || 0, 10)} workers ${runBoardView.workers.length} | files ${runBoardView.resultPreview.changedFiles.length}`;
-  const timelineItems = busy
-    ? loopActivityTimeline.slice(-5).map(formatLoopActivityLine)
-    : displayedResultCard
-      ? compactResultCardLines(displayedResultCard)
-      : messages.slice(-3).map((message) => `${message.role}: ${message.brief}`);
-  const bodyRows = Math.max(12, terminalRows - (showCurrentAction ? 8 : 6) - completionRows);
-  const timelineLimit = bodyRows >= 30 ? 5 : 3;
-  const productResultCardView = selectProductResultCardView(runBoardState, {
-    card: displayedResultCard,
-    detailHint: latestDetailSource !== "none" ? detailOpenHint() : undefined
-  });
-  const shouldShowRunBoardSurface = shouldRenderRunBoard || Boolean(displayedResultCard);
-  const overviewSurface = shouldRenderRunBoard
-    ? (
-      <Box flexDirection="column" width="100%">
-        {resolveNewActiveLayout() ? (
-          <Box flexDirection="column" width="100%">
-            <RunStatusLine
-              view={runBoardView}
-              columns={terminalColumns}
-              compact={screenDensity === "compact"}
-              elapsedMs={runBoardElapsedMs}
-            />
-            <ActivityRail view={runBoardView} visible={showActivityRail} columns={terminalColumns} />
-          </Box>
-        ) : (
-          <RunBoardSurface
-            view={runBoardView}
-            workerLimit={screenDensity === "compact" ? 4 : 6}
-            attentionLimit={screenDensity === "compact" ? 1 : 2}
-            onWorkerClick={openRunBoardWorkerDetail}
-            onAttentionAction={handleRunBoardAttentionAction}
-            onResultAction={handleRunBoardResultAction}
-          />
-        )}
-        <ActiveWorkSummary
-          taskStates={taskStates}
-          taskCompleted={taskCompleted}
-          taskTotal={taskTotal}
-          toolResults={toolResults}
-          density={screenDensity}
-        />
-        <SwarmSurfacePanel surface={swarmSurface} limit={3} />
-      </Box>
-    )
-    : displayedResultCard
-      ? <Box flexDirection="column" width="100%">
-        <ProductResultCard
-          view={productResultCardView}
-          density={screenDensity}
-          onNextAction={handleRunBoardResultAction}
-        />
-        <SwarmSurfacePanel surface={swarmSurface} limit={3} />
-      </Box>
-      : <Box flexDirection="column" width="100%">
-        <ProductResultCard
-          view={productResultCardView}
-          density={screenDensity}
-        />
-        <SwarmSurfacePanel surface={swarmSurface} limit={4} />
-      </Box>;
-  const wideWorkbench = screenMode.showInspector;
-  const primaryColumns = wideWorkbench ? Math.max(72, Math.floor((terminalColumns - 4) * 0.64)) : terminalColumns;
-  const inspectorColumns = Math.max(40, terminalColumns - primaryColumns - 3);
-  const selectedActionRow = actionLogRows[selectedActionIndex] ?? actionLogRows.at(-1);
   const activeSearchMatch = currentTranscriptSearchMatch(transcriptSearch);
-  const activeSearchSummary = transcriptSearchSummary(transcriptSearch);
-  const bottomFooterHint = transcriptSearch.active
-    ? transcriptSearchHint(activeSearchSummary)
-    : "Left/Right footer | [/] message | / search";
-  const inlineInspectorTarget = inlineInspectorTargetForPane({
-    pane: mainPane,
-    selectedAction: Boolean(selectedActionRow),
-    latestDetailSource,
-    latestDetail: Boolean(latestDetail)
+  const statusLine = (promptEmpty: boolean) => buildStatusLine({
+    search: transcriptSearch.active
+      ? {
+        query: transcriptSearch.query.trim(),
+        position: !transcriptSearch.query.trim() ? undefined : transcriptSearch.matches.length
+          ? `${transcriptSearch.currentIndex + 1}/${transcriptSearch.matches.length}`
+          : "no matches"
+      }
+      : undefined,
+    budgetsReached: usageLine.budgetsReached,
+    approvalsWaiting: idlePaneSnapshot.approvals.filter((record) => record.status === "pending").length - (approval ? 1 : 0),
+    tickets: ticketSnapshot ? { needYou: ticketSnapshot.status.counts.person, working: ticketSnapshot.status.counts.working } : undefined,
+    spentToday: usageLine.spentToday,
+    promptEmpty,
+    transcriptFocus
   });
-  const inlineInspectorContent = inlineInspectorTarget.enabled && latestDetailSource !== "none" && latestDetail
-    ? latestDetail
-    : renderActionRowDetail(selectedActionRow);
-  const footerItems = buildFooterPills({
-    taskCompleted,
-    taskTotal,
-    pendingApprovals: footerPendingApprovalCount(approval, idlePaneSnapshot.approvals),
-    cacheStatus,
-    cacheHitRate,
-    gatewayStatus: "local",
-    mcpStatus: mcpRuntimeSummary?.state,
-    skillStatus: skillRuntimeSummary?.state,
-    symphonyRunning: symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping").length,
-    symphonyRetrying: 0,
-    lspStatus: lspHealthStatus,
-    ...(ticketSnapshot ? { tickets: { value: ticketsFooterValue(ticketSnapshot.status), waiting: ticketSnapshot.status.counts.person } } : {})
-  });
-  const selectedFooterItem = selectedFooterPill(footerNavigation, footerItems)?.id;
-  if (screenMode.primarySurface === "conversation") {
+  const renderStatusLine = ({ promptEmpty }: { promptEmpty: boolean }) => (
+    <StatusLine {...statusLine(promptEmpty)} columns={terminalColumns} onItemClick={openStatusItem} />
+  );
+  const runningWorkerRecords = [...workers.values()].filter((worker) => worker.status === "running");
+  const runningWorkers = runningWorkerRecords.length;
+  const workerLines = busy && showActivityRail ? workerListLines(runningWorkerRecords) : [];
+  const activityRows = 1 + workerLines.length;
+  const activityLine = busy ? (
+    <Box flexDirection="column" width="100%">
+      {workerLines.map((line, index) => (
+        <Text key={`worker:${index}`} wrap="truncate" color={visualTokenColor("text.muted")}>{line}</Text>
+      ))}
+      <ConversationStatusLine
+      message={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : "Starting"}
+      motionFrame={shouldAnimate ? motionTick : undefined}
+      elapsedMs={busySinceRef.current ? Date.now() - busySinceRef.current : undefined}
+      extra={[runningWorkers ? `${runningWorkers} worker${runningWorkers === 1 ? "" : "s"} (Ctrl+R)` : "", "Ctrl+C interrupts"].filter(Boolean).join(" · ")}
+    />
+    </Box>
+  ) : undefined;
+  if (mainPane === "chat") {
     const bottomRows = conversationBottomRows();
     const conversationRows = fullscreenConversationRows(terminalRows - CONVERSATION_HEADER_ROWS, bottomRows);
-    const waiting = needsYouItems(ticketSnapshot?.rows ?? []);
-    const runningWorkers = [...workers.values()].filter((worker) => worker.status === "running").length;
     const inputCapacity = chatInputCapacity();
-    const bottom = approval ? (
-      <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
-    ) : pendingPlan ? (
-      <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
-    ) : (
-      <ConversationBottomChrome
-        busy={busy}
-        activity={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined}
-        motionFrame={shouldAnimate ? motionTick : undefined}
-        detailAvailable={latestDetailSource !== "none"}
-        notice={<>
-          <BudgetStrip notices={budgetNotices} columns={terminalColumns} />
-          <NeedsYouStrip items={waiting} columns={terminalColumns} />
-        </>}
-        status={
-          <Box paddingX={1}>
-            <ConversationStatusLine
-              message={loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : "Starting"}
-              motionFrame={shouldAnimate ? motionTick : undefined}
-              elapsedMs={busySinceRef.current ? Date.now() - busySinceRef.current : undefined}
-              extra={[runningWorkers ? `${runningWorkers} workers` : "", "Ctrl+C interrupts"].filter(Boolean).join(" · ")}
-            />
-          </Box>
-        }
-        input={
-          <ChatInputArea
-            onSubmit={submitObjective}
-            onCompletionRowsChange={setCompletionRows}
-            onCompletionStateChange={setChatCompletion}
-            controllerStateRef={chatInputState}
-            extraCommands={extensionCommandCandidates}
-            promptLabel={routeLabel === "auto" ? undefined : routeBadge(routeLabel).toLowerCase()}
-            sandboxLabel={runSandboxMode === "workspace-write" ? undefined : sandboxBadge(runSandboxMode).toLowerCase()}
-            footerHint={bottomFooterHint}
-            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
-            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
-            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
-            footerItems={footerItems}
-            selectedFooterItem={selectedFooterItem}
-            footerModeLabel={routeBadge(routeLabel)}
-            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
-            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
-            footerSandboxLabel={sandboxBadge(runSandboxMode)}
-            footerSandboxTone={sandboxTone(runSandboxMode)}
-            onFooterItemClick={(id) => {
-              emitTuiFocusTransition(
-                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
-                "other",
-                `footer:${id}`
-              );
-              void openFooterDetail(id);
-            }}
-            onInputTelemetry={logTuiInputTelemetry}
-            completionPlacement="overlay"
-            density={screenDensity}
-            columns={terminalColumns}
-            maxRows={bottomRows}
-            maxInputRows={inputCapacity.maxInputRows}
-          />
-        }
+    const bottom = decisionCard ?? (
+      <ChatInputArea
+        onSubmit={submitObjective}
+        onCompletionRowsChange={setCompletionRows}
+        onCompletionStateChange={setChatCompletion}
+        controllerStateRef={chatInputState}
+        extraCommands={extensionCommandCandidates}
+        activity={activityLine}
+        activityRows={activityRows}
+        status={renderStatusLine}
+        inputActive={!transcriptFocus && !transcriptSearch.active}
+        yieldKey={(character, key, value) => value.length === 0 && !key.ctrl && !key.meta && (character === "?" || Boolean(key.escape))}
+        onInputTelemetry={logTuiInputTelemetry}
+        completionPlacement="overlay"
+        maxRows={bottomRows}
+        maxInputRows={inputCapacity.maxInputRows}
       />
     );
     const completionOverlay = !approval && !pendingPlan && chatCompletion.candidates.length > 0
@@ -3796,11 +3510,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             columns={terminalColumns}
             model={settingsSnapshot.models.worker || settingsSnapshot.models.planner || "no model"}
             workspace={displayWorkspace(process.cwd())}
-            right={[
-              { text: routeBadge(routeLabel).toLowerCase(), color: "brand.focus" },
-              { text: ` · ${policyBadge(settingsSnapshot.permissions.defaultMode).toLowerCase()}`, color: "text.muted" },
-              { text: ` · ${sandboxBadge(runSandboxMode).toLowerCase()}`, color: "text.muted" }
-            ]}
+            right={headerModeSpans({ runMode, permissionMode: settingsSnapshot.permissions.defaultMode, sandboxMode: runSandboxMode })}
           />
         }
         completionOverlay={completionOverlay}
@@ -3817,158 +3527,57 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
             selectedMessageIndex={messageCursor.selectedIndex}
             searchMatchMessageIndex={activeSearchMatch?.messageIndex}
             searchMatchQuery={transcriptSearch.query}
-            tailRows={conversationTailRows({ busy: false, hasResult: !busy && Boolean(displayedResultCard) })}
-            tail={conversationTail({
-              busy: false,
-              activity: loopActivityTimeline.at(-1) ? formatConversationActivityLine(loopActivityTimeline.at(-1)!) : undefined,
-              motionFrame: shouldAnimate ? motionTick : undefined,
-              resultCard: busy ? undefined : displayedResultCard,
-              detailAvailable: latestDetailSource !== "none"
-            })}
+            workspace={displayWorkspace(process.cwd())}
           />
         }
         bottom={bottom}
       />
     );
   }
+  const viewBody = viewBodyRows(terminalRows, decisionCardRows);
   return (
-    <Box width={terminalColumns} height={terminalRows} flexDirection="column" overflow="hidden" paddingX={1}>
-      <StatusRail
-        appName="Swarm"
-        state={approval ? "awaiting approval" : busy ? "running" : displayedResultCard ? "done" : "idle"}
-        route={routeLabel}
-        permissionMode={settingsSnapshot.permissions.defaultMode}
-        sandboxMode={runSandboxMode}
-        model={settingsSnapshot.models.worker || settingsSnapshot.models.planner || settingsSnapshot.models.defaultProvider || "unset"}
-        sessionId={lastSessionId}
-        cacheStatus={cacheStatus}
-        checkpoint={checkpointLabel}
-        view={mainPaneLabels[mainPane]}
-        compact={screenMode.compactStatus}
-        density={screenDensity}
-      />
-
-      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={1}>
-        {showCurrentAction && (
-          <CurrentActionRow
-            message={currentAction}
-            phase={currentPhase}
-            status={loopActivity ? loopActivityStatus(loopActivity.phase) : statusForRunBoardPhase(displayedRunBoardPhase, displayedResultCard?.status)}
-            tone={loopActivity ? loopActivityTone(loopActivity.phase) : toneForRunBoardPhase(displayedRunBoardPhase, displayedResultCard?.status)}
-            progress={progress}
-            needYou={needYou === "no" ? undefined : needYou}
-            motionFrame={shouldAnimate ? motionTick : undefined}
-            density={screenDensity}
-          />
-        )}
-
-        <Box flexDirection={wideWorkbench ? "row" : "column"} flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={showCurrentAction ? 1 : 0}>
-          <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width={wideWorkbench ? primaryColumns : "100%"}>
-            {screenMode.primarySurface === "trace" ? (
-              <ActionLog
-                rows={actionLogRows}
-                height={bodyRows}
-                columns={wideWorkbench ? primaryColumns : terminalColumns}
-                scrollOffset={actionLogScrollOffset}
-                onScrollOffsetChange={setActionLogScrollOffset}
-                motionFrame={shouldAnimate ? motionTick : undefined}
-                selectedIndex={selectedActionIndex}
-              />
-            ) : (
-              <>
-                {!shouldShowRunBoardSurface && (
-                  <ActivityTimeline
-                    title={busy ? "Progress" : displayedResultCard ? "Result" : "Recent"}
-                    items={timelineItems}
-                    emptyLabel="(none)"
-                    limit={timelineLimit}
-                    density={screenDensity}
-                  />
-                )}
-
-                <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" width="100%" marginTop={shouldShowRunBoardSurface ? 0 : 1}>
-                  {shouldShowRunBoardSurface || mainPane === "overview" ? (
-                    overviewSurface
-                  ) : (
-                    <IdleKernelView
-                      pane={mainPane}
-                      rows={bodyRows}
-                      columns={wideWorkbench ? primaryColumns : terminalColumns}
-                      messages={messages.slice(-4)}
-                      toolOutputs={toolResults.slice(-4)}
-                      sessions={idlePaneSnapshot.sessions}
-                      attempts={idlePaneSnapshot.attempts}
-                      leases={idlePaneSnapshot.leases}
-                      approvals={idlePaneSnapshot.approvals}
-                      workers={mergeWorkerRecords(workers, idlePaneSnapshot.workers, 6)}
-                      blackboard={idlePaneSnapshot.blackboard}
-                      swarmSurface={swarmSurface}
-                      symphonyDaemons={symphonyDaemons.slice(0, 4)}
-                      lastSessionId={lastSessionId}
-                      lastRoute={lastRoute}
-                      lastSnapshot={latestSnapshot}
-                    />
-                  )}
-                </Box>
-              </>
-            )}
-          </Box>
-          {wideWorkbench && inlineInspectorTarget.enabled && (
-            <Box flexDirection="column" width={inspectorColumns} marginLeft={1} overflow="hidden">
-              <DetailView
-                content={inlineInspectorContent}
-                scroll={detailScroll}
-                height={bodyRows}
-                sessionId={lastSessionId}
-                route={lastRoute ? routeDisplayLabel(lastRoute.mode) : undefined}
-                source={inlineInspectorTarget.source}
-                title={inlineInspectorTarget.title}
-                density={screenDensity}
-              />
-            </Box>
-          )}
-        </Box>
-      </Box>
-
-      <Box flexShrink={0} width="100%" marginTop={1}>
-        {approval ? (
-          <ApprovalOverlay request={approval} onDecision={resolveApprovalDecision} />
-        ) : pendingPlan ? (
-          <PlanApprovalOverlay summary={pendingPlan.plan.summary} taskCount={pendingPlan.plan.tasks.length} />
-        ) : (
-          <ChatInputArea
-            onSubmit={submitObjective}
-            onCompletionRowsChange={setCompletionRows}
-            controllerStateRef={chatInputState}
-            extraCommands={extensionCommandCandidates}
-            promptLabel={routeBadge(routeLabel).toLowerCase()}
-            sandboxLabel={sandboxBadge(runSandboxMode).toLowerCase()}
-            footerHint={bottomFooterHint}
-            footerActivityLabel={transcriptSearch.active ? "search" : undefined}
-            footerActivityValue={transcriptSearch.active ? activeSearchSummary?.replace(/^search\s*/u, "") || transcriptSearch.query || "active" : undefined}
-            footerActivityTone={transcriptSearch.active ? "surface.searchMatch" : undefined}
-            footerItems={footerItems}
-            selectedFooterItem={selectedFooterItem}
-            footerModeLabel={routeBadge(routeLabel)}
-            footerPermissionLabel={policyBadge(settingsSnapshot.permissions.defaultMode)}
-            footerPermissionTone={policyTone(settingsSnapshot.permissions.defaultMode)}
-            footerSandboxLabel={sandboxBadge(runSandboxMode)}
-            footerSandboxTone={sandboxTone(runSandboxMode)}
-            onFooterItemClick={(id) => {
-              emitTuiFocusTransition(
-                focusDecisionForInput(undefined, {}, { focusBefore: "footer", hasFocusedTarget: true }),
-                "other",
-                `footer:${id}`
-              );
-              void openFooterDetail(id);
-            }}
-            onInputTelemetry={logTuiInputTelemetry}
-            density={screenDensity}
-            columns={terminalColumns}
-          />
-        )}
-      </Box>
-    </Box>
+    <ViewFrame
+      title={mainPaneLabels[mainPane]}
+      summary={mainPane === "log" ? `${actionLogRows.length} actions` : lastSessionId ? `session ${lastSessionId}` : undefined}
+      columns={terminalColumns}
+      height={terminalRows}
+      keys={mainPane === "log" ? "↑↓ select · Enter details · PgUp/PgDn page · Esc back · / command" : "Esc back · / command"}
+      bottom={decisionCard}
+      bottomRows={decisionCardRows}
+    >
+      {mainPane === "log" ? (
+        <ActionLog
+          rows={actionLogRows}
+          height={viewBody}
+          columns={terminalColumns - 2}
+          scrollOffset={actionLogScrollOffset}
+          onScrollOffsetChange={setActionLogScrollOffset}
+          motionFrame={shouldAnimate ? motionTick : undefined}
+          selectedIndex={selectedActionIndex}
+          header={false}
+        />
+      ) : (
+        <IdleKernelView
+          pane={mainPane}
+          rows={viewBody}
+          columns={terminalColumns - 2}
+          messages={messages.slice(-4)}
+          toolOutputs={toolResults.slice(-4)}
+          sessions={idlePaneSnapshot.sessions}
+          attempts={idlePaneSnapshot.attempts}
+          leases={idlePaneSnapshot.leases}
+          approvals={idlePaneSnapshot.approvals}
+          workers={mergeWorkerRecords(workers, idlePaneSnapshot.workers, 6)}
+          blackboard={idlePaneSnapshot.blackboard}
+          swarmSurface={swarmSurface}
+          symphonyDaemons={symphonyDaemons.slice(0, 4)}
+          lastSessionId={lastSessionId}
+          lastRoute={lastRoute}
+          lastSnapshot={latestSnapshot}
+          work={{ taskStates, taskCompleted, taskTotal }}
+        />
+      )}
+    </ViewFrame>
   );
 }
 
@@ -4108,6 +3717,8 @@ function IdleKernelView(input: {
   lastSessionId?: string;
   lastRoute?: RouteState;
   lastSnapshot?: ReturnType<SwarmRuntime["getWorkSnapshot"]>;
+  /** The run's tasks, for the overview's Work section. */
+  work?: { taskStates: Map<string, TaskState>; taskCompleted: number; taskTotal: number };
 }): React.ReactElement {
   if (input.pane === "chat") {
     return (
@@ -4120,7 +3731,6 @@ function IdleKernelView(input: {
   const activeDaemons = input.symphonyDaemons.filter((daemon) => daemon.status === "running" || daemon.status === "stopping");
   return (
     <Box flexDirection="column" width="100%">
-      <PaneHeader pane={input.pane} columns={input.columns} />
       {input.pane === "overview" && <IdleOverviewPane input={input} rows={input.rows} activeDaemons={activeDaemons} lastSnapshot={input.lastSnapshot} />}
       {input.pane === "output" && <IdleOutputPane rows={input.rows} outputs={input.toolOutputs} />}
       {input.pane === "sessions" && <IdleSessionsPane rows={input.rows} sessions={input.sessions} leases={input.leases} lastSessionId={input.lastSessionId} />}
@@ -4131,52 +3741,18 @@ function IdleKernelView(input: {
   );
 }
 
-function PaneHeader({ pane, columns }: { pane: MainPaneId; columns: number }): React.ReactElement {
-  const compact = columns < 96;
-  const current = compact ? mainPaneShortLabels[pane] : mainPaneLabels[pane];
-  const shortcut = columns < 72 ? "/view" : "use /view";
-  return (
-    <Box flexDirection="column" width="100%">
-      <Text wrap="truncate">
-        <Text color={paneAccentColor(pane)} bold>{sectionLabel(current)}</Text>
-        <Text color={mutedColor()}>  {shortcut} · </Text>
-      {mainPaneOrder.map((item, index) => (
-        <Text key={item} inverse={item === pane} color={item === pane ? selectedTextColor() : mutedColor()}>
-          {item === pane ? `[${compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}]` : compact ? mainPaneShortLabels[item] : mainPaneLabels[item]}
-          {index < mainPaneOrder.length - 1 ? " " : ""}
-        </Text>
-      ))}
-      </Text>
-      <PaneDivider tone={paneAccentToken(pane)} />
-    </Box>
-  );
-}
-
-function PaneDivider({ tone = "surface.line" }: { tone?: TuiColorRef }): React.ReactElement {
-  return (
-    <Text color={resolveTuiColor(tone)} wrap="truncate">
-      {"─".repeat(160)}
-    </Text>
-  );
-}
-
 function PaneSection({
   title,
-  tone = "text.primary",
   children,
   marginTop = 1
 }: {
   title: string;
-  tone?: TuiColorRef;
   children: React.ReactNode;
   marginTop?: number;
 }): React.ReactElement {
   return (
     <Box flexDirection="column" width="100%" marginTop={marginTop}>
-      <Text wrap="truncate">
-        <Text color={resolveTuiColor(tone)} bold>{sectionLabel(title)}</Text>
-        <Text color={mutedColor()}> {"─".repeat(96)}</Text>
-      </Text>
+      <Text wrap="truncate" color={visualTokenColor("text.primary")} bold>{sectionLabel(title)}</Text>
       {children}
     </Box>
   );
@@ -4191,24 +3767,6 @@ function displayWorkspace(path: string): string {
   return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
 }
 
-function paneAccentToken(pane: MainPaneId): TuiColorRef {
-  switch (pane) {
-    case "output": return "role.tool";
-    case "sessions": return "role.gateway";
-    case "attempts": return "status.warning";
-    case "agents": return "role.swarm";
-    case "blackboard": return "role.swarm";
-    case "overview": return "brand.focus";
-    case "chat": return "text.primary";
-    case "log": return "text.primary";
-    case "tickets": return "status.pending";
-  }
-}
-
-function paneAccentColor(pane: MainPaneId): TuiResolvedColor {
-  return resolveTuiColor(paneAccentToken(pane));
-}
-
 function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
   input: Parameters<typeof IdleKernelView>[0];
   rows: number;
@@ -4218,7 +3776,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
   const recentMessages = rows >= 48 ? 3 : rows >= 36 ? 2 : 1;
   return (
     <>
-      <PaneSection title="Status" tone="role.gateway">
+      <PaneSection title="Status">
         <Text color={mutedColor()}>
           {`sessions=${input.sessions.length} attempts=${input.attempts.length} outputs=${input.toolOutputs.length} approvals=${input.approvals.length} symphony=${activeDaemons.length} last=${shortId(input.lastSessionId ?? "-")}`}
         </Text>
@@ -4234,8 +3792,12 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
         )}
       </PaneSection>
 
+      <PaneSection title="Work">
+        <OverviewWork work={input.work} toolOutputs={input.toolOutputs} />
+      </PaneSection>
+
       {(input.approvals.length > 0 || activeDaemons.length > 0) && (
-        <PaneSection title="Attention" tone="status.pending">
+        <PaneSection title="Attention">
           {input.approvals.slice(0, 2).map((approval) => (
             <Text key={approval.approval_id} wrap="truncate" color={pendingColor()}>
               approval {approval.risk_class}/{approval.risk} {approval.action} {firstLine(approval.target, 60)}
@@ -4250,7 +3812,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
       )}
 
       {input.lastSessionId && (
-        <PaneSection title="Latest Session" tone="brand.focus">
+        <PaneSection title="Latest Session">
           {lastSnapshot
             ? compactWorkSnapshotLines(lastSnapshot).slice(0, 2).map((line) => (
                 <Text key={line} wrap="truncate" color={mutedColor()}>
@@ -4261,7 +3823,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
         </PaneSection>
       )}
 
-      <PaneSection title="Recent Messages" tone="text.primary">
+      <PaneSection title="Recent Messages">
         {input.messages.length ? input.messages.slice(-recentMessages).map((message, index) => (
           <Box key={`${message.role}-${index}`} flexDirection="column">
             <Text wrap="truncate" color={roleColor(message.role)}>
@@ -4272,7 +3834,7 @@ function IdleOverviewPane({ input, rows, activeDaemons, lastSnapshot }: {
       </PaneSection>
 
       {input.toolOutputs.length > 0 && (
-        <PaneSection title="Latest Output" tone="role.tool">
+        <PaneSection title="Latest Output">
           {input.toolOutputs.slice(-1).map((result, index) => {
             return (
               <Box key={`${result.task_id}-${index}`} flexDirection="column">
@@ -4294,7 +3856,7 @@ function IdleOutputPane({ rows, outputs }: { rows: number; outputs: ToolResultSt
   const outputLimit = rows >= 48 ? 5 : rows >= 36 ? 3 : 2;
   const outputRows = orderCompactIdleRows(outputs.map((result, index) => compactIdleOutputRow(result, index))).slice(0, outputLimit);
   return (
-    <PaneSection title="Command Output" tone="role.tool">
+    <PaneSection title="Command Output">
       {outputRows.length ? outputRows.map(({ row, source }) => (
         <Box key={row.key} flexDirection="column">
           <CompactIdleRow row={row} />
@@ -4422,7 +3984,7 @@ function compactIdleLeaseRow(lease: WorkspaceLease, index: number): CompactIdleR
     id: lease.session_id,
     title: shortPath(lease.workspace_path),
     status: lease.write_boundary,
-    badge: lease.write_boundary === "read_only" ? "[RO]" : lease.write_boundary === "workspace" ? "[RW]" : "[FS]",
+    badge: lease.write_boundary === "read_only" ? "ro" : lease.write_boundary === "workspace" ? "rw" : "fs",
     tone: lease.write_boundary === "read_only" ? "warning" : "muted",
     meta: [
       lease.scope.length ? compactScope(lease.scope) : undefined,
@@ -4593,14 +4155,14 @@ function IdleSessionsPane({ rows, sessions, leases, lastSessionId }: {
   const leaseRows = orderCompactIdleRows(leases.map((lease, index) => compactIdleLeaseRow(lease, index))).slice(0, leaseLimit);
   return (
     <>
-      <PaneSection title="Recent Sessions" tone="role.gateway">
+      <PaneSection title="Recent Sessions">
         {lastSessionId && <Text color={mutedColor()}>last={shortId(lastSessionId)}</Text>}
         {sessionRows.length ? sessionRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Workspace Leases" tone="role.gateway">
+      <PaneSection title="Workspace Leases">
         {leaseRows.length ? leaseRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
@@ -4614,7 +4176,7 @@ function IdleAttemptsPane({ rows, attempts }: { rows: number; attempts: RunAttem
   const attemptRows = orderCompactIdleRows(attempts.map((attempt, index) => compactIdleAttemptRow(attempt, index))).slice(0, attemptLimit);
   const attemptById = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]));
   return (
-    <PaneSection title="Recent Attempts" tone="status.warning">
+    <PaneSection title="Recent Attempts">
       {attemptRows.length ? attemptRows.map((row) => {
         const attempt = attemptById.get(row.key);
         return (
@@ -4646,7 +4208,7 @@ function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
     <>
       <SwarmSurfacePanel surface={swarmSurface} limit={rows >= 48 ? 5 : 3} />
 
-      <PaneSection title="Active Work" tone="role.swarm">
+      <PaneSection title="Active Work">
         {workerRows.length ? workerRows.map((row) => {
           const worker = workerById.get(row.key);
           return (
@@ -4659,13 +4221,13 @@ function IdleActivityPane({ rows, workers, approvals, daemons, swarmSurface }: {
         }) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Approvals" tone="status.pending">
+      <PaneSection title="Approvals">
         {approvalRows.length ? approvalRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Background Work" tone="role.swarm">
+      <PaneSection title="Background Work">
         {daemonRows.length ? daemonRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
@@ -4683,7 +4245,7 @@ function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProje
   const ownership = surface.ownership.slice(0, visibleLimit);
   const conflicts = surface.conflicts.slice(0, visibleLimit);
   return (
-    <PaneSection title="Swarm Surface" tone={tone}>
+    <PaneSection title="Swarm Surface">
       <Text color={mutedColor()} wrap="truncate">
         {formatSwarmTopologySummary(surface)}
       </Text>
@@ -4706,42 +4268,23 @@ function SwarmSurfacePanel({ surface, limit = 4 }: { surface?: SwarmSurfaceProje
   );
 }
 
-function ActiveWorkSummary(input: {
-  taskStates: Map<string, TaskState>;
-  taskCompleted: number;
-  taskTotal: number;
-  toolResults: ToolResultState[];
-  density?: TuiDensity;
-}): React.ReactElement {
-  const latestTask = [...input.taskStates.entries()].slice(-1)[0];
-  const latestOutput = input.toolResults.slice(-1)[0];
-  const policySummary = summarizeTaskWritePolicies(input.taskStates);
-  const scopePreview = policySummary.scopedTargets.slice(0, 3).join(", ");
-  const scopeSuffix = policySummary.scopedTargets.length > 3 ? ` +${policySummary.scopedTargets.length - 3} more` : "";
-  const compact = input.density === "compact";
+/** What the current run's tasks are doing and what they may write, or that nothing runs. */
+function OverviewWork({ work, toolOutputs }: { work?: { taskStates: Map<string, TaskState>; taskCompleted: number; taskTotal: number }; toolOutputs: ToolResultState[] }): React.ReactElement {
+  if (!work || work.taskTotal === 0) {
+    return <Text color={mutedColor()}>No active background work.</Text>;
+  }
+  const latestTask = [...work.taskStates.entries()].at(-1);
+  const policies = summarizeTaskWritePolicies(work.taskStates);
+  const scope = policies.scopedTargets.slice(0, 3).join(", ") + (policies.scopedTargets.length > 3 ? ` +${policies.scopedTargets.length - 3} more` : "");
   return (
-    <Box flexDirection="column" width="100%">
-      <Text color={visualTokenColor("role.swarm")} bold>{sectionLabel("Work")}</Text>
-      <Text color={mutedColor()} wrap="truncate">
-        in progress · tasks {input.taskCompleted}/{input.taskTotal || 0} · tool outputs {input.toolResults.length}
-      </Text>
-      {!compact && (
-        <Text color={mutedColor()} wrap="truncate">
-          policies: ro {policySummary.readOnly} · scoped {policySummary.scopedWrite} · workspace {policySummary.workspaceWrite}
-        </Text>
-      )}
-      {policySummary.scopedTargets.length > 0 && (
-        <Text color={mutedColor()} wrap="truncate">
-          scope: {scopePreview}{scopeSuffix}
-        </Text>
-      )}
+    <>
+      <Text color={mutedColor()} wrap="truncate">tasks {work.taskCompleted}/{work.taskTotal} · tool outputs {toolOutputs.length}</Text>
+      <Text color={mutedColor()} wrap="truncate">policies: ro {policies.readOnly} · scoped {policies.scopedWrite} · workspace {policies.workspaceWrite}</Text>
+      {scope ? <Text color={mutedColor()} wrap="truncate">scope: {scope}</Text> : null}
       <Text color={mutedColor()} wrap="truncate">
         task: {latestTask ? `${statusIcon(latestTask[1].status)} ${latestTask[1].title || latestTask[0]}${formatTaskStatePolicyHint(latestTask[1])}` : "(waiting)"}
       </Text>
-      <Text color={mutedColor()} wrap="truncate">
-        output: {latestOutput ? `[${latestOutput.status ?? "unknown"}${latestOutput.errorCode ? `/${latestOutput.errorCode}` : ""}] ${latestOutput.agentLabel ? `${latestOutput.agentLabel}: ` : ""}${latestOutput.summary}` : "(none)"}
-      </Text>
-    </Box>
+    </>
   );
 }
 
@@ -4754,60 +4297,6 @@ function formatTaskStatePolicyHint(task: TaskState): string {
   return parts.length ? ` (${parts.join(" ")})` : "";
 }
 
-function ActivityPanel({ workers, agents }: {
-  workers: WorkerRecord[];
-  agents: Array<Extract<RuntimeEvent, { type: "agent" }>>;
-}): React.ReactElement {
-  if (workers.length) {
-    return (
-      <>
-        {workers.slice(0, 8).map((worker) => (
-          <WorkerLine key={worker.worker_id} worker={worker} compact />
-        ))}
-      </>
-    );
-  }
-  if (agents.length) {
-    return (
-      <>
-        {agents.map((event) => (
-          <Text key={`${event.card.agent_id}-${event.card.status}`} wrap="truncate">
-            {event.card.name || event.card.agent_id} [{event.card.status}] running={event.card.load.running_tasks}/{event.card.load.max_tasks}
-          </Text>
-        ))}
-      </>
-    );
-  }
-  return <Text color={mutedColor()}>No active background work.</Text>;
-}
-
-function WorkerLine({ worker, compact = false }: { worker: WorkerRecord; compact?: boolean }): React.ReactElement {
-  const agent = worker.agent_spec_id
-    ? `${worker.agent_spec_id}${worker.invocation_mode ? `/${worker.invocation_mode}` : ""}`
-    : worker.capability;
-  const displayLabel = workerDisplayLabel(worker);
-  const result = worker.last_result ? ` - ${firstLine(worker.last_result, compact ? 44 : 90)}` : "";
-  if (compact) {
-    return (
-      <Text wrap="truncate" color={workerStatusColor(worker.status)}>
-        {statusIcon(worker.status)} {displayLabel} [{worker.status}]{result}
-      </Text>
-    );
-  }
-  return (
-    <Box flexDirection="column">
-      <Text wrap="truncate" color={workerStatusColor(worker.status)}>
-        {statusIcon(worker.status)} {displayLabel} [{worker.status}]
-      </Text>
-      <Text wrap="truncate" color={mutedColor()}>
-        {worker.worker_id} {agent}{worker.file_scope.length ? ` scope=${worker.file_scope.slice(0, 3).join(",")}` : ""}
-      </Text>
-      {!compact && <Text wrap="truncate">{worker.objective}</Text>}
-      {result && <Text wrap="truncate" color={mutedColor()}>{result}</Text>}
-    </Box>
-  );
-}
-
 function IdleBlackboardPane({ rows, blackboard, messages }: {
   rows: number;
   blackboard: BlackboardEntry[];
@@ -4818,13 +4307,13 @@ function IdleBlackboardPane({ rows, blackboard, messages }: {
   const blackboardRows = orderCompactIdleRows(blackboard.map((entry, index) => compactIdleBlackboardRow(entry, index))).slice(0, blackboardLimit);
   return (
     <>
-      <PaneSection title="Blackboard" tone="role.swarm">
+      <PaneSection title="Blackboard">
         {blackboardRows.length ? blackboardRows.map((row) => (
           <CompactIdleRow key={row.key} row={row} />
         )) : <Text color={mutedColor()}>(none)</Text>}
       </PaneSection>
 
-      <PaneSection title="Recent Messages" tone="text.primary">
+      <PaneSection title="Recent Messages">
         {messages.length ? messages.slice(-recentMessages).map((message, index) => (
           <Text key={`${message.role}-${index}`} wrap="truncate" color={roleColor(message.role)}>
             {message.role}: {message.brief}
@@ -4835,55 +4324,11 @@ function IdleBlackboardPane({ rows, blackboard, messages }: {
   );
 }
 
-function ApprovalView({ request }: { request: ToolApprovalRequest }): React.ReactElement {
-  return <ApprovalOverlay request={request} />;
-}
-
 function approvalSessionRuleKey(request: ToolApprovalRequest, runtime?: SwarmRuntime): string {
   const scope = request.session_id
     ? runtime?.sessionFamilyRootSessionId(request.session_id) ?? request.session_id
     : "sessionless";
   return `${scope}\0${request.action}\0${request.target}`;
-}
-
-function compactResultCardLines(card: RuntimeResultCard): string[] {
-  const changed = card.changedFiles.length ? card.changedFiles.slice(0, 3).join(", ") : "none";
-  const checks = card.checks.length ? card.checks.slice(0, 3).map((check) => `${check.command}[${check.status}]`).join(", ") : "none";
-  const next = card.next.length ? card.next.slice(0, 2).join(" · ") : "none";
-  return [
-    `summary: ${card.summary}`,
-    `changed: ${changed}`,
-    `checks: ${checks}`,
-    `review: ${card.review.status} - ${firstLine(card.review.summary, 120)}`,
-    `next: ${next}`
-  ];
-}
-
-function DetailView({ content, scroll, height, sessionId, route, source, title, density }: {
-  content: string;
-  scroll: number;
-  height: number;
-  sessionId?: string;
-  route?: string;
-  source?: "ai" | "command" | "task" | "event";
-  title?: string;
-  density?: TuiDensity;
-}): React.ReactElement {
-  const lines = content.split(/\r?\n/);
-  const visible = lines.slice(scroll, scroll + height);
-  return (
-    <Box flexDirection="column" width="100%">
-      <InspectorPane
-        title={title ?? detailTitleForSource(source)}
-        sessionId={sessionId}
-        route={route ? routeDisplayLabel(route) : undefined}
-        selected={`lines ${Math.min(scroll + 1, lines.length)}-${Math.min(scroll + height, lines.length)} / ${lines.length}`}
-        tabs={source === "command" ? undefined : ["output", "files", "checks", "workers", "attempts", "debug"]}
-        content={visible.join("\n") || " "}
-        density={density}
-      />
-    </Box>
-  );
 }
 
 function renderConversationMessageDetail(index: number, message: ConversationMessage): string {
@@ -4901,25 +4346,10 @@ function renderConversationMessageDetail(index: number, message: ConversationMes
   ].filter((line): line is string => typeof line === "string").join("\n");
 }
 
-function renderPlanSummary(planned: PlannedSession): string {
-  return [
-    `Plan for ${planned.session.session_id}`,
-    planned.plan.summary,
-    "",
-    ...planned.plan.tasks.map(
-      (task, index) =>
-        `${index + 1}. ${task.title} (${task.required_capabilities.join(", ")})${
-          task.dependencies?.length ? ` after ${task.dependencies.join(", ")}` : ""
-        }`
-    )
-  ].join("\n");
-}
-
-function formatLoopActivityLine(activity: LoopActivityState): string {
-  const turn = activity.turn ? `#${activity.turn} ` : "";
-  const tool = activity.tool ? `${activity.tool} ` : "";
-  const agent = activityAgentLabel(activity);
-  return `${agent ? `${agent} ` : ""}${turn}${activity.phase}: ${tool}${activity.message}`;
+/** Ctrl+R while busy: the running workers, at most five, and how many more. */
+function workerListLines(workers: readonly WorkerRecord[]): string[] {
+  const shown = workers.slice(0, 5).map((worker) => `○ ${workerDisplayLabel(worker)}  ${firstLine(worker.objective, 100)}`);
+  return workers.length > shown.length ? [...shown, `+${workers.length - shown.length} more`] : shown;
 }
 
 function formatConversationActivityLine(activity: LoopActivityState): string {
@@ -4959,52 +4389,6 @@ function runtimeAgentLabel(agent: NonNullable<LoopActivityState["agent"]>): stri
   const name = agent.display_name?.trim() || agent.agent_id || agent.worker_id || agent.agent_spec_id || agent.capability || agent.role || "agent";
   const role = agent.role_title?.trim();
   return role ? `${name} / ${role}` : name;
-}
-
-function conversationBottomStatusRows(_input: {
-  busy?: boolean;
-  hasResult?: boolean;
-}): number {
-  return 0;
-}
-
-function conversationTailRows(input: {
-  busy?: boolean;
-  hasResult?: boolean;
-}): number {
-  if (input.busy) {
-    return 1;
-  }
-  if (input.hasResult) {
-    return 2;
-  }
-  return 0;
-}
-
-function conversationTail(input: {
-  busy?: boolean;
-  activity?: string;
-  motionFrame?: number;
-  resultCard?: RuntimeResultCard;
-  detailAvailable?: boolean;
-}): React.ReactNode {
-  if (input.busy) {
-    return (
-      <ConversationStatusLine
-        message={input.activity ?? "Working"}
-        motionFrame={input.motionFrame}
-      />
-    );
-  }
-  if (input.resultCard) {
-    return (
-      <ConversationResultLine
-        card={input.resultCard}
-        detailAvailable={Boolean(input.detailAvailable)}
-      />
-    );
-  }
-  return undefined;
 }
 
 function normalizeActionLogControlCharacter(character: string | undefined): string {
@@ -5047,52 +4431,6 @@ function tuiKeyEventForInput(
     return "q";
   }
   return "other";
-}
-
-function loopActivityStatus(phase: LoopActivityState["phase"]): string {
-  switch (phase) {
-    case "failed": return "failed";
-    case "completed": return "completed";
-    case "stopped": return "stopped";
-    case "waiting_approval": return "awaiting approval";
-    case "turn_complete": return "idle";
-    default: return "running";
-  }
-}
-
-function loopActivityTone(phase: LoopActivityState["phase"]): TuiTone {
-  switch (phase) {
-    case "failed": return "danger";
-    case "completed": return "success";
-    case "stopped": return "warning";
-    case "waiting_approval": return "pending";
-    case "turn_complete": return "muted";
-    default: return "running";
-  }
-}
-
-function isActiveRunBoardPhase(phase: RunBoardPhase): boolean {
-  return phase === "planning"
-    || phase === "working"
-    || phase === "reviewing"
-    || phase === "waiting-attention"
-    || phase === "verifying";
-}
-
-function statusForRunBoardPhase(phase: RunBoardPhase, resultStatus?: string): string {
-  if (phase === "waiting-attention") return "awaiting approval";
-  if (phase === "planning" || phase === "working" || phase === "reviewing" || phase === "verifying") return "running";
-  if (phase === "done") return resultStatus ?? "completed";
-  if (phase === "failed") return "failed";
-  return resultStatus ?? "idle";
-}
-
-function toneForRunBoardPhase(phase: RunBoardPhase, resultStatus?: string): TuiColorRef {
-  if (phase === "waiting-attention") return "status.pending";
-  if (phase === "planning" || phase === "working" || phase === "reviewing" || phase === "verifying") return "status.running";
-  if (phase === "done") return statusTone(resultStatus ?? "completed") as TuiColorRef;
-  if (phase === "failed") return "status.danger";
-  return statusTone(resultStatus ?? "idle") as TuiColorRef;
 }
 
 async function formatDoctorReport(runtime: SwarmRuntime | undefined, workflowPath?: string): Promise<string> {
@@ -5251,44 +4589,26 @@ function extensionRuntimeDiagnostics(runtime: SwarmRuntime | undefined): {
   };
 }
 
-function footerPendingApprovalCount(
-  activeApproval: ToolApprovalRequest | undefined,
-  recentApprovals: readonly { status?: string }[]
-): number {
-  const persisted = recentApprovals.filter((approval) => approval.status === "pending").length;
-  return Math.max(persisted, activeApproval ? 1 : 0);
-}
-
-function runBoardWorkerIdFromRuntimeEvent(event: RuntimeEvent): string | undefined {
-  if (event.type === "worker" || event.type === "agent_run_started" || event.type === "agent_run_completed") {
-    return `worker:${event.worker.worker_id}`;
+/**
+ * The header's right side: only modes that are not the default, such as a run mode picked with /mode, a permission
+ * mode that skips approvals, or a read-only sandbox.
+ */
+export function headerModeSpans(input: { runMode: string; permissionMode: string; sandboxMode: string }): SemanticTextSpan[] {
+  const spans: SemanticTextSpan[] = [];
+  const add = (text: string, color: TuiColorRef): void => {
+    spans.push(...(spans.length ? [{ text: "  " }] : []), { text, color });
+  };
+  if (input.runMode !== "auto") {
+    add(routeBadge(input.runMode).toLowerCase(), "brand.focus");
   }
-  if (event.type === "handoff_started" || event.type === "handoff_returned" || event.type === "handoff_taken_back") {
-    return `worker:${event.handoff.worker_id}`;
+  if (input.permissionMode !== "ask") {
+    const tone = policyTone(input.permissionMode);
+    add(policyBadge(input.permissionMode).toLowerCase(), tone === "danger" ? "status.danger" : tone === "warning" ? "status.warning" : "status.pending");
   }
-  if (event.type === "task" || event.type === "task_attempt") {
-    return `task:${event.task_id}`;
+  if (input.sandboxMode !== "workspace-write") {
+    add(input.sandboxMode, input.sandboxMode === "read-only" ? "status.pending" : "status.warning");
   }
-  if (event.type === "tool_result") {
-    return event.agent?.worker_id ? `worker:${event.agent.worker_id}` : `task:${event.task_id}`;
-  }
-  if (event.type === "loop_activity" && event.agent?.worker_id) {
-    return `worker:${event.agent.worker_id}`;
-  }
-  if (event.type === "verification_completed" && event.result.worker_id) {
-    return `worker:${event.result.worker_id}`;
-  }
-  return undefined;
-}
-
-function eventTimestampForRunBoard(event: RuntimeEvent): string {
-  if (event.type === "worker" || event.type === "agent_run_started" || event.type === "agent_run_completed") {
-    return event.worker.updated_at;
-  }
-  if (event.type === "handoff_started" || event.type === "handoff_returned" || event.type === "handoff_taken_back") {
-    return event.handoff.updated_at;
-  }
-  return new Date().toISOString();
+  return spans;
 }
 
 function sessionSourceKind(sourceJson: string | null | undefined): string | undefined {
@@ -6577,17 +5897,6 @@ function mergeWorkerRecords(live: Map<string, WorkerRecord>, persisted: WorkerRe
     .slice(0, limit);
 }
 
-function workerStatusColor(status: WorkerRecord["status"]): TuiColorRef {
-  switch (status) {
-    case "pending": return "status.pending";
-    case "running": return "status.running";
-    case "completed": return "status.success";
-    case "failed": return "status.danger";
-    case "stopped": return "status.warning";
-  }
-  return "text.primary";
-}
-
 function shouldOfferAiDetail(detail: string): boolean {
   const lineCount = detail.split(/\r?\n/).length;
   const bytes = Buffer.byteLength(detail, "utf8");
@@ -6621,10 +5930,6 @@ function successColor(): TuiResolvedColor {
 
 function dangerColor(): TuiResolvedColor {
   return visualTokenColor("status.danger");
-}
-
-function selectedTextColor(): TuiResolvedColor {
-  return resolveTuiColor("black");
 }
 
 function shortId(value: string): string {

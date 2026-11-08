@@ -1,13 +1,16 @@
 import React from "react";
-import { Box } from "../ui.js";
+import { Box, Text } from "../ui.js";
 import type { ConversationMessage } from "../conversation-layout.js";
-import { ConversationLogo } from "./ConversationLogo.js";
+import { visualTokenColor } from "../theme.js";
 import { VirtualConversationList } from "./VirtualConversationList.js";
 
+/** The conversation: its transcript, or two quiet lines saying how to start while it is empty. */
 export function ConversationFirstPane(input: {
   messages: ConversationMessage[];
   rows: number;
   columns?: number;
+  /** The workspace, named in the empty conversation's first line. */
+  workspace?: string;
   scrollOffset?: number;
   newMessageCount?: number;
   unseenStartIndex?: number;
@@ -18,33 +21,34 @@ export function ConversationFirstPane(input: {
   tail?: React.ReactNode;
   tailRows?: number;
 }): React.ReactElement {
-  const showLogo = input.messages.length <= 1 && input.messages[0]?.kind === "logo";
+  if (input.messages.length === 0) {
+    return (
+      <Box flexDirection="column" width="100%" height={input.rows} overflow="hidden" paddingTop={1}>
+        <Text color={visualTokenColor("text.primary")} wrap="truncate">
+          Ask anything{input.workspace ? ` about ${input.workspace}` : ""}.
+        </Text>
+        <Text color={visualTokenColor("text.muted")} wrap="truncate">
+          / commands · ? keys
+        </Text>
+        <Box flexGrow={1} />
+        {input.tail}
+      </Box>
+    );
+  }
   return (
-    <Box flexDirection="column" width="100%" height={input.rows} overflow="hidden">
-      {showLogo && (
-        <ConversationLogo
-          columns={input.columns}
-          model={input.messages[0]?.detail}
-          cwd={input.messages[0]?.preview}
-          version={input.messages[0]?.title}
-        />
-      )}
-      {!showLogo && (
-        <VirtualConversationList
-          messages={input.messages}
-          rows={input.rows}
-          columns={input.columns}
-          scrollOffset={input.scrollOffset}
-          newMessageCount={input.newMessageCount}
-          unseenStartIndex={input.unseenStartIndex}
-          expandedMessageKeys={input.expandedMessageKeys}
-          selectedMessageIndex={input.selectedMessageIndex}
-          searchMatchMessageIndex={input.searchMatchMessageIndex}
-          searchMatchQuery={input.searchMatchQuery}
-          tailRows={input.tailRows}
-          tail={input.tail}
-        />
-      )}
-    </Box>
+    <VirtualConversationList
+      messages={input.messages}
+      rows={input.rows}
+      columns={input.columns}
+      scrollOffset={input.scrollOffset}
+      newMessageCount={input.newMessageCount}
+      unseenStartIndex={input.unseenStartIndex}
+      expandedMessageKeys={input.expandedMessageKeys}
+      selectedMessageIndex={input.selectedMessageIndex}
+      searchMatchMessageIndex={input.searchMatchMessageIndex}
+      searchMatchQuery={input.searchMatchQuery}
+      tailRows={input.tailRows}
+      tail={input.tail}
+    />
   );
 }

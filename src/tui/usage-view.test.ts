@@ -7,9 +7,10 @@ import React from "react";
 import { defaultSwarmSettings } from "../config/settings.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { UsageStore } from "../storage/usage-store.js";
-import { BudgetStrip, budgetNoticeRows } from "./components/BudgetStrip.js";
+import { StatusLine } from "./components/StatusLine.js";
 import { assertFrameHasNoOverflow, createFrameSnapshot } from "./renderer/frame-snapshot.js";
 import { renderTuiToFrame } from "./renderer/testing.js";
+import { buildStatusLine } from "./status-line.js";
 import { usageView } from "./usage-view.js";
 
 test("/usage counts each model call of the session once and shows this device's day and its budgets", () => {
@@ -38,16 +39,29 @@ test("/usage counts each model call of the session once and shows this device's 
   }
 });
 
-test("the budget notice above the prompt fits the terminal and takes no rows while no cap is reached", () => {
-  const notices = ["provider deepseek: daily budget reached ($2.0100 of $2.00), new calls stop · raise usage.budgets.providers.deepseek.daily",
-    "harness claude: monthly budget reached ($101.20 of $100.00), new turns stop · raise usage.budgets.harnesses.claude.monthly", "a third"];
+test("the status line puts what needs attention first, fits the terminal, and keeps its hint at the right", () => {
+  const line = buildStatusLine({
+    budgetsReached: ["deepseek daily budget reached"],
+    approvalsWaiting: 1,
+    tickets: { needYou: 2, working: 3 },
+    spentToday: "$0.13",
+    promptEmpty: true
+  });
+  assert.deepEqual(line.items.map((item) => [item.text, item.tone]), [
+    ["deepseek daily budget reached", "danger"], ["1 approval waiting", "warning"], ["2 tickets need you", "warning"], ["$0.13 today", "muted"]
+  ]);
+  assert.equal(line.hint, "? keys");
+  assert.equal(buildStatusLine({ promptEmpty: false }).hint, "", "the hint gives way while typing: ? would be typed");
+  assert.equal(buildStatusLine({ promptEmpty: true, transcriptFocus: true }).hint, "↑↓ pick · Enter fold · o open · Esc prompt");
+  assert.deepEqual(buildStatusLine({ search: { query: "pair", position: "1/3" }, promptEmpty: true }),
+    { items: [{ id: "search", text: "search \"pair\" 1/3", tone: "accent" }], hint: "Enter jump · Esc close" });
+
   for (const columns of [60, 120]) {
-    const frame = renderTuiToFrame(React.createElement(BudgetStrip, { notices, columns }), { columns, rows: 3 });
+    const frame = renderTuiToFrame(React.createElement(StatusLine, { ...line, columns }), { columns, rows: 1 });
     assertFrameHasNoOverflow(createFrameSnapshot(frame));
     const text = frame.screen.cells.map((cells) => cells.map((cell) => cell.char).join("").trimEnd()).join("\n");
-    assert.match(text, /! provider deepseek: daily budget reached/);
-    assert.doesNotMatch(text, /a third/);
+    assert.match(text, /\? keys$/);
+    if (columns === 60) assert.match(text, /^ {3}deepseek daily budget reached +\? keys$/, "items that do not fit are left out whole");
+    else assert.match(text, /^ {3}deepseek daily budget reached · 1 approval waiting · 2 tickets need you · \$0\.13 today +\? keys$/);
   }
-  assert.equal(budgetNoticeRows(notices), 2);
-  assert.equal(budgetNoticeRows([]), 0);
 });

@@ -63,13 +63,13 @@ Swarm now uses the CC-style Swarm-owned DOM renderer as the default and only int
 ## Prompt Input And Shortcut Registry
 
 - `src/tui/chat-input-controller.ts` isolates prompt editing state from app-level command routing.
-- `src/tui/input-rendering.ts`, `src/tui/slash-commands.ts`, and `src/tui/footer-navigation.ts` cover completion overlay, slash mode, footer pills, and narrow terminal row budgets.
-- `src/tui/shortcuts.ts` is the registry for shortcut labels and phrases. Product result text should use helpers such as `appendDetailShortcut`, `detailOpenHint`, and `transcriptSearchHint` instead of hand-written shortcut strings.
+- `src/tui/input-rendering.ts` and `src/tui/slash-commands.ts` cover the completion overlay, slash mode, and narrow terminal row budgets; `src/tui/status-line.ts` decides what the status line under the prompt says.
+- `src/tui/shortcuts.ts` is the registry for shortcut labels and phrases, and `KEYS_VIEW` there is the list the keys view (`?`) shows. Product result text should use helpers such as `appendDetailShortcut`, `detailOpenHint`, and `transcriptSearchHint` instead of hand-written shortcut strings.
 
 ## Design System, Dialogs, And Cockpit
 
-- `src/tui/theme.ts` provides semantic tones and density rules for transcript rows, approvals, cache, services, status rails, and compact operator rows.
-- `src/tui/components/ApprovalOverlay.tsx`, `ConversationFullscreenLayout.tsx`, `StatusRail.tsx`, `ActionLog.tsx`, and `InspectorPane.tsx` share the focus/detail/result surface contract.
+- `src/tui/theme.ts` provides semantic tones and density rules. Screens use a small palette: text, muted text, the brand accent, the status colours, selection, search and diff; role and service tokens resolve to one of those in every profile.
+- `src/tui/components/ApprovalOverlay.tsx` (the approval card), `ConversationFullscreenLayout.tsx`, `ViewFrame.tsx` (the frame every full-screen view shares) and `ActionLog.tsx` share the focus/detail/result surface contract.
 - `src/tui/renderer/operator-cockpit.ts` keeps cache and LSP status visible while surfacing recovery actions in compact operator surfaces.
 
 ## Selection, Links, And Terminal Capabilities
@@ -81,7 +81,6 @@ Swarm now uses the CC-style Swarm-owned DOM renderer as the default and only int
 
 ## State And Instrumentation
 
-- `src/tui/state/*` provides selector-based TUI app state so renderer/product subscribers only fire when their selected slice changes.
 - `src/tui/interaction-replay.ts` and `src/evals/local-evals.ts` provide offline replay, dogfood, and parity gate evidence.
 - Renderer frame output exposes damage and repaint cost metrics for performance regressions.
 

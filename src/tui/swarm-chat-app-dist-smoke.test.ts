@@ -57,8 +57,8 @@ test("built TUI accepts input and exits through the global dist entry path", asy
     try {
       await waitFor(() => stripAnsi(output).includes("Ask Swarm"), "dist initial prompt render");
       await waitFor(
-        () => /\[WORK\].*\[cache:UNKNOWN\]/u.test(stripAnsi(output)),
-        "dist footer status render"
+        () => /\? keys/u.test(stripAnsi(output)),
+        "dist status line render"
       );
       stdin.emit("data", "dist smoke input");
       await waitFor(() => stripAnsi(output).includes("dist smoke input"), "dist prompt text update");

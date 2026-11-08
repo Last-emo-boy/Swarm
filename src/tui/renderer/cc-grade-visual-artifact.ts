@@ -5,6 +5,8 @@ import React from "react";
 import { ChatInputArea } from "../ChatInputArea.js";
 import { ConversationFirstPane } from "../components/ConversationFirstPane.js";
 import { ConversationFullscreenLayout } from "../components/ConversationFullscreenLayout.js";
+import { StatusLine } from "../components/StatusLine.js";
+import { buildStatusLine } from "../status-line.js";
 import type { ConversationMessage } from "../conversation-layout.js";
 import {
   resolveTuiColor,
@@ -78,7 +80,7 @@ export type CcGradeVisualArtifactFiles = {
 const DEFAULT_PROFILES: CcGradeVisualProfileName[] = ["swarm-dark", "swarm-contrast", "swarm-monochrome"];
 
 export function ccGradeVisualFixture(input: { columns: number; rows: number }): React.ReactElement {
-  const bottomRows = 4;
+  const bottomRows = 3;
   return React.createElement(ConversationFullscreenLayout, {
     columns: input.columns,
     rows: input.rows,
@@ -95,22 +97,10 @@ export function ccGradeVisualFixture(input: { columns: number; rows: number }): 
       onSubmit: () => undefined,
       onCompletionRowsChange: () => undefined,
       inputActive: false,
-      footerModeLabel: "WORK",
-      footerModeTone: "brand.focus",
-      footerPermissionLabel: "YOLO",
-      footerPermissionTone: "status.danger",
-      footerSandboxLabel: "RW",
-      footerSandboxTone: "status.success",
-      footerItems: [
-        { id: "tasks", label: "tasks", value: "1/3", tone: "running" },
-        { id: "cache", label: "cache", value: "HIT 74%", tone: "success" },
-        { id: "lsp", label: "lsp", value: "TS", tone: "success" },
-        { id: "gateway", label: "gateway", value: "local", tone: "success" },
-        { id: "symphony", label: "symphony", value: "2 run", tone: "running" }
-      ],
-      selectedFooterItem: "cache",
-      footerHint: "Left/Right footer | [/] message | / search",
-      columns: input.columns,
+      status: ({ promptEmpty }: { promptEmpty: boolean }) => React.createElement(StatusLine, {
+        ...buildStatusLine({ budgetsReached: ["deepseek daily budget reached"], approvalsWaiting: 1, spentToday: "$0.13", promptEmpty }),
+        columns: input.columns
+      }),
       maxRows: bottomRows
     })
   });
@@ -246,19 +236,10 @@ function ccGradeMessages(): ConversationMessage[] {
   return [
     { role: "user", brief: "Find cache miss without losing marker color" },
     { role: "assistant", brief: "Assistant body stays neutral while search and selection use backgrounds." },
-    { role: "user", brief: "Keep the ordinary prompt band visible too." },
-    {
-      role: "system",
-      kind: "tool_use",
-      status: "running",
-      brief: "shell npm run check"
-    },
-    {
-      role: "system",
-      kind: "tool_result",
-      status: "success",
-      brief: "stdout cache hit and tests passed"
-    }
+    { role: "user", brief: "Check the build and the docs." },
+    { role: "system", kind: "tool_use", status: "success", id: "tool:1", tool: { verb: "Read", target: "README.md" }, brief: "Read README.md" },
+    { role: "system", kind: "tool_use", status: "error", id: "tool:2", tool: { verb: "Bash", target: "ls docs/missing", note: "command exited 1" }, brief: "Bash ls docs/missing" },
+    { role: "system", kind: "tool_use", status: "running", id: "tool:3", tool: { verb: "Bash", target: "npm run check", approval: "approved" }, brief: "Bash npm run check" }
   ];
 }
 

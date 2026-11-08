@@ -1,52 +1,102 @@
 import { strict as assert } from "node:assert";
-import { PassThrough } from "node:stream";
 import React from "react";
 import test from "node:test";
-import { render, withTuiRendererMode } from "./ui.js";
+import { withTuiRendererMode } from "./ui.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
-import { ApprovalOverlay } from "./components/ApprovalOverlay.js";
-import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
+import { ApprovalOverlay, approvalCardRows, approvalExpandedRows } from "./components/ApprovalOverlay.js";
+import { PLAN_CARD_ROWS, PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
+import { approvalInputDecision } from "./approval-input.js";
 import { createTuiRoot } from "./renderer/root.js";
 import type { TuiFrame } from "./renderer/frame.js";
 import { renderTuiToFrame } from "./renderer/testing.js";
 import { resolveTuiColor } from "./theme.js";
 
-test("ApprovalOverlay puts decision controls before high-risk detail", async () => {
-  const plain = stripAnsi(await renderElement(React.createElement(ApprovalOverlay, {
-    request: approvalFixture()
-  })));
+test("an ordinary approval is a short card: what, why it was asked, and the keys", () => {
+  const request: ToolApprovalRequest = {
+    ...approvalFixture(),
+    action: "shell.exec",
+    summary: "Run shell command: ls src",
+    detail: "Command: ls src\nCWD: .\nTimeout: 120000 ms",
+    risk_class: "r2",
+    target: "ls src",
+    attention_note: undefined,
+    permission_rule: "Bash(*)",
+    summary_diff: undefined
+  };
+  const rows = approvalCardRows(request);
+  const frame = renderTuiToFrame(React.createElement(ApprovalOverlay, { request }), { columns: 80, rows });
+  const lines = frameLines(frame);
 
-  const decisionIndex = plain.indexOf("DECISION MENU");
-  const riskIndex = plain.indexOf("[HIGH] R4/SHELL shell.exec · TARGET Remove-Item -Recurse build");
-  const summaryIndex = plain.indexOf("SUMMARY Delete generated files under the workspace.");
-  const impactIndex = plain.indexOf("IMPACT Deletes generated output.");
-  const rollbackIndex = plain.indexOf("ROLLBACK Restore from checkpoint or rebuild artifacts.");
-
-  assert(decisionIndex >= 0);
-  assert.match(plain, /Y approve once . S allow same target . N deny . Esc cancel/);
-  assert(riskIndex > decisionIndex);
-  assert(summaryIndex > riskIndex);
-  assert(impactIndex > summaryIndex);
-  assert(rollbackIndex > impactIndex);
-  assert.doesNotMatch(plain, /[┌┐└┘]/);
-  assert.match(plain, /^\s*─{20,}/m);
-  assert.match(plain, /Destructive shell command detected/);
-  assert.match(plain, /GOVERNANCE actor=worker:safety scope=Remove-Item -Recurse build ttl=900000ms/);
-  assert.match(plain, /PREVIEW/);
+  assert.equal(rows, 4);
+  assert.match(lines[0] ?? "", /^─{80}$/);
+  assert.equal(lines[1], " ? Run a command  ls src");
+  assert.equal(lines[2], "   rule Bash(*)");
+  assert.equal(lines[3], "   y yes · a always · n no · ? details");
+  assert.equal(colorAtText(frame, "?"), resolveTuiColor("status.pending"));
+  assert.equal(colorAtText(frame, "Run a command"), resolveTuiColor("text.primary"));
+  assert.equal(colorAtText(frame, "rule Bash"), resolveTuiColor("text.muted"));
 });
 
-test("ApprovalOverlay renders compact risk row with top divider and local accents", () => {
-  const frame = renderTuiToFrame(React.createElement(ApprovalOverlay, {
-    request: approvalFixture()
-  }), { columns: 100, rows: 12 });
-  const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd()).join("\n");
+test("a high-risk approval says so in red and an edit shows the first lines of its diff", () => {
+  const frame = renderTuiToFrame(React.createElement(ApprovalOverlay, { request: approvalFixture() }), { columns: 100, rows: approvalCardRows(approvalFixture()) });
+  const lines = frameLines(frame);
 
-  assert.match(plain, /^\s*─{20,}/m);
-  assert.match(plain, /\[HIGH\] R4\/SHELL shell\.exec · TARGET Remove-Item -Recurse build/);
-  assert.equal(colorAtText(frame, "[HIGH]"), resolveTuiColor("status.danger"));
-  assert.equal(colorAtText(frame, "TARGET"), resolveTuiColor("role.gateway"));
-  assert.equal(colorAtText(frame, "SUMMARY"), resolveTuiColor("text.muted"));
-  assert.equal(colorAtText(frame, "Delete generated files"), resolveTuiColor("status.danger"));
+  assert.equal(lines[1], " ! Run a command  Remove-Item -Recurse build");
+  assert.equal(lines[2], "   rule r4 shell · in E:/Playground/Swarm");
+  assert.equal(lines[3], "   Destructive shell command detected. Review the command literally before approving.");
+  assert.deepEqual(lines.slice(4, 6), ["   - build/old.js", "   + (deleted)"]);
+  assert.equal(colorAtText(frame, "!"), resolveTuiColor("status.danger"));
+  assert.equal(colorAtText(frame, "Destructive"), resolveTuiColor("status.danger"));
+  assert.equal(colorAtText(frame, "- build"), resolveTuiColor("diff.removed"));
+  assert.equal(colorAtText(frame, "+ (deleted)"), resolveTuiColor("diff.added"));
+
+  const edit: ToolApprovalRequest = {
+    ...approvalFixture(),
+    action: "file.edit",
+    risk: "write",
+    risk_class: "r2",
+    target: "src/pair.ts",
+    attention_note: undefined,
+    summary_diff: Array.from({ length: 12 }, (_, index) => `${index % 2 ? "+" : "-"} line ${index + 1}`).join("\n")
+  };
+  assert.equal(approvalCardRows(edit), 4 + 8, "at most eight diff lines before ?");
+  assert.match(frameLines(renderTuiToFrame(React.createElement(ApprovalOverlay, { request: edit }), { columns: 80, rows: 12 }))[1] ?? "", /^ \? Edit a file {2}src\/pair\.ts$/);
+});
+
+test("? opens the whole request inside the card, cut to the rows it is given", () => {
+  const request = approvalFixture();
+  const plain = frameLines(renderTuiToFrame(React.createElement(ApprovalOverlay, { request, expanded: true }), { columns: 140, rows: 24 })).join("\n");
+
+  assert.match(plain, /Risk \[HIGH\] R4\/SHELL shell\.exec/);
+  assert.match(plain, /Summary Delete generated files under the workspace\./);
+  assert.match(plain, /Review focus: high-risk operation/);
+  assert.match(plain, /Why now The build folder must be cleared/);
+  assert.match(plain, /Permission: shell\.exec ask \| Destructive shell command requires explicit approval\./);
+  assert.match(plain, /Governance actor=worker:safety scope=Remove-Item -Recurse build ttl=900000ms/);
+  assert.match(plain, /Impact Deletes generated output\./);
+  assert.match(plain, /Rollback Restore from checkpoint or rebuild artifacts\./);
+  assert.match(plain, /a always allows this target for the rest of the session/);
+  assert.match(plain, /y yes · a always · n no · \? less/);
+  assert(approvalExpandedRows(request) > approvalCardRows(request));
+
+  const cut = frameLines(renderTuiToFrame(React.createElement(ApprovalOverlay, { request, expanded: true, maxRows: 8 }), { columns: 80, rows: 12 }));
+  assert.equal(cut.filter(Boolean).length, 8, "the card keeps to the rows it is given");
+  assert.match(cut.filter(Boolean).at(-1) ?? "", /\? less$/, "the keys stay visible");
+  assert(cut.every((line) => line.length <= 80), "long lines are cut at the terminal's edge");
+});
+
+test("approval keys: y once, a or s for the rest of the session, n, Esc or Ctrl+C no", () => {
+  const decide = (character: string, key = {}) => {
+    const decision = approvalInputDecision(character, key);
+    return decision.handled ? [decision.approved, decision.rememberForSession] : "ignored";
+  };
+  assert.deepEqual(decide("y"), [true, false]);
+  assert.deepEqual(decide("a"), [true, true]);
+  assert.deepEqual(decide("s"), [true, true]);
+  assert.deepEqual(decide("n"), [false, false]);
+  assert.deepEqual(decide("", { escape: true }), [false, false]);
+  assert.deepEqual(decide("c", { ctrl: true }), [false, false]);
+  assert.equal(decide("?"), "ignored", "? opens the details; the app handles it");
 });
 
 test("ApprovalOverlay claims dom-renderer approval keys through focused DOM handler", () => {
@@ -63,49 +113,29 @@ test("ApprovalOverlay claims dom-renderer approval keys through focused DOM hand
   });
 
   assert.equal(root.getFocusManager().activeElement?.focusable, true);
-  root.dispatchInput("s");
+  root.dispatchInput("a");
   root.dispatchInput(undefined, { escape: true });
 
   assert.deepEqual(decisions, ["true:true", "false:false"]);
   root.unmount();
 });
 
-test("PlanApprovalOverlay renders pending plan controls with semantic colors", () => {
+test("a plan waiting for approval is the same short card", () => {
   const frame = renderTuiToFrame(React.createElement(PlanApprovalOverlay, {
-    summary: "Refactor the TUI footer and command-output focus flow.",
+    summary: "Refactor the TUI footer and command-output focus flow.\nSecond line is not shown.",
     taskCount: 3
-  }), { columns: 96, rows: 5 });
-  const plain = frame.screen.cells.map((row) => row.map((cell) => cell.char).join("")).join("\n");
+  }), { columns: 96, rows: PLAN_CARD_ROWS });
+  const lines = frameLines(frame);
 
-  assert.match(plain, /PLAN APPROVAL/);
-  assert.match(plain, /Refactor the TUI footer/);
-  assert.match(plain, /y approve/);
-  assert.match(plain, /^\s*─{20,}/m);
-  assert.doesNotMatch(plain, /[┌┐└┘]/);
-  assert.equal(colorAtText(frame, "[?]"), resolveTuiColor("status.pending"));
-  assert.equal(colorAtText(frame, "REVIEW"), resolveTuiColor("role.gateway"));
-  assert.equal(colorAtText(frame, "Refactor the TUI footer"), resolveTuiColor("text.primary"));
-  assert.equal(colorAtText(frame, "[ASK]"), resolveTuiColor("status.pending"));
-  assert.equal(colorAtText(frame, "y approve"), resolveTuiColor("text.muted"));
+  assert.match(lines[0] ?? "", /^─{96}$/);
+  assert.equal(lines[1], " ? Run this plan  Refactor the TUI footer and command-output focus flow. · 3 tasks");
+  assert.equal(lines[2], "   y yes · n no · Ctrl+O plan");
+  assert.equal(colorAtText(frame, "?"), resolveTuiColor("status.pending"));
+  assert.equal(colorAtText(frame, "· 3 tasks"), resolveTuiColor("text.muted"));
 });
 
-function renderElement(element: React.ReactElement): Promise<string> {
-  const stream = new PassThrough();
-  let output = "";
-  stream.on("data", (chunk: Buffer | string) => {
-    output += chunk.toString();
-  });
-  const app = render(element, {
-    stdout: stream as unknown as NodeJS.WriteStream,
-    stderr: stream as unknown as NodeJS.WriteStream,
-    patchConsole: false
-  });
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      app.unmount();
-      resolve(output);
-    }, 20);
-  });
+function frameLines(frame: TuiFrame): string[] {
+  return frame.screen.cells.map((row) => row.map((cell) => cell.char).join("").trimEnd());
 }
 
 function approvalFixture(): ToolApprovalRequest {
@@ -157,12 +187,6 @@ function approvalFixture(): ToolApprovalRequest {
     },
     summary_diff: "- build/old.js\n+ (deleted)"
   };
-}
-
-function stripAnsi(value: string): string {
-  return value
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "");
 }
 
 function colorAtText(frame: TuiFrame, needle: string): string | undefined {

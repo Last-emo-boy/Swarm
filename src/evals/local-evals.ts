@@ -1965,7 +1965,7 @@ function checkTuiEventBufferBehavior(): EvalCaseResult {
 
 function checkTuiApprovalInputBehavior(): EvalCaseResult {
   const yes = approvalInputDecision("y", {});
-  const allowOnce = approvalInputDecision("a", {});
+  const allowAlways = approvalInputDecision("a", {});
   const allowSession = approvalInputDecision("s", {});
   const no = approvalInputDecision("n", {});
   const deny = approvalInputDecision("d", {});
@@ -1973,7 +1973,7 @@ function checkTuiApprovalInputBehavior(): EvalCaseResult {
   const ctrlC = approvalInputDecision("c", { ctrl: true });
   const ignored = approvalInputDecision("x", {});
   const ok = yes.handled && yes.approved && !yes.rememberForSession
-    && allowOnce.handled && allowOnce.approved && !allowOnce.rememberForSession
+    && allowAlways.handled && allowAlways.approved && allowAlways.rememberForSession
     && allowSession.handled && allowSession.approved && allowSession.rememberForSession
     && no.handled && !no.approved && !no.rememberForSession
     && deny.handled && !deny.approved && !deny.rememberForSession
@@ -1985,7 +1985,7 @@ function checkTuiApprovalInputBehavior(): EvalCaseResult {
     : {
         name: "TUI approval input maps decisions deterministically",
         status: "fail",
-        message: `yes=${fmtApprovalDecision(yes)} once=${fmtApprovalDecision(allowOnce)} session=${fmtApprovalDecision(allowSession)} no=${fmtApprovalDecision(no)} deny=${fmtApprovalDecision(deny)} escape=${fmtApprovalDecision(escape)} ctrlC=${fmtApprovalDecision(ctrlC)} ignored=${fmtApprovalDecision(ignored)}`
+        message: `yes=${fmtApprovalDecision(yes)} always=${fmtApprovalDecision(allowAlways)} session=${fmtApprovalDecision(allowSession)} no=${fmtApprovalDecision(no)} deny=${fmtApprovalDecision(deny)} escape=${fmtApprovalDecision(escape)} ctrlC=${fmtApprovalDecision(ctrlC)} ignored=${fmtApprovalDecision(ignored)}`
       };
 }
 

@@ -12,7 +12,7 @@ import {
 
 test("TUI shortcut registry formats detail and modal hints consistently", () => {
   assert.equal(shortcutHint(["command.select", "command.accept", "command.close"]), "Up/Down select | Tab accept | Esc close");
-  assert.equal(shortcutHint(["approval.approve_once", "approval.allow_target", "approval.deny", "approval.cancel"]), "Y approve once | S allow target | N deny | Esc cancel");
+  assert.equal(shortcutHint(["approval.approve_once", "approval.allow_target", "approval.deny", "approval.cancel"]), "y yes | a always | n no | Esc no");
   assert.equal(detailShortcutPhrase(), "Ctrl+O for details");
   assert.equal(appendDetailShortcut("Work commands"), "Work commands. Ctrl+O for details.");
   assert.equal(appendDetailShortcut("Continue started", "preflight"), "Continue started. Ctrl+O for preflight.");
@@ -21,9 +21,9 @@ test("TUI shortcut registry formats detail and modal hints consistently", () => 
 });
 
 test("worker rail toggle is registered with a discoverable Ctrl+R label", () => {
-  const railToggle = TUI_SHORTCUTS["run-board.toggle_rail"];
+  const railToggle = TUI_SHORTCUTS["workers.toggle"];
   assert.deepEqual(railToggle.keys, ["Ctrl+R"]);
-  assert.match(shortcutLabel("run-board.toggle_rail"), /Ctrl\+R/);
-  assert.equal(shortcutHint(["run-board.toggle_rail"]), "Ctrl+R workers");
+  assert.match(shortcutLabel("workers.toggle"), /Ctrl\+R/);
+  assert.equal(shortcutHint(["workers.toggle"]), "Ctrl+R workers");
 });
 

@@ -78,7 +78,9 @@ function paintNode(
     nodeName: node.nodeName
   };
   if (node.nodeName === "swarm-text") {
-    paintInlineChildren(node, node.layout.x, node.layout.y, screen, style, metadata);
+    // A truncated text stops at its own right edge; without the clip its overflow wraps onto the rows below it.
+    const clipX = node.attributes.wrap === "truncate" ? node.layout.x + node.layout.width : undefined;
+    paintInlineChildren(node, node.layout.x, node.layout.y, screen, style, metadata, clipX);
     return;
   }
   if (node.nodeName === "swarm-raw-ansi") {
@@ -165,11 +167,12 @@ function paintInlineChildren(
   y: number,
   screen: ReturnType<typeof createScreen>,
   style: TuiStyle,
-  metadata: TuiScreenCellMetadata
+  metadata: TuiScreenCellMetadata,
+  clipX?: number
 ): { x: number; y: number } {
   let cursor = { x, y };
   for (const child of node.childNodes) {
-    cursor = paintInlineNode(child, cursor.x, cursor.y, x, screen, style, metadata);
+    cursor = paintInlineNode(child, cursor.x, cursor.y, x, screen, style, metadata, clipX);
   }
   return cursor;
 }
@@ -181,7 +184,8 @@ function paintInlineNode(
   lineStartX: number,
   screen: ReturnType<typeof createScreen>,
   inheritedStyle: TuiStyle,
-  inheritedMetadata: TuiScreenCellMetadata
+  inheritedMetadata: TuiScreenCellMetadata,
+  clipX?: number
 ): { x: number; y: number } {
   if (node.hidden) {
     return { x, y };
@@ -190,7 +194,7 @@ function paintInlineNode(
     ? { ...inheritedStyle, ...node.style }
     : { ...inheritedStyle, ...node.style };
   if (node.nodeName === "#text") {
-    return paintText(node.nodeValue, x, y, screen, style, inheritedMetadata, lineStartX);
+    return paintText(node.nodeValue, x, y, screen, style, inheritedMetadata, lineStartX, clipX);
   }
   const metadata: TuiScreenCellMetadata = {
     hyperlink: node.nodeName === "swarm-link" && typeof node.attributes.href === "string"
@@ -200,7 +204,7 @@ function paintInlineNode(
     ownerChain: node.debugOwnerChain.length ? node.debugOwnerChain : inheritedMetadata.ownerChain,
     nodeName: node.nodeName
   };
-  return paintInlineChildren(node, x, y, screen, style, metadata);
+  return paintInlineChildren(node, x, y, screen, style, metadata, clipX);
 }
 
 function paintAnsiText(
@@ -227,7 +231,8 @@ function paintText(
   screen: ReturnType<typeof createScreen>,
   style: TuiStyle,
   metadata: TuiScreenCellMetadata,
-  lineStartX = x
+  lineStartX = x,
+  clipX?: number
 ): { x: number; y: number } {
   let cursorX = x;
   let cursorY = y;
@@ -239,7 +244,16 @@ function paintText(
     }
     const charWidth = displayWidth(char);
     if (charWidth === 0) {
-      appendCombiningMark(screen, cursorX - 1, cursorY, char);
+      if (clipX === undefined || cursorX <= clipX) {
+        appendCombiningMark(screen, cursorX - 1, cursorY, char);
+      }
+      continue;
+    }
+    if (clipX !== undefined) {
+      if (cursorX + charWidth <= clipX) {
+        setCell(screen, cursorX, cursorY, char, style, metadata);
+      }
+      cursorX += charWidth;
       continue;
     }
     setCell(screen, cursorX, cursorY, char, style, metadata);

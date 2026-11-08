@@ -7,11 +7,10 @@ import React from "react";
 import { renderTuiToFrame } from "../renderer/testing.js";
 import { assertFrameHasNoOverflow, createFrameSnapshot } from "../renderer/frame-snapshot.js";
 import { displayWidth } from "../display-width.js";
-import { NeedsYouStrip } from "../components/NeedsYouStrip.js";
 import { TicketsPane } from "../components/TicketsPane.js";
 import { ConversationHeader } from "../components/ConversationHeader.js";
 import { truncateSpans } from "../components/SemanticTextLine.js";
-import { needsYouItems, needsYouRows, paneOrder, ticketDetailText, ticketsFooterValue, ticketsPaneLines, ticketsPillValue } from "./view-model.js";
+import { needsYouItems, paneOrder, ticketDetailText, ticketsPaneLines, ticketsPillValue } from "./view-model.js";
 import { runTicketCommand } from "./commands.js";
 import { TuiTickets } from "./controller.js";
 import type { TicketRow } from "../../superagent/views.js";
@@ -38,16 +37,12 @@ test("needs-you items say what each ticket needs and the command that answers it
     ["!", "awaiting review · PR #31", "/ticket 33333333"],
     ["×", "failed", "/ticket retry 44444444"]
   ]);
-  assert.equal(needsYouRows(items), 4);
-  assert.equal(needsYouRows(items, 2), 4, "a heading, two items and +1 more");
-  assert.equal(needsYouRows([]), 0);
 });
 
-test("the footer and pane summaries put what needs a person first", () => {
+test("the pane summary puts what needs a person first", () => {
   const status = { running: true, counts: { person: 3, working: 1, queued: 0, idle: 0, ended: 1 } };
-  assert.equal(ticketsFooterValue(status), "3 need you");
   assert.equal(ticketsPillValue(status), "3 need you · 1 working");
-  assert.equal(ticketsFooterValue({ running: false, counts: { person: 0, working: 0, queued: 0, idle: 0, ended: 0 } }), "no host");
+  assert.equal(ticketsPillValue({ running: false, counts: { person: 0, working: 0, queued: 0, idle: 0, ended: 0 } }), "no host");
 });
 
 test("the tickets pane groups tickets by what they wait for and indexes the selection in that order", () => {
@@ -69,28 +64,16 @@ test("truncateSpans keeps a multi-span line within its width, also with wide cha
   assert.equal(truncateSpans(spans, 200).length, spans.length);
 });
 
-test("the needs-you strip fits narrow terminals and keeps each item's command visible", () => {
-  const items = needsYouItems([...rows, row({ id: "6".repeat(32), short: "66666666", group: "person", label: "Blocked", title: "这是一个很长的中文工单标题，用来测试宽字符截断是否正确" })]);
-  for (const columns of [80, 120]) {
-    const frame = renderTuiToFrame(React.createElement(NeedsYouStrip, { items, columns }), { columns, rows: 6 });
-    assertFrameHasNoOverflow(createFrameSnapshot(frame));
-    const text = plain(frame);
-    assert.match(text, /needs you/);
-    assert.match(text, /\/ticket say 22222222/);
-    assert.match(text, /\+1 more/);
-  }
-});
-
 test("the tickets pane and header render within the terminal", () => {
   const pane = renderTuiToFrame(React.createElement(TicketsPane, { rows: paneOrder(rows), selected: 0, columns: 80, height: 12, summary: "3 need you · 1 working", hosting: true }), { columns: 80, rows: 12 });
   assertFrameHasNoOverflow(createFrameSnapshot(pane));
   assert.match(plain(pane), /▸ \? 22222222/);
   assert.match(plain(pane), /host in this TUI/);
   const header = renderTuiToFrame(React.createElement(ConversationHeader, { columns: 60, model: "kimi-coding/kimi-for-coding",
-    workspace: "~/Playground/a-very-long-project-directory-name/that-keeps-going", right: [{ text: "work · ask · rw" }] }), { columns: 60, rows: 1 });
+    workspace: "~/Playground/a-very-long-project-directory-name/that-keeps-going", right: [{ text: "yolo" }, { text: "  " }, { text: "read-only" }] }), { columns: 60, rows: 1 });
   assertFrameHasNoOverflow(createFrameSnapshot(header));
-  assert.match(plain(header), /^ Swarm · kimi-coding/);
-  assert.match(plain(header), /work · ask · rw$/);
+  assert.match(plain(header), /^ swarm {2}kimi-coding\/kimi-for-coding {2}…/, "the workspace gives way first");
+  assert.match(plain(header), /yolo {2}read-only$/);
 });
 
 test("ticket commands file a request, show and answer a ticket, and do not start a host while another runs", async () => {

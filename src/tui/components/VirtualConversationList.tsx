@@ -4,7 +4,9 @@ import {
   normalizeConversationScrollOffset,
   applyConversationDynamicLineState,
   conversationMessageFoldKey,
+  conversationRenderPlan,
   renderConversationMessageLines,
+  renderToolGroupLines,
   unseenTranscriptPill,
   type ConversationRenderOptions,
   type ConversationLine,
@@ -204,7 +206,7 @@ export function VirtualConversationList(input: {
     <Box flexDirection="column" width="100%" height={input.rows} overflow="hidden">
       {layout.stickyPrompt && (
         <Text color={visualTokenColor("text.muted")} wrap="truncate">
-          ❯ {layout.stickyPrompt}
+          › {layout.stickyPrompt}
         </Text>
       )}
       <Box flexDirection="column" width="100%" flexGrow={1} flexShrink={1} overflow="hidden">
@@ -246,27 +248,36 @@ function buildVirtualConversationItems(
     options.unseenStartIndex >= 0 &&
     options.unseenStartIndex < messages.length;
 
-  messages.forEach((message, index) => {
+  const renderOptions = {
+    expandedMessageKeys: options.expandedMessageKeys,
+    selectedMessageIndex: options.selectedMessageIndex,
+    searchMatchMessageIndex: options.searchMatchMessageIndex,
+    searchMatchQuery: options.searchMatchQuery
+  };
+  const plan = conversationRenderPlan(messages, {
+    expandedMessageKeys: options.expandedMessageKeys,
+    reveal: [options.selectedMessageIndex, options.searchMatchMessageIndex]
+  });
+  for (const entry of plan) {
+    const index = entry.kind === "group" ? entry.first : entry.index;
     if (shouldRenderDivider && index === options.unseenStartIndex) {
       items.push({
         key: `divider:${index}`,
         lines: [unseenDividerLine(index, options.newMessageCount ?? 0)]
       });
     }
-    const lines = options.cache.getMessageLines(message, index, columns, {
-      expandedMessageKeys: options.expandedMessageKeys,
-      selectedMessageIndex: options.selectedMessageIndex,
-      searchMatchMessageIndex: options.searchMatchMessageIndex,
-      searchMatchQuery: options.searchMatchQuery
-    });
+    // A group's line depends on all of its rows, so it is rendered each time; it is one line while folded.
+    const lines = entry.kind === "group"
+      ? renderToolGroupLines(messages, entry, columns, renderOptions).map((line) => ({ ...line, key: `group:${index}:${line.key}` }))
+      : options.cache.getMessageLines(messages[index]!, index, columns, renderOptions);
     if (lines.length > 0) {
       items.push({
-        key: `message:${index}`,
+        key: `${entry.kind}:${index}`,
         messageIndex: index,
         lines
       });
     }
-  });
+  }
 
   let cursor = 0;
   return items.map((item) => {
@@ -410,7 +421,7 @@ function unseenDividerLine(unseenStartIndex: number, newMessageCount: number): C
   return {
     key: `transcript:unseen-divider:${unseenStartIndex}`,
     role: "system",
-    text: `--- ${count} new message${count === 1 ? "" : "s"} ---`,
+    text: `── ${count} new message${count === 1 ? "" : "s"} ──`,
     kind: "divider",
     dim: true
   };
