@@ -112,6 +112,27 @@ export const AccessSchema = z.object({
   limits: z.object({ owner: LimitsSchema.optional(), maintainer: LimitsSchema.optional(), everyone: LimitsSchema.optional() }).strict().default({})
 }).strict();
 export type Access = z.infer<typeof AccessSchema>;
+/**
+ * The agent in group chats beyond its work: the chats where it joins the conversation on its own after a lull, who it is
+ * there, and how often it may speak. A message that addresses it and asks for no work gets an answer anywhere.
+ */
+export const ChatterSchema = z.object({
+  /** Feishu chats (oc_...) where it joins in on its own; owners set them with /chatter, and each must be listened to in full. */
+  chats: z.array(z.string().regex(/^oc_[A-Za-z0-9]+$/)).default([]),
+  /** Who the agent is in conversation: its voice, manner and interests. */
+  persona: z.string().trim().max(2000).default(""),
+  model: ModelRefSchema,
+  /** How long a chat stays quiet before the agent considers saying something. */
+  lullSeconds: z.number().int().min(10).max(3600).default(90),
+  /** The least time between two considerations of one chat. */
+  considerMinutes: z.number().int().min(1).max(1440).default(10),
+  /** The most messages it posts on its own in one chat in an hour. */
+  perHour: z.number().int().min(0).max(30).default(2),
+  /** Hours, in `timeZone`, from `from` until `to`, when it posts nothing on its own. */
+  quiet: z.object({ from: z.number().int().min(0).max(23), to: z.number().int().min(0).max(23), timeZone: z.string().default("Asia/Shanghai") })
+    .strict().optional()
+}).strict();
+export type Chatter = z.infer<typeof ChatterSchema>;
 export const SourceInstanceSchema = z.object({
   enabled: z.boolean().default(true),
   config: z.record(z.string(), z.unknown()).default({})
@@ -122,7 +143,8 @@ export const SettingsSchema = z.object({
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
-  access: AccessSchema.optional()
+  access: AccessSchema.optional(),
+  chatter: ChatterSchema.optional()
 }).strict();
 export type Settings = z.infer<typeof SettingsSchema>;
 

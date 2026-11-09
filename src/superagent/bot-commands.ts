@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { z } from "zod/v4";
 import { UserError, key, liveTicket, threadKey, type ReceiveResult, type Role, type Ticket, type Trigger, type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
+import { chatterOf } from "./chatter.js";
 import { WorktreeNameSchema } from "./messages.js";
 import { addressable, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, steers } from "./policy.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
@@ -15,14 +16,14 @@ import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
 import { patchPath } from "./ticket-tools.js";
 
 const HOUR_MS = 3_600_000;
-export const COMMANDS = ["help", "me", "role", "listen", "ceiling", "takeover"] as const;
+export const COMMANDS = ["help", "me", "role", "listen", "ceiling", "chatter", "takeover"] as const;
 export type CommandName = typeof COMMANDS[number];
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 
 const MentionsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
 const short = (id: string): string => id.slice(0, 8);
 const HELP = "Commands: /me shows your role and limits; /takeover [ticket] opens a pull request from a local ticket's patch. "
-  + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off in a group, /ceiling read-only|local|github.";
+  + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.";
 
 /** The bot command a person's Feishu message to the agent gives, after the mentions it starts with, if it gives one. */
 export function commandOf(trigger: Trigger): Command | undefined {
@@ -105,6 +106,7 @@ export class BotCommands {
       case "role": return this.role(command, trigger, settings);
       case "listen": return this.listen(command, trigger, settings);
       case "ceiling": return this.ceiling(command, trigger, settings);
+      case "chatter": return this.chatter(command, trigger, settings);
       case "takeover": return this.takeover(command, trigger, settings);
     }
   }
@@ -162,6 +164,8 @@ export class BotCommands {
       const kept = chats.find((chat) => chat.chatId === chatId);
       const others = chats.filter((chat) => chat.chatId !== chatId);
       source.config = { ...source.config, chats: mode === "off" ? others : [...others, { ...kept, chatId, listen: mode }] };
+      // The agent joins a conversation on its own only where it reads all of it.
+      if (mode !== "all" && next.chatter) next.chatter = { ...next.chatter, chats: next.chatter.chats.filter((chat) => chat !== chatId) };
       return next;
     }, settingsPath(this.client.stateDir));
     return mode === "off" ? "This chat is off the list now; an owner can list it again in the settings file."
@@ -182,6 +186,28 @@ export class BotCommands {
       return next;
     }, settingsPath(this.client.stateDir));
     return `Work asked for here writes ${level} at most from now on.`;
+  }
+
+  /**
+   * `/chatter on|off`, in a group an owner listed with /listen all: whether the agent joins the conversation there on its
+   * own; without an argument, whether it does.
+   */
+  private chatter(command: Command, trigger: Trigger, settings: Settings): string {
+    const chatId = String(trigger.meta.chatId ?? "");
+    const on = chatterOf(settings).chats.includes(chatId);
+    if (trigger.meta.direct === true) return "/chatter works in a group chat.";
+    const mode = command.args[0];
+    if (!mode) return on ? `I join the conversation here now and then, at most ${chatterOf(settings).perHour} times an hour.` : "I speak here only when someone mentions me.";
+    this.owner(trigger, settings);
+    if (mode !== "on" && mode !== "off") return "Usage: /chatter on|off";
+    const listed = z.array(z.looseObject({ chatId: z.string(), listen: z.string().optional() })).catch([]).parse(settings.sources[FEISHU]?.config.chats);
+    if (mode === "on" && listed.find((chat) => chat.chatId === chatId)?.listen !== "all") return "First send /listen all here: I need to read the whole conversation.";
+    updateSettings((next) => {
+      const current = chatterOf(next);
+      next.chatter = { ...current, chats: mode === "on" ? [...new Set([...current.chats, chatId])] : current.chats.filter((chat) => chat !== chatId) };
+      return next;
+    }, settingsPath(this.client.stateDir));
+    return mode === "on" ? "I'll join the conversation here now and then." : "I'll speak here only when someone mentions me.";
   }
 
   /**

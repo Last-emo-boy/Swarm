@@ -34,6 +34,17 @@ describe('attachments', () => {
     expect(calls.at(-1)).toContain('m1-nofile')
     await expect(sendFeishu({ commands: refuse(new CliError('lark-cli timed out')) }, message(path))).rejects.toThrow('timed out')
   }))
+  it('posts into the chat itself, as a plain message or a reply that quotes a message, not in a topic', async () => {
+    const calls: string[][] = []
+    const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands
+    const chat = (address: Record<string, string>): OutboundMessage => ({ id: 'c1', kind: 'notice', text: 'Tea time?', channel: { source: 'feishu', thread: 'feishu:oc_1', address } })
+    expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat' }))).toBe('sent')
+    expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat', messageId: 'om_9' }))).toBe('sent')
+    expect(calls).toEqual([
+      ['im', '+messages-send', '--chat-id', 'oc_1', '--text', 'Tea time?', '--idempotency-key', 'c1'],
+      ['im', '+messages-reply', '--message-id', 'om_9', '--text', 'Tea time?', '--idempotency-key', 'c1']
+    ])
+  })
   it('folds an attachment into the end of a GitHub comment', () => withPatch(async (path) => {
     const posted: string[] = []
     const commands = { deployment: { repository: 'o/r', github: { cli: 'gh', login: 'agent' } }, pages: async () => [],

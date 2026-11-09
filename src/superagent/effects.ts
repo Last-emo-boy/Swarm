@@ -22,6 +22,8 @@ export interface EffectPayloads {
   stop: { ticketId: string; reason: string }
   /** Send a message for a Channel through its Source; the key is the message ID, whose receipt the Outbox keeps. */
   reply: Record<string, never>
+  /** Ask the model whether the agent says something in a group chat after a lull; the key is the chat ID. */
+  chatter: { chatId: string }
 }
 export type EffectKind = keyof EffectPayloads
 interface Handler<K extends EffectKind> {

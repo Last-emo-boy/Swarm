@@ -81,6 +81,10 @@ export function storeReads(db: DatabaseSync) {
     LEFT JOIN disposition d ON d.id = t.id WHERE t.at >= ? AND t.at < ? AND t.value ->> '$.actor.source' = ? AND t.value ->> '$.actor.id' = ?
     AND t.value ->> '$.addressed' IS NOT NULL AND d.value ->> '$.filtered' IS NULL AND IFNULL(d.value ->> '$.command', '') <> 'limit'`)
     .get(from, to, actor.source, actor.id)?.n ?? 0),
+  /** The latest `limit` messages people wrote in a Feishu chat at or after `since`, newest first. */
+  chatMessages: (chatId: string, since: string, limit: number): Trigger[] => values<Trigger>(`SELECT value FROM trigger WHERE at >= ?
+    AND value ->> '$.source' = 'feishu' AND value ->> '$.meta.chatId' = ? AND value ->> '$.human' = 1 ORDER BY at DESC, rowid DESC LIMIT ?`,
+    since, chatId, limit),
   subscribedThreads: (source?: string): Thread[] => source
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.

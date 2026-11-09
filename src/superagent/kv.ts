@@ -33,6 +33,12 @@ export const KV = {
    * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.
    */
   mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
+  /**
+   * The agent in group chats (chatter.ts): by chat, when it last considered speaking, what it said there lately, and the
+   * names of the chat's members as Feishu last listed them.
+   */
+  chatter: { chat: family<{ consideredAt?: string; said: { at: string; text: string }[] }, [chat: string]>('chatter:'),
+    members: family<{ at: string; names: Record<string, string> }, [chat: string]>('chatter-members:') },
   /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */
   harness: { chosen: family<string>('harness-chosen:') },
   /**

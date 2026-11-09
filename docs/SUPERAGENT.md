@@ -119,8 +119,28 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
+| `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own |
 
 The first owner is set in the settings file.
+
+### Conversation
+
+A message addressed to the agent that asks for no work, such as a greeting, thanks or a question it can answer from the
+message alone, gets a short answer in its conversation and starts no ticket.
+
+In a group an owner listed with `/listen all`, `/chatter on` lets the agent join the conversation on its own, reading the
+room (読空気): once the chat has been quiet for `lullSeconds`, one model call reads its latest messages, with what the
+agent said there, and decides whether a member would say something now. Saying nothing is the usual answer. It posts as
+a plain message in the chat, or a reply that quotes the one message it answers, at most `perHour` times an hour, never in
+`quiet` hours, and considers a chat at most every `considerMinutes`. `/chatter off`, or listening to mentions only, ends it.
+
+```json
+{ "chatter": { "chats": ["oc_..."], "persona": "Who the agent is in conversation", "perHour": 2,
+  "lullSeconds": 90, "considerMinutes": 10, "quiet": { "from": 23, "to": 8, "timeZone": "Asia/Shanghai" } } }
+```
+
+The persona also shapes its answers to messages addressed to it. Reading every message of a group needs the Feishu app's
+`im:message.group_msg` permission.
 
 ## Safety
 
