@@ -6,6 +6,7 @@
   "files": [
     "dist",
     "README.md",
+    "README.zh-CN.md",
     "docs"
   ],
   "bin": {
