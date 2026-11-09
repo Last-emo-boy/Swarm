@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="884" height="424" viewBox="0 0 884 424" role="img" aria-label="Swarm in a terminal: an earlier question folded to one line, then an edit to src/mesh/pair.ts waiting on a short approval card that shows the diff.">
+<title>Swarm in a terminal: an earlier question folded to one line, then an edit to src/mesh/pair.ts waiting on a short approval card that shows the diff.</title>
+<rect width="884" height="424" rx="12" fill="#17191c"/>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+<text xml:space="preserve" x="30.4" y="36" textLength="42" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">swarm</text>
+<text xml:space="preserve" x="72.4" y="36" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">  kimi-coding/kimi-for-coding  </text>
+<text xml:space="preserve" x="332.8" y="36" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#919191">~/projects/swarm-demo</text>
+<text xml:space="preserve" x="30.4" y="56" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">› </text>
+<text xml:space="preserve" x="47.2" y="56" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">How do devices pair in this repo?</text>
+<text xml:space="preserve" x="30.4" y="76" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#919191">  ▸ Read 2 files</text>
+<text xml:space="preserve" x="30.4" y="116" textLength="781.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">With a pairing code such as K7QM-4ZX2: run swarm mesh invite on any device in the swarm, then</text>
+<text xml:space="preserve" x="30.4" y="136" textLength="772.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">swarm mesh join K7QM-4ZX2 on the new one. A code works for 15 minutes, and three wrong tries</text>
+<text xml:space="preserve" x="30.4" y="156" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">cancel it.</text>
+<text xml:space="preserve" x="30.4" y="196" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">› </text>
+<text xml:space="preserve" x="47.2" y="196" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Make pairing codes expire after 10 minutes</text>
+<text xml:space="preserve" x="47.2" y="216" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#68d086">✓ </text>
+<text xml:space="preserve" x="64" y="216" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8" font-weight="700">Read   </text>
+<text xml:space="preserve" x="122.8" y="216" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">src/mesh/pair.ts</text>
+<text xml:space="preserve" x="47.2" y="236" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#f5be50">? </text>
+<text xml:space="preserve" x="64" y="236" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8" font-weight="700">Edit   </text>
+<text xml:space="preserve" x="122.8" y="236" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">src/mesh/pair.ts</text>
+<text xml:space="preserve" x="257.2" y="236" textLength="193.2" lengthAdjust="spacingAndGlyphs" fill="#919191"> · waiting for approval</text>
+<line x1="22" y1="272" x2="862" y2="272" stroke="#f5be50" stroke-width="1"/>
+<text xml:space="preserve" x="30.4" y="296" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#f5be50" font-weight="700">? </text>
+<text xml:space="preserve" x="47.2" y="296" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8" font-weight="700">Edit a file</text>
+<text xml:space="preserve" x="139.6" y="296" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">  src/mesh/pair.ts</text>
+<text xml:space="preserve" x="30.4" y="316" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#919191">  rule Edit(**)</text>
+<text xml:space="preserve" x="30.4" y="336" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#919191">  @@ file.edit str_replace @@</text>
+<text xml:space="preserve" x="30.4" y="356" textLength="302.4" lengthAdjust="spacingAndGlyphs" fill="#ff6b80">  -export const INVITE_MINUTES = 15;</text>
+<text xml:space="preserve" x="30.4" y="376" textLength="302.4" lengthAdjust="spacingAndGlyphs" fill="#68d086">  +export const INVITE_MINUTES = 10;</text>
+<text xml:space="preserve" x="30.4" y="396" textLength="310.8" lengthAdjust="spacingAndGlyphs" fill="#919191">  y yes · a always · n no · ? details</text>
+</g>
+</svg>

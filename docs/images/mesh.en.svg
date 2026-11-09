@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="372" viewBox="0 0 880 372" role="img" aria-label="Three devices in a swarm: the laptop runs swarm mesh invite and shows the code K7QM-4ZX2, the gpu box joins with it and is paired with every member, and the always-on ovh server runs as a node service. Devices link directly when they can and through the relay otherwise.">
+<title>Three devices in a swarm: the laptop runs swarm mesh invite and shows the code K7QM-4ZX2, the gpu box joins with it and is paired with every member, and the always-on ovh server runs as a node service. Devices link directly when they can and through the relay otherwise.</title>
+<rect width="880" height="372" rx="12" fill="#17191c"/>
+<g fill="none" stroke="#5a5e64" stroke-width="1.5" stroke-linecap="round">
+<path d="M358 74 H522"/>
+<path d="M193 120 L360 212"/>
+<path d="M687 120 L520 212" stroke-dasharray="5 5"/>
+</g>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+<text x="440" y="64" font-size="12" fill="#919191" text-anchor="middle">direct</text>
+<text x="274" y="174" font-size="12" fill="#919191" text-anchor="end">direct</text>
+<rect x="573" y="153" width="60" height="26" rx="13" fill="#17191c" stroke="#5a5e64" stroke-width="1.5"/>
+<text x="603" y="170" font-size="12" fill="#919191" text-anchor="middle">relay</text>
+<rect x="28" y="28" width="330" height="92" rx="8" fill="#1f2226" stroke="#34383e"/>
+<text xml:space="preserve" x="44" y="54" fill="#e8e8e8" font-weight="700">laptop</text>
+<text xml:space="preserve" x="44" y="80" fill="#e8e8e8"><tspan fill="#e09758" font-weight="700">›</tspan> swarm mesh invite</text>
+<text xml:space="preserve" x="44" y="104" fill="#919191">  code <tspan fill="#e09758" font-weight="700">K7QM-4ZX2</tspan> · 15 minutes</text>
+<rect x="522" y="28" width="330" height="92" rx="8" fill="#1f2226" stroke="#34383e"/>
+<text xml:space="preserve" x="538" y="54" fill="#e8e8e8" font-weight="700">gpu</text>
+<text xml:space="preserve" x="538" y="80" fill="#e8e8e8"><tspan fill="#e09758" font-weight="700">›</tspan> swarm mesh join K7QM-4ZX2</text>
+<text xml:space="preserve" x="538" y="104" fill="#919191">  <tspan fill="#68d086">✓</tspan> paired with laptop and ovh</text>
+<rect x="275" y="212" width="330" height="92" rx="8" fill="#1f2226" stroke="#34383e"/>
+<text xml:space="preserve" x="291" y="238" fill="#e8e8e8" font-weight="700">ovh<tspan font-weight="400" fill="#919191">  always on</tspan></text>
+<text xml:space="preserve" x="291" y="264" fill="#e8e8e8"><tspan fill="#e09758" font-weight="700">›</tspan> swarm node install</text>
+<text xml:space="preserve" x="291" y="288" fill="#919191">  <tspan fill="#68d086">✓</tspan> runs as a service, takes tickets</text>
+<g font-size="13" fill="#b4b4b4">
+<text x="28" y="334">Each pair of devices shares its own key, agreed from the code without sending it.</text>
+<text x="28" y="354">Every link is TLS under that key; the relay only joins streams and never reads them.</text>
+</g>
+</g>
+</svg>
