@@ -8,6 +8,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from 
 import { join } from "node:path";
 import { liveTicket, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
+import { BotCommands } from "./bot-commands.js";
 import { SuperagentClient } from "./client.js";
 import { writeEnvironment, verifyEnvironment, workerBin } from "./environment.js";
 import { SwarmExecutor, type RemoteWork } from "./executor.js";
@@ -17,9 +18,12 @@ import { policyVersion, superagentStateDir, type Settings } from "./settings.js"
 import { SETUP_FIELDS, SetupError, commandProbe, defaultMachine, resolveFeishuBot, resolveGithub, type Deployment, type SetupProblem } from "./setup.js";
 import { sourceContextOf, type SourceContextDeps } from "./sources/context.js";
 import { sourceTrigger } from "./messages.js";
+import { prunePatches } from "./ticket-tools.js";
 import { ticketVariables, variableValues } from "./variables.js";
 
 const PASS_MS = 2000;
+/** How often the host deletes the patches it kept too long. */
+const PRUNE_MS = 3_600_000;
 
 export interface HostOptions {
   stateDir?: string;
@@ -69,7 +73,9 @@ export class SuperagentHost {
   readonly client: SuperagentClient;
   private readonly executor: SwarmExecutor;
   private readonly assessor: ModelAssessor;
+  private readonly botCommands: BotCommands;
   private release?: () => void;
+  private prunedAt = 0;
   private deployment?: Deployment;
   problem?: SetupProblem;
   /** Where tickets placed on paired nodes run; a mesh node sets it before it starts the host (src/mesh/work.ts). */
@@ -98,6 +104,7 @@ export class SuperagentHost {
       });
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment });
       this.assessor.install();
+      this.botCommands = new BotCommands(this.client);
     } catch (error) {
       this.release();
       throw error;
@@ -170,6 +177,7 @@ export class SuperagentHost {
         this.restartSources();
       }
       this.syncSources(settings);
+      if (Date.now() - this.prunedAt > PRUNE_MS) { prunePatches(this.stateDir); this.prunedAt = Date.now(); }
       this.client.engine.evaluateDue();
       this.client.effects.kick();
       this.client.store.set(KV.host.owner, { pid: process.pid, startedAt: this.startedAt, heartbeatAt: new Date().toISOString() });
@@ -214,8 +222,9 @@ export class SuperagentHost {
       ready: Promise.resolve(),
       configured: () => !!host.deployment,
       get setupProblem() { return host.problem; },
+      // A bot command, or a message the sender's limits hold back, stops here; anything else goes to the Engine.
       receive: (trigger) => {
-        const result = client.engine.receive(trigger);
+        const result = this.botCommands.receive(trigger);
         void this.pass();
         return result;
       }

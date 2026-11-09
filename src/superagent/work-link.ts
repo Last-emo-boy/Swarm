@@ -3,7 +3,7 @@
  * reads that node's store directly; on a paired node it reaches the owner over the mesh (src/mesh/work-link.ts), whose
  * routes answer with these same functions, so the owner stays the only process that writes its store.
  */
-import { liveTicket, runningAssignment, type Ticket, type Trigger, type WorkerReport } from "./core/index.js";
+import { liveTicket, runningAssignment, type Ticket, type Trigger, type WorkerReport, type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { mandateInstructions, sourceTrigger } from "./messages.js";
 import { workerPrompt } from "./prompts.js";
@@ -13,8 +13,11 @@ import { ticketVariables, variableLines } from "./variables.js";
 
 /** A ticket as its worker reads it at one moment: the ticket and the Triggers the worker reads with it. */
 export interface WorkView { ticket: Ticket; triggers: Record<string, Trigger> }
-/** How a worker starts: its directory, what is added to its prompt, the commands it may not run, and its model for conclusions. */
-export interface WorkStart { directory: string; prompt: string; blockedCommands: string[]; model?: string }
+/**
+ * How a worker starts: its directory, what is added to its prompt, the commands it may not run, its model for conclusions, and
+ * how far its ticket's capability lets it write.
+ */
+export interface WorkStart { directory: string; prompt: string; blockedCommands: string[]; model?: string; write?: WriteLevel }
 /** The arguments after the Swarm entry point that start the worker's ticket tools, and their environment. */
 export interface ToolServer { args: string[]; env: Record<string, string> }
 
@@ -54,10 +57,12 @@ export function workStart(client: SuperagentClient, deployment: Deployment, tick
   const placed: Ticket = { ...ticket, execution: { ...ticket.execution!, directory } };
   const variables = ticketVariables({ deployment, sources: client.sources, settings, ticket: placed, ...(origin ? { trigger: origin } : {}) });
   const sources = [...new Set([origin?.source, ...ticket.channels.map((channel) => channel.source)].filter((value): value is string => !!value))];
+  const write = ticket.mandate.capability?.write;
   return {
     directory, blockedCommands: settings.executor.blockedCommands, ...(settings.executor.model ? { model: settings.executor.model } : {}),
+    ...(write ? { write } : {}),
     prompt: workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(ticket.mandate), sources,
-      github: !!deployment.github })
+      github: !!deployment.github, ...(write ? { write } : {}) })
   };
 }
 

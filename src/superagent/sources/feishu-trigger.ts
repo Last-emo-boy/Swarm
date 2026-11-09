@@ -27,6 +27,11 @@ export function feishuTime(value: string): string {
   if (!Number.isFinite(time)) throw new Error(`Unreadable Feishu message time: ${value}`)
   return new Date(time).toISOString()
 }
+/** The people and bots a message mentions by open_id and name, which a bot command such as `/role @name` names its people by. */
+const mentionsMeta = (mentions: FeishuEvent['mentions']): { mentions?: { id: string; name: string }[] } => {
+  const named = mentions.flatMap(mention => mention.name ? [{ id: mention.id, name: mention.name }] : [])
+  return named.length ? { mentions: named } : {}
+}
 /** Converts a normalized Feishu event into a Trigger, returning undefined for messages sent by the bot itself. */
 export function feishuTrigger(input: unknown, botId: string, botAppId: string): Trigger | undefined {
   const event = EventSchema.parse(input)
@@ -39,7 +44,7 @@ export function feishuTrigger(input: unknown, botId: string, botAppId: string): 
     ...(direct ? { addressed: 'direct' as const } : mentioned ? { addressed: 'mention' as const } : {}),
     at: feishuTime(event.create_time), text: withMentionNames(event.content, event.mentions),
     channel: feishuChannel(event.chat_id, event.message_id, direct), ...(event.message_app_link ? { url: event.message_app_link } : {}),
-    meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned, ...(event.root_id ? { rootId: event.root_id } : {}),
+    meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned, ...mentionsMeta(event.mentions), ...(event.root_id ? { rootId: event.root_id } : {}),
       ...(event.parent_id ? { parentId: event.parent_id } : {}), ...(event.thread_id ? { threadId: event.thread_id } : {}) } }
 }
 export const feishuParent = (trigger: Trigger): string | undefined =>

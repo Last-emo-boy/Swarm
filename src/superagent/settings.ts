@@ -52,9 +52,17 @@ export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({
   unlistedUnaddressed: Weak.optional()
 }).strict();
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema);
+export const RoleSchema = z.enum(["owner", "maintainer", "everyone"]);
+export const WriteLevelSchema = z.enum(["read-only", "local", "github"]);
+/** Roles by sender id; a sender with a role is on the list as one on `allowed` is. See `roleOf` in policy.ts. */
+export const RolesSchema = z.record(z.string().trim().min(1).max(200), RoleSchema);
+/** How far the work of a ticket accepted in each receiving scope (an admission row) may write at most. */
+export const CeilingsSchema = z.record(z.string(), WriteLevelSchema);
 export const SourcePolicySchema = z.object({
   allowed: z.array(AllowedSchema).default([]),
-  admission: AdmissionTableSchema.default({})
+  admission: AdmissionTableSchema.default({}),
+  roles: RolesSchema.optional(),
+  ceilings: CeilingsSchema.optional()
 }).catchall(z.unknown());
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>;
 const SourceIdSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
@@ -89,6 +97,21 @@ export const ExecutorConfigSchema = z.object({
   const problem = harnessSettingsProblem(executor.harness, executor.harnesses);
   if (problem) context.addIssue({ code: "custom", message: problem, path: ["harness"] });
 });
+const LimitsSchema = z.object({
+  /** Live tickets a sender may have at once. */
+  openTickets: z.number().int().min(0).optional(),
+  /** Messages addressed to the agent a sender may send in an hour, bot commands included. */
+  requestsPerHour: z.number().int().min(0).optional()
+}).strict();
+/**
+ * The access model: with it, each accepted ticket gets a capability from its requester's role and its scope's ceiling, only a
+ * ticket's requester and maintainers steer it, and each role has limits (see `ACCESS_LIMITS` in policy.ts for the defaults).
+ * Without it, every sender on a list may do everything, as before.
+ */
+export const AccessSchema = z.object({
+  limits: z.object({ owner: LimitsSchema.optional(), maintainer: LimitsSchema.optional(), everyone: LimitsSchema.optional() }).strict().default({})
+}).strict();
+export type Access = z.infer<typeof AccessSchema>;
 export const SourceInstanceSchema = z.object({
   enabled: z.boolean().default(true),
   config: z.record(z.string(), z.unknown()).default({})
@@ -98,17 +121,20 @@ export const SettingsSchema = z.object({
   sources: z.record(SourceIdSchema, SourceInstanceSchema).default({}),
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
-  executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({}))
+  executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
+  access: AccessSchema.optional()
 }).strict();
 export type Settings = z.infer<typeof SettingsSchema>;
 
 export const POLICY_REVISION = "mandate-v3";
 /**
- * The version of the settings that bear on authorization: rules, accept mode and each Source's Policy part. Models,
- * concurrency, pause and polling do not invalidate decisions.
+ * The version of the settings that bear on authorization: rules, accept mode, each Source's Policy part (its roles and
+ * ceilings too) and whether the access model is on. Models, concurrency, pause, polling and the access model's limits do not
+ * invalidate decisions.
  */
 export function policyVersion(settings: Settings): string {
-  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources }));
+  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources,
+    ...settings.access ? { access: true } : {} }));
 }
 
 /** Where the superagent keeps its database, settings, lock, worker shims and, by default, ticket directories. */

@@ -13,18 +13,18 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod/v4";
 import { HttpError, errorMessage } from "../server/gateway-http.js";
-import { latestAssignment, liveTicket, ticketStage, waitsForPerson, type Ticket } from "../superagent/core/index.js";
+import { latestAssignment, liveTicket, ticketStage, waitsForPerson, type Ticket, type WriteLevel } from "../superagent/core/index.js";
 import { Later } from "../superagent/effects.js";
-import { verifyEnvironment, workerBin, workerEnvironment, writeEnvironment } from "../superagent/environment.js";
+import { sealed, verifyEnvironment, workerBin, workerEnvironment, writeEnvironment } from "../superagent/environment.js";
 import { WORKER_SHELL_AUTO_BACKGROUND_MS, prepareDirectory, workerExited, type RemoteWork } from "../superagent/executor.js";
 import type { HealthEntry } from "../superagent/health.js";
 import type { SuperagentHost } from "../superagent/host.js";
 import { KV } from "../superagent/kv.js";
 import { sourceTrigger } from "../superagent/messages.js";
 import { leaseOf, placementOf, updatePlacement, workNeeds, type Lease, type NodeRef, type Placement } from "../superagent/placement.js";
-import { settingsPath } from "../superagent/settings.js";
+import { WriteLevelSchema, settingsPath } from "../superagent/settings.js";
 import { SetupError, commandProbe, defaultMachine, resolveGithub, type Deployment } from "../superagent/setup.js";
-import { ticketTools, type TicketTool } from "../superagent/ticket-tools.js";
+import { PatchSchema, ticketTools, type TicketTool } from "../superagent/ticket-tools.js";
 import { ticketVariables, variableValues } from "../superagent/variables.js";
 import { hostStatus } from "../superagent/views.js";
 import { workDelivered, workStart, workView } from "../superagent/work-link.js";
@@ -53,7 +53,9 @@ const OfferSchema = z.object({
   variables: z.record(z.string(), z.string()),
   blockedCommands: z.array(z.string().regex(/^[A-Za-z0-9._-]+$/).refine((name) => name !== "." && name !== "..")),
   permissionMode: z.enum(["full-auto", "yolo"]),
-  leaseMs: z.number().int().min(1000).max(3_600_000)
+  leaseMs: z.number().int().min(1000).max(3_600_000),
+  /** How far the ticket's capability lets its work write: a sealed one gets no agent accounts (see `sealed`). */
+  write: WriteLevelSchema.optional()
 });
 type Offer = z.infer<typeof OfferSchema>;
 const ClaimSchema = z.object({ ticketId: z.string().min(1).max(128), assignmentId: z.string().min(1).max(128) });
@@ -96,6 +98,7 @@ interface Held {
   /** The ticket's execution variables, naming this node's directory. */
   variables: Record<string, string>;
   permissionMode: string;
+  write?: WriteLevel;
   leaseMs: number;
   /** Until when the lease holds by this node's clock: from each heartbeat the owner answered. */
   expires: number;
@@ -247,12 +250,14 @@ export class MeshWork implements RemoteWork {
     // The lease exists before the node hears of the work, so the worker it may start at once finds it.
     this.saveLease(ticket.id, { ...same ?? { assignmentId, node: { id: node.id, name: node.name }, at: new Date().toISOString() },
       expiresAt: new Date(Date.now() + this.leaseMs).toISOString() });
+    const write = ticket.mandate.capability?.write;
     try {
       await callPeer(node, "POST", "/mesh/v1/work/offers", {
         ticketId: ticket.id, assignmentId, name: ticket.execution!.name, repository: deployment.repository,
-        ...(deployment.github ? { github: { login: deployment.github.login } } : {}),
+        ...(deployment.github && !sealed(write) ? { github: { login: deployment.github.login } } : {}),
         variables: variableValues(ticketVariables({ deployment, sources: client.sources, settings, ticket, ...(trigger ? { trigger } : {}) })),
-        blockedCommands: settings.executor.blockedCommands, permissionMode: settings.executor.permissionMode, leaseMs: this.leaseMs
+        blockedCommands: settings.executor.blockedCommands, permissionMode: settings.executor.permissionMode, leaseMs: this.leaseMs,
+        ...(write ? { write } : {})
       }, 30_000);
     } catch (error) {
       if (this.live(previous)) this.saveLease(ticket.id, previous);
@@ -473,7 +478,10 @@ export class MeshWork implements RemoteWork {
       const { ticketId } = this.leased(request);
       const tool = this.toolset(ticketId).find((item) => item.name === request.params.tool);
       if (!tool) throw new HttpError(404, `No ticket tool ${request.params.tool}`);
-      return { result: await tool.run(z.object(tool.input).parse(request.body.args ?? {})) };
+      const args = (request.body.args ?? {}) as Record<string, unknown>;
+      // The patch of a local ticket's ready report comes from the worker's directory, not from its model: see `withPatch`.
+      const patch = tool.name === "report" && args.patch !== undefined ? { patch: PatchSchema.parse(args.patch) } : {};
+      return { result: await tool.run({ ...z.object(tool.input).parse(args), ...patch }) };
     }));
     server.route("POST", `${ticket}/exited`, forWorkers((request) => {
       const { ticketId, assignmentId, lease } = this.leased(request);
@@ -545,7 +553,8 @@ export class MeshWork implements RemoteWork {
     return {
       owner, ticketId: offer.ticketId, assignmentId: offer.assignmentId, directory, deployment,
       variables: { ...offer.variables, SWARM_TICKET_DIR: directory, SWARM_TICKET_BLOCKED_COMMANDS: blocked.join(" ") },
-      permissionMode: offer.permissionMode, leaseMs: offer.leaseMs, expires: Date.now() + offer.leaseMs, ready: false
+      permissionMode: offer.permissionMode, ...(offer.write ? { write: offer.write } : {}), leaseMs: offer.leaseMs,
+      expires: Date.now() + offer.leaseMs, ready: false
     };
   }
 
@@ -558,7 +567,8 @@ export class MeshWork implements RemoteWork {
   private async begin(work: Held): Promise<void> {
     try {
       if (!existsSync(work.directory)) {
-        await prepareDirectory(work.directory, this.client.settings().executor.prepare, workerEnvironment(work.deployment, work.variables));
+        await prepareDirectory(work.directory, this.client.settings().executor.prepare,
+          workerEnvironment(work.deployment, work.variables, process.env, work.write));
       }
       if (!this.holding(work)) return;
       await this.call(work, "started", { directory: work.directory });
@@ -583,7 +593,7 @@ export class MeshWork implements RemoteWork {
       SWARM_MESH_HOME: this.options.home,
       SWARM_PERMISSION_MODE: work.permissionMode,
       SWARM_SHELL_AUTO_BACKGROUND_MS: String(WORKER_SHELL_AUTO_BACKGROUND_MS)
-    });
+    }, process.env, work.write);
     const child = spawn(program!, [...prefix, "superagent", "worker", "--ticket", work.ticketId, "--assignment", work.assignmentId, "--remote", work.owner.id],
       { cwd: work.directory, env, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";

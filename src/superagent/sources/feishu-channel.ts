@@ -1,4 +1,6 @@
 /** Feishu outbound channel: posts threaded bot replies and constructs chat deep links (from dsh-superagent's sources/feishu-channel.ts). */
+import { existsSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
 import type { OutboundMessage } from '../core/index.js'
 import { CliError } from '../commands.js'
 import { checkedImText } from '../text.js'
@@ -15,14 +17,26 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
  */
 const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
   || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
-/** Replies in the topic of the target message; Feishu keeps at most one reply per idempotency key (the outgoing message's `message.id`). */
+/**
+ * Replies in the topic of the target message, then with its attachment as a file; Feishu keeps at most one reply per
+ * idempotency key (the outgoing message's `message.id`, and that with `-file` for its file). An attachment Feishu refuses for
+ * good, such as without the permission to upload files, is replaced by a line that says it could not be attached, and why.
+ */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const messageId = message.channel.address.messageId
   if (!messageId) throw new Error('Missing Feishu reply target')
   const text = checkedImText(message.text)
-  const reply = ['im', '+messages-reply', '--message-id', messageId, '--markdown', text, '--reply-in-thread', '--idempotency-key', message.id]
-  try { await host.commands.lark(reply) }
-  catch (error) {
+  const reply = (content: string[], key: string, cwd?: string) => host.commands.lark(['im', '+messages-reply', '--message-id', messageId, ...content,
+    '--reply-in-thread', '--idempotency-key', key], cwd)
+  try {
+    if (text.trim()) await reply(['--markdown', text], message.id)
+    if (message.attachment && existsSync(message.attachment)) {
+      await reply(['--file', basename(message.attachment)], `${message.id}-file`, dirname(message.attachment)).catch(async (error: unknown) => {
+        if (!(error instanceof CliError) || error.code === undefined || gone(error)) throw error
+        await reply(['--markdown', `(${basename(message.attachment!)} could not be attached: ${error.message.slice(0, 200)})`], `${message.id}-nofile`)
+      })
+    }
+  } catch (error) {
     if (gone(error)) return 'gone'
     throw error
   }

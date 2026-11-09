@@ -29,6 +29,10 @@ function answer(request: ModelRequest): string {
     return JSON.stringify({ state: "ready", summary: "Bumped the version to 0.2.0 and committed.", message_for_person: "The version is bumped to 0.2.0." });
   }
   if (request.system.includes("You route requests for Swarm's ticket host")) {
+    // Earlier tickets' titles reach the router's card too, so the NOTICE request is matched first.
+    if (request.user.includes("NOTICE")) {
+      return JSON.stringify({ kind: "accept", title: "Add a NOTICE file", worktree_name: "add-notice", acknowledgement: "On it: adding a NOTICE file." });
+    }
     if (request.user.includes("bump the version")) {
       return JSON.stringify({ kind: "accept", title: "Bump the version", worktree_name: "bump-version", acknowledgement: "On it: bumping the version." });
     }
@@ -42,6 +46,21 @@ function answer(request: ModelRequest): string {
       return JSON.stringify({ kind: "accept", title: "Update the changelog", worktree_name: "update-changelog", acknowledgement: "On it: updating the changelog." });
     }
     return JSON.stringify({ kind: "accept", title: "Create hello.txt", worktree_name: "create-hello", acknowledgement: "On it: creating hello.txt." });
+  }
+  // The NOTICE ticket keeps its work local: its worker commits, finds no GitHub account, and reports ready.
+  if (request.system.includes("add-notice-")) {
+    if (!request.user.includes("gh is unavailable")) {
+      return loop({ status: "continue", summary: "Commit", message: "Committing the NOTICE file.", tool_calls: [
+        { id: "write", action: "Write", inputs: { file_path: "NOTICE", content: "Notice\n" } },
+        { id: "commit", action: "Bash", inputs: { command: "git add NOTICE && git -c user.name=t -c user.email=t@example.com commit -qm 'Add NOTICE' && gh api user" } }
+      ] });
+    }
+    if (!reported(request)) {
+      return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
+        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Committed NOTICE.", message_for_person: "NOTICE is added; the patch is attached." } }
+      ] });
+    }
+    return loop({ status: "completed", summary: "Reported", message: "Reported." });
   }
   // The version ticket's worker never reports, even when reminded, as a real model did in a live trial.
   if (request.system.includes("bump-version-")) {
@@ -233,4 +252,41 @@ test("a worker reads a person's message before it reports on it, so the ticket e
   assert.ok(input.readAt < report.at, `read at ${input.readAt}, before the report at ${report.at}`);
   client.engine.threadClosed({ source: "github", id: "9" }, "merged", new Date().toISOString());
   assert.equal(find()?.ended?.outcome, "merged", `ended: ${JSON.stringify(find()?.ended)}`);
+});
+
+test("a local ticket's worker has no agent accounts, commits its change, and its result carries the commits as a patch", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  const { execFileSync } = await import("node:child_process");
+  const { localOperator } = await import("./sources/local.js");
+  const { settingsPath, writeSettings } = await import("./settings.js");
+  const origin = join(home, "origin");
+  execFileSync("git", ["init", "-q", origin]);
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "Start"], { cwd: origin });
+  // The operator asks with the role everyone under the access model, so the ticket keeps its work local.
+  const path = settingsPath(client.stateDir);
+  writeSettings({ access: {}, policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "everyone" } } } },
+    executor: { prepare: `git clone -q ${JSON.stringify(origin)} "$SWARM_TICKET_DIR"` } }, path);
+  try {
+    client.request("add a NOTICE file");
+    const deadline = Date.now() + 100_000;
+    const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Add a NOTICE file");
+    let ticket = find();
+    while (Date.now() < deadline && !ticket?.ended) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      ticket = find();
+    }
+    const seen = model.requests.filter((request) => request.system.includes("add-notice-")).map((request) => request.user.slice(-1500)).join("\n=====\n");
+    assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)} ${seen}`);
+    assert.deepEqual(ticket.mandate.capability, { role: "everyone", write: "local" });
+    assert.ok(model.requests.some((request) => request.system.includes("add-notice-") && request.system.includes("This ticket keeps its change local")));
+    assert.ok(model.requests.some((request) => request.user.includes("gh is unavailable")), "the worker's gh has no account");
+    const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string; attachment?: string });
+    const result = replies.find((reply) => reply.text === "NOTICE is added; the patch is attached.");
+    assert.ok(result?.attachment, `the result carries the patch: ${JSON.stringify(result)}`);
+    const patch = readFileSync(result.attachment, "utf8");
+    assert.match(patch, /Subject: \[PATCH\] Add NOTICE/);
+    assert.match(patch, /\+Notice/);
+  } finally {
+    rmSync(path, { force: true });
+  }
 });

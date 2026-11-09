@@ -1,4 +1,6 @@
 /** GitHub outbound channel: posts issue/PR comments and review thread replies under the agent account (from dsh-superagent's sources/github-channel.ts). */
+import { existsSync, readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 import { z } from 'zod/v4'
 import type { OutboundMessage } from '../core/index.js'
 import { CliError } from '../commands.js'
@@ -15,6 +17,16 @@ const CommentSchema = z.looseObject({
 const gone = (error: unknown): boolean => error instanceof CliError
   && (error.code === 410 || (error.code === 403 && /locked/i.test(error.message)))
 const missing = (error: unknown): boolean => error instanceof CliError && (error.code === 404 || error.code === 410)
+/** The longest attachment a comment shows inline; GitHub takes comments of up to 65536 characters. */
+const ATTACHED_CHARS = 60_000
+/** An attachment, such as a local ticket's patch, as the folded block that ends a comment; empty without one. */
+function attached(path: string | undefined): string {
+  if (!path || !existsSync(path)) return ''
+  const text = readFileSync(path, 'utf8')
+  const shown = text.length > ATTACHED_CHARS ? `${text.slice(0, ATTACHED_CHARS)}\n… (${text.length - ATTACHED_CHARS} more characters)` : text
+  const fence = '`'.repeat(Math.max(3, ...[...shown.matchAll(/`{3,}/g)].map(match => match[0].length + 1)))
+  return `\n\n<details><summary>${basename(path)}</summary>\n\n${fence}diff\n${shown}\n${fence}\n</details>`
+}
 /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
@@ -38,7 +50,7 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
       && (rootId === undefined || comment.in_reply_to_id === rootId) && (comment.body ?? '').includes(marker)
     if ((await commands.pages(CommentSchema, path)).some(mine)) return 'sent'
     const target = rootId === undefined ? path : `${path}/${rootId}/replies`
-    await commands.api(z.unknown(), target, '--method', 'POST', '-f', `body=${message.text}\n\n${marker}`)
+    await commands.api(z.unknown(), target, '--method', 'POST', '-f', `body=${message.text}${attached(message.attachment)}\n\n${marker}`)
     return 'sent'
   } catch (error) {
     if (gone(error)) return 'gone'

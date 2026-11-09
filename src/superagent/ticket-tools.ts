@@ -3,6 +3,10 @@
  * (`swarm superagent mcp --ticket <id>`): read the ticket's context, acknowledge a request, report, hand a message back,
  * and follow or drop a Thread (from dsh-superagent's app/tools/executor.ts). Each runs as an Engine command, which checks it.
  */
+import { execFile } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { z } from "zod/v4";
 import { key, latestReport, liveTicket, reached, threadKey, ticketStage, type Ticket, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
@@ -24,6 +28,40 @@ export interface TicketTool {
   readOnly: boolean;
   run(args: Record<string, unknown>): Promise<unknown>;
 }
+
+const exec = promisify(execFile);
+/** The largest patch a local ticket's ready report sends; a larger change is beyond a ticket kept local. */
+export const PATCH_BYTES = 1024 * 1024;
+/**
+ * A ready report's patch, as the worker's directory gives it: its commits that no remote branch has, their size in bytes (the
+ * text is empty beyond `PATCH_BYTES`), and whether tracked files have uncommitted changes.
+ */
+export const PatchSchema = z.object({ text: z.string().max(PATCH_BYTES), bytes: z.number().int().min(0), uncommitted: z.boolean() }).strict();
+export type Patch = z.infer<typeof PatchSchema>;
+/** Where the host keeps a local ticket's patch, named after the ticket, which its result carries and a take-over applies. */
+export const patchPath = (stateDir: string, ticket: Pick<Ticket, "id" | "execution">): string =>
+  join(stateDir, "patches", `${(ticket.execution?.name ?? ticket.id).replace(/[^A-Za-z0-9_-]/g, "_")}.patch`);
+
+/** The patch of the work in `directory`, or undefined where it is no git repository with remote branches to compare with. */
+export async function directoryPatch(directory: string): Promise<Patch | undefined> {
+  const git = async (...args: string[]) => (await exec("git", args, { cwd: directory, timeout: 60_000, maxBuffer: PATCH_BYTES * 4 })).stdout;
+  try {
+    if (!(await git("for-each-ref", "--count=1", "refs/remotes")).trim()) return undefined;
+    const text = await git("format-patch", "--stdout", "HEAD", "--not", "--remotes");
+    const bytes = Buffer.byteLength(text);
+    return { text: bytes > PATCH_BYTES ? "" : text, bytes, uncommitted: (await git("status", "--porcelain", "--untracked-files=no")).trim() !== "" };
+  } catch {
+    return undefined;
+  }
+}
+/** The ticket tools with a ready report that also carries the patch of the worker's directory, which the host keeps for a local ticket. */
+export const withPatch = (tools: readonly TicketTool[], directory: string): TicketTool[] => tools.map((tool) => tool.name !== "report" ? tool : {
+  ...tool,
+  run: async (args) => {
+    const patch = args.state === "ready" ? await directoryPatch(directory) : undefined;
+    return tool.run({ ...args, ...(patch ? { patch } : {}) });
+  }
+});
 
 const AcknowledgementSchema = z.string().trim().min(1)
   .refine((text) => wordCount(text) <= IM_WORDS, `At most ${IM_WORDS} words; write one short sentence.`);
@@ -182,7 +220,8 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       ...(typeof args.question_for_trigger_id === "string" ? { question_for_trigger_id: args.question_for_trigger_id } : {}),
       ...(typeof args.pr_number === "number" ? { pr_number: args.pr_number } : {}),
       ...(typeof args.reply_to_trigger_id === "string" ? { reply_to_trigger_id: args.reply_to_trigger_id } : {}),
-      ...(typeof args.message_for_person === "string" ? { message_for_person: args.message_for_person } : {})
+      ...(typeof args.message_for_person === "string" ? { message_for_person: args.message_for_person } : {}),
+      ...(args.patch ? { patch: PatchSchema.parse(args.patch) } : {})
     })
   };
   return withRuns((name) => runs[name]);
@@ -197,7 +236,12 @@ export interface ReportArgs {
   pr_number?: number;
   reply_to_trigger_id?: string;
   message_for_person?: string;
+  /** With a ready report, the patch of the worker's directory: see `withPatch`. */
+  patch?: Patch;
 }
+
+/** What a local ticket's result says when its worker gave no message: the patch is the result. */
+const PATCH_RESULT = "The change is ready as the attached patch; nothing was pushed.";
 
 /**
  * Files a worker's report and posts what it says to the person: its question, its ready result or its answer, each under
@@ -206,7 +250,15 @@ export interface ReportArgs {
 export async function fileReport(client: SuperagentClient, ticketId: string, args: ReportArgs) {
   const current = client.store.tickets.get(ticketId);
   if (!current || !liveTicket(current)) throw new Error("Ticket ended (its PR closed or the work finished); do not resume it");
-  const message = args.message_for_person ? checkedImText(args.message_for_person) : undefined;
+  // A local ticket's result is its commits as a patch, which the host keeps and sends with the result.
+  const local = current.mandate.capability?.write === "local" && args.state === "ready" && args.patch ? args.patch : undefined;
+  if (local?.uncommitted) throw new Error("Tracked files have uncommitted changes: commit the change on this ticket's branch first, since the person gets its commits as a patch.");
+  if (local && local.bytes > PATCH_BYTES) {
+    throw new Error(`The commits of this ticket make a patch of ${Math.ceil(local.bytes / 1024)} KB, more than ${PATCH_BYTES / 1024} KB: keep generated and large files out of them.`);
+  }
+  const attachment = local?.text ? keepPatch(client.stateDir, current, local.text) : undefined;
+  const given = args.message_for_person ? checkedImText(args.message_for_person) : undefined;
+  const message = given ?? (attachment ? PATCH_RESULT : undefined);
   const github = args.pr_number ? sourceContextOf({
     store: client.store, outbox: client.outbox, engine: client.engine, commands: client.commands, sources: client.sources,
     get deployment() { return client.deployment(); }, ready: Promise.resolve(), configured: () => true, receive: (trigger) => client.engine.receive(trigger)
@@ -233,15 +285,36 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
       client.engine.reply({ purpose: "attention", ticketId, question: updated.attention.question, text: message ?? updated.attention.question });
       posted.push("attention");
     } else if (report.state === "ready" && message && !answerIsResult) {
-      client.engine.reply({ purpose: "result", ticketId, text: message });
+      client.engine.reply({ purpose: "result", ticketId, text: message, ...(attachment ? { attachment } : {}) });
       posted.push("result");
     }
     if (answering) {
-      client.engine.reply({ purpose: "answer", ticketId, triggerId: report.answers, text: message });
+      client.engine.reply({ purpose: "answer", ticketId, triggerId: report.answers, text: message, ...(attachment && answerIsResult ? { attachment } : {}) });
       posted.push("answer");
     }
     return { reported: true, posted, ...(updated.attention ? { attention: updated.attention } : {}), ended: !liveTicket(updated) };
   });
+}
+
+/** How long the host keeps a local ticket's patch after it last changed. */
+export const PATCH_DAYS = 30;
+/** Deletes the patches the host kept longer than `PATCH_DAYS`. */
+export function prunePatches(stateDir: string, now = Date.now()): void {
+  const dir = join(stateDir, "patches");
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (now - statSync(path).mtimeMs > PATCH_DAYS * 86_400_000) rmSync(path, { force: true });
+  }
+}
+
+/** Writes a local ticket's patch where the host keeps it (owner-only), and returns its path. */
+function keepPatch(stateDir: string, ticket: Ticket, text: string): string {
+  const path = patchPath(stateDir, ticket);
+  mkdirSync(join(stateDir, "patches"), { recursive: true, mode: 0o700 });
+  writeFileSync(path, text, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return path;
 }
 
 /** Serves the ticket tools over stdio MCP until the worker's runtime closes the connection. */
