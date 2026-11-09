@@ -18,7 +18,8 @@
     "test": "node --import tsx --import ./src/testing/env.ts --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "evals": "npm run build && node dist/evals/local-evals.js",
     "release:gate": "npm run build && node dist/evals/local-evals.js --release-gate",
-    "smoke": "npm run build && node dist/smoke.js"
+    "smoke": "npm run build && node dist/smoke.js",
+    "docs:images": "node --import tsx scripts/readme-images.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

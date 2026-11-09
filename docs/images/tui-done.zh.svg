@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="884" height="484" viewBox="0 0 884 484" role="img" aria-label="终端里的 Swarm：两个回合各折叠成一行，下面是回答和一行页脚：改了一个文件，一项检查通过。">
+<title>终端里的 Swarm：两个回合各折叠成一行，下面是回答和一行页脚：改了一个文件，一项检查通过。</title>
+<rect width="884" height="484" rx="12" fill="#17191c"/>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+<text xml:space="preserve" x="30.4" y="36" textLength="42" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">swarm</text>
+<text xml:space="preserve" x="72.4" y="36" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">  kimi-coding/kimi-for-coding  </text>
+<text xml:space="preserve" x="332.8" y="36" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#919191">~/projects/swarm-demo</text>
+<text xml:space="preserve" x="30.4" y="56" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">› </text>
+<text xml:space="preserve" x="47.2" y="56" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">这个仓库里设备是怎么配对的？</text>
+<text xml:space="preserve" x="30.4" y="76" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#919191">  ▸ Read 2 files</text>
+<text xml:space="preserve" x="30.4" y="116" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">用一串配对码，比如</text>
+<text xml:space="preserve" x="181.6" y="116" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> K7QM-4ZX2</text>
+<text xml:space="preserve" x="265.6" y="116" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">：在网格里任一台设备上运行</text>
+<text xml:space="preserve" x="484" y="116" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> swarm mesh invite</text>
+<text xml:space="preserve" x="635.2" y="116" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">，再在新设备上运行</text>
+<text xml:space="preserve" x="786.4" y="116" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> swarm</text>
+<text xml:space="preserve" x="30.4" y="136" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">mesh join K7QM-4ZX2</text>
+<text xml:space="preserve" x="190" y="136" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">。码</text>
+<text xml:space="preserve" x="223.6" y="136" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> 15 </text>
+<text xml:space="preserve" x="257.2" y="136" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">分钟内有效，输错</text>
+<text xml:space="preserve" x="391.6" y="136" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> 3 </text>
+<text xml:space="preserve" x="416.8" y="136" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">次作废。</text>
+<text xml:space="preserve" x="30.4" y="176" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">› </text>
+<text xml:space="preserve" x="47.2" y="176" textLength="168" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">把配对码的有效期改成</text>
+<text xml:space="preserve" x="215.2" y="176" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> 10 </text>
+<text xml:space="preserve" x="248.8" y="176" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">分钟</text>
+<text xml:space="preserve" x="30.4" y="196" textLength="336" lengthAdjust="spacingAndGlyphs" fill="#919191">  ▸ Read 1 file, edited 1 file, 2 agents</text>
+<text xml:space="preserve" x="30.4" y="236" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">配对码现在</text>
+<text xml:space="preserve" x="114.4" y="236" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> 10 </text>
+<text xml:space="preserve" x="148" y="236" textLength="168" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">分钟后失效。时长只在</text>
+<text xml:space="preserve" x="316" y="236" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> src/mesh/pair.ts </text>
+<text xml:space="preserve" x="467.2" y="236" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">的</text>
+<text xml:space="preserve" x="484" y="236" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> INVITE_MINUTES </text>
+<text xml:space="preserve" x="618.4" y="236" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">里设置，邀请和加入都读它。</text>
+<text xml:space="preserve" x="30.4" y="276" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Swarm Review</text>
+<text xml:space="preserve" x="30.4" y="296" textLength="201.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Review Agent completed: </text>
+<text xml:space="preserve" x="232" y="296" textLength="369.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">改动只涉及邀请和加入共用的常量，没有别处假定</text>
+<text xml:space="preserve" x="601.6" y="296" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> 15 </text>
+<text xml:space="preserve" x="635.2" y="296" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">分钟。</text>
+<text xml:space="preserve" x="30.4" y="336" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Swarm Verification</text>
+<text xml:space="preserve" x="30.4" y="356" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Verifier Agent completed: </text>
+<text xml:space="preserve" x="248.8" y="356" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">确认邀请和加入路径都读</text>
+<text xml:space="preserve" x="433.6" y="356" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> INVITE_MINUTES</text>
+<text xml:space="preserve" x="559.6" y="356" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">，没有残留的其他时长。</text>
+<text xml:space="preserve" x="30.4" y="376" textLength="470.4" lengthAdjust="spacingAndGlyphs" fill="#919191">1 file changed · 1 check passed · /revert last undoes it</text>
+<line x1="22" y1="412" x2="862" y2="412" stroke="#e09758" stroke-width="1"/>
+<text xml:space="preserve" x="30.4" y="436" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758">› </text>
+<rect x="47.2" y="422" width="8.4" height="20" fill="#919191"/>
+<text xml:space="preserve" x="47.2" y="436" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#17191c">A</text>
+<text xml:space="preserve" x="55.6" y="436" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#919191">sk Swarm</text>
+<text xml:space="preserve" x="47.2" y="456" textLength="806.4" lengthAdjust="spacingAndGlyphs" fill="#919191">12 calls today                                                                            ? keys</text>
+</g>
+</svg>

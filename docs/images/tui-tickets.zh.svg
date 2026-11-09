@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="884" height="264" viewBox="0 0 884 264" role="img" aria-label="工单视图：需要你的工单排在前面，然后是本机和配对设备上正在进行的工单。">
+<title>工单视图：需要你的工单排在前面，然后是本机和配对设备上正在进行的工单。</title>
+<rect width="884" height="264" rx="12" fill="#17191c"/>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+<text xml:space="preserve" x="30.4" y="36" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">Tickets</text>
+<text xml:space="preserve" x="89.2" y="36" textLength="361.2" lengthAdjust="spacingAndGlyphs" fill="#919191">  2 need you · 2 working · host in this TUI</text>
+<line x1="22" y1="52" x2="862" y2="52" stroke="#525252" stroke-width="1"/>
+<text xml:space="preserve" x="30.4" y="76" textLength="109.2" lengthAdjust="spacingAndGlyphs" fill="#f5be50" font-weight="700">Needs you (2)</text>
+<text xml:space="preserve" x="30.4" y="96" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">▸ </text>
+<text xml:space="preserve" x="47.2" y="96" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#f5be50" font-weight="700">? </text>
+<text xml:space="preserve" x="64" y="96" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#919191">2c5e81f0  </text>
+<text xml:space="preserve" x="148" y="96" textLength="201.6" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">上传测试不稳定，加上重试</text>
+<text xml:space="preserve" x="349.6" y="96" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#919191">  Awaiting answer · github</text>
+<text xml:space="preserve" x="568" y="96" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#f5be50">  asks: </text>
+<text xml:space="preserve" x="635.2" y="96" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#f5be50">重试</text>
+<text xml:space="preserve" x="668.8" y="96" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#f5be50"> 3 </text>
+<text xml:space="preserve" x="694" y="96" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#f5be50">次够吗？</text>
+<text xml:space="preserve" x="47.2" y="116" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#f5be50" font-weight="700">! </text>
+<text xml:space="preserve" x="64" y="116" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#919191">9a03d4be  </text>
+<text xml:space="preserve" x="148" y="116" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">设置页加上深色主题</text>
+<text xml:space="preserve" x="299.2" y="116" textLength="403.2" lengthAdjust="spacingAndGlyphs" fill="#919191">  Awaiting review · PR #42 · github · via claude</text>
+<text xml:space="preserve" x="30.4" y="136" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#5cc8d7" font-weight="700">Working (2)</text>
+<text xml:space="preserve" x="47.2" y="156" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#5cc8d7" font-weight="700">● </text>
+<text xml:space="preserve" x="64" y="156" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#919191">ovh:5b17e0aa  </text>
+<text xml:space="preserve" x="181.6" y="156" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">翻译新手指南</text>
+<text xml:space="preserve" x="282.4" y="156" textLength="252" lengthAdjust="spacingAndGlyphs" fill="#919191">  Working · feishu · via codex</text>
+<text xml:space="preserve" x="47.2" y="176" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#5cc8d7" font-weight="700">● </text>
+<text xml:space="preserve" x="64" y="176" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#919191">e41f7c22  </text>
+<text xml:space="preserve" x="148" y="176" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">把构建脚本改名为</text>
+<text xml:space="preserve" x="282.4" y="176" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8"> build:all</text>
+<text xml:space="preserve" x="366.4" y="176" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#919191">  Working · tui · pulled by laptop</text>
+<text xml:space="preserve" x="30.4" y="196" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#919191" font-weight="700">Ended (1)</text>
+<text xml:space="preserve" x="47.2" y="216" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#68d086" font-weight="700">✓ </text>
+<text xml:space="preserve" x="64" y="216" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#919191">70bd9e13  </text>
+<text xml:space="preserve" x="148" y="216" textLength="168" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">修正安装一节里的错字</text>
+<text xml:space="preserve" x="316" y="216" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#919191">  Completed · PR #41 · github</text>
+<text xml:space="preserve" x="30.4" y="236" textLength="688.8" lengthAdjust="spacingAndGlyphs" fill="#919191">↑↓ select · Enter open · s stop · r retry · Esc back · /ticket &lt;request&gt; files one</text>
+</g>
+</svg>
