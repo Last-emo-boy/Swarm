@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Engine, followupOwners, latestAssignment, liveTicket, threadKey, type DomainEvent, type Executor, type Ticket } from "./core/index.js";
 import { Commands } from "./commands.js";
 import { Effects } from "./effects.js";
+import { linkOf } from "./github-link.js";
 import { harnessIds } from "./harness.js";
 import { HealthBoard } from "./health.js";
 import { KV } from "./kv.js";
@@ -73,7 +74,7 @@ export class SuperagentClient {
     this.engine = new Engine({
       repo: this.store,
       scope: this.sources,
-      policy: () => settingsPolicy(this.settings(), this.sources),
+      policy: () => settingsPolicy(this.settings(), this.sources, { of: (actor) => linkOf(this.store, actor) }),
       assessor: { request: (candidate) => this.effects.enqueue("assessment", candidate.evalId, { triggerId: candidate.triggers[0]!.id }) },
       executor,
       outbox: this.outbox,

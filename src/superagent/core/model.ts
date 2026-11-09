@@ -134,8 +134,12 @@ export type MandateBasis = Received & { sender?: string; rules?: string[] } & (
 export type Role = 'owner' | 'maintainer' | 'everyone'
 /** How far a ticket's work may reach: it only reads, keeps its change in its directory and sends it as a patch, or writes to GitHub. */
 export type WriteLevel = 'read-only' | 'local' | 'github'
-/** What a ticket's work may do, fixed when it is accepted: its requester's role then, how far it may write, and the ticket it took over. */
-export interface Capability { role: Role; write: WriteLevel; from?: string }
+/**
+ * What a ticket's work may do, fixed when it is accepted: its requester's role then, how far it may write, and the ticket it
+ * took over. Work that writes to GitHub under the access model does so as its requester's linked account (`credential`), on
+ * one repository (`repository`, owner/name).
+ */
+export interface Capability { role: Role; write: WriteLevel; from?: string; credential?: { login: string; id: number }; repository?: string }
 
 /** Immutable authorization produced by an accept decision; execution is bounded by it and it never changes. */
 export interface Mandate {

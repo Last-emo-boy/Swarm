@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import { each, expect } from './testing/expect.js'
-import { addressable, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, roleOf, settingsPolicy, allowedSender, anyoneAllowed }
-  from './policy.js'
+import { addressable, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, repositoryFor, roleOf, settingsPolicy, allowedSender,
+  anyoneAllowed } from './policy.js'
 import { SettingsSchema, policyVersion, type Settings } from './settings.js'
 import type { MandateBasis } from './core/index.js'
 import { SourceRegistry } from './sources/registry.js'
@@ -464,16 +464,35 @@ describe('access model', () => {
     expect(setup(roles).policy.gate(feishu({ actor: person(READER) }), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit', basis: { sender: READER } })
     expect(setup(roles).policy.gate(feishu({ actor: person(GUEST) }), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
   })
-  it('lets explicit work of maintainers write to GitHub, keeps everyone\'s and inferred work local, and lowers either to the ceiling', () => {
-    const { policy: gated } = setup(roles)
-    expect(gated.capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'github' })
+  const WATCHED = 'owner/watched'
+  const linked = { login: 'alice-gh', id: 7, repos: [WATCHED, 'alice-gh/tool'], reposAt: '', linkedAt: '' }
+  const links = (link: typeof linked | undefined = linked) => ({ of: (actor: { id: string }) => actor.id === MEMBER || actor.id === BOSS ? link : undefined })
+  const watching = (settings: Settings) => SettingsSchema.parse({ ...settings, sources: { ...settings.sources, github: { enabled: false, config: { repository: WATCHED } } } })
+  it('lets explicit work of maintainers write to GitHub as their linked account, keeps the rest local, and lowers either to the ceiling', () => {
+    const gated = settingsPolicy(watching(roles), sources, links())
+    expect(gated.capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'github', credential: { login: 'alice-gh', id: 7 }, repository: WATCHED })
     expect(gated.capability?.(explicit(READER) as never)).toEqual({ role: 'everyone', write: 'local' })
     expect(gated.capability?.({ ...explicit(BOSS), strength: 'inferred' } as never)).toEqual({ role: 'owner', write: 'local' })
+    // Without a working link, work that could write to GitHub stays local.
+    expect(settingsPolicy(watching(roles), sources).capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'local' })
+    expect(capabilityOf(watching(roles), explicit(MEMBER), { ...linked, broken: 'refused' })).toEqual({ role: 'maintainer', write: 'local' })
     // Chats nobody listed write locally unless their ceiling says otherwise; a ceiling can also make a chat read-only.
-    expect(capabilityOf(roles, explicit(BOSS, 'other'))).toEqual({ role: 'owner', write: 'local' })
-    expect(capabilityOf(withAccess({ ceilings: { other: 'github' } }), explicit(MEMBER, 'other'))).toEqual({ role: 'maintainer', write: 'github' })
-    expect(capabilityOf(withAccess({ ceilings: { [CHAT]: 'read-only' } }), explicit(MEMBER))).toEqual({ role: 'maintainer', write: 'read-only' })
+    expect(capabilityOf(roles, explicit(BOSS, 'other'), linked)).toEqual({ role: 'owner', write: 'local' })
+    expect(capabilityOf(watching(withAccess({ ceilings: { other: 'github' } })), explicit(MEMBER, 'other'), linked)).toMatchObject({ write: 'github' })
+    expect(capabilityOf(withAccess({ ceilings: { [CHAT]: 'read-only' } }), explicit(MEMBER), linked)).toEqual({ role: 'maintainer', write: 'read-only' })
     expect(ceilingOf(roles, 'feishu', 'direct')).toBe('github')
+  })
+  it('writes to the repository the request names, else the default, else the watched one, else the only one, and on GitHub to the watched one', () => {
+    const settings = watching(roles)
+    expect(capabilityOf(settings, explicit(MEMBER), linked, { repository: 'ALICE-GH/tool' })?.repository).toBe('alice-gh/tool')
+    expect(capabilityOf(settings, explicit(MEMBER), { ...linked, defaultRepo: 'alice-gh/tool' })?.repository).toBe('alice-gh/tool')
+    // A repository the person cannot push to does not count; the next choice applies.
+    expect(capabilityOf(settings, explicit(MEMBER), linked, { repository: 'someone/else' })?.repository).toBe(WATCHED)
+    expect(capabilityOf(roles, explicit(MEMBER), { ...linked, repos: ['alice-gh/tool'] })?.repository).toBe('alice-gh/tool')
+    expect(capabilityOf(roles, explicit(MEMBER), { ...linked, repos: ['a/b', 'c/d'] })).toEqual({ role: 'maintainer', write: 'local' })
+    const onGithub = { ...explicit(MEMBER), basis: { ...explicit(MEMBER).basis, source: 'github' } }
+    expect(capabilityOf(settings, onGithub, { ...linked, defaultRepo: 'alice-gh/tool' }, { repository: 'alice-gh/tool' })?.repository).toBe(WATCHED)
+    expect(repositoryFor(linked, '', undefined)).toBeUndefined()
   })
   it('lets a ticket\'s requester and maintainers steer it, and nobody else', () => {
     const { policy: gated } = setup(roles)

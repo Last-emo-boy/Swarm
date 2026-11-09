@@ -23,6 +23,14 @@ export const pullOf = (ticket: Pick<Ticket, 'follows'>): number | undefined => p
 export const agentPull = (pr: { user: { login: string }; head?: { repo?: { full_name: string } | null } | null },
   deployment: Pick<Deployment, 'github' | 'repository'>): boolean =>
   !!deployment.github && sameName(pr.user.login, deployment.github.login) && sameName(pr.head?.repo?.full_name ?? '', deployment.repository)
+/**
+ * True when the PR is one the ticket's work opened in the configured repository: by the agent account, or by the requester's
+ * linked account a ticket acts as.
+ */
+export const ticketPull = (pr: Parameters<typeof agentPull>[0], ticket: Pick<Ticket, 'mandate'>, deployment: Pick<Deployment, 'github' | 'repository'>): boolean => {
+  const login = ticket.mandate.capability?.credential?.login
+  return agentPull(pr, deployment) || (!!login && sameName(pr.user.login, login) && sameName(pr.head?.repo?.full_name ?? '', deployment.repository))
+}
 /** True when a branch belongs to the ticket: its last path segment is the ticket's short name, such as `agent/<name>`. */
 export const ticketBranch = (ticket: Pick<Ticket, 'execution'>, ref: string): boolean =>
   !!ticket.execution?.name && ref.split('/').at(-1) === ticket.execution.name
@@ -37,9 +45,9 @@ export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull): strin
   if (!ticket || !liveTicket(ticket)) return 'Ticket ended because its PR was closed'
   const source = ctx.triggers.get(ticket.origin.triggerId)
   const started = source?.source === SOURCE && source.meta.isPr === true && source.meta.number === pr.number
-  const opened = agentPull(pr, ctx.deployment) && ticketBranch(ticket, pr.head.ref)
+  const opened = ticketPull(pr, ticket, ctx.deployment) && ticketBranch(ticket, pr.head.ref)
   if (!started && !opened) {
-    const { login } = githubAccount(ctx.deployment)
+    const login = ticket.mandate.capability?.credential?.login ?? githubAccount(ctx.deployment).login
     return `PR does not belong to this ticket: use the source PR or a PR by ${login} from a branch whose last path segment is SWARM_TICKET_NAME; omit pr_number when no PR exists`
   }
   const owner = ctx.tickets.open().find(item => pullsOf(item, true).includes(pr.number))
@@ -50,7 +58,7 @@ export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull): strin
 }
 /**
  * Reconciles a polled PR's open/merged/closed state and auto-merge fact with any bound or branch-matching ticket.
- * An open agent PR auto-binds to the single open ticket on its branch unless that ticket already follows another open PR
+ * An open PR the ticket's work opened (see `ticketPull`) auto-binds to the single open ticket on its branch unless that ticket already follows another open PR
  * (which only the Executor's report changes).
  * @returns whether the PR has ended.
  */
@@ -58,7 +66,7 @@ export async function observePull(ctx: SourceContext, pr: Pull): Promise<boolean
   const ended = pr.state === 'closed' || !!pr.merged
   if (ended) closePull(ctx, pr)
   else {
-    const candidates = agentPull(pr, ctx.deployment) ? ctx.tickets.open().filter(ticket => ticketBranch(ticket, pr.head.ref)) : []
+    const candidates = ctx.tickets.open().filter(ticket => ticketBranch(ticket, pr.head.ref) && ticketPull(pr, ticket, ctx.deployment))
     const ticket = candidates.length === 1 ? candidates[0]! : undefined
     // A PR the ticket followed until it closed, and that is open again, is followed again.
     const reopened = ticket?.follows?.some(item => item.thread === `${SOURCE}:${pr.number}` && item.closed)

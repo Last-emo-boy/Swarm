@@ -2,6 +2,7 @@
  * Typed key-value store keys grouped by the component that owns and writes each family (from dsh-superagent's kv.ts).
  * Readers and writers refer to a record by its entry here so each key is spelled once with its value type.
  */
+import type { GithubLink } from './github-link.js'
 import type { Health } from './health.js'
 import type { Lease, Placement } from './placement.js'
 import type { Retry } from './sources/github.js'
@@ -33,6 +34,8 @@ export const KV = {
    * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.
    */
   mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
+  /** People's linked GitHub accounts, by the Source and id they write from (see github-link.ts); only the host writes them. */
+  links: { github: family<GithubLink, [source: string, actor: string]>('github-link:') },
   /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */
   harness: { chosen: family<string>('harness-chosen:') },
   /**

@@ -24,8 +24,11 @@ export interface Policy {
   admitsInferred(rules: readonly string[]): boolean
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
-  /** What the work of a Mandate about to be accepted may do; none leaves it as tickets always were. */
-  capability?(mandate: Omit<Mandate, 'capability'>): Capability | undefined
+  /**
+   * What the work of a Mandate about to be accepted may do, on the repository its request names (`repository`) when the
+   * requester may write there; none leaves it as tickets always were.
+   */
+  capability?(mandate: Omit<Mandate, 'capability'>, requested?: { repository?: string }): Capability | undefined
   /**
    * Whether a person's message steers a ticket: reaches its worker as a request, resumes or unblocks it, attaches to it or
    * stops it. Without this method everyone does; a message that does not reaches the worker for context only and goes to Eval.
@@ -53,7 +56,9 @@ export type AssessmentOutcome =
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
     name?: string; note?: string
     /** The ticket this one takes over, whose change it carries on with: see `Capability.from`. */
-    from?: string }
+    from?: string
+    /** The GitHub repository (owner/name) the request names, which its work writes to if its requester may. */
+    repository?: string }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { sealedGitConfig, sealedWorkerBin, workerBin, workerEnvironment, workerGitConfig, writeEnvironment } from "./environment.js";
+import { requesterGitConfig, requesterWorkerBin, sealedGitConfig, sealedWorkerBin, workerAccounts, workerBin, workerEnvironment, workerGitConfig, writeEnvironment } from "./environment.js";
 import { SHELL_PATH_FIRST } from "../tools/shell-path.js";
 
 let stateDir: string;
@@ -25,12 +26,37 @@ test("gives a worker whose ticket keeps its work local shims that refuse both ac
   assert.equal(open.PATH, [workerBin(stateDir), "/usr/bin"].join(delimiter));
   assert.equal(open.GIT_CONFIG_GLOBAL, workerGitConfig(stateDir));
   assert.equal(open[SHELL_PATH_FIRST], workerBin(stateDir));
-  const local = workerEnvironment({ stateDir, github: github as never }, {}, base, "local");
+  const local = workerEnvironment({ stateDir, github: github as never }, {}, base, "none");
   assert.equal(local.PATH, [sealedWorkerBin(stateDir), "/usr/bin"].join(delimiter));
   assert.equal(local.GIT_CONFIG_GLOBAL, sealedGitConfig(stateDir));
   assert.equal(local[SHELL_PATH_FIRST], sealedWorkerBin(stateDir));
   assert.equal(local.GH_TOKEN, undefined);
   // Without a GitHub account a local worker still gets git without the operator's credentials.
-  assert.equal(workerEnvironment({ stateDir }, {}, base, "read-only").GIT_CONFIG_GLOBAL, sealedGitConfig(stateDir));
+  assert.equal(workerEnvironment({ stateDir }, {}, base, "none").GIT_CONFIG_GLOBAL, sealedGitConfig(stateDir));
   assert.equal(workerEnvironment({ stateDir }, {}, base).GIT_CONFIG_GLOBAL, undefined);
+});
+
+test("gives a worker that acts as its requester gh itself, with their token, and git credentials from that token", () => {
+  writeEnvironment({ stateDir, github: { ...github, cli: "/opt/agent/gh-agent" } as never, feishu: { cli: "/usr/bin/lark-cli" } as never }, []);
+  const gh = readFileSync(join(requesterWorkerBin(stateDir), "gh"), "utf8");
+  assert.match(gh, /exec 'gh' "\$@"/);
+  assert.doesNotMatch(gh, /gh-agent/);
+  assert.match(readFileSync(join(requesterWorkerBin(stateDir), "lark-cli"), "utf8"), /exec '\/usr\/bin\/lark-cli'/);
+  assert.match(readFileSync(requesterGitConfig(stateDir), "utf8"), /password=\$GH_TOKEN/);
+  const env = workerEnvironment({ stateDir, github: github as never }, { GH_TOKEN: "ghu_requester" }, { PATH: "/usr/bin", GH_TOKEN: "agent" }, "requester");
+  assert.equal(env.GH_TOKEN, "ghu_requester");
+  assert.equal(env.PATH, [requesterWorkerBin(stateDir), "/usr/bin"].join(delimiter));
+  assert.equal(env.GIT_CONFIG_GLOBAL, requesterGitConfig(stateDir));
+  assert.equal(workerAccounts(undefined, false), "agent");
+  assert.equal(workerAccounts({ role: "everyone", write: "local" }, false), "none");
+  assert.equal(workerAccounts({ role: "owner", write: "github" }, false), "agent");
+  assert.equal(workerAccounts({ role: "owner", write: "github", credential: { login: "a", id: 1 }, repository: "a/b" }, true), "requester");
+  assert.equal(workerAccounts({ role: "owner", write: "github", credential: { login: "a", id: 1 }, repository: "a/b" }, false), "none");
+});
+
+test("the requester's git credential helper answers with the token in GH_TOKEN", () => {
+  writeEnvironment({ stateDir }, []);
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: requesterGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: "1", GH_TOKEN: "ghu_secret" };
+  const filled = spawnSync("git", ["credential", "fill"], { env, input: "protocol=https\nhost=github.com\n\n", encoding: "utf8" });
+  assert.match(filled.stdout, /username=x-access-token\npassword=ghu_secret/);
 });
