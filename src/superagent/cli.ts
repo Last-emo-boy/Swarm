@@ -278,6 +278,9 @@ async function runMcpCommand(args: string[]): Promise<void> {
   const assignmentId = value(args, "assignment");
   if (!ticketId || (owner && !assignmentId)) throw new Error("Usage: swarm superagent mcp --ticket <id> [--remote <node> --assignment <id>]");
   const { serveTicketTools, ticketTools, withPatch } = await import("./ticket-tools.js");
+  // The tools act as the agent's accounts; a worker that acts as its requester holds their token, which they never use.
+  delete process.env.GH_TOKEN;
+  delete process.env.GH_REPO;
   // The worker starts its tools in its ticket's directory, whose commits a local ticket's ready report sends as a patch.
   const directory = process.env.SWARM_TICKET_DIR || process.cwd();
   if (owner) {

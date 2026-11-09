@@ -100,7 +100,7 @@ steer it. Without the block, nothing changes: everyone on a list may do everythi
 
 - **Roles.** A sender has the role `roles` gives them. Otherwise someone on `allowed` is a `maintainer`, and anyone else
   is `everyone`. A sender with a role is on the list just as one on `allowed` is.
-- **Capability.** A maintainer's or an owner's explicit request may write to GitHub. Work for `everyone`, and work nobody
+- **Capability.** A maintainer's or an owner's explicit request may write to GitHub, as their linked account (below). Work for `everyone`, and work nobody
   asked for (inferred, or a bot's), stays `local`: its worker commits in its directory, has no `gh` or `lark-cli` account,
   and its ready result carries the commits as a patch. A receiving scope's `ceilings` entry (`read-only`, `local` or
   `github`) lowers either; chats nobody listed (`other`) are `local` unless a ceiling says otherwise.
@@ -114,7 +114,8 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 
 | Command | Who | What it does |
 |---|---|---|
-| `/me` | anyone | Shows your role, open tickets, requests in the last hour and the ceiling here |
+| `/me` | anyone | Shows your role, open tickets, requests in the last hour, the ceiling here and your GitHub account |
+| `/link`, `/unlink`, `/repo [owner/name]` | anyone, in a direct message | Links or removes your GitHub account, and lists or sets your default repository |
 | `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
@@ -122,6 +123,26 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own |
 
 The first owner is set in the settings file.
+
+### GitHub accounts
+
+Work that writes to GitHub does so as the person who asked, through a GitHub App they authorize with GitHub's device
+flow. Name the app (Device Flow on, expiring user tokens, Contents and Pull requests read and write) in the GitHub
+Source's settings: `"app": { "clientId": "Iv23...", "slug": "your-app" }` under `sources.github.config`.
+
+- `/link`, in a direct message, shows a code to enter at github.com/login/device. The host keeps the account's tokens,
+  sealed with AES-256-GCM under a key from `SWARM_LINK_KEY_FILE`, the service's `link-key` credential
+  (`$CREDENTIALS_DIRECTORY`), or `<stateDir>/link-key`. It refreshes them before they expire, and tells the person in the
+  conversation they linked from when GitHub refuses a refresh.
+- `/repo [owner/name]` lists the repositories where the person installed the app and may push, and sets their default.
+  `/unlink` removes the link; GitHub's authorizations page revokes the app itself.
+- A maintainer's or an owner's explicit request writes to GitHub only once they linked an account. It works on the
+  repository the request names (as owner/name or a github.com link), else their default, else the watched repository,
+  else their only one; without any, it stays local. The worker's `gh` and git use that person's token, and their commits
+  carry that account's identity. A repository other than the watched one is cloned into the ticket's directory, and its
+  pull request's link comes back in the result: the host follows review and merge only on the watched repository.
+- What a worker does through the app, such as opening a pull request as the person, is the agent's own: the GitHub
+  Source does not take it back in as their message.
 
 ### Conversation
 
@@ -146,8 +167,9 @@ The persona also shapes its answers to messages addressed to it. Reading every m
 
 Workers run as the operator's OS user in `full-auto` mode; an action that still needs approval is refused and the worker
 reports what it needs. A worker on an agent harness runs under the harness's own permission mode or sandbox instead of
-Swarm's permission rules (README, "Harness workers"). The wrappers, blocked commands and a local ticket's missing accounts
-are defaults, not a sandbox: a worker can run programs by path and read the operator's home directory. Messages on a ticket's Threads reach its worker as context whoever wrote
+Swarm's permission rules ([GUIDE.md, "Harness workers"](GUIDE.md#harness-workers)). The wrappers, blocked commands
+and a local ticket's missing accounts are defaults, not a sandbox: a worker can run programs by path and read the
+operator's home directory. Messages on a ticket's Threads reach its worker as context whoever wrote
 them, so on a public repository strangers can put text in front of a worker with shell access; run the host under a
 dedicated OS account holding only the agent's credentials there. Upstream lists which Trigger fields to trust as an
 open question; so does this port.

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import { liveTicket, type Ticket, type Trigger } from "./core/index.js";
 import { BotCommands, commandOf } from "./bot-commands.js";
+import { GithubLinks, linkKey, linkOf } from "./github-link.js";
+import { KV } from "./kv.js";
 import { SuperagentClient } from "./client.js";
 import { readSettings, settingsPath, writeSettings } from "./settings.js";
 import { feishuTrigger } from "./sources/feishu.js";
@@ -19,8 +21,23 @@ let stateDir: string;
 let client: SuperagentClient;
 let commands: BotCommands;
 let clock: number;
+let links: GithubLinks;
+/** GitHub's answers by path. */
+let answers: Record<string, unknown>;
+const fakeFetch: typeof fetch = async (input) => {
+  const answer = answers[new URL(String(input)).pathname];
+  return answer === undefined ? new Response("not found", { status: 404 }) : Response.json(answer);
+};
+/** Links a sender's GitHub account as the device flow would, with the repositories they may push to. */
+function linkAs(sender: string, login: string, repos: string[]): void {
+  client.store.set(KV.links.github("feishu", sender), { login, id: 7, repos, reposAt: "", linkedAt: "", access: { iv: "", data: "", tag: "" } });
+}
+const until = async (done: () => boolean) => { for (let i = 0; i < 100 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5)); };
+const WATCHED = "owner/watched";
+const APP = { clientId: "Iv23client", slug: "swarm-oauth" };
 const settings = (access: Record<string, unknown> = {}) => ({
-  sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: CHAT, listen: "mentions" }], directMessages: true } } },
+  sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: CHAT, listen: "mentions" }], directMessages: true } },
+    github: { enabled: false, config: { repository: WATCHED, app: APP } } },
   policy: { sources: { feishu: { allowed: [{ id: MAINTAINER, name: "Alice" }], roles: { [BOSS]: "owner", [READER]: "everyone" } } } },
   eval: { mode: "observe" },
   access
@@ -30,7 +47,9 @@ beforeEach(() => {
   writeSettings(settings(), settingsPath(stateDir));
   const deployment = { stateDir, repository: "", feishu: { cli: "lark-cli", appId: "cli_app", brand: "feishu", botId: BOT, name: "w33d" } } as unknown as Deployment;
   client = new SuperagentClient({ stateDir, deployment: () => deployment });
-  commands = new BotCommands(client);
+  answers = {};
+  links = new GithubLinks({ store: client.store, key: () => linkKey(stateDir), fetch: fakeFetch, sleep: async () => {} });
+  commands = new BotCommands(client, { links });
   clock = Date.parse("2026-11-09T10:00:00Z");
 });
 afterEach(() => {
@@ -162,14 +181,57 @@ describe("take-over", () => {
     const path = patchPath(stateDir, local);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "From 0000 Mon Sep 17 00:00:00 2001\n");
+    commands.receive(message(MAINTAINER, "/takeover", { root }));
+    expect(replies().at(-1)!.text).toContain("Link your GitHub account first");
+    linkAs(READER, "reader-gh", [WATCHED]);
     commands.receive(message(READER, "/takeover", { root }));
-    expect(replies().at(-1)!.text).toContain("You cannot open pull requests from here");
+    expect(replies().at(-1)!.text).toContain(`You cannot open pull requests on ${WATCHED} from here`);
+    linkAs(MAINTAINER, "alice-gh", ["alice-gh/tool"]);
+    commands.receive(message(MAINTAINER, "/takeover", { root }));
+    expect(replies().at(-1)!.text).toContain(`You cannot open pull requests on ${WATCHED} from here`);
+    linkAs(MAINTAINER, "alice-gh", ["alice-gh/tool", WATCHED]);
     commands.receive(message(MAINTAINER, "/takeover", { root }));
     const taken = client.store.tickets.list().find((ticket) => ticket.mandate.capability?.from === local.id)!;
-    expect(taken.mandate).toMatchObject({ actor: { id: MAINTAINER }, capability: { role: "maintainer", write: "github", from: local.id } });
+    expect(taken.mandate).toMatchObject({ actor: { id: MAINTAINER }, capability: { role: "maintainer", write: "github", from: local.id,
+      credential: { login: "alice-gh", id: 7 }, repository: WATCHED } });
     expect(taken.execution?.assignment).toContain("fix the typo");
     expect(liveTicket(client.store.tickets.get(local.id)!)).toBe(false);
     expect(replies().at(-1)!.text).toMatch(/^Ticket [0-9a-f]{8} takes over ticket [0-9a-f]{8}/);
     expect(readFileSync(path, "utf8")).toContain("From 0000");
+  });
+});
+
+describe("GitHub links", () => {
+  it("links an account in a direct message: the code first, then the account and its repositories", async () => {
+    answers = { "/login/device/code": { device_code: "dc", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 },
+      "/login/oauth/access_token": { access_token: "ghu_1", expires_in: 28800, refresh_token: "ghr_1", refresh_token_expires_in: 15897600 },
+      "/user": { login: "alice-gh", id: 7 }, "/user/installations": { installations: [{ id: 1 }] },
+      "/user/installations/1/repositories": { repositories: [{ full_name: WATCHED, permissions: { push: true } }] } };
+    commands.receive(message(MAINTAINER, "/link"));
+    expect(replies().at(-1)!.text).toBe("Send /link to me in a direct message.");
+    commands.receive(message(MAINTAINER, "/link", { direct: true }));
+    await until(() => replies().length === 3);
+    expect(replies().slice(1).map((reply) => reply.text)).toEqual([
+      "Open https://github.com/login/device and enter ABCD-1234 within 15 minutes to link your GitHub account.",
+      `Linked as @alice-gh. You can work on ${WATCHED}. Install the app on more repositories at https://github.com/apps/swarm-oauth/installations/new.`
+    ]);
+    expect(linkOf(client.store, { source: "feishu", id: MAINTAINER })).toMatchObject({ login: "alice-gh", repos: [WATCHED], channel: { address: { chatId: DM } } });
+    commands.receive(message(MAINTAINER, "/me", { direct: true }));
+    expect(replies().at(-1)!.text).toContain(`GitHub: @alice-gh, working on ${WATCHED}.`);
+  });
+  it("sets a default repository among the ones the app may push to, and unlinks", async () => {
+    answers = { "/user": { login: "alice-gh", id: 7 }, "/user/installations": { installations: [{ id: 1 }] },
+      "/user/installations/1/repositories": { repositories: [{ full_name: WATCHED, permissions: { push: true } }, { full_name: "alice-gh/tool", permissions: { push: true } }] } };
+    await links.link({ source: "feishu", id: MAINTAINER }, { access_token: "ghu_ok", expires_in: 28800 });
+    commands.receive(message(MAINTAINER, "/repo alice-gh/tool", { direct: true }));
+    await until(() => replies().length === 1);
+    expect(replies()[0]!.text).toBe(`You can work on alice-gh/tool (default), ${WATCHED}.`);
+    commands.receive(message(MAINTAINER, "/repo someone/else", { direct: true }));
+    await until(() => replies().length === 2);
+    expect(replies()[1]!.text).toContain("@alice-gh cannot push to someone/else through the app");
+    commands.receive(message(MAINTAINER, "/unlink", { direct: true }));
+    await until(() => replies().length === 3);
+    expect(replies()[2]!.text).toContain("Unlinked.");
+    expect(linkOf(client.store, { source: "feishu", id: MAINTAINER })).toBeUndefined();
   });
 });

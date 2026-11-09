@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="884" height="584" viewBox="0 0 884 584" role="img" aria-label="Swarm in a terminal: both turns folded to one line each, the answer, and a footer line saying one file changed and one check passed.">
+<title>Swarm in a terminal: both turns folded to one line each, the answer, and a footer line saying one file changed and one check passed.</title>
+<rect width="884" height="584" rx="12" fill="#17191c"/>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+<text xml:space="preserve" x="30.4" y="36" textLength="42" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">swarm</text>
+<text xml:space="preserve" x="72.4" y="36" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">  kimi-coding/kimi-for-coding  </text>
+<text xml:space="preserve" x="332.8" y="36" textLength="176.4" lengthAdjust="spacingAndGlyphs" fill="#919191">~/projects/swarm-demo</text>
+<text xml:space="preserve" x="30.4" y="56" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">› </text>
+<text xml:space="preserve" x="47.2" y="56" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">How do devices pair in this repo?</text>
+<text xml:space="preserve" x="30.4" y="76" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#919191">  ▸ Read 2 files</text>
+<text xml:space="preserve" x="30.4" y="116" textLength="781.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">With a pairing code such as K7QM-4ZX2: run swarm mesh invite on any device in the swarm, then</text>
+<text xml:space="preserve" x="30.4" y="136" textLength="772.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">swarm mesh join K7QM-4ZX2 on the new one. A code works for 15 minutes, and three wrong tries</text>
+<text xml:space="preserve" x="30.4" y="156" textLength="84" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">cancel it.</text>
+<text xml:space="preserve" x="30.4" y="196" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758" font-weight="700">› </text>
+<text xml:space="preserve" x="47.2" y="196" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Make pairing codes expire after 10 minutes</text>
+<text xml:space="preserve" x="30.4" y="216" textLength="336" lengthAdjust="spacingAndGlyphs" fill="#919191">  ▸ Read 1 file, edited 1 file, 2 agents</text>
+<text xml:space="preserve" x="30.4" y="256" textLength="806.4" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Pairing codes now expire after 10 minutes. INVITE_MINUTES in src/mesh/pair.ts was the only place</text>
+<text xml:space="preserve" x="30.4" y="276" textLength="394.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">the time was set; invite and join both read it.</text>
+<text xml:space="preserve" x="30.4" y="316" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Swarm Review</text>
+<text xml:space="preserve" x="30.4" y="336" textLength="798" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Review Agent completed: The change touches only the constant that invite and join read; nothing</text>
+<text xml:space="preserve" x="30.4" y="356" textLength="201.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">else assumed 15 minutes.</text>
+<text xml:space="preserve" x="30.4" y="396" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Swarm Verification</text>
+<text xml:space="preserve" x="30.4" y="416" textLength="747.6" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">Verifier Agent completed: Checked the invite and join paths read INVITE_MINUTES; no other</text>
+<text xml:space="preserve" x="30.4" y="436" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#e8e8e8">duration remains.</text>
+<text xml:space="preserve" x="30.4" y="456" textLength="470.4" lengthAdjust="spacingAndGlyphs" fill="#919191">1 file changed · 1 check passed · /revert last undoes it</text>
+<line x1="22" y1="512" x2="862" y2="512" stroke="#e09758" stroke-width="1"/>
+<text xml:space="preserve" x="30.4" y="536" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#e09758">› </text>
+<rect x="47.2" y="522" width="8.4" height="20" fill="#919191"/>
+<text xml:space="preserve" x="47.2" y="536" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#17191c">A</text>
+<text xml:space="preserve" x="55.6" y="536" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#919191">sk Swarm</text>
+<text xml:space="preserve" x="47.2" y="556" textLength="806.4" lengthAdjust="spacingAndGlyphs" fill="#919191">11 calls today                                                                            ? keys</text>
+</g>
+</svg>

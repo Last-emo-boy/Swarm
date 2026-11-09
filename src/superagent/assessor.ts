@@ -9,6 +9,7 @@ import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, 
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
 import { said } from "./chatter.js";
+import { linkOf, namedRepository } from "./github-link.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { updatePlacement } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed } from "./policy.js";
@@ -186,10 +187,12 @@ export class ModelAssessor {
       switch (route.kind) {
         case "accept": {
           const { client } = this.host;
+          const repository = this.requestedRepository(candidate);
           const decision = client.store.atomic(() => {
             const decided = engine.decide(triggerId, {
               kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
-              acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}), evalId: candidate.evalId
+              acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}),
+              ...(repository ? { repository } : {}), evalId: candidate.evalId
             });
             // Recorded with the ticket, before its worker launches, so a mesh node places the worker where the work can run.
             if (decided.ticketId && route.needs?.length) updatePlacement(client, decided.ticketId, { needs: [...new Set(route.needs)] });
@@ -227,6 +230,14 @@ export class ModelAssessor {
       if (error instanceof UserError) return error.message;
       throw error;
     }
+  }
+
+  /** The repository of the requester's linked account that the candidate's request names, if it names one. */
+  private requestedRepository(candidate: Candidate): string | undefined {
+    const evaluation = candidate.thread.evaluating;
+    const primary = candidate.triggers.find((trigger) => trigger.id === evaluation?.primary) ?? candidate.triggers.at(-1)!;
+    const link = linkOf(this.host.client.store, evaluation?.actor ?? primary.actor);
+    return link ? namedRepository(primary.text, link.repos) : undefined;
   }
 
   /** The thread window an assessment reads, as upstream's orchestrator_eval served it: the first five and five on either side. */

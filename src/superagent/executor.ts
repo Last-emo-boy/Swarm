@@ -6,13 +6,16 @@
  * A ticket placed on a paired mesh node runs its worker there instead (`RemoteWork`), while this host keeps its record.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { latestAssignment, liveTicket, runningAssignment, waitsForPerson, type Ticket } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { Later } from "./effects.js";
-import { verifyDirectory, workerEnvironment } from "./environment.js";
+import { verifyDirectory, workerAccounts, workerEnvironment, type WorkerAccounts } from "./environment.js";
+import type { Credential } from "./github-link.js";
+import { watchedRepository } from "./policy.js";
+import { sameName } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 import type { Deployment } from "./setup.js";
 
@@ -68,6 +71,23 @@ export async function prepareDirectory(directory: string, command: string, env: 
       });
   }
   mkdirSync(directory, { recursive: true });
+  await verifyDirectory(directory, env);
+}
+
+/**
+ * Clones a repository into a new ticket directory, with the credentials of the worker's environment, and checks out the
+ * ticket's branch; a clone that fails leaves no directory and throws why.
+ */
+export async function cloneRepository(directory: string, repository: string, branch: string, env: NodeJS.ProcessEnv): Promise<void> {
+  mkdirSync(dirname(directory), { recursive: true });
+  try {
+    await exec("git", ["clone", "--quiet", `https://github.com/${repository}.git`, directory], { env, timeout: PREPARE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 });
+    await exec("git", ["checkout", "--quiet", "-b", branch], { cwd: directory, env, timeout: 60_000 });
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    const { stderr, message } = error as { stderr?: string; message?: string };
+    throw new PrepareFailed(`Cloning ${repository} failed: ${(stderr || message || String(error)).slice(0, 2000)}`);
+  }
   await verifyDirectory(directory, env);
 }
 
@@ -131,7 +151,12 @@ export interface ExecutorHost {
   log(message: string): void;
   /** Where tickets placed on paired nodes run, on a host that is a mesh node. */
   remote(): RemoteWork | undefined;
+  /** The token of the account a ticket writes to GitHub as (`Capability.credential`), while its link works. */
+  credential(ticket: Ticket): Promise<Credential | undefined>;
 }
+
+/** Whose accounts a ticket's worker uses, and the variables that carry its requester's token. */
+interface WorkerAccess { accounts: WorkerAccounts; extra: Record<string, string> }
 
 interface Worker { process: ChildProcess; assignmentId: string; exited: Promise<number | null>; stopping?: boolean }
 
@@ -159,7 +184,8 @@ export class SwarmExecutor {
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== "pending") return;
     if (this.host.closing()) throw new Later("The host is stopping");
     try {
-      if (await this.host.remote()?.run(ticket, assignmentId)) return;
+      // A ticket that acts as its requester runs here, where the host keeps their token.
+      if (!ticket.mandate.capability?.credential && await this.host.remote()?.run(ticket, assignmentId)) return;
     } catch (error) {
       if (error instanceof Later) throw error;
       this.failed(ticketId, assignmentId, error instanceof Error ? error.message : String(error));
@@ -169,9 +195,15 @@ export class SwarmExecutor {
     try {
       const directory = ticket.execution?.directory ?? "";
       if (!directory) throw new PrepareFailed("The ticket has no directory");
-      if (!existsSync(directory)) await this.prepare(ticket);
+      const access = await this.access(ticket);
+      if (!access) {
+        client.engine.assignmentStarted(ticketId, assignmentId);
+        this.needsLink(ticket);
+        return;
+      }
+      if (!existsSync(directory)) await this.prepare(ticket, access);
       client.engine.assignmentStarted(ticketId, assignmentId);
-      this.spawnWorker(ticketId, assignmentId);
+      this.spawnWorker(ticketId, assignmentId, access);
     } catch (error) {
       if (error instanceof Later) throw error;
       this.failed(ticketId, assignmentId, error instanceof Error ? error.message : String(error));
@@ -181,14 +213,32 @@ export class SwarmExecutor {
   }
 
   /**
-   * Prepares a ticket's new directory with the prepare command, and applies the patch of the ticket it takes over; a failed
-   * command or a patch that does not apply fails the ticket.
+   * Whose accounts a ticket's worker uses: its requester's, with their token, for GitHub work that acts as them; undefined
+   * while their link does not work.
    */
-  private async prepare(ticket: Ticket): Promise<void> {
-    const variables = this.host.environment(ticket);
-    const env = workerEnvironment(this.host.deployment(), variables, process.env, ticket.mandate.capability?.write);
-    const { directory } = ticket.execution!;
-    await prepareDirectory(directory, this.host.client.settings().executor.prepare, env);
+  private async access(ticket: Ticket): Promise<WorkerAccess | undefined> {
+    const { capability } = ticket.mandate;
+    if (!capability?.credential || !capability.repository) return { accounts: workerAccounts(capability, false), extra: {} };
+    const credential = await this.host.credential(ticket);
+    return credential ? { accounts: "requester", extra: { GH_TOKEN: credential.token, GH_REPO: capability.repository } } : undefined;
+  }
+  /** A ticket whose requester's link stopped working waits for them to link again, which its question asks. */
+  private needsLink(ticket: Ticket): void {
+    const login = ticket.mandate.capability?.credential?.login ?? "";
+    this.host.client.engine.report(ticket.id, { state: "blocked", summary: `@${login}'s GitHub link does not work, so the worker cannot act as them.`,
+      question: `Your GitHub link (@${login}) stopped working, so I cannot work on GitHub as you. Send me /link in a direct message, then reply here.` });
+  }
+  /**
+   * Prepares a ticket's new directory: a clone of its repository when that is not the one the GitHub Source watches, else the
+   * prepare command, then the patch of the ticket it takes over; a failure fails the ticket.
+   */
+  private async prepare(ticket: Ticket, access: WorkerAccess): Promise<void> {
+    const variables = { ...this.host.environment(ticket), ...access.extra };
+    const env = workerEnvironment(this.host.deployment(), variables, process.env, access.accounts);
+    const { directory, name } = ticket.execution!;
+    const repository = ticket.mandate.capability?.repository;
+    if (repository && !sameName(repository, watchedRepository(this.host.client.settings()))) await cloneRepository(directory, repository, `agent/${name}`, env);
+    else await prepareDirectory(directory, this.host.client.settings().executor.prepare, env);
     const from = ticket.mandate.capability?.from;
     if (from) await applyPatch(directory, this.takenOver(from), env, variables);
   }
@@ -212,7 +262,7 @@ export class SwarmExecutor {
     if (waitsForPerson(ticket) && !fromPerson(ticket)) return;
     if (this.host.closing()) throw new Later("The host is stopping");
     try {
-      if (await this.host.remote()?.run(ticket, assignment.id)) return;
+      if (!ticket.mandate.capability?.credential && await this.host.remote()?.run(ticket, assignment.id)) return;
     } catch (error) {
       if (error instanceof Later) throw error;
       // The ticket shows the Inputs that did not reach its worker, until a delivery succeeds or a person retries it.
@@ -221,25 +271,28 @@ export class SwarmExecutor {
     }
     this.slots.reserve(ticketId, fromPerson(ticket) ? "person" : "wake");
     try {
+      const access = await this.access(ticket);
+      if (!access) { this.needsLink(ticket); return; }
       // An Assignment that ran on a paired node whose lease lapsed has no directory here yet.
-      if (!existsSync(ticket.execution?.directory ?? "")) await this.prepare(ticket);
-      this.spawnWorker(ticketId, assignment.id);
+      if (!existsSync(ticket.execution?.directory ?? "")) await this.prepare(ticket, access);
+      this.spawnWorker(ticketId, assignment.id, access);
     } catch (error) {
       client.engine.deliveryFailed(ticketId, assignment.id, error instanceof Error ? error.message : String(error));
     } finally { this.slots.free(ticketId); }
   }
 
-  private spawnWorker(ticketId: string, assignmentId: string): void {
+  private spawnWorker(ticketId: string, assignmentId: string, access: WorkerAccess): void {
     const { client } = this.host;
     const ticket = client.store.tickets.get(ticketId)!;
     const [program, ...prefix] = this.host.workerCommand;
     const env = workerEnvironment(this.host.deployment(), {
       ...this.host.environment(ticket),
+      ...access.extra,
       SWARM_SUPERAGENT_HOME: client.stateDir,
       SWARM_SUPERAGENT_DEPLOYMENT: JSON.stringify(this.host.deployment()),
       SWARM_PERMISSION_MODE: client.settings().executor.permissionMode,
       SWARM_SHELL_AUTO_BACKGROUND_MS: String(WORKER_SHELL_AUTO_BACKGROUND_MS)
-    }, process.env, ticket.mandate.capability?.write);
+    }, process.env, access.accounts);
     const child = spawn(program!, [...prefix, "superagent", "worker", "--ticket", ticketId, "--assignment", assignmentId],
       { cwd: ticket.execution!.directory, env, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";

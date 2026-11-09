@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" role="img" aria-label="工单怎么跑：来自 GitHub、飞书或 TUI 的需求先过门禁，成为工单，在装有对应 harness 的设备上由 worker 执行，答复回到提问的地方。">
+<title>工单怎么跑：来自 GitHub、飞书或 TUI 的需求先过门禁，成为工单，在装有对应 harness 的设备上由 worker 执行，答复回到提问的地方。</title>
+<rect width="880" height="300" rx="12" fill="#17191c"/>
+<g fill="none" stroke-width="1.5" stroke-linecap="round">
+<path d="M48 56 V80 M262 56 V80 M418 56 V68 Q418 80 406 80 H48" stroke="#525252"/>
+<path d="M48 80 V268" stroke="#e09758"/>
+</g>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="13">
+<rect x="28" y="24" width="148" height="32" rx="6" fill="#1f2226" stroke="#34383e"/>
+<rect x="192" y="24" width="140" height="32" rx="6" fill="#1f2226" stroke="#34383e"/>
+<rect x="348" y="24" width="140" height="32" rx="6" fill="#1f2226" stroke="#34383e"/>
+<text xml:space="preserve" x="40" y="45" fill="#919191">GitHub 上 <tspan fill="#e8e8e8">@它</tspan></text>
+<text xml:space="preserve" x="204" y="45" fill="#e8e8e8">飞书消息</text>
+<text xml:space="preserve" x="360" y="45" fill="#919191">TUI 里 <tspan fill="#e8e8e8">/ticket</tspan></text>
+<g font-size="14" font-weight="700" text-anchor="middle">
+<circle cx="48" cy="120" r="11" fill="#17191c"/><text x="48" y="125" fill="#68d086">✓</text>
+<circle cx="48" cy="164" r="11" fill="#17191c"/><text x="48" y="169" fill="#e09758">○</text>
+<circle cx="48" cy="208" r="11" fill="#17191c"/><text x="48" y="213" fill="#5cc8d7">●</text>
+<circle cx="48" cy="268" r="11" fill="#17191c"/><text x="48" y="273" fill="#68d086">✓</text>
+</g>
+<g font-size="14" font-weight="700" fill="#e8e8e8">
+<text x="72" y="125">门禁</text>
+<text xml:space="preserve" x="72" y="169">工单<tspan font-weight="400" fill="#919191"> 2c5e81f0</tspan></text>
+<text x="72" y="213">执行</text>
+<text x="72" y="273">答复</text>
+</g>
+<g fill="#b4b4b4">
+<text x="212" y="125">只放行有权提需求的人，这时还没有任何模型看到它</text>
+<text x="212" y="169">由模型分派：开新工单、并入已有工单、停下，或者不处理</text>
+<text x="212" y="213">在装有对应 harness 的设备上运行，用自己的工作树</text>
+<text x="212" y="235" fill="#7d8187">Swarm 自己的循环、Claude Code、Codex、Kimi Code 或 OpenCode</text>
+<text x="212" y="273">在提问的地方答复；之后那里的消息都交给同一个 worker</text>
+</g>
+</g>
+</svg>
