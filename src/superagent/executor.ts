@@ -13,6 +13,7 @@ import { latestAssignment, liveTicket, runningAssignment, waitsForPerson, type T
 import type { SuperagentClient } from "./client.js";
 import { Later } from "./effects.js";
 import { verifyDirectory, workerEnvironment } from "./environment.js";
+import { patchPath } from "./ticket-tools.js";
 import type { Deployment } from "./setup.js";
 
 const exec = promisify(execFile);
@@ -68,6 +69,20 @@ export async function prepareDirectory(directory: string, command: string, env: 
   }
   mkdirSync(directory, { recursive: true });
   await verifyDirectory(directory, env);
+}
+
+/**
+ * Applies a patch of commits to a prepared ticket directory with `git am`, committing as the agent's account, or as Swarm
+ * without one; a patch that does not apply leaves the directory as it was and throws why.
+ */
+export async function applyPatch(directory: string, patch: string, env: NodeJS.ProcessEnv, variables: Record<string, string>): Promise<void> {
+  const name = variables.SWARM_TICKET_GITHUB_ACCOUNT || "Swarm", email = variables.SWARM_TICKET_GITHUB_COMMIT_EMAIL || "swarm@localhost";
+  const git = (...args: string[]) => exec("git", ["-c", `user.name=${name}`, "-c", `user.email=${email}`, ...args],
+    { cwd: directory, env, timeout: PREPARE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 });
+  await git("am", "--3way", patch).catch(async (error: { stderr?: string; message?: string }) => {
+    await git("am", "--abort").catch(() => undefined);
+    throw new PrepareFailed(`The patch of the ticket taken over does not apply: ${(error.stderr || error.message || String(error)).slice(0, 2000)}`);
+  });
 }
 
 /**
@@ -165,10 +180,25 @@ export class SwarmExecutor {
     }
   }
 
-  /** Prepares a ticket's new directory with the prepare command; a failed command fails the ticket. */
+  /**
+   * Prepares a ticket's new directory with the prepare command, and applies the patch of the ticket it takes over; a failed
+   * command or a patch that does not apply fails the ticket.
+   */
   private async prepare(ticket: Ticket): Promise<void> {
-    const env = workerEnvironment(this.host.deployment(), this.host.environment(ticket));
-    await prepareDirectory(ticket.execution!.directory, this.host.client.settings().executor.prepare, env);
+    const variables = this.host.environment(ticket);
+    const env = workerEnvironment(this.host.deployment(), variables, process.env, ticket.mandate.capability?.write);
+    const { directory } = ticket.execution!;
+    await prepareDirectory(directory, this.host.client.settings().executor.prepare, env);
+    const from = ticket.mandate.capability?.from;
+    if (from) await applyPatch(directory, this.takenOver(from), env, variables);
+  }
+  /** The patch of the ticket a take-over carries on with. */
+  private takenOver(ticketId: string): string {
+    const { client } = this.host;
+    const source = client.store.tickets.get(ticketId);
+    const path = source && patchPath(client.stateDir, source);
+    if (!path || !existsSync(path)) throw new PrepareFailed(`Ticket ${ticketId} left no patch to take over`);
+    return path;
   }
 
   /** Wakes an idle ticket's worker for the Inputs waiting for it; a running worker takes them by itself. */
@@ -209,7 +239,7 @@ export class SwarmExecutor {
       SWARM_SUPERAGENT_DEPLOYMENT: JSON.stringify(this.host.deployment()),
       SWARM_PERMISSION_MODE: client.settings().executor.permissionMode,
       SWARM_SHELL_AUTO_BACKGROUND_MS: String(WORKER_SHELL_AUTO_BACKGROUND_MS)
-    });
+    }, process.env, ticket.mandate.capability?.write);
     const child = spawn(program!, [...prefix, "superagent", "worker", "--ticket", ticketId, "--assignment", assignmentId],
       { cwd: ticket.execution!.directory, env, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";

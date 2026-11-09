@@ -1620,3 +1620,75 @@ describe('ignores from the card', () => {
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
   })
 })
+
+describe('steering and capabilities', () => {
+  /** Only a ticket's requester steers it, as the access model has it for someone who is not a maintainer. */
+  const requesterSteers = { steers: (mandate: { actor: { id: string } }, actor: { id: string }) => actor.id === mandate.actor.id }
+  it('gives a message from someone who may not steer a ticket to its worker for context only, and to Eval', () => {
+    const h = harness(requesterSteers)
+    const { ticketId } = accepted(h)
+    h.engine.receive(trigger('2', { actor: guest }))
+    const input = h.repo.tickets.get(ticketId!)!.inputs.find(item => item.kind === 'trigger' && item.triggerId === '2')
+    expect(input).toMatchObject({ human: true, context: true, advisory: true })
+    expect(h.repo.triggers.disposition('2')).toMatchObject({ fanout: [ticketId], context: [ticketId] })
+    expect(followupOwners(h.repo.triggers.get('2')!, h.repo)).toEqual([])
+    expect(h.repo.threads.get('chat:t1')?.pending).toEqual(['2'])
+    // The requester's own follow-up is still the ticket's.
+    h.engine.receive(trigger('3'))
+    expect(followupOwners(h.repo.triggers.get('3')!, h.repo)).toEqual([ticketId])
+  })
+  it('neither unblocks nor resumes a ticket for someone who may not steer it', () => {
+    const h = harness(requesterSteers)
+    const { ticketId } = accepted(h)
+    h.engine.report(ticketId!, { state: 'blocked', summary: 'needs a token' })
+    h.tick(1); h.engine.receive(trigger('2', { actor: guest }))
+    expect(waitsForPerson(h.repo.tickets.get(ticketId!)!)).toBe(true)
+    h.engine.report(ticketId!, { state: 'ready', summary: 'done' })
+    expect(h.repo.tickets.get(ticketId!)!.ended).toMatchObject({ outcome: 'completed' })
+    h.tick(1); h.engine.receive(trigger('4', { actor: guest }))
+    expect(h.repo.triggers.disposition('4')?.fanout).toEqual([])
+    expect(h.repo.tickets.get(ticketId!)!.ended).toBeDefined()
+    h.tick(1); h.engine.receive(trigger('5'))
+    expect(h.repo.tickets.get(ticketId!)!.ended).toBeUndefined()
+  })
+  it('refuses to attach, or stop on, a message from someone who may not steer the ticket', () => {
+    const explicitForAll: Partial<Policy> = { ...requesterSteers, gate: () => ({ admissible: true, strength: 'explicit', basis: { via: 'listed' } }) }
+    const h = harness(explicitForAll)
+    const { ticketId } = accepted(h)
+    h.engine.receive(trigger('2', { actor: guest, threads: [{ source: 'chat', id: 't2' }] }))
+    expect(() => h.engine.attach(ticketId!, '2')).toThrow(new UserError('notSteerer'))
+    expect(h.engine.decide('2', { kind: 'stop', ticketId: ticketId!, reason: 'stop it' })).toMatchObject({ kind: 'ignore', reason: [{ code: 'stopNotSteerer' }] })
+    expect(h.repo.tickets.get(ticketId!)!.ended).toBeUndefined()
+  })
+  it('puts the capability the Policy gives on the Mandate, with the ticket an accept takes over', () => {
+    const h = harness({ capability: mandate => ({ role: mandate.actor.id === 'alice' ? 'maintainer' : 'everyone', write: 'local' }) })
+    const first = accepted(h)
+    expect(h.repo.tickets.get(first.ticketId!)!.mandate.capability).toEqual({ role: 'maintainer', write: 'local' })
+    h.engine.receive(trigger('2', { threads: [{ source: 'chat', id: 't2' }] })); h.pump()
+    const taken = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'takeover', from: first.ticketId! })
+    expect(h.repo.tickets.get(taken.ticketId!)!.mandate.capability).toEqual({ role: 'maintainer', write: 'local', from: first.ticketId })
+    // Without a capability from the Policy, a Mandate has none, as before.
+    const plain = harness()
+    expect(plain.repo.tickets.get(accepted(plain).ticketId!)!.mandate).not.toHaveProperty('capability')
+  })
+  it('refuses an accept for a sender with as many live tickets as the Policy allows', () => {
+    const h = harness({ openLimit: () => 1 })
+    accepted(h)
+    h.engine.receive(trigger('2', { threads: [{ source: 'chat', id: 't2' }] })); h.pump()
+    expect(() => h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'More', scope: 'small', reason: 'requested' }))
+      .toThrow(new UserError('openTicketLimit', { open: '1', limit: '1' }))
+    expect(h.repo.tickets.list()).toHaveLength(1)
+  })
+  it('ignores a candidate nobody asked for from a sender with as many live tickets as the Policy allows', () => {
+    let limit: number | undefined
+    const h = harness({ openLimit: () => limit })
+    accepted(h)
+    limit = 0
+    h.engine.receive(trigger('2', { actor: guest })); h.engine.reevaluate('2'); h.pump()
+    const candidate = h.requests.at(-1)!
+    expect(candidate.strength).toBe('inferred')
+    expect(h.decide(candidate, { kind: 'accept', title: 'Guess', scope: 'small', reason: 'chat', rules: ['copy'] }))
+      .toMatchObject({ kind: 'ignore', reason: [{ code: 'openTicketLimit', values: { open: '0', limit: '0' } }] })
+    expect(h.repo.tickets.list()).toHaveLength(1)
+  })
+})

@@ -10,7 +10,8 @@ import { getSwarmPaths, loadSwarmSettings } from "../config/settings.js";
 import { SwarmDatabase } from "../storage/database.js";
 import { UsageStore } from "../storage/usage-store.js";
 import { assertBudget } from "../usage/budget.js";
-import { checkHarness, harnessUsageRows, HarnessSetupError, resolveHarness, runTurn, SessionLost, type Harness, type HarnessKind, type TurnLimits, type TurnOutcome } from "./harness.js";
+import { checkHarness, harnessUsageRows, HarnessSetupError, readOnlyProblem, resolveHarness, runTurn, SessionLost, type Harness, type HarnessKind, type TurnLimits,
+  type TurnOutcome } from "./harness.js";
 import { transient, workerSessionId } from "./messages.js";
 import { readSettings, settingsPath } from "./settings.js";
 import type { WorkLink, WorkStart } from "./work-link.js";
@@ -88,13 +89,16 @@ export async function harnessTurns(input: HarnessTurnsInput): Promise<WorkerTurn
     if (error instanceof HarnessSetupError) return { failure: error.message };
     throw error;
   }
+  // A read-only ticket runs only on a harness that keeps a turn read-only.
+  const readOnly = start.write === "read-only" ? readOnlyProblem(harness) : undefined;
+  if (readOnly) return { failure: readOnly };
   const { directory } = start;
   const sessionId = workerSessionId(ticketId);
   const [node, ...entry] = input.entry;
   const tools = { command: node!, args: [...entry, ...link.tools.args], env: link.tools.env };
   const request = {
     directory, instructions: `${start.prompt}\n\n${harnessSection(harness.kind)}`, tools,
-    permission: process.env.SWARM_PERMISSION_MODE === "yolo" ? "yolo" as const : "full-auto" as const,
+    permission: start.write === "read-only" ? "read-only" as const : process.env.SWARM_PERMISSION_MODE === "yolo" ? "yolo" as const : "full-auto" as const,
     blockedCommands: start.blockedCommands,
     variables: Object.keys(harness.env).filter((name) => harness.env[name] !== undefined)
   };

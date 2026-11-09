@@ -277,15 +277,17 @@ async function runMcpCommand(args: string[]): Promise<void> {
   const owner = value(args, "remote");
   const assignmentId = value(args, "assignment");
   if (!ticketId || (owner && !assignmentId)) throw new Error("Usage: swarm superagent mcp --ticket <id> [--remote <node> --assignment <id>]");
-  const { serveTicketTools, ticketTools } = await import("./ticket-tools.js");
+  const { serveTicketTools, ticketTools, withPatch } = await import("./ticket-tools.js");
+  // The worker starts its tools in its ticket's directory, whose commits a local ticket's ready report sends as a patch.
+  const directory = process.env.SWARM_TICKET_DIR || process.cwd();
   if (owner) {
     const { remoteTicketTools } = await import("../mesh/work-link.js");
-    await serveTicketTools(remoteTicketTools(await ownerNode(owner), ticketId, assignmentId!));
+    await serveTicketTools(withPatch(remoteTicketTools(await ownerNode(owner), ticketId, assignmentId!), directory));
     return;
   }
   const deployment = deploymentFromEnv();
   const client = new SuperagentClient({ deployment: () => deployment });
-  await serveTicketTools(ticketTools(client, ticketId));
+  await serveTicketTools(withPatch(ticketTools(client, ticketId), directory));
 }
 
 function runConfig(args: string[]): void {

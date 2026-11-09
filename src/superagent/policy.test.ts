@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import { each, expect } from './testing/expect.js'
-import { assessmentOutcome, policyEffects, settingsPolicy, allowedSender, anyoneAllowed } from './policy.js'
+import { addressable, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, roleOf, settingsPolicy, allowedSender, anyoneAllowed }
+  from './policy.js'
 import { SettingsSchema, policyVersion, type Settings } from './settings.js'
 import type { MandateBasis } from './core/index.js'
 import { SourceRegistry } from './sources/registry.js'
@@ -433,5 +434,78 @@ describe('bots and events without a sender', () => {
       ['pulls', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
+  })
+})
+
+describe('access model', () => {
+  const GUEST = 'ou_guest', BOSS = 'ou_boss', READER = 'ou_reader'
+  const withAccess = (feishuPart: Record<string, unknown> = {}, access: Record<string, unknown> = {}) => SettingsSchema.parse({ ...base, access,
+    policy: { ...base.policy, sources: { ...base.policy.sources, feishu: { ...base.policy.sources.feishu!, ...feishuPart } } } })
+  const roles = withAccess({ roles: { [BOSS]: 'owner', [READER]: 'everyone' } })
+  const person = (id: string) => ({ source: 'feishu', id })
+  const explicit = (id: string, row: string = CHAT) => ({ strength: 'explicit' as const, actor: person(id),
+    basis: { via: 'addressed', addressed: 'mention', source: 'feishu', row } satisfies MandateBasis })
+  it('leaves every ticket as it was without the access model: no capability, everyone steers, no limits', () => {
+    const { policy: plain } = setup()
+    expect(plain.capability?.(explicit(MEMBER) as never)).toBeUndefined()
+    expect(plain.steers?.({ actor: person(MEMBER) } as never, person(GUEST))).toBe(true)
+    expect(plain.openLimit?.(person(GUEST))).toBeUndefined()
+    expect(limitOf(base, 'everyone', 'requestsPerHour')).toBeUndefined()
+    expect(policyVersion(base)).toBe(setup(SettingsSchema.parse({ ...base, policy: base.policy })).version)
+  })
+  it('gives each sender a role: the roles entry, else maintainer on the list, else everyone; a role puts a sender on the list', () => {
+    expect(roleOf(roles, person(BOSS))).toBe('owner')
+    expect(roleOf(roles, person(MEMBER))).toBe('maintainer')
+    expect(roleOf(roles, person(GUEST))).toBe('everyone')
+    // Someone on the list whose role is everyone stays on it, with that role.
+    expect(roleOf(withAccess({ roles: { [MEMBER]: 'everyone' } }), person(MEMBER))).toBe('everyone')
+    expect(listedSender(roles, person(READER))).toEqual({ id: READER })
+    expect(listedSender(roles, person(GUEST))).toBeUndefined()
+    expect(setup(roles).policy.gate(feishu({ actor: person(READER) }), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit', basis: { sender: READER } })
+    expect(setup(roles).policy.gate(feishu({ actor: person(GUEST) }), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
+  })
+  it('lets explicit work of maintainers write to GitHub, keeps everyone\'s and inferred work local, and lowers either to the ceiling', () => {
+    const { policy: gated } = setup(roles)
+    expect(gated.capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'github' })
+    expect(gated.capability?.(explicit(READER) as never)).toEqual({ role: 'everyone', write: 'local' })
+    expect(gated.capability?.({ ...explicit(BOSS), strength: 'inferred' } as never)).toEqual({ role: 'owner', write: 'local' })
+    // Chats nobody listed write locally unless their ceiling says otherwise; a ceiling can also make a chat read-only.
+    expect(capabilityOf(roles, explicit(BOSS, 'other'))).toEqual({ role: 'owner', write: 'local' })
+    expect(capabilityOf(withAccess({ ceilings: { other: 'github' } }), explicit(MEMBER, 'other'))).toEqual({ role: 'maintainer', write: 'github' })
+    expect(capabilityOf(withAccess({ ceilings: { [CHAT]: 'read-only' } }), explicit(MEMBER))).toEqual({ role: 'maintainer', write: 'read-only' })
+    expect(ceilingOf(roles, 'feishu', 'direct')).toBe('github')
+  })
+  it('lets a ticket\'s requester and maintainers steer it, and nobody else', () => {
+    const { policy: gated } = setup(roles)
+    const mandate = { actor: person(READER) } as never
+    expect(gated.steers?.(mandate, person(READER))).toBe(true)
+    expect(gated.steers?.(mandate, person(MEMBER))).toBe(true)
+    expect(gated.steers?.(mandate, person(BOSS))).toBe(true)
+    expect(gated.steers?.({ actor: person(MEMBER) } as never, person(READER))).toBe(false)
+    expect(gated.steers?.({ actor: person(MEMBER) } as never, person(GUEST))).toBe(false)
+  })
+  it('limits each role by default and by the settings', () => {
+    expect(setup(roles).policy.openLimit?.(person(GUEST))).toBe(1)
+    expect(setup(roles).policy.openLimit?.(person(MEMBER))).toBe(4)
+    expect(limitOf(roles, 'owner', 'requestsPerHour')).toBeUndefined()
+    const raised = withAccess({}, { limits: { everyone: { openTickets: 3 } } })
+    expect(limitOf(raised, 'everyone', 'openTickets')).toBe(3)
+    expect(limitOf(raised, 'everyone', 'requestsPerHour')).toBe(10)
+  })
+  it('changes the Policy version when the access model turns on, or roles and ceilings change, not when limits do', () => {
+    const on = setup(withAccess()).version
+    expect(on).not.toBe(setup().version)
+    expect(setup(withAccess({}, { limits: { everyone: { openTickets: 5 } } })).version).toBe(on)
+    expect(setup(roles).version).not.toBe(on)
+    expect(setup(withAccess({ ceilings: { [CHAT]: 'local' } })).version).not.toBe(on)
+  })
+  it('validates roles and ceilings beside the Source\'s own part, and finds who may address the agent', () => {
+    expect(sources.validatePolicy({ feishu: { allowed: [], roles: { [BOSS]: 'owner' }, ceilings: { other: 'local' } } }).feishu)
+      .toMatchObject({ roles: { [BOSS]: 'owner' }, ceilings: { other: 'local' } })
+    expect(() => sources.validatePolicy({ feishu: { allowed: [], roles: { [BOSS]: 'king' } } })).toThrow()
+    expect(addressable(roles, setup(roles).sources, feishu({ actor: person(READER) }))).toBe(true)
+    expect(addressable(roles, setup(roles).sources, feishu({ actor: person(GUEST) }))).toBe(false)
+    const open = withAccess({ admission: { [CHAT]: { unlistedAddressed: 'explicit' } } })
+    expect(addressable(open, setup(open).sources, feishu({ actor: person(GUEST) }))).toBe(true)
   })
 })

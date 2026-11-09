@@ -101,7 +101,8 @@ export class Tickets extends EnginePart {
   }
   /**
    * The Trigger to attach to a ticket, once the ticket may take it.
-   * @throws UserError when the trigger or ticket is unknown, a ticket's worker still decides the trigger, a person stopped the ticket, or an ended ticket's Mandate no longer revalidates.
+   * @throws UserError when the trigger or ticket is unknown, a ticket's worker still decides the trigger, a person stopped the ticket,
+   * its sender may not steer it, or an ended ticket's Mandate no longer revalidates.
    */
   attachable(ticketId: string, triggerId: string): Trigger {
     const trigger = this.repo.triggers.get(triggerId)
@@ -110,6 +111,7 @@ export class Tickets extends EnginePart {
     this.leftToWorkers(trigger)
     const current = this.require(ticketId)
     if (current.ended?.by === 'human') throw new UserError('ticketStopped')
+    if (trigger.human && this.policy().steers?.(current.mandate, trigger.actor) === false) throw new UserError('notSteerer')
     if (!liveTicket(current) && !this.policy().revalidate(current.mandate)) throw new UserError('mandateRevoked')
     return trigger
   }

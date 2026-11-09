@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -106,4 +106,26 @@ test("a ready report that answers a person's message in the ticket's own convers
   assert.deepEqual(filed.posted, ["answer"]);
   const replies = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => JSON.parse(String(row.value)) as { text: string });
   assert.deepEqual(replies.map((reply) => reply.text), ["Yes, it is ready for review."]);
+});
+
+test("a local ticket's ready report keeps its committed patch and attaches it to the result, and refuses uncommitted work", async () => {
+  const { fileReport, patchPath } = await import("./ticket-tools.js");
+  const { localOperator } = await import("./sources/local.js");
+  writeSettings({ access: {}, policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "everyone" } } } } }, settingsPath(stateDir));
+  // The settings file changed within the same second as the client read it; a later mtime makes the client read it again.
+  utimesSync(settingsPath(stateDir), new Date(), new Date(Date.now() + 2000));
+  const { triggerId } = client.request("add a NOTICE file");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Add a NOTICE file", scope: "x", reason: "asked", name: "add-notice", evalId: candidate.evalId });
+  const ticket = client.store.tickets.get(ticketId!)!;
+  assert.deepEqual(ticket.mandate.capability, { role: "everyone", write: "local" });
+  client.engine.assignmentStarted(ticketId!, ticket.assignments[0]!.id);
+  const patch = "From 1 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] Add NOTICE\n";
+  await assert.rejects(fileReport(client, ticketId!, { state: "ready", summary: "Done.", patch: { text: patch, bytes: patch.length, uncommitted: true } }), /uncommitted changes/);
+  const filed = await fileReport(client, ticketId!, { state: "ready", summary: "Done.", patch: { text: patch, bytes: patch.length, uncommitted: false } });
+  assert.deepEqual(filed.posted, ["result"]);
+  const replies = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => JSON.parse(String(row.value)) as { text: string; attachment?: string });
+  assert.deepEqual(replies.map((reply) => [reply.text, reply.attachment]), [["The change is ready as the attached patch; nothing was pushed.", patchPath(stateDir, ticket)]]);
+  assert.equal(readFileSync(patchPath(stateDir, ticket), "utf8"), patch);
 });

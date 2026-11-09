@@ -82,12 +82,52 @@ handlers.
 setup checks the account, its push access and the bot before the Source polls. Workers get `SWARM_TICKET_*` variables
 describing the ticket, the repository and the agent account, and `gh`/`lark-cli` shims that call the wrappers.
 
+## Access
+
+With an `access` block in the settings, each ticket gets a capability when it is accepted, and only some people may
+steer it. Without the block, nothing changes: everyone on a list may do everything.
+
+```json
+{
+  "access": { "limits": { "everyone": { "openTickets": 1, "requestsPerHour": 10 } } },
+  "policy": { "sources": { "feishu": {
+    "allowed": [{ "id": "ou_..." }],
+    "roles": { "ou_owner...": "owner", "ou_guest...": "everyone" },
+    "ceilings": { "oc_team...": "local" }
+  } } }
+}
+```
+
+- **Roles.** A sender has the role `roles` gives them. Otherwise someone on `allowed` is a `maintainer`, and anyone else
+  is `everyone`. A sender with a role is on the list just as one on `allowed` is.
+- **Capability.** A maintainer's or an owner's explicit request may write to GitHub. Work for `everyone`, and work nobody
+  asked for (inferred, or a bot's), stays `local`: its worker commits in its directory, has no `gh` or `lark-cli` account,
+  and its ready result carries the commits as a patch. A receiving scope's `ceilings` entry (`read-only`, `local` or
+  `github`) lowers either; chats nobody listed (`other`) are `local` unless a ceiling says otherwise.
+- **Steering.** A ticket's requester and maintainers steer it. Anyone else's message on its Thread reaches the worker for
+  context only (`advisory: true`). It neither resumes nor unblocks the ticket, and it goes to Eval as that person's own
+  request. Attaching such a message to the ticket, or a stop from that person, is refused.
+- **Limits.** Defaults: `everyone` 1 open ticket and 10 requests an hour, `maintainer` 4 and 60, `owner` 8 and no hourly
+  limit. A message beyond them is held back with one answer that says so.
+
+People run these bot commands in Feishu, after mentioning the bot or in a direct message:
+
+| Command | Who | What it does |
+|---|---|---|
+| `/me` | anyone | Shows your role, open tickets, requests in the last hour and the ceiling here |
+| `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends |
+| `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
+| `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
+| `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
+
+The first owner is set in the settings file.
+
 ## Safety
 
 Workers run as the operator's OS user in `full-auto` mode; an action that still needs approval is refused and the worker
 reports what it needs. A worker on an agent harness runs under the harness's own permission mode or sandbox instead of
-Swarm's permission rules (README, "Harness workers"). The wrappers and blocked commands are defaults, not a sandbox: a worker can run programs by
-path and read the operator's home directory. Messages on a ticket's Threads reach its worker as context whoever wrote
+Swarm's permission rules (README, "Harness workers"). The wrappers, blocked commands and a local ticket's missing accounts
+are defaults, not a sandbox: a worker can run programs by path and read the operator's home directory. Messages on a ticket's Threads reach its worker as context whoever wrote
 them, so on a public repository strangers can put text in front of a worker with shell access; run the host under a
 dedicated OS account holding only the agent's credentials there. Upstream lists which Trigger fields to trust as an
 open question; so does this port.

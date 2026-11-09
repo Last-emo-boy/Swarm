@@ -49,8 +49,13 @@ export interface TriggerDisposition {
    * without its worker taking it up no longer counts.
    */
   fanout: string[]
-  /** The tickets of `fanout` it reached only on a Thread their Executor follows for context, which makes it none of theirs. */
+  /**
+   * The tickets of `fanout` it reached only for context, which makes it none of theirs: on a Thread their Executor follows for
+   * context, or from a sender who may not steer them.
+   */
   context?: string[]
+  /** The bot command the host carried out for it, such as `me`; it reached no ticket and no Eval. */
+  command?: string
   /** A person, or the main Session for a message no ticket decides, sent it to Eval again; a hand-back does not set it. */
   requeued?: true
   /** The tickets whose Executor handed it back as beyond the ticket, each once, with why; it goes to Eval once none decides it. */
@@ -122,6 +127,16 @@ export type MandateBasis = Received & { sender?: string; rules?: string[] } & (
   | { via: 'bot'; addressed?: 'mention' | 'direct'; observation: { mode: AcceptMode } }
 )
 
+/**
+ * What a person may do with the agent: an `owner` also sets roles and how chats are listened to, a `maintainer` also steers
+ * and stops other people's tickets, and `everyone` steers only their own.
+ */
+export type Role = 'owner' | 'maintainer' | 'everyone'
+/** How far a ticket's work may reach: it only reads, keeps its change in its directory and sends it as a patch, or writes to GitHub. */
+export type WriteLevel = 'read-only' | 'local' | 'github'
+/** What a ticket's work may do, fixed when it is accepted: its requester's role then, how far it may write, and the ticket it took over. */
+export interface Capability { role: Role; write: WriteLevel; from?: string }
+
 /** Immutable authorization produced by an accept decision; execution is bounded by it and it never changes. */
 export interface Mandate {
   strength: Strength
@@ -130,6 +145,8 @@ export interface Mandate {
   basis: MandateBasis
   actor: ActorRef
   scope: string
+  /** What its work may do; a ticket accepted while the Policy gave no capability has none and writes as tickets always did. */
+  capability?: Capability
 }
 
 /** Active trigger evaluation on a thread; at most one exists per thread. */
@@ -235,8 +252,10 @@ export interface Assignment {
 export type TicketInput =
   /** A Trigger on one of its Threads, or attached to it; `human` when a person wrote it. */
   | { id: string; kind: 'trigger'; triggerId: string; at: string; note?: string; human?: true
-    /** It reached the ticket only on a Thread its Executor follows for context. */
+    /** It reached the ticket only for context: on a Thread its Executor follows for context, or with `advisory`. */
     context?: true
+    /** Its sender may not steer the ticket (see `Policy.steers`): its worker reads it as a suggestion, and it went to Eval. */
+    advisory?: true
     /**
      * When the worker's Session took the message that carried it into a step, from which its model reads it; `null` while
      * it waits in the Session. One delivered before reads were recorded has none, and counts as read from `deliveredAt`.
