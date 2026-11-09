@@ -6,6 +6,7 @@ import { z } from "zod/v4";
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell } from "./admission.js";
 import type { AssessmentOutcome, Capability, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
   GateResult, WriteLevel } from "./core/index.js";
+import type { LinkView } from "./github-link.js";
 import { sameName } from "./text.js";
 import { AllowedSchema, RuleIdSchema, policyVersion, type Settings } from "./settings.js";
 
@@ -107,16 +108,34 @@ export function limitOf(settings: Settings, role: Role, name: LimitName): number
   if (!settings.access) return undefined
   return settings.access.limits[role]?.[name] ?? ACCESS_LIMITS[role][name]
 }
+/** The repository the GitHub Source watches (owner/name), where local tickets work and whose pull requests the host follows. */
+export const watchedRepository = (settings: Pick<Settings, 'sources'>): string => String(settings.sources.github?.config.repository ?? '')
+/**
+ * The repository a linked person's work writes to: the one the request names, else their default, else the watched one,
+ * else the only one they have; each only while they may push there. A request on GitHub is about the watched repository.
+ */
+export function repositoryFor(link: Pick<LinkView, 'repos' | 'defaultRepo'>, watched: string, requested?: string): string | undefined {
+  const usable = (repo: string | undefined) => repo ? link.repos.find(item => sameName(item, repo)) : undefined
+  return usable(requested) ?? usable(link.defaultRepo) ?? usable(watched) ?? (link.repos.length === 1 ? link.repos[0] : undefined)
+}
 /**
  * The capability of work about to be accepted, while the access model is on: work nobody asked for (inferred, or a bot's) and
- * work for `everyone` stays local, the rest may write to GitHub, and the receiving scope's ceiling lowers either.
+ * work for `everyone` stays local, the rest may write to GitHub, and the receiving scope's ceiling lowers either. Work that
+ * may write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one.
  */
-export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>): Capability | undefined {
+export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>, link?: LinkView,
+  requested: { repository?: string } = {}): Capability | undefined {
   if (!settings.access) return undefined
   const role = roleOf(settings, mandate.actor)
   const wanted: WriteLevel = mandate.strength === 'inferred' || mandate.basis.via === 'bot' || role === 'everyone' ? 'local' : 'github'
   const ceiling = ceilingOf(settings, mandate.basis.source ?? mandate.actor.source, mandate.basis.row)
-  return { role, write: WRITE[wanted] <= WRITE[ceiling] ? wanted : ceiling }
+  const write = WRITE[wanted] <= WRITE[ceiling] ? wanted : ceiling
+  if (write !== 'github') return { role, write }
+  const watched = watchedRepository(settings)
+  const repository = link && !link.broken
+    ? repositoryFor(link, watched, mandate.basis.source === 'github' ? watched : requested.repository) : undefined
+  if (!link || !repository) return { role, write: 'local' }
+  return { role, write, credential: { login: link.login, id: link.id }, repository }
 }
 /** Whether `actor` steers a ticket under `mandate`: always without the access model, else its requester and maintainers do. */
 export function steers(settings: Settings, mandate: Pick<Mandate, 'actor'>, actor: ActorRef): boolean {
@@ -170,8 +189,10 @@ export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Se
   }
   return effects
 }
+/** Where the Policy finds a sender's linked GitHub account. */
+export interface Links { of(actor: ActorRef): LinkView | undefined }
 /** Build the active Policy for gating incoming Triggers and revalidating existing Ticket Mandates. */
-export function settingsPolicy(settings: Settings, sources: SourceScope): Policy {
+export function settingsPolicy(settings: Settings, sources: SourceScope, links?: Links): Policy {
   const version = policyVersion(settings)
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
@@ -245,7 +266,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       if ((basis.via === 'admission' || basis.via === 'listed' || basis.via === 'bot') && basis.observation) return mode === 'auto' && rulesOn(basis.rules)
       return true
     },
-    capability: mandate => capabilityOf(settings, mandate),
+    capability: (mandate, requested) => capabilityOf(settings, mandate, links?.of(mandate.actor), requested),
     steers: (mandate, actor) => steers(settings, mandate, actor),
     openLimit: actor => limitOf(settings, roleOf(settings, actor), 'openTickets'),
   }

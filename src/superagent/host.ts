@@ -6,9 +6,10 @@
  */
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { liveTicket, type Ticket } from "./core/index.js";
+import { key, liveTicket, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
 import { BotCommands } from "./bot-commands.js";
+import { GithubLinks, githubApp, linkKey, type Credential, type LinkView } from "./github-link.js";
 import { SuperagentClient } from "./client.js";
 import { writeEnvironment, verifyEnvironment, workerBin } from "./environment.js";
 import { SwarmExecutor, type RemoteWork } from "./executor.js";
@@ -19,6 +20,7 @@ import { SETUP_FIELDS, SetupError, commandProbe, defaultMachine, resolveFeishuBo
 import { sourceContextOf, type SourceContextDeps } from "./sources/context.js";
 import { sourceTrigger } from "./messages.js";
 import { prunePatches } from "./ticket-tools.js";
+import { sameName } from "./text.js";
 import { ticketVariables, variableValues } from "./variables.js";
 
 const PASS_MS = 2000;
@@ -74,6 +76,7 @@ export class SuperagentHost {
   private readonly executor: SwarmExecutor;
   private readonly assessor: ModelAssessor;
   private readonly botCommands: BotCommands;
+  private readonly links: GithubLinks;
   private release?: () => void;
   private prunedAt = 0;
   private deployment?: Deployment;
@@ -93,6 +96,7 @@ export class SuperagentHost {
     this.release = acquireLock(this.stateDir);
     try {
       this.client = new SuperagentClient({ stateDir: this.stateDir, deployment: () => this.deployment });
+      this.links = new GithubLinks({ store: this.client.store, key: () => linkKey(this.stateDir), broken: (actor, link) => this.linkBroken(link) });
       this.executor = new SwarmExecutor({
         client: this.client,
         deployment: () => this.requireDeployment(),
@@ -100,11 +104,12 @@ export class SuperagentHost {
         environment: (ticket) => this.variables(ticket),
         closing: () => this.closing,
         log: this.log,
-        remote: () => this.remote
+        remote: () => this.remote,
+        credential: (ticket) => this.credential(ticket)
       });
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment });
       this.assessor.install();
-      this.botCommands = new BotCommands(this.client);
+      this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log });
     } catch (error) {
       this.release();
       throw error;
@@ -119,6 +124,20 @@ export class SuperagentHost {
     const trigger = sourceTrigger({ store: this.client.store }, ticket);
     return variableValues(ticketVariables({ deployment: this.requireDeployment(), sources: this.client.sources, settings: this.client.settings(),
       ticket, ...(trigger ? { trigger } : {}) }));
+  }
+
+  /** The token of the account a ticket writes to GitHub as, while that person's link still is that account and works. */
+  private async credential(ticket: Ticket): Promise<Credential | undefined> {
+    const app = githubApp(this.client.settings());
+    const wanted = ticket.mandate.capability?.credential;
+    const credential = app && wanted ? await this.links.credential(app, ticket.mandate.actor) : undefined;
+    return credential && sameName(credential.login, wanted!.login) ? credential : undefined;
+  }
+  /** A link that stopped working tells its person where they linked it. */
+  private linkBroken(link: LinkView): void {
+    if (!link.channel) return;
+    this.client.outbox.send({ id: key("link-broken", link.login, link.linkedAt), channel: link.channel, kind: "reply",
+      text: `Your GitHub link (@${link.login}) stopped working: ${link.broken}. Send /link here to link again.` });
   }
 
   /** Resolves the accounts the Sources act as and writes the workers' environment; a problem leaves those Sources off. */
@@ -261,6 +280,7 @@ export class SuperagentHost {
     this.closing = true;
     if (this.timer) clearInterval(this.timer);
     for (const watcher of this.watchers.values()) watcher.controller.abort();
+    this.botCommands.close();
     await Promise.allSettled([...this.watchers.values()].map((watcher) => watcher.done));
     await this.remote?.close();
     await this.executor.shutdown();

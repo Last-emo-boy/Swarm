@@ -315,7 +315,8 @@ export class Evals extends EnginePart {
     const at = this.now()
     const basis = { ...evaluation.basis, ...(outcome.rules ? { rules: outcome.rules } : {}) }
     const { strength, policyVersion, actor } = evaluation
-    const granted = this.policy().capability?.({ strength, policyVersion, basis, actor, scope: outcome.scope })
+    const granted = this.policy().capability?.({ strength, policyVersion, basis, actor, scope: outcome.scope },
+      outcome.repository ? { repository: outcome.repository } : {})
     const capability = granted && outcome.from ? { ...granted, from: outcome.from } : granted
     const mandate: Mandate = { strength, policyVersion, basis, actor, scope: outcome.scope, ...capability ? { capability } : {} }
     const ticketId = key('ticket', evaluation.id)

@@ -2,6 +2,7 @@
 import { key, type Thread } from '../core/index.js'
 import { sameName } from '../text.js'
 import { GithubAccountsSchema, githubAccount } from '../setup.js'
+import { GithubAppSchema } from '../github-link.js'
 import { CliError, validItems, type Tally } from '../commands.js'
 import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.js'
 import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
@@ -24,7 +25,9 @@ const NotificationSchema = z.looseObject({
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
-  observeCi: z.boolean().default(false) }).strict()
+  observeCi: z.boolean().default(false),
+  /** The GitHub App people link their accounts with (github-link.ts); what it does on their behalf is the agent's own work. */
+  app: GithubAppSchema.optional() }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema>
 const OBSERVED = { issues: 'observeIssues', pulls: 'observePulls', comments: 'observeComments', ci: 'observeCi' } as const
 type Scope = keyof typeof OBSERVED
@@ -188,7 +191,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
   for (const item of items) {
     // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
     if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
-    if (sameName(item.user.login, login)) continue
+    if (ownItem(ctx, item, login)) continue
     if (id === 'issues') {
       const issue = IssueSchema.safeParse(item)
       const pr = issue.success && !!issue.data.pull_request
@@ -316,7 +319,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
       // An Issue opened by someone other than the agent since the cursor brings its body so a mention in it reaches the gate.
       // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
       const { login } = githubAccount(ctx.deployment)
-      const opened = Date.parse(issue.created_at) >= Date.parse(since) && !sameName(issue.user.login, login)
+      const opened = Date.parse(issue.created_at) >= Date.parse(since) && !ownItem(ctx, issue, login)
       if (opened) await ctx.receive(issueTrigger(issue, login))
       await intakeComments(ctx, { number, isPr: false, url: issue.html_url }, since, round)
       nameThread(ctx, number, issue.title)
@@ -326,7 +329,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
     const pr = await pull(ctx, round, number)
     // Emit a PR description trigger for PRs opened since the cursor; its ID is the same as the one produced by the repository PR stream.
     const { login } = githubAccount(ctx.deployment)
-    if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !sameName(pr.user.login, login)) {
+    if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !ownItem(ctx, pr, login)) {
       const opened = { number, title: pr.title ?? '', body: pr.body, user: pr.user, created_at: pr.created_at, html_url: pr.html_url }
       await ctx.receive(pullTrigger(opened, login))
     }
@@ -335,6 +338,15 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
   }
   ctx.state.set(KV.github.cursor(number), cursorAt(round.started))
   ctx.threads.patch(`github:${number}`, { pollError: undefined })
+}
+const PerformedSchema = z.looseObject({ slug: z.string() }).nullish().catch(null)
+/**
+ * Whether an Issue, PR or comment is the agent's own: written by its account, or by a worker through the GitHub App on the
+ * behalf of the person whose linked account it acts as. Neither is a person's message to the agent.
+ */
+export function ownItem(ctx: Pick<SourceContext, 'config'>, item: { user: { login: string }; performed_via_github_app?: unknown }, login: string): boolean {
+  const slug = ctx.config<GithubConfig>(SOURCE)?.app?.slug
+  return sameName(item.user.login, login) || (!!slug && PerformedSchema.parse(item.performed_via_github_app)?.slug === slug)
 }
 /** Reads and observes a PR at most once per polling round. */
 function pull(ctx: SourceContext, round: Round, number: number): Promise<Pull> {
@@ -358,7 +370,7 @@ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, r
       if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
       const timestamp = Date.parse(comment.updated_at ?? comment.submitted_at ?? comment.created_at ?? '')
       if (!Number.isFinite(timestamp) || timestamp < Date.parse(since)) continue
-      if (sameName(comment.user.login, login)) continue
+      if (ownItem(ctx, comment, login)) continue
       // A review decision without a body still reaches the ticket: a worker may be waiting for that approval.
       const trigger = commentTrigger(comment, ref, kind, login)
       if (trigger.text) await ctx.receive(trigger)

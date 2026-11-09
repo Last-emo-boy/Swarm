@@ -29,7 +29,10 @@ function answer(request: ModelRequest): string {
     return JSON.stringify({ state: "ready", summary: "Bumped the version to 0.2.0 and committed.", message_for_person: "The version is bumped to 0.2.0." });
   }
   if (request.system.includes("You route requests for Swarm's ticket host")) {
-    // Earlier tickets' titles reach the router's card too, so the NOTICE request is matched first.
+    // Earlier tickets' titles reach the router's card too, so the NOTICE and VERSION requests are matched first.
+    if (request.user.includes("VERSION")) {
+      return JSON.stringify({ kind: "accept", title: "Add a VERSION file", worktree_name: "add-version", acknowledgement: "On it: adding a VERSION file." });
+    }
     if (request.user.includes("NOTICE")) {
       return JSON.stringify({ kind: "accept", title: "Add a NOTICE file", worktree_name: "add-notice", acknowledgement: "On it: adding a NOTICE file." });
     }
@@ -46,6 +49,20 @@ function answer(request: ModelRequest): string {
       return JSON.stringify({ kind: "accept", title: "Update the changelog", worktree_name: "update-changelog", acknowledgement: "On it: updating the changelog." });
     }
     return JSON.stringify({ kind: "accept", title: "Create hello.txt", worktree_name: "create-hello", acknowledgement: "On it: creating hello.txt." });
+  }
+  // The VERSION ticket acts as its requester: its worker looks at the account its tools use, and reports ready.
+  if (request.system.includes("add-version-")) {
+    if (!request.user.includes("token=")) {
+      return loop({ status: "continue", summary: "Check", message: "Checking the account.", tool_calls: [
+        { id: "check", action: "Bash", inputs: { command: "printf 'token=%s repo=%s helper=%s\\n' \"$GH_TOKEN\" \"$GH_REPO\" \"$(git config --get credential.https://github.com.helper)\"" } }
+      ] });
+    }
+    if (!reported(request)) {
+      return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
+        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Checked the account.", message_for_person: "VERSION is ready." } }
+      ] });
+    }
+    return loop({ status: "completed", summary: "Reported", message: "Reported." });
   }
   // The NOTICE ticket keeps its work local: its worker commits, finds no GitHub account, and reports ready.
   if (request.system.includes("add-notice-")) {
@@ -286,6 +303,45 @@ test("a local ticket's worker has no agent accounts, commits its change, and its
     const patch = readFileSync(result.attachment, "utf8");
     assert.match(patch, /Subject: \[PATCH\] Add NOTICE/);
     assert.match(patch, /\+Notice/);
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
+test("a ticket of a linked maintainer runs its worker as them: their token, the repository it writes to, and git credentials from it", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  const { execFileSync } = await import("node:child_process");
+  const { localOperator } = await import("./sources/local.js");
+  const { settingsPath, writeSettings } = await import("./settings.js");
+  const { GithubLinks, linkKey } = await import("./github-link.js");
+  const origin = join(home, "origin-version");
+  execFileSync("git", ["init", "-q", origin]);
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "Start"], { cwd: origin });
+  const path = settingsPath(client.stateDir);
+  writeSettings({ access: {}, sources: { github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },
+    policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "maintainer" } } } },
+    executor: { prepare: `git clone -q ${JSON.stringify(origin)} "$SWARM_TICKET_DIR"` } }, path);
+  // The operator links an account as the device flow would, under the host's key.
+  const github: Record<string, unknown> = { "/user": { login: "alice-gh", id: 7 }, "/user/installations": { installations: [{ id: 1 }] },
+    "/user/installations/1/repositories": { repositories: [{ full_name: "owner/watched", permissions: { push: true } }] } };
+  const links = new GithubLinks({ store: client.store, key: () => linkKey(client.stateDir),
+    fetch: async (input) => Response.json(github[new URL(String(input)).pathname]) });
+  await links.link({ source: "local", id: localOperator() }, { access_token: "ghu_e2e", expires_in: 28800 });
+  try {
+    client.request("add a VERSION file");
+    const deadline = Date.now() + 100_000;
+    const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Add a VERSION file");
+    let ticket = find();
+    while (Date.now() < deadline && !ticket?.ended) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      ticket = find();
+    }
+    assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)}`);
+    assert.deepEqual(ticket.mandate.capability, { role: "maintainer", write: "github", credential: { login: "alice-gh", id: 7 }, repository: "owner/watched" });
+    assert.ok(model.requests.some((request) => request.system.includes("add-version-") && request.system.includes("This ticket writes to GitHub as @alice-gh")));
+    const seen = model.requests.find((request) => request.system.includes("add-version-") && request.user.includes("token=ghu_e2e"));
+    assert.ok(seen, "the worker has its requester's token");
+    assert.match(seen.user, /repo=owner\/watched helper=!f\(\)/);
   } finally {
     rmSync(path, { force: true });
   }

@@ -6,6 +6,7 @@
 import { liveTicket, runningAssignment, type Ticket, type Trigger, type WorkerReport, type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { mandateInstructions, sourceTrigger } from "./messages.js";
+import { watchedRepository } from "./policy.js";
 import { workerPrompt } from "./prompts.js";
 import type { Deployment } from "./setup.js";
 import { fileReport, type ReportArgs } from "./ticket-tools.js";
@@ -61,7 +62,7 @@ export function workStart(client: SuperagentClient, deployment: Deployment, tick
   return {
     directory, blockedCommands: settings.executor.blockedCommands, ...(settings.executor.model ? { model: settings.executor.model } : {}),
     ...(write ? { write } : {}),
-    prompt: workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(ticket.mandate), sources,
+    prompt: workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(ticket.mandate, watchedRepository(settings)), sources,
       github: !!deployment.github, ...(write ? { write } : {}) })
   };
 }

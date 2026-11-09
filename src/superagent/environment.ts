@@ -10,7 +10,7 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { SHELL_PATH_FIRST } from "../tools/shell-path.js";
-import type { WriteLevel } from "./core/index.js";
+import type { Capability, WriteLevel } from "./core/index.js";
 import { WORKER_COMMANDS } from "./settings.js";
 import { SetupError, type Deployment } from "./setup.js";
 
@@ -21,8 +21,26 @@ export const workerGitConfig = (stateDir: string): string => join(stateDir, "wor
 /** The shims and git configuration of a worker whose ticket may not use the agent's accounts: see `sealed`. */
 export const sealedWorkerBin = (stateDir: string): string => join(stateDir, "worker-bin-local");
 export const sealedGitConfig = (stateDir: string): string => join(stateDir, "worker-gitconfig-local");
+/** The shims and git configuration of a worker that writes to GitHub as its requester, with their token in GH_TOKEN. */
+export const requesterWorkerBin = (stateDir: string): string => join(stateDir, "worker-bin-requester");
+export const requesterGitConfig = (stateDir: string): string => join(stateDir, "worker-gitconfig-requester");
 /** Whether a ticket's work may not use the agent's GitHub and Feishu accounts: it keeps its change local, or only reads. */
 export const sealed = (write: WriteLevel | undefined): boolean => write === "local" || write === "read-only";
+/**
+ * Whose accounts a worker's shims and git use: the agent's; none, for a ticket that keeps its work local or only reads; or
+ * its requester's, whose GitHub token the host gives the worker in GH_TOKEN.
+ */
+export type WorkerAccounts = "agent" | "none" | "requester";
+/**
+ * The accounts of a worker for its ticket's capability: the agent's without one (or for GitHub work accepted before links),
+ * its requester's for GitHub work when the host has their token, and none otherwise.
+ */
+export function workerAccounts(capability: Capability | undefined, token: boolean): WorkerAccounts {
+  if (!capability) return "agent";
+  if (capability.write !== "github") return "none";
+  if (!capability.credential) return "agent";
+  return token ? "requester" : "none";
+}
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, (char) => `\\${char}`)}"`;
 export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`;
@@ -42,13 +60,16 @@ export const GIT_LOCATION: readonly string[] = ["GIT_DIR", "GIT_WORK_TREE", "GIT
  * Overrides for a worker's environment: no ambient GitHub tokens, no repository named by the host's environment, no
  * interactive prompts and, with a GitHub account, the isolated git configuration whose credential helper is the agent's CLI.
  */
-export function agentVariables(deployment: Pick<Deployment, "stateDir" | "github">, write?: WriteLevel): Record<string, string | undefined> {
+export function agentVariables(deployment: Pick<Deployment, "stateDir" | "github">, accounts: WorkerAccounts = "agent"): Record<string, string | undefined> {
+  const config = { agent: workerGitConfig, none: sealedGitConfig, requester: requesterGitConfig }[accounts](deployment.stateDir);
   return {
     GH_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
+    // The host service's credentials, such as the key that seals linked GitHub tokens, are not the worker's.
+    CREDENTIALS_DIRECTORY: undefined,
     ...Object.fromEntries(GIT_LOCATION.map((name) => [name, undefined])),
-    ...(deployment.github || sealed(write) ? {
-      GIT_CONFIG_GLOBAL: sealed(write) ? sealedGitConfig(deployment.stateDir) : workerGitConfig(deployment.stateDir),
+    ...(deployment.github || accounts !== "agent" ? {
+      GIT_CONFIG_GLOBAL: config,
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_COUNT: undefined,
       GIT_CONFIG_PARAMETERS: undefined,
@@ -65,24 +86,27 @@ export function agentVariables(deployment: Pick<Deployment, "stateDir" | "github
 }
 
 /**
- * The environment of a worker process: `base` with the agent overrides, the shim directory first on PATH, and `extra`; a
- * worker whose ticket's capability writes `write` that is `sealed` gets the shims and git configuration without the accounts.
+ * The environment of a worker process: `base` with the agent overrides, the shim directory of its `accounts` first on PATH,
+ * and `extra`, which carries the requester's token for a worker that acts as them.
  */
 export function workerEnvironment(deployment: Pick<Deployment, "stateDir" | "github">, extra: Record<string, string>,
-  base: NodeJS.ProcessEnv = process.env, write?: WriteLevel): NodeJS.ProcessEnv {
+  base: NodeJS.ProcessEnv = process.env, accounts: WorkerAccounts = "agent"): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  for (const [name, value] of Object.entries(agentVariables(deployment, write))) {
+  for (const [name, value] of Object.entries(agentVariables(deployment, accounts))) {
     if (value === undefined) delete env[name];
     else env[name] = value;
   }
-  const bins = [workerBin(deployment.stateDir), sealedWorkerBin(deployment.stateDir)];
-  const rest = bins.reduce((path, dir) => withoutDirectory(path, dir), base.PATH ?? "");
-  const bin = sealed(write) ? bins[1]! : bins[0]!;
+  const bins = shimDirectories(deployment.stateDir);
+  const rest = Object.values(bins).reduce((path, dir) => withoutDirectory(path, dir), base.PATH ?? "");
+  const bin = bins[accounts];
   env.PATH = [bin, rest].join(delimiter);
   // The login shells of the worker's tools rebuild PATH from their profile; this keeps the shims first there too.
   env[SHELL_PATH_FIRST] = bin;
   return { ...env, ...extra };
 }
+
+const shimDirectories = (stateDir: string): Record<WorkerAccounts, string> =>
+  ({ agent: workerBin(stateDir), none: sealedWorkerBin(stateDir), requester: requesterWorkerBin(stateDir) });
 
 /** True when a regular file starts with the marker in its first two lines; links and directories never count. */
 function written(file: string): boolean {
@@ -123,9 +147,10 @@ export function writeEnvironment(deployment: Pick<Deployment, "stateDir" | "gith
   const { stateDir, github, feishu } = deployment;
   const shims = new Map<string, string>();
   const shim = (name: string, body: string): void => { shims.set(name, body); };
+  const dirs = Object.values(shimDirectories(stateDir));
   const withoutShims = [
-    `self=${shellQuote(workerBin(stateDir))}`, `other=${shellQuote(sealedWorkerBin(stateDir))}`, "rest=", "IFS=:", "set -f",
-    "for entry in $PATH; do [ \"$entry\" = \"$self\" ] || [ \"$entry\" = \"$other\" ] || rest=\"${rest:+$rest:}$entry\"; done",
+    `shims=${shellQuote(`:${dirs.join(":")}:`)}`, "rest=", "IFS=:", "set -f",
+    "for entry in $PATH; do case $shims in *\":$entry:\"*) ;; *) rest=\"${rest:+$rest:}$entry\" ;; esac; done",
     "set +f", "unset IFS", "PATH=$rest", "export PATH"
   ].join("\n");
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`;
@@ -143,6 +168,11 @@ export function writeEnvironment(deployment: Pick<Deployment, "stateDir" | "gith
     ["lark-cli", fail(`lark-cli is unavailable: this ticket keeps its work local and has no Feishu account. ${reads}`)],
     ...blocked.map((name) => [name, fail(`${name} is blocked in this installation.`)] as const)
   ]));
+  // A worker that acts as its requester runs gh itself, which takes their token from GH_TOKEN, never the agent's wrapper.
+  writeShims(requesterWorkerBin(stateDir), new Map([
+    ["gh", run("gh")],
+    ...[...shims].filter(([name]) => name !== "gh")
+  ]));
   const config = (helper: string[]) => [
     MARKER,
     // git refuses to commit without an identity the worker sets, instead of guessing one from the operator's OS user.
@@ -154,6 +184,8 @@ export function writeEnvironment(deployment: Pick<Deployment, "stateDir" | "gith
     "[filter \"lfs\"]", "\tclean = git-lfs clean -- %f", "\tsmudge = git-lfs smudge -- %f", "\tprocess = git-lfs filter-process", "\trequired = true"
   ].join("\n") + "\n";
   own(sealedGitConfig(stateDir), config([]));
+  own(requesterGitConfig(stateDir), config(["[credential \"https://github.com\"]",
+    `\thelper = ${gitQuote('!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$GH_TOKEN"; }; f')}`]));
   if (!github) return;
   own(workerGitConfig(stateDir), config(["[credential \"https://github.com\"]", `\thelper = ${gitQuote(credentialHelper(github.cli))}`]));
 }

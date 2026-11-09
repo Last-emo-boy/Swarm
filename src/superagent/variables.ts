@@ -25,8 +25,12 @@ export function ticketVariables(input: { deployment: Deployment; sources: Source
     SWARM_TICKET_ID: ticket.id
   };
   const result: Variable[] = EXECUTOR_VARIABLES.map((spec) => ({ key: spec.key, value: executor[spec.key] ?? "", description: spec.description, owner: "executor" }));
+  // A ticket that writes to GitHub as its requester's account names that account and its repository instead of the agent's.
+  const { credential, repository } = ticket.mandate.capability ?? {};
+  const requester: Record<string, string> = credential && repository ? { SWARM_TICKET_GITHUB_REPOSITORY: repository,
+    SWARM_TICKET_GITHUB_ACCOUNT: credential.login, SWARM_TICKET_GITHUB_COMMIT_EMAIL: `${credential.id}+${credential.login}@users.noreply.github.com` } : {};
   for (const { kind, environment, config } of sources.environments(settings)) {
-    const values = environment.values({ deployment, config, ...(trigger ? { trigger } : {}) });
+    const values = { ...environment.values({ deployment, config, ...(trigger ? { trigger } : {}) }), ...kind.kind === "github" ? requester : {} };
     for (const spec of environment.variables) result.push({ key: spec.key, value: values[spec.key] ?? "", description: spec.description, owner: kind.kind });
   }
   return result;

@@ -568,7 +568,7 @@ export class MeshWork implements RemoteWork {
     try {
       if (!existsSync(work.directory)) {
         await prepareDirectory(work.directory, this.client.settings().executor.prepare,
-          workerEnvironment(work.deployment, work.variables, process.env, work.write));
+          workerEnvironment(work.deployment, work.variables, process.env, sealed(work.write) ? "none" : "agent"));
       }
       if (!this.holding(work)) return;
       await this.call(work, "started", { directory: work.directory });
@@ -593,7 +593,7 @@ export class MeshWork implements RemoteWork {
       SWARM_MESH_HOME: this.options.home,
       SWARM_PERMISSION_MODE: work.permissionMode,
       SWARM_SHELL_AUTO_BACKGROUND_MS: String(WORKER_SHELL_AUTO_BACKGROUND_MS)
-    }, process.env, work.write);
+    }, process.env, sealed(work.write) ? "none" : "agent");
     const child = spawn(program!, [...prefix, "superagent", "worker", "--ticket", work.ticketId, "--assignment", work.assignmentId, "--remote", work.owner.id],
       { cwd: work.directory, env, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";

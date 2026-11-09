@@ -11,6 +11,7 @@ import { z } from "zod/v4";
 import { key, latestReport, liveTicket, reached, threadKey, ticketStage, type Ticket, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { textPage, ticketCard } from "./cards.js";
+import { watchedRepository } from "./policy.js";
 import { inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
@@ -19,7 +20,7 @@ import { readGithub } from "./sources/github-read.js";
 import { claimPull, readPull } from "./sources/github-pull.js";
 import { githubKind } from "./sources/github.js";
 import { sourceContextOf } from "./sources/context.js";
-import { IM_WORDS, checkedImText, wordCount } from "./text.js";
+import { IM_WORDS, checkedImText, sameName, wordCount } from "./text.js";
 
 export interface TicketTool {
   name: string;
@@ -259,6 +260,12 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
   const attachment = local?.text ? keepPatch(client.stateDir, current, local.text) : undefined;
   const given = args.message_for_person ? checkedImText(args.message_for_person) : undefined;
   const message = given ?? (attachment ? PATCH_RESULT : undefined);
+  // The host follows pull requests on the repository the GitHub Source watches; a ticket on another one names its PR in its message.
+  const elsewhere = current.mandate.capability?.repository;
+  const watched = watchedRepository(client.settings());
+  if (args.pr_number && elsewhere && !sameName(elsewhere, watched)) {
+    throw new Error(`The host follows pull requests on ${watched || "no repository"} only: omit pr_number for ${elsewhere}, and put the pull request's link in message_for_person.`);
+  }
   const github = args.pr_number ? sourceContextOf({
     store: client.store, outbox: client.outbox, engine: client.engine, commands: client.commands, sources: client.sources,
     get deployment() { return client.deployment(); }, ready: Promise.resolve(), configured: () => true, receive: (trigger) => client.engine.receive(trigger)
