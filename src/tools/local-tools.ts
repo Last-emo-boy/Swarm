@@ -29,6 +29,7 @@ import {
   type ShellCommandResult
 } from "./file-grep.js";
 import { runLspTool } from "../lsp/tools.js";
+import { withPathFirst } from "./shell-path.js";
 
 const AGENT_TOOL_DEFAULT_CAPABILITY = "code.research";
 
@@ -3451,7 +3452,7 @@ export async function runShellCommand(
   options: { cwd: string; timeoutMs: number; maxOutputBytes: number }
 ): Promise<ShellCommandResult> {
   const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh";
-  const args = process.platform === "win32" ? ["-NoProfile", "-Command", command] : ["-lc", command];
+  const args = process.platform === "win32" ? ["-NoProfile", "-Command", command] : ["-lc", withPathFirst(command, shell)];
 
   return new Promise((resolvePromise) => {
     let stdout = "";

@@ -5,6 +5,7 @@ import { appendFile, mkdir, open, readdir, readFile, stat, writeFile } from "nod
 import { createInterface } from "node:readline";
 import { join, resolve } from "node:path";
 import { getSwarmPaths } from "../config/settings.js";
+import { withPathFirst } from "./shell-path.js";
 
 export type BackgroundProcessStatus = "running" | "completed" | "failed" | "stopped" | "unknown";
 
@@ -75,7 +76,7 @@ export async function startBackgroundProcess(input: BackgroundProcessStartInput)
   const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh";
   const args = process.platform === "win32"
     ? ["-NoProfile", "-Command", input.command]
-    : ["-lc", input.command];
+    : ["-lc", withPathFirst(input.command, shell)];
   const maxLogBytes = Math.max(1024 * 1024, input.maxLogBytes ?? DEFAULT_MAX_LOG_BYTES);
   const startedAt = new Date().toISOString();
 

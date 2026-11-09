@@ -2,7 +2,7 @@
 import type { ChannelRef, OutboundMessage, ScopeResult, SourceScope, Trigger } from '../core/index.js'
 import type { Commands } from '../commands.js'
 import { HealthBoard, type HealthEntry } from '../health.js'
-import { AdmissionTableSchema, type Settings } from '../settings.js'
+import { AdmissionTableSchema, CeilingsSchema, RolesSchema, type Settings } from '../settings.js'
 import type { ChannelLink, ChannelLinks, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.js'
 
 
@@ -60,17 +60,22 @@ export class SourceRegistry implements SourceScope {
   validatePolicy(parts: Record<string, Record<string, unknown>>): Record<string, Record<string, unknown> & { allowed: { id: string; name?: string }[] }> {
     return Object.fromEntries(Object.entries(parts).map(([id, part]) => {
       const policy = this.kinds.get(id)?.policy
-      // `admission` is validated by the Policy's own schema (shared across all kinds), while the kind validates the rest of its part.
-      const { admission, ...rest } = part
-      return [id, policy ? { ...policy.schema.parse(rest), admission: AdmissionTableSchema.parse(admission ?? {}) } : part as Record<string, unknown> & { allowed: { id: string; name?: string }[] }]
+      // `admission`, `roles` and `ceilings` are validated by the Policy's own schemas (shared across all kinds), while the kind
+      // validates the rest of its part.
+      const { admission, roles, ceilings, ...rest } = part
+      return [id, policy ? { ...policy.schema.parse(rest), admission: AdmissionTableSchema.parse(admission ?? {}),
+        ...roles === undefined ? {} : { roles: RolesSchema.parse(roles) }, ...ceilings === undefined ? {} : { ceilings: CeilingsSchema.parse(ceilings) } }
+        : part as Record<string, unknown> & { allowed: { id: string; name?: string }[] }]
     }))
   }
   policyPart(id: string, settings = this.settings()) {
     const policy = this.kinds.get(id)?.policy
     if (!policy) return undefined
-    const { admission, ...rest } = settings.policy.sources[id] ?? {}
+    const { admission, roles, ceilings, ...rest } = settings.policy.sources[id] ?? {}
     const parsed = policy.schema.safeParse(rest)
-    return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {} }
+    return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {},
+      ...roles === undefined ? {} : { roles: RolesSchema.safeParse(roles).data ?? {} },
+      ...ceilings === undefined ? {} : { ceilings: CeilingsSchema.safeParse(ceilings).data ?? {} } }
   }
   channelAllowed(channel: { source: string; address: Record<string, string> }, settings = this.settings()): boolean {
     const kind = this.kinds.get(channel.source)

@@ -2,7 +2,7 @@
 import { key } from './ids.js'
 import { UserError } from './errors.js'
 import { liveTicket, threadKey } from './model.js'
-import type { Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger } from './model.js'
+import type { ActorRef, Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger } from './model.js'
 import type { AssessmentOutcome, Candidate, Policy } from './ports.js'
 import { said, type Reason } from './reasons.js'
 import { EnginePart, type EngineOptions } from './part.js'
@@ -152,6 +152,12 @@ export class Evals extends EnginePart {
     if (outcome.kind === 'accept' && evaluation.strength !== 'explicit' && !this.policy().admitsInferred(outcome.rules ?? [])) {
       throw new UserError('notExplicit')
     }
+    // A sender with as many live tickets as the Policy allows gets no more: an explicit request is refused, so its router can
+    // attach it to one of theirs, and a candidate nobody asked for is ignored.
+    const full = outcome.kind === 'accept' ? this.openLimitReached(evaluation.actor) : undefined
+    if (full && evaluation.strength === 'explicit') throw new UserError('openTicketLimit', full)
+    // It was assessed: its audit, even an empty one, keeps the Decision from reading as ignored from its card.
+    if (full) return this.decideEval(thread, evaluation, { kind: 'ignore', reason: { code: 'openTicketLimit', values: full }, audit: { ...outcome.audit } })
     return this.decideEval(thread, evaluation, outcome)
   }
   /**
@@ -296,6 +302,8 @@ export class Evals extends EnginePart {
         ...audit })
       if (evaluation.strength !== 'explicit') return this.finish(thread, evaluation, { kind: 'ignore',
         reason: [{ code: 'stopNotExplicit' }], ...audit })
+      if (this.policy().steers?.(ticket.mandate, evaluation.actor) === false) return this.finish(thread, evaluation, { kind: 'ignore',
+        reason: [{ code: 'stopNotSteerer' }], ...audit })
       const decision = this.finish(thread, evaluation, { kind: 'stop', reason: reasonOf(outcome.reason), ticketId: ticket.id, ...audit })
       this.tickets.end(ticket.id, 'human', 'stopped', this.now(), typeof outcome.reason === 'string' ? outcome.reason : undefined)
       return decision
@@ -307,12 +315,22 @@ export class Evals extends EnginePart {
     const at = this.now()
     const basis = { ...evaluation.basis, ...(outcome.rules ? { rules: outcome.rules } : {}) }
     const { strength, policyVersion, actor } = evaluation
-    const mandate: Mandate = { strength, policyVersion, basis, actor, scope: outcome.scope }
+    const granted = this.policy().capability?.({ strength, policyVersion, basis, actor, scope: outcome.scope })
+    const capability = granted && outcome.from ? { ...granted, from: outcome.from } : granted
+    const mandate: Mandate = { strength, policyVersion, basis, actor, scope: outcome.scope, ...capability ? { capability } : {} }
     const ticketId = key('ticket', evaluation.id)
     const audit = outcome.audit ? { audit: outcome.audit } : {}
     const decision = this.finish(thread, evaluation, { kind: 'accept', reason: reasonOf(outcome.reason), ...audit, mandate, ticketId })
     this.tickets.create(ticketId, decision.id, mandate, evaluation, outcome, at)
     return decision
+  }
+  /** How many live tickets a sender has and may have, once they have as many as the Policy allows them. */
+  private openLimitReached(actor: ActorRef): { open: string; limit: string } | undefined {
+    const limit = this.policy().openLimit?.(actor)
+    if (limit === undefined) return undefined
+    const open = this.repo.tickets.open().filter(ticket => liveTicket(ticket) && ticket.mandate.actor.source === actor.source
+      && ticket.mandate.actor.id === actor.id).length
+    return open >= limit ? { open: String(open), limit: String(limit) } : undefined
   }
   /** Record an Eval's Decision; the Thread's own Eval ends with it, while a gate-only one leaves the Thread's Eval going. */
   private finish(thread: Thread, evaluation: Evaluation, outcome: Finished): Decision {

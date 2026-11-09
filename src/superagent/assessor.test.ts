@@ -162,3 +162,19 @@ test("stops the tickets a person's follow-up asks to stop, and nothing on a mess
   const ended = client.store.tickets.get(ticketId)!;
   assert.equal(ended.ended?.by, "human");
 });
+
+test("routes a request again when the Engine refuses to attach it to a ticket its sender may not steer", async () => {
+  start({ access: {}, policy: { sources: { local: { allowed: [], roles: { alice: "maintainer", bob: "everyone" } } } } });
+  const first = client.request("fix the typo in README", "alice");
+  answers.push(accept());
+  await judge(first.triggerId);
+  const ticketId = client.store.tickets.list()[0]!.id;
+  const { triggerId } = client.request("also reword the intro", "bob");
+  answers.push(JSON.stringify({ kind: "attach", ticket_id: ticketId }), accept({ title: "Reword the intro", worktree_name: "reword-intro" }));
+  await judge(triggerId);
+  assert.match(calls[2]!.user, /may not steer this ticket/);
+  const mine = client.store.tickets.list().find((ticket) => ticket.mandate.actor.id === "bob");
+  assert.equal(mine?.title, "Reword the intro");
+  assert.deepEqual(mine?.mandate.capability, { role: "everyone", write: "local" });
+  assert.ok(liveTicket(client.store.tickets.get(ticketId)!));
+});

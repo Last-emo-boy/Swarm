@@ -1,6 +1,6 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
-import type { Assignment, ChannelRef, Decision, DecisionKind, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
-  from './model.js'
+import type { ActorRef, Assignment, Capability, ChannelRef, Decision, DecisionKind, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome,
+  Trigger } from './model.js'
 import type { Reason } from './reasons.js'
 
 /** Gate admission result: either inadmissible with a reason code, or admissible with strength and MandateBasis. */
@@ -24,6 +24,15 @@ export interface Policy {
   admitsInferred(rules: readonly string[]): boolean
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
+  /** What the work of a Mandate about to be accepted may do; none leaves it as tickets always were. */
+  capability?(mandate: Omit<Mandate, 'capability'>): Capability | undefined
+  /**
+   * Whether a person's message steers a ticket: reaches its worker as a request, resumes or unblocks it, attaches to it or
+   * stops it. Without this method everyone does; a message that does not reaches the worker for context only and goes to Eval.
+   */
+  steers?(mandate: Mandate, actor: ActorRef): boolean
+  /** How many live tickets a sender may have; an accept beyond it is refused. Without this method, or a limit, any number. */
+  openLimit?(actor: ActorRef): number | undefined
 }
 
 /** What the assessor receives: bounded facts, never authority. */
@@ -42,7 +51,9 @@ export type AssessmentOutcome =
   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
   /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
-    name?: string; note?: string }
+    name?: string; note?: string
+    /** The ticket this one takes over, whose change it carries on with: see `Capability.from`. */
+    from?: string }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */
@@ -68,8 +79,12 @@ export interface Executor {
   stop(ticket: Ticket, assignment: Assignment, reason: string): void
 }
 
-/** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
-export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
+/**
+ * A message for a Channel; `ticketId` names the Ticket it is for, when there is one, and `attachment` the path of a file the
+ * host keeps that goes with it, such as a local ticket's patch.
+ */
+export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
+  attachment?: string }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */

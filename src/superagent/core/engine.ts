@@ -47,6 +47,11 @@ export class Engine {
    */
   receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
   /**
+   * A Source's message that the host carries out as a bot command, such as `/me`: stored once, so a Source that reads it again
+   * finds it a duplicate, and reaching no ticket and no Eval. `filtered` when its Source does not listen to it.
+   */
+  receiveCommand(trigger: Trigger, command: string): ReceiveResult { return this.repo.atomic(() => this.intake.receiveCommand(trigger, command)) }
+  /**
    * A Source's request to make an open ticket follow one of its Threads, such as a pull request's, `own` when the ticket
    * opened it: the ticket subscribes to it, and a ready report ends it only once `followsDone` holds (see `Tickets.followsDone`).
    * @throws UserError when the ticket is unknown or has ended.
@@ -104,7 +109,8 @@ export class Engine {
    * its batch wait for a fresh Eval. A note for an Input the worker already received goes out as a new Input, and so does a
    * message the ticket let go, read for context only, or had before it ended. An ended ticket resumes under its Mandate, at
    * once unless processing is paused.
-   * @throws UserError for a ticket a person stopped, which withdrew its Mandate, or one whose Mandate the Policy no longer holds.
+   * @throws UserError for a ticket a person stopped, which withdrew its Mandate, one whose Mandate the Policy no longer holds, or
+   * a person's message from someone who may not steer it (see `Policy.steers`).
    */
   attach(ticketId: string, triggerId: string, note?: string): Ticket {
     return this.repo.atomic(() => {

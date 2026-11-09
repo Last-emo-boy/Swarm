@@ -4,8 +4,8 @@
  */
 import { z } from "zod/v4";
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell } from "./admission.js";
-import type { AssessmentOutcome, Mandate, Policy, PolicyEffect, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef, GateResult }
-  from "./core/index.js";
+import type { AssessmentOutcome, Capability, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
+  GateResult, WriteLevel } from "./core/index.js";
 import { sameName } from "./text.js";
 import { AllowedSchema, RuleIdSchema, policyVersion, type Settings } from "./settings.js";
 
@@ -65,8 +65,65 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
   const bots = z.array(AllowedSchema).catch([]).parse(settings.policy.sources[actor.source]?.bots ?? [])
   return bots.find(entry => sameName(entry.id, actor.id))
 }
-export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
+export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources)
+  .some(part => part.allowed.length > 0 || Object.keys(part.roles ?? {}).length > 0)
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
+
+/** The id `roles` gives `actor` a role under, if any. */
+const roleEntry = (settings: Settings, actor: ActorRef): string | undefined =>
+  Object.keys(settings.policy.sources[actor.source]?.roles ?? {}).find(id => sameName(id, actor.id))
+/** A sender on their Source's list, which the gate admits as a listed sender: one on `allowed`, or one with a role. */
+export function listedSender(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
+  const allowed = allowedSender(settings, actor)
+  if (allowed) return allowed
+  const id = roleEntry(settings, actor)
+  return id === undefined ? undefined : { id }
+}
+/** A sender's role: the one their Source's `roles` gives them, else `maintainer` for a sender on `allowed`, else `everyone`. */
+export function roleOf(settings: Settings, actor: ActorRef): Role {
+  const id = roleEntry(settings, actor)
+  if (id !== undefined) return settings.policy.sources[actor.source]!.roles![id]!
+  return allowedSender(settings, actor) ? 'maintainer' : 'everyone'
+}
+const RANK: Readonly<Record<Role, number>> = { everyone: 0, maintainer: 1, owner: 2 }
+export const atLeast = (role: Role, wanted: Role): boolean => RANK[role] >= RANK[wanted]
+/** The admission row of chats nobody listed, such as Feishu's `other`: work accepted there writes locally at most by default. */
+export const UNLISTED_ROW = 'other'
+/** How far work accepted in a receiving scope may write: its `ceilings` entry, else local in the unlisted row and GitHub elsewhere. */
+export function ceilingOf(settings: Settings, source: string, row: string | undefined): WriteLevel {
+  const set = row === undefined ? undefined : settings.policy.sources[source]?.ceilings?.[row]
+  return set ?? (row === UNLISTED_ROW ? 'local' : 'github')
+}
+const WRITE: Readonly<Record<WriteLevel, number>> = { 'read-only': 0, local: 1, github: 2 }
+type LimitName = 'openTickets' | 'requestsPerHour'
+/** Each role's limits while the access model is on and its settings name none; an absent limit is none. */
+export const ACCESS_LIMITS: Readonly<Record<Role, Partial<Record<LimitName, number>>>> = {
+  owner: { openTickets: 8 },
+  maintainer: { openTickets: 4, requestsPerHour: 60 },
+  everyone: { openTickets: 1, requestsPerHour: 10 }
+}
+/** A role's limit while the access model is on: the settings', else `ACCESS_LIMITS`; undefined for none. */
+export function limitOf(settings: Settings, role: Role, name: LimitName): number | undefined {
+  if (!settings.access) return undefined
+  return settings.access.limits[role]?.[name] ?? ACCESS_LIMITS[role][name]
+}
+/**
+ * The capability of work about to be accepted, while the access model is on: work nobody asked for (inferred, or a bot's) and
+ * work for `everyone` stays local, the rest may write to GitHub, and the receiving scope's ceiling lowers either.
+ */
+export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>): Capability | undefined {
+  if (!settings.access) return undefined
+  const role = roleOf(settings, mandate.actor)
+  const wanted: WriteLevel = mandate.strength === 'inferred' || mandate.basis.via === 'bot' || role === 'everyone' ? 'local' : 'github'
+  const ceiling = ceilingOf(settings, mandate.basis.source ?? mandate.actor.source, mandate.basis.row)
+  return { role, write: WRITE[wanted] <= WRITE[ceiling] ? wanted : ceiling }
+}
+/** Whether `actor` steers a ticket under `mandate`: always without the access model, else its requester and maintainers do. */
+export function steers(settings: Settings, mandate: Pick<Mandate, 'actor'>, actor: ActorRef): boolean {
+  if (!settings.access) return true
+  const requester = mandate.actor.source === actor.source && sameName(mandate.actor.id, actor.id)
+  return requester || atLeast(roleOf(settings, actor), 'maintainer')
+}
 
 /** Check whether a thread has tickets of its own (excluding context-only subscriptions). */
 const participating = (thread: Thread, tickets: Ticket[]): boolean =>
@@ -81,6 +138,15 @@ function admissionOf(settings: Settings, source: string, row: string | undefined
 }
 const STRENGTH: Readonly<Record<Admission, number>> = { ignore: 0, inferred: 1, explicit: 2 }
 
+/**
+ * Whether the gate takes an addressed message from this sender at all: they are on the list, or the receiving scope's row lets
+ * senders off the list address the agent. Bot commands and the request limits answer only such senders.
+ */
+export function addressable(settings: Settings, sources: SourceScope, trigger: Pick<Trigger, 'source' | 'actor' | 'meta'>): boolean {
+  if (listedSender(settings, trigger.actor)) return true
+  const scope = listened(sources, trigger.source, trigger.meta)
+  return scope.listened && admissionOf(settings, trigger.source, scope.row, 'unlistedAddressed') !== 'ignore'
+}
 /** Compute how a settings change from `old` to `now` affects the authorization or matched rules of each open ticket. */
 export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Settings, scope: (settings: Settings) => SourceScope):
   Map<string, PolicyEffect> {
@@ -131,7 +197,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
-      const allowed = allowedSender(settings, trigger.actor)
+      const allowed = listedSender(settings, trigger.actor)
       const scope = listened(sources, trigger.source, trigger.meta)
       const row = scope.listened ? scope.row : undefined
       const recorded = { source: trigger.source, scope: trigger.meta, ...row === undefined ? {} : { row }, ...allowed ? { sender: senderName(allowed) } : {} }
@@ -165,7 +231,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       // An admission-table Mandate holds while the sender's current cell still grants at least the original strength.
       if (basis.via === 'admission') {
         const { cell } = basis
-        const listed = !!allowedSender(settings, mandate.actor)
+        const listed = !!listedSender(settings, mandate.actor)
         // A listed sender who addresses the agent is always explicit and uses no table cell.
         if (cell === 'unlistedAddressed' && listed) return true
         // A sender added to the allowed list since acceptance moves to the listed cell, and still undergoes observation checks below.
@@ -174,10 +240,13 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
         const admission = admissionOf(settings, source ?? '', current?.listened ? current.row : undefined, now)
         if (STRENGTH[admission] < STRENGTH[mandate.strength]) return false
         if (mandate.strength === 'explicit') return true
-      } else if (basis.via !== 'bot' && !allowedSender(settings, mandate.actor)) return false
+      } else if (basis.via !== 'bot' && !listedSender(settings, mandate.actor)) return false
       // Observed/inferred Mandates hold only while auto mode is active and all matched rules remain enabled.
       if ((basis.via === 'admission' || basis.via === 'listed' || basis.via === 'bot') && basis.observation) return mode === 'auto' && rulesOn(basis.rules)
       return true
     },
+    capability: mandate => capabilityOf(settings, mandate),
+    steers: (mandate, actor) => steers(settings, mandate, actor),
+    openLimit: actor => limitOf(settings, roleOf(settings, actor), 'openTickets'),
   }
 }

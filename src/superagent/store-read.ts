@@ -73,6 +73,14 @@ export function storeReads(db: DatabaseSync) {
   droppedReplies: (limit = 20): Dropped[] =>
     values('SELECT value FROM outbox WHERE dropped IS NOT NULL ORDER BY dropped DESC LIMIT ?', limit),
   droppedSince: (since: string): number => Number(db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE dropped >= ?').get(since)?.n ?? 0),
+  /**
+   * How many messages a sender addressed to the agent in the window [`from`, `to`): those it took in, and its bot commands,
+   * but not the ones its Source filtered or that the request limit held back.
+   */
+  requests: (actor: { source: string; id: string }, from: string, to: string): number => Number(db.prepare(`SELECT COUNT(*) AS n FROM trigger t
+    LEFT JOIN disposition d ON d.id = t.id WHERE t.at >= ? AND t.at < ? AND t.value ->> '$.actor.source' = ? AND t.value ->> '$.actor.id' = ?
+    AND t.value ->> '$.addressed' IS NOT NULL AND d.value ->> '$.filtered' IS NULL AND IFNULL(d.value ->> '$.command', '') <> 'limit'`)
+    .get(from, to, actor.source, actor.id)?.n ?? 0),
   subscribedThreads: (source?: string): Thread[] => source
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.

@@ -5,6 +5,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { WriteLevel } from "./core/index.js";
 import type { Rule, Settings } from "./settings.js";
 import { policyVersion } from "./settings.js";
 import { BUILT_IN } from "./prompt-text.js";
@@ -56,6 +57,8 @@ export interface WorkerPromptInput {
   sources: readonly string[];
   /** Whether the deployment has a GitHub repository and account, which decides what a code change delivers. */
   github: boolean;
+  /** How far the ticket's capability lets its work write; a local or read-only ticket delivers no pull request. */
+  write?: WriteLevel;
 }
 
 /** The instructions appended to Swarm's coding-loop prompt for a ticket's worker. */
@@ -68,7 +71,8 @@ export function workerPrompt(input: WorkerPromptInput): string {
     section("Replies", BUILT_IN.replies),
     section("Work", BUILT_IN.work),
     section("Handoff", `${BUILT_IN.handoff}\n${BUILT_IN.handoffWorker}`),
-    section("Delivery in Swarm", input.github ? SWARM_DELIVERY : `${SWARM_DELIVERY}\n${LOCAL_DELIVERY}`),
+    section("Delivery in Swarm", input.write === "local" || input.write === "read-only" ? SWARM_DELIVERY
+      : input.github ? SWARM_DELIVERY : `${SWARM_DELIVERY}\n${LOCAL_DELIVERY}`),
     section("CLI", BUILT_IN.cli),
     ...(input.sources.includes("github") ? [section("GitHub", BUILT_IN.github)] : []),
     ...(input.sources.includes("feishu") ? [section("Feishu", BUILT_IN.feishu)] : []),

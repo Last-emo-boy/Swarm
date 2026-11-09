@@ -168,7 +168,7 @@ async function swarmTurns(ticketId: string, link: WorkLink, begun: WorkStart, co
     fresh,
     run: async (prompt) => {
       const result = await runtime.executeWorkSession({ session_id: sessionId, prompt, workspace_path: directory, appendSystemPrompt,
-        maxTurns: WORKER_MAX_TURNS, maxToolCalls: WORKER_MAX_TOOL_CALLS });
+        maxTurns: WORKER_MAX_TURNS, maxToolCalls: WORKER_MAX_TOOL_CALLS, ...(begun.write === "read-only" ? { sandboxMode: "read-only" as const } : {}) });
       return { failed: result?.status === "failed", words: lastWords(result) };
     },
     send: async (text, inputId) => { await runtime.sendUserMessage(text, { sessionId, source: "superagent", sourceId: inputId }); },
