@@ -98,13 +98,13 @@ export class VmGateway {
 
   private get client() { return this.work.host.client; }
 
-  /** Listens on `port` + slot on 127.0.0.1 for each of `slots` slots. */
-  async listen(slots: number, port: number): Promise<void> {
-    for (let slot = 0; slot < slots; slot++) {
+  /** Listens on 127.0.0.1 for each slot, on its port in `ports`. */
+  async listen(ports: number[]): Promise<void> {
+    for (const [slot, port] of ports.entries()) {
       const server = createServer((request, response) => { void this.handle(slot, request, response); });
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
-        server.listen(port + slot, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+        server.listen(port, "127.0.0.1", () => { server.off("error", reject); resolve(); });
       });
       this.servers.push(server);
     }

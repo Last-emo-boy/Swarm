@@ -30,6 +30,7 @@ The domain is upstream's, ported unchanged in `src/superagent/core/` with its en
 | `swarm harness list\|check`: the harness profiles of this machine | `harness-cli.ts` | CLI |
 | Ticket tools (`mcp__ticket__*`) | `ticket-tools.ts` | MCP stdio child of the worker |
 | Ticket VMs: slots, leases, the gateway and its model proxy | `vm/vm-work.ts`, `vm/gateway.ts`, `vm/model-proxy.ts` | Host, with `executor.isolation` set to `vm` |
+| Cluster ticket VMs: ticket pods, their volumes and egress rules | `vm/kube-control.ts` | Host, with `executor.vm.kube` |
 | Guest supervisor: prepares the ticket's directory, starts the worker, renews the lease | `vm/guest.ts`, `vm/gateway-link.ts` | `swarm superagent guest` in a ticket VM |
 | Sources | `sources/local.ts`, `sources/github*.ts`, `sources/feishu*.ts` | Host polls; the TUI and CLI write local Triggers |
 
@@ -212,6 +213,22 @@ The model proxy relays OpenCode's streamed chat completions and counts the usage
 mesh node lists `harness:<id>` for its OpenCode profiles, not for the harnesses installed on it; other harnesses run on
 paired nodes that have them, or with `process`. `executor.vm.slots` (default 4) VMs run at once, and a slot
 whose guest stops renewing its lease is treated as work a restart interrupted.
+
+With `executor.vm.kube`, tickets that find the host's slots full boot in pods of a Kubernetes cluster that the deployment
+set up: a namespace (`namespace`, default `swarm-tickets`), a device plugin that gives pods `/dev/kvm` as the resource
+`swarm.w33d.xyz/kvm`, a tunnel pod, and network policies that let a ticket pod reach DNS, the internet and its own slot's
+tunnel port, and no private range, node or other pod. Each of the cluster's `slots` (default 10) runs QEMU in a pod of the
+runner image (`image`), with the same VM image, `cpu` and `memoryMiB` for its guest, and the ticket's data disk on a volume
+of its own (`diskGiB` plus room for the filesystem), which is deleted once the ticket ends. The host reaches the cluster
+with `kubeconfig` (empty: its service's `kubeconfig` credential) and only creates and deletes ticket pods, their token
+Secrets and volumes; the deployment forwards each cluster slot's tunnel port to the host's gateway for it, on 127.0.0.1 at
+`port` (default 47200) plus the slot. A ticket keeps to the side its disk is on, so a follow-up waits for the cluster's
+slots even when the host's are free. With `executor.vm.slots` set to 0, every ticket runs in the cluster. A cluster VM starts in the background: the launch returns once the slot holds the
+ticket, and the host applies the volume and pod, waits for the pod's node (which the cluster may add first), and only then
+creates the pod's token Secret, after the nodes' public addresses are in the egress policy's except list, so nothing in
+the pod runs before its node is out of its reach. A start that fails ends the boot's lease after 30 seconds per boot so
+far, and the ticket launches again, failing after three boots with the error. A boot holds its lease for 15 minutes;
+while cluster VMs run, the host keeps the except list current every 15 seconds.
 
 ## Safety
 
