@@ -2855,7 +2855,8 @@ async function parseCodingLoopModelResultWithRepair(
 /**
  * Asks the turn's question again, with the reply the loop could not use and why. A repair that saw only the objective and
  * the reply knew neither the allowed tools nor the work so far: on OVH it invented tools and commands, or gave up for want
- * of a shell, and the turn failed with that. It answers with the turn's output budget, as a reply that writes a script needs.
+ * of a shell, and the turn failed with that. It answers with the turn's output budget, as a reply that writes a script needs,
+ * and without reasoning first where the provider can turn it off: replayed so, DeepSeek's markup replies came back as JSON.
  */
 async function repairCodingLoopModelResult(
   text: string,
@@ -2866,7 +2867,8 @@ async function repairCodingLoopModelResult(
   const repaired = await provider.generateText({
     ...request,
     user: [...request.user, unusableReplyBlock(text, validationError)],
-    usage: { ...request.usage, purpose: "coding_loop_json_repair" }
+    usage: { ...request.usage, purpose: "coding_loop_json_repair" },
+    reasoning: "off"
   });
   const parsed = parseCodingLoopModelResult(repaired);
   const repairedValidationError = validateCodingLoopModelResult(parsed);

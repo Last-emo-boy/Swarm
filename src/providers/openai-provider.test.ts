@@ -60,6 +60,19 @@ test("asks DeepSeek again without thinking when its JSON answer came back only a
   }
 });
 
+test("turns DeepSeek's thinking off for a request that asks for no reasoning", async () => {
+  const fixture = await createProviderFixture({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+  try {
+    const provider = new OpenAIProvider({ workspace: fixture.workspace });
+    await provider.generateText({ model: "deepseek/test-chat", system: "Return JSON.", user: "Go.", responseFormat: "json_object", reasoning: "off" });
+    await provider.generateText({ model: "deepseek/test-chat", system: "Return JSON.", user: "Go.", responseFormat: "json_object" });
+    assert.deepEqual((fixture.requests[0] as Record<string, unknown>).thinking, { type: "disabled" });
+    assert.equal((fixture.requests[1] as Record<string, unknown>).thinking, undefined);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("prompt cache diagnostics ignore dynamic non-cacheable system text", async () => {
   const fixture = await createProviderFixture({
     prompt_tokens: 1200,

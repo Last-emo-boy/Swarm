@@ -153,6 +153,8 @@ test("coding loop asks again for a reply it cannot use with the turn's own promp
   assert.match(note, /not a JSON object/);
   assert.match(note, /DSML/);
   assert.equal(repair.maxOutputTokens, turn.maxOutputTokens, "with the turn's output budget");
+  assert.equal(repair.reasoning, "off", "and without reasoning first");
+  assert.equal(turn.reasoning, undefined);
   assert.equal(repair.usage?.sessionId, turn.usage?.sessionId);
 });
 

@@ -69,15 +69,7 @@ export class OpenAIProvider {
     }));
   }
 
-  async generateText(input: {
-    system: PromptInput;
-    user: PromptInput;
-    model?: string;
-    cache?: PromptCacheOptions;
-    responseFormat?: ProviderResponseFormat;
-    maxOutputTokens?: number;
-    usage?: ProviderUsageContext;
-  }): Promise<string> {
+  async generateText(input: GenerateTextInput): Promise<string> {
     const resolved = this.resolveModel(input.model ?? this.model);
     if (resolved.provider.apiKeyRequired && !resolved.apiKey) {
       throw new Error(
@@ -167,6 +159,7 @@ export class OpenAIProvider {
       max_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, input.maxOutputTokens),
       ...openAIPromptCacheParams(resolved, prompt, input.cache),
       ...responseFormatParams,
+      ...(input.reasoning === "off" && resolved.providerId === "deepseek" ? { thinking: { type: "disabled" } } : {}),
       messages
     };
     const response = await createChatCompletionWithResponseFormatFallback(
@@ -517,6 +510,12 @@ type GenerateTextInput = {
   responseFormat?: ProviderResponseFormat;
   maxOutputTokens?: number;
   usage?: ProviderUsageContext;
+  /**
+   * "off" asks the model to answer without reasoning first, where its provider can turn reasoning off (DeepSeek's thinking).
+   * DeepSeek's JSON mode then holds: with thinking on, a reply now and then is its own tool-call markup around a script, or
+   * runs out of max_tokens while reasoning, and replayed with thinking off the same requests came back as JSON.
+   */
+  reasoning?: "off";
 };
 
 type ProviderResponseFormat = "json_object";
