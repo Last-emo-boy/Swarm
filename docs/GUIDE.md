@@ -831,19 +831,23 @@ Feishu images are not read during assessments yet. See [SUPERAGENT.md](SUPERAGEN
 
 ### Roles and bot commands
 
-With an `access` block in the superagent settings, each person who asks has a role, and the role decides how far their
-tickets may write. Without the block, everyone on a Source's `allowed` list may do everything.
+With an `access` block in the superagent settings, each person who asks has a role, and the role decides what else they
+may do and how much they may ask for. Without the block, everyone on a Source's `allowed` list may do everything.
 
 | Role | Who has it | Their requests | Open tickets | Requests an hour |
 | --- | --- | --- | --- | --- |
-| `owner` | set in `roles` | may write to GitHub; owners also run the setup commands below | 8 | no limit |
-| `maintainer` | set in `roles`, or on `allowed` | may write to GitHub | 4 | 60 |
-| `everyone` | anyone else a listed chat lets in | stay local | 1 | 10 |
+| `owner` | set in `roles` | write to GitHub as their linked account; owners also run the setup commands below | 8 | no limit |
+| `maintainer` | set in `roles`, or on `allowed` | write to GitHub as their linked account; maintainers also steer others' tickets | 4 | 60 |
+| `everyone` | anyone else a listed chat lets in | write to GitHub as their linked account | 1 | 10 |
 
-- **Writing to GitHub** happens as the person who asked. They link their GitHub account once with `/link`, and the
-  worker's `gh` and git use that account on their repository. Without a link, and for work nobody asked for (inferred,
-  or a bot's), the ticket stays local: its worker commits in its own directory, has no `gh` or `lark-cli` account, and
-  its result carries the commits as a patch. `/takeover` turns that patch into a pull request later.
+- **Writing to GitHub** happens as the person who asked, whatever their role. They link their GitHub account once with
+  `/link`, and the worker's `gh` and git use that account on their repository. Without a working link, and for work
+  nobody asked for (inferred, or a bot's), the ticket stays local: its worker commits in its own directory, has no `gh`
+  or `lark-cli` account, and its result carries the commits as a patch. `/takeover` turns that patch into a pull request
+  later.
+- **A pull request before linking.** Someone who asks for a pull request before they linked gets the work as a local
+  ticket, and the code to link in a direct message. Once they linked and the ticket is ready, the agent takes it over and
+  opens the pull request as them.
 - **A chat's ceiling** (`read-only`, `local` or `github`) lowers this for everything asked there. Chats nobody listed
   are `local`.
 - **Steering.** The person who asked and the maintainers steer a ticket. Anyone else's message on its conversation
@@ -855,14 +859,20 @@ People send these commands to the Feishu bot, after mentioning it or in a direct
 
 | Command | Who | What it does |
 | --- | --- | --- |
+| `/help` | anyone | Lists these commands. |
 | `/me` | anyone | Shows your role, open tickets, requests in the last hour, this chat's ceiling and your GitHub account. |
-| `/link`, `/repo [owner/name]` | anyone, in a direct message | Links your GitHub account with a code you enter on GitHub; lists or sets your default repository. |
+| `/link` | anyone | Links your GitHub account. The code to enter on GitHub comes in a direct message, even when you ask in a group: whoever enters it links their account to you. |
+| `/repo [owner/name]` | anyone, in a direct message | Lists or sets your default repository. |
 | `/unlink` | anyone | Removes your GitHub link. |
-| `/takeover [ticket]` | the requester or a maintainer | Opens a pull request from a local ticket's patch, as a new ticket of yours. |
+| `/takeover [ticket]` | the requester or a maintainer | Opens a pull request from a local ticket's patch, as a new ticket of yours. It waits until you linked and the ticket has its patch; a ticket is taken over only once. |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned. |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list. |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this chat may write. |
 | `/chatter [on\|off]` | owner, in a group listed with `/listen all`; anyone may ask | Whether the agent joins the conversation here on its own. |
+
+People can also ask in their own words: the agent runs `/help`, `/me`, `/link`, `/repo` and `/takeover` for them, as if
+they had typed it. `/role`, `/listen`, `/ceiling`, `/chatter` and `/unlink` change settings or remove a link, so they
+have to be typed.
 
 A message that asks for no work, such as thanks or a question the agent can answer at once, gets a short answer and
 starts no ticket. With `/chatter on`, the agent also speaks up in the group on its own when the chat has gone quiet and
