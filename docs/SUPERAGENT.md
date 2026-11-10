@@ -117,7 +117,8 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 |---|---|---|
 | `/me` | anyone | Shows your role, open tickets, requests in the last hour, the ceiling here and your GitHub account |
 | `/link` | anyone | Links your GitHub account; its code comes in a direct message |
-| `/unlink`, `/repo [owner/name]` | anyone, in a direct message | Removes your GitHub account, and lists or sets your default repository |
+| `/repo [owner/name]` | anyone, in a direct message | Lists or sets your default repository |
+| `/unlink` | anyone | Removes your GitHub account |
 | `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends. It waits until you linked and the ticket has its patch |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
