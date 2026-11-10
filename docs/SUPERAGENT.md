@@ -24,6 +24,7 @@ The domain is upstream's, ported unchanged in `src/superagent/core/` with its en
 | Engine, store, effects queue, outbox | `core/`, `store.ts`, `effects.ts`, `outbox.ts`, `client.ts` | Any Swarm process |
 | Host: lock, setup, Source polling, passes, Policy changes, health snapshot | `host.ts`, `setup.ts`, `environment.ts` | `swarm superagent run`, or a TUI with no other host |
 | Routing, assessment, follow-up stop check | `assessor.ts`, `prompts.ts` | Host |
+| What the agent runs work on: nodes, harnesses, free workers | `devices.ts` | Host |
 | Executor: slots, prepare command, worker processes | `executor.ts` | Host |
 | Worker: coding loop on the ticket's session | `worker.ts` | One child process per running ticket |
 | Harness turns: Claude Code, Codex, Kimi Code or OpenCode in place of the coding loop | `harness.ts`, `harness-turns.ts` | One child of the worker per turn |
@@ -119,6 +120,8 @@ steer it. Without the block, nothing changes: everyone on a list may do everythi
 - **Harness.** Maintainers and owners may ask for the agent harness their work runs on (below), since its turns are paid
   for by the owner's harness accounts. `everyone`'s work runs on the default (`executor.harness`), and the
   acknowledgement says so.
+- **Devices.** Maintainers and owners learn which nodes the agent runs work on and what each runs (below); `everyone`
+  learns how many paired nodes there are, how many are online and how many workers are free.
 
 People run these bot commands in Feishu, after mentioning the bot or in a direct message:
 
@@ -129,12 +132,13 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | `/repo [owner/name]` | anyone, in a direct message | Lists or sets your default repository |
 | `/unlink` | anyone | Removes your GitHub account |
 | `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends. It waits until you linked and the ticket has its patch |
+| `/devices` | anyone (node names: maintainers and owners) | Shows what the agent runs work on now: this node, its paired nodes and the free workers (below) |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
 | `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own |
 
-People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo` and `/takeover` for someone whose
+People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo`, `/takeover` and `/devices` for someone whose
 message asks for what one does, as if they had typed it. The others change settings or remove a link, so only people type
 them. The first owner is set in the settings file.
 
@@ -152,6 +156,24 @@ can run. A host that is not a mesh node counts every profile as its own; one not
 Work that acts as its requester on GitHub (`capability.credential`) runs only on the node that holds their token, so for
 it only a harness this node has counts: a harness only a paired node has is answered as unavailable for that request. A
 request filed with `--harness` keeps that harness whatever the router says.
+
+### Devices
+
+The router's card carries `devices`, what the agent runs work on now, so it answers "你现在能调用哪些设备？" from real data
+with chat, in its persona's voice, and its acknowledgements do not promise work now when every worker is busy:
+
+- `this_node`: this node's name, its machine (OS, `docker`, `gpu`) and the harnesses signed in here, from its mesh card.
+- `paired_nodes`: each paired node, online when it answered the card request just now (3 seconds), with its machine and
+  harnesses; one that did not answer shows only its name.
+- `ticket_workers`: how many workers run at once, busy and free. With `process` isolation, the worker processes here
+  against `executor.maxWorkers`. With `vm`, the ticket VM slots here (`executor.vm.slots`) and in the cluster
+  (`executor.vm.kube.slots`); a slot is busy while its lease holds, so any process that opens the state reads the same.
+
+The host reads the paired nodes at most every 30 seconds for the router, the harness choices and `/devices` together,
+and again after a read that failed. For a requester who may not see nodes (`seesNodes`: without the access model anyone,
+with it maintainers and owners), the card holds counts alone: paired nodes, online ones and the workers. A host that is
+no mesh node counts every harness profile it would run as its own, as the harness choices do. `/devices` prints the same
+view. Workers in ticket VMs and on paired nodes see none of it.
 
 ### GitHub accounts
 

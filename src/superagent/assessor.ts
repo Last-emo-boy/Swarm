@@ -9,13 +9,14 @@ import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, 
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
 import { said } from "./chatter.js";
+import { devicesCard, type Devices } from "./devices.js";
 import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js";
 import { harnessIds } from "./harness.js";
 import { KV } from "./kv.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
-  watchedRepository } from "./policy.js";
+  seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
@@ -44,6 +45,8 @@ export interface AssessorHost {
    * runs; without it every harness profile counts as this node's.
    */
   mesh?(): Promise<MeshView | undefined>;
+  /** What the host runs its tickets' work on now, which the router answers questions about its devices from. */
+  devices?(): Promise<Devices>;
 }
 
 const AcknowledgementSchema = z.string().trim().min(1)
@@ -275,11 +278,26 @@ export class ModelAssessor {
     return { default: fallback, choices: Object.fromEntries([...harnesses.places].map(([id, place]) => [id, where(place)])) };
   }
 
+  /**
+   * The card's devices: the nodes the agent runs work on with what each runs, for a requester who may see them, else how
+   * many there are; and how many workers are free.
+   */
+  private async devices(candidate: Candidate): Promise<{ devices?: Record<string, unknown> | string }> {
+    if (!this.host.devices) return {};
+    const actor = candidate.thread.evaluating?.actor ?? candidate.triggers.at(-1)!.actor;
+    try {
+      return { devices: devicesCard(await this.host.devices(), seesNodes(this.host.client.settings(), actor)) };
+    } catch (error) {
+      // Routing goes on without them; the router says it cannot tell.
+      return { devices: `unknown now: ${String(error instanceof Error ? error.message : error).slice(0, 200)}` };
+    }
+  }
+
   /** Routes an explicit candidate: one model answer, checked once and asked again with the problem when it does not hold. */
   private async route(candidate: Candidate): Promise<void> {
     const { client, complete } = this.host;
     const harnesses = await this.harnesses(candidate);
-    const card = { ...this.card(candidate), harnesses: this.harnessCard(candidate, harnesses) };
+    const card = { ...this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...await this.devices(candidate) };
     const triggerId = candidate.triggers.at(-1)!.id;
     let last = "";
     for (let attempt = 0; attempt < 2; attempt++) {

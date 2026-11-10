@@ -57,8 +57,11 @@ export function workNeeds(ticket: Ticket, placement: Placement | undefined): str
 
 /** A node by its name, with the abilities its card lists. */
 export interface NodeAbilities { name: string; abilities: readonly string[] }
-/** This mesh node and the paired nodes that answered, with their abilities: where work that needs an ability can run now. */
-export interface MeshView { here: NodeAbilities; peers: readonly NodeAbilities[] }
+/**
+ * This mesh node and the paired nodes that answered, with their abilities: where work that needs an ability can run now;
+ * and the names of the paired nodes that did not answer.
+ */
+export interface MeshView { here: NodeAbilities; peers: readonly NodeAbilities[]; offline?: readonly string[] }
 
 /**
  * Where work on harness `id` runs, as a mesh node places it: here when this node lists the harness, else on a paired node
