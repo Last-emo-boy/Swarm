@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import type { Trigger } from "./core/index.js";
-import { ChatterRoom, chatterPrompt, namesAgent, quietAt } from "./chatter.js";
+import { ChatterRoom, chatterPrompt, cutToFit, namesAgent, quietAt } from "./chatter.js";
+import { wordCount } from "./text.js";
 import { ask, openAsks } from "./asks.js";
 import { posted } from "./people.js";
 import { SuperagentClient } from "./client.js";
@@ -234,6 +235,27 @@ describe("when messages call for the agent that its router does not answer", () 
     const card = JSON.parse(calls[0]!.user) as { messages: { id?: string; for_you?: string }[] };
     expect(card.messages.filter((line) => line.for_you).map((line) => line.for_you)).toEqual(["names_you", "replies_to_you", "mentions_you"]);
     expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([["行，我觉得可以先上", named.meta.messageId]]);
+  });
+
+  it("asks again when a relay is longer than Feishu takes, then cuts it after a whole sentence rather than drop it", async () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 进度如何？", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    const reply = botMessage("ou_feifei", "很长的一段进度说明", 0, { mention: true });
+    const long = "规范基本定完了，热更新由上层每次进选关时调一次。".repeat(12);
+    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: long }] }), JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: long }] }));
+    await room.attend(CHAT, [reply.id]);
+    expect(calls.length).toBe(2);
+    expect(JSON.parse(calls[1]!.user).problem).toMatch(/^the relay for ask-1 is \d+ words: Feishu takes a relay of at most 100 words/);
+    const [relay] = posts();
+    expect(wordCount(relay!.text) <= 100 && relay!.text.endsWith("。…") && relay!.text.startsWith("规范基本定完了")).toBe(true);
+    expect(openAsks(client.store, now)).toEqual([]);
+  });
+
+  it("cuts a sentence too long alone where it fits", () => {
+    const cut = cutToFit("word ".repeat(300), 100);
+    expect(wordCount(cut) <= 100 && cut.endsWith("…")).toBe(true);
   });
 
   it("knows its name as a word, not inside a link", () => {
