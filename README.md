@@ -23,8 +23,10 @@ English · [简体中文](README.zh-CN.md)
   or `n`.
 - **Remembers where it stopped.** `/continue` picks a session up again, and what it remembers is checked against the
   files as they are now.
-- **Takes tickets.** People you allow ask on GitHub, in Feishu or with `/ticket`; each request gets its own worker
-  and directory, and the answer goes back where it was asked.
+- **Takes tickets.** People ask on GitHub, in Feishu or with `/ticket`; each request gets its own worker and
+  directory, in a VM of its own if you like, and the answer goes back where it was asked.
+- **Works as a member of your team chat.** On Feishu it knows who is who, follows the conversation, messages and @s
+  people for you, remembers what matters, and brings back the answers to what it asked for you.
 - **Uses the agents you already have.** A ticket or a subagent can run on Claude Code, Codex, Kimi Code or OpenCode
   instead of Swarm's own loop.
 - **Links your devices.** A laptop, a server and a GPU box pair with a short code, and work goes to the one that has
@@ -73,10 +75,10 @@ for scripts ([CLI](docs/GUIDE.md#cli)).
 
 ## Tickets
 
-`swarm superagent` turns requests into tickets. Someone you allow mentions the agent on GitHub, messages its Feishu
-bot, or types `/ticket <request>` in the TUI. A fixed check of who sent it runs before any model sees the request;
-then each ticket gets a worker in its own directory, usually a git worktree, and the answer goes back to the
-conversation it came from.
+`swarm superagent` turns requests into tickets. Someone mentions the agent on GitHub, messages its Feishu bot in a
+direct message or any group it is in, or types `/ticket <request>` in the TUI. A fixed check of who sent it runs before
+any model sees the request; then each ticket gets a worker in its own directory, usually a git worktree, and the answer
+goes back to the conversation it came from.
 
 <img src="docs/images/tickets.en.svg" width="880" alt="How a ticket runs: a request from GitHub, Feishu or the TUI passes a gate, becomes a ticket, runs on a worker on a device with the right harness, and the answer goes back where it was asked.">
 
@@ -91,8 +93,26 @@ swarm superagent tickets          # what waits for a person comes first
 
 <img src="docs/images/tui-tickets.en.svg" width="880" alt="The tickets view: tickets that need you first, then those working on this device and paired ones.">
 
-GitHub and Feishu stay off until they are set up with an agent account and a bot. Workers run as your OS user, so use
-a dedicated account for repositories where strangers comment. More in [tickets](docs/GUIDE.md#tickets).
+GitHub and Feishu stay off until they are set up with an agent account and a bot. More in
+[tickets](docs/GUIDE.md#tickets).
+
+- **Who may ask, and for what.** With an `access` block, each person has a role, `owner`, `maintainer` or `everyone`,
+  that sets what their work may do and how much they may ask. Someone who links their GitHub account with `/link` gets
+  their work pushed and their pull requests opened on their own repositories, as themselves; other work comes back as a
+  patch. See [roles and bot commands](docs/GUIDE.md#roles-and-bot-commands) and [access](docs/SUPERAGENT.md#access).
+- **Where workers run.** By default each worker is a process of your OS user. With `executor.isolation: "vm"` each ticket
+  gets a VM of its own that reaches nothing on the host but its gateway, on this host or in a Kubernetes cluster once
+  the host's are busy. See [ticket VMs](docs/SUPERAGENT.md#ticket-vms).
+
+### In your team chat
+
+The Feishu bot hears every group it is in and answers when someone @s it. It reads who is who and the conversation
+around a message, and it can message or @ people for you ("帮我私聊小王…"), wait for their answer, a person's or another
+bot's, and bring it back. With `chatter.everywhere` it also joins in when a member would: a question nobody answered,
+another bot that @s it, someone who calls it by name or replies to it. With `memory.enabled` it remembers people, chats
+and itself across conversations and tickets, and keeps promises such as "两分钟后提醒我…"; `/memory` shows anyone what it
+remembers about them and `/forget` erases it. See [conversation](docs/SUPERAGENT.md#conversation) and
+[memory](docs/SUPERAGENT.md#memory).
 
 ### Workers on other agents
 
@@ -128,10 +148,13 @@ swarm mesh invite               # on any member: prints a code such as K7QM-4ZX2
 swarm mesh join K7QM-4ZX2       # on the device to add
 swarm node install              # keep this device's node up as a service
 swarm mesh status               # every device: how it is reached, its abilities, its load
+swarm mesh lend shell ~/work    # let paired devices run commands here, in this folder
 ```
 
 A code works for 15 minutes, and three wrong tries cancel it. A paired device can act on this one's tickets, so pair
-only devices you control. More in [mesh](docs/GUIDE.md#mesh).
+only devices you control. A device can lend the others a shell or file access in folders it names: Swarm sessions there
+use them as tools, and so does every ticket's worker, through its host, from a ticket VM too. A lent shell runs as its
+device's user, with that user's credentials. More in [mesh](docs/GUIDE.md#mesh).
 
 ## Usage and budgets
 
@@ -140,6 +163,7 @@ Every model call and harness turn is counted on the device that made it, with it
 ```bash
 swarm usage                          # the last 7 days on this device, by model
 swarm usage --since 30d --by harness
+swarm usage --by purpose             # the ticket host's own calls (routing, chatter, memory) apart from workers'
 swarm usage --all-devices            # adds every paired device that answers
 ```
 

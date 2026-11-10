@@ -20,7 +20,8 @@
 - **在你的仓库里干活。** 读代码、改代码、跑测试和构建，说“做完了”之前先自己检查一遍改动。
 - **有风险的操作先问你。** 编辑文件、执行命令、安装依赖都会先停在一张带 diff 的小卡片上，你按 `y`、`a` 或 `n`。
 - **记得上次做到哪。** `/continue` 接着上一个会话继续；它记得的内容会先对照现在的文件核实一遍。
-- **接工单。** 你允许的人在 GitHub、飞书或用 `/ticket` 提需求；每个需求有自己的 worker 和目录，答复回到提问的地方。
+- **接工单。** 大家在 GitHub、飞书或用 `/ticket` 提需求；每个需求有自己的 worker 和目录，愿意的话还有自己的 VM，答复回到提问的地方。
+- **像团队群里的一员。** 在飞书上它知道谁是谁、跟得上对话，能替你私聊或 @ 人，记得重要的事，替你问的问题会把回答带回来。
 - **用上你已有的 agent。** 工单或子代理可以跑在 Claude Code、Codex、Kimi Code 或 OpenCode 上，不必用 Swarm 自己的循环。
 - **把设备连成网格。** 笔记本、服务器、GPU 主机用一串短码配对，活儿交给具备所需条件的那台。
 
@@ -64,7 +65,7 @@ swarm           # 在当前目录打开 Swarm
 
 ## 工单
 
-`swarm superagent` 把需求变成工单。你允许的人在 GitHub 上 @ 这个 agent、给它的飞书机器人发消息，或者在 TUI 里输入
+`swarm superagent` 把需求变成工单。有人在 GitHub 上 @ 这个 agent、在私聊或它所在的任何群里给它的飞书机器人发消息，或者在 TUI 里输入
 `/ticket <需求>`。在任何模型看到需求之前，先有一道固定的检查确认是谁发的；之后每张工单有一个 worker，在自己的目录（通常是一个 git 工作树）里干活，答复回到需求来的那个对话里。
 
 <img src="docs/images/tickets.zh.svg" width="880" alt="工单怎么跑：来自 GitHub、飞书或 TUI 的需求先过门禁，成为工单，在装有对应 harness 的设备上由 worker 执行，答复回到提问的地方。">
@@ -80,7 +81,14 @@ swarm superagent tickets          # 等人处理的排在前面
 
 <img src="docs/images/tui-tickets.zh.svg" width="880" alt="工单视图：需要你的工单排在前面，然后是本机和配对设备上正在进行的工单。">
 
-GitHub 和飞书在配好 agent 账号和机器人之前一直关闭。worker 以你的系统用户身份运行，所以在有陌生人评论的仓库上，请用一个专门的系统账号。详见[工单](docs/GUIDE.zh-CN.md#工单)。
+GitHub 和飞书在配好 agent 账号和机器人之前一直关闭。详见[工单](docs/GUIDE.zh-CN.md#工单)。
+
+- **谁能提、能做到哪一步。** 设置里有 `access` 时，每个人有一个角色：`owner`、`maintainer` 或 `everyone`，它决定这个人的工单能做什么、能提多少。用 `/link` 绑定了 GitHub 的人，工单会以他自己的身份推送到他自己的仓库、开拉取请求；其余的工单以补丁交付。详见[角色和机器人命令](docs/GUIDE.zh-CN.md#角色和机器人命令)和 [access](docs/SUPERAGENT.md#access)（英文）。
+- **worker 在哪儿跑。** 默认每个 worker 是你系统用户下的一个进程。设置 `executor.isolation: "vm"` 后，每张工单有自己的 VM，除了自己的网关碰不到宿主机上的任何东西；VM 在本机，本机的忙不过来时也可以在 Kubernetes 集群里。详见 [ticket VMs](docs/SUPERAGENT.md#ticket-vms)（英文）。
+
+### 在团队群里
+
+飞书机器人能听到它所在的每个群，有人 @ 它就回答。它读得懂谁是谁、一条消息周围在聊什么，能替你私聊或 @ 人（“帮我私聊小王…”），等对方回答，不管回答的是人还是别的机器人，再把回答带回来。开了 `chatter.everywhere`，它还会像群成员一样插话：没人回答的问题、别的机器人 @ 它、有人叫它名字或回复它。开了 `memory.enabled`，它会在不同的对话和工单之间记住人、群和它自己，也会兑现“两分钟后提醒我…”这样的承诺；`/memory` 让每个人看到它记得自己什么，`/forget` 删掉。详见 [conversation](docs/SUPERAGENT.md#conversation) 和 [memory](docs/SUPERAGENT.md#memory)（英文）。
 
 ### 用其他 agent 做 worker
 
@@ -114,9 +122,10 @@ swarm mesh invite               # 在任一成员上：打印一个配对码，�
 swarm mesh join K7QM-4ZX2       # 在要加入的设备上
 swarm node install              # 把本机节点装成服务，保持在线
 swarm mesh status               # 每台设备：怎么连上的、有什么能力、忙不忙
+swarm mesh lend shell ~/work    # 让配对设备在这个文件夹里执行命令
 ```
 
-配对码 15 分钟内有效，输错 3 次作废。配对设备可以操作本机的工单，所以只配对你自己掌控的设备。详见[网格](docs/GUIDE.zh-CN.md#网格)。
+配对码 15 分钟内有效，输错 3 次作废。配对设备可以操作本机的工单，所以只配对你自己掌控的设备。一台设备可以把它指定的文件夹里的 shell 或文件访问借给其他设备：那些设备上的 Swarm 会话把它们当工具用，每张工单的 worker 也能经宿主机用上，在工单 VM 里也一样。借出的 shell 以那台设备的用户身份运行，带着那个用户的凭据。详见[网格](docs/GUIDE.zh-CN.md#网格)。
 
 ## 用量和预算
 
@@ -125,6 +134,7 @@ swarm mesh status               # 每台设备：怎么连上的、有什么能�
 ```bash
 swarm usage                          # 本机最近 7 天，按模型汇总
 swarm usage --since 30d --by harness
+swarm usage --by purpose             # 工单宿主自己的调用（分派、闲聊、记忆）和 worker 的分开算
 swarm usage --all-devices            # 加上所有有回应的配对设备
 ```
 
