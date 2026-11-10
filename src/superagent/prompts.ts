@@ -35,7 +35,8 @@ const SWARM_DELIVERY = [
   "When mcp__ticket__report has state ready, a human_action question, or reply_to_trigger_id, also give `message_for_person`: the one short message the person reads, written as the Communication section says, in the language of the source conversation.",
   "The host posts it as the ticket's result, its question or its answer, in the conversation the replies section names, and refuses a message the rules do not allow.",
   "Without `message_for_person`, a ready report posts nothing and a question posts the question itself.",
-  "Progress, blocked and failed reports without a question stay internal.",
+  "Keep the person posted, not informed of every step: at a milestone they would care about, such as finding the code, getting it to run, a first result or an open pull request, report progress with a one-sentence `message_for_person`. The host sends at most one such update every few minutes and none in the first two, so routine steps get none.",
+  "A blocked or failed report without a question tells the person that the work stopped: give `message_for_person` to say why in their words, else the host quotes your summary.",
   "Only the mcp__ticket__report tool tells anyone what happened. Your final JSON (status, summary, message) is not a report and reaches nobody, whatever it says: call mcp__ticket__report in tool_calls first, and return status=completed only after its result shows reported:true.",
   "`.swarm/` in the ticket directory is Swarm's local state: never commit it."
 ].join("\n");
@@ -117,6 +118,7 @@ export const ROUTE_CONTRACT = [
   ' "note": "accept or attach: optional routing background or an explicit human constraint, at most 30 words",',
   ' "needs": "accept: optional list of what the work needs of the machine its worker runs on, from gpu (an NVIDIA GPU), macos, linux, windows; omit it when any machine will do",',
   ' "link": "accept: true to send the requester a code to link their GitHub account, as the Requester section says; omit it otherwise",',
+  ' "repository": "accept: owner/name of the requester\'s repository the work is about, exactly as the card lists it, as the Requester section says; omit it otherwise",',
   ` "command": "command: one of ${AGENT_COMMANDS.join(", ")}",`,
   ' "args": "command: optional list of its arguments, such as [\"owner/name\"] for repo or [\"<ticket id>\"] for takeover",',
   ' "ticket_id": "attach and stop: the ticket",',
@@ -127,6 +129,7 @@ export const ROUTE_CONTRACT = [
 const REQUESTER_LINES = [
   "The card's requester, when the access model is on, says who sent the message: their role, whether this is a direct message, how far work asked for here may write (may_write), what a ticket accepted now would do (this_request), and their GitHub account when linking is set up.",
   "An acknowledgement promises only what this_request allows: when it is local, the change comes back as a patch, never a pull request; when it is read-only, an answer.",
+  "When accepted work is about one of the requester's GitHub repositories, set repository to its owner/name exactly as the card lists it, however the person called it (\"2048 DQN\" for owner/2048-DQN, a translated or shortened name). Without it, the work happens on when_none_is_named.",
   "Set link: true on an accept when the person wants a pull request, a push or another change on GitHub, may_write is github, and their GitHub is not linked or its link stopped working. The host then sends them a code to link their account in a direct message, and once they linked it turns the finished patch into a pull request as them; the acknowledgement says both.",
   "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them.",
   "Changing roles, the chats the agent reads, ceilings or whether it joins conversations on its own, and unlinking, are only for people to type themselves (/role, /listen, /ceiling, /chatter, /unlink): asked for one, answer with chat and name the command to send."

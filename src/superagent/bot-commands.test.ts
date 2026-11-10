@@ -22,6 +22,8 @@ let client: SuperagentClient;
 let commands: BotCommands;
 let clock: number;
 let links: GithubLinks;
+/** The bot's brand, which words answers to a bare command: Chinese on Feishu, English on Lark. */
+let brand: "feishu" | "lark";
 /** GitHub's answers by path. */
 let answers: Record<string, unknown>;
 const fakeFetch: typeof fetch = async (input) => {
@@ -44,8 +46,9 @@ const settings = (access: Record<string, unknown> = {}) => ({
 });
 beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "swarm-bot-commands-"));
+  brand = "lark";
   writeSettings(settings(), settingsPath(stateDir));
-  const deployment = { stateDir, repository: "", feishu: { cli: "lark-cli", appId: "cli_app", brand: "feishu", botId: BOT, name: "w33d" } } as unknown as Deployment;
+  const deployment = { stateDir, repository: "", feishu: { cli: "lark-cli", appId: "cli_app", get brand() { return brand; }, botId: BOT, name: "w33d" } } as unknown as Deployment;
   client = new SuperagentClient({ stateDir, deployment: () => deployment });
   answers = {};
   links = new GithubLinks({ store: client.store, key: () => linkKey(stateDir), fetch: fakeFetch, sleep: async () => {} });
@@ -265,6 +268,17 @@ describe("GitHub links", () => {
     expect(replies()[3]!.channel.address).toMatchObject({ chatId: DM });
     commands.receive(message(MAINTAINER, "/me", { direct: true }));
     expect(replies().at(-1)!.text).toContain(`GitHub: @alice-gh, working on ${WATCHED}.`);
+  });
+  it("answers in the language a person writes in, and a bare command in Chinese on Feishu", () => {
+    const asked = message(MAINTAINER, "我在这里能做什么？");
+    commands.receive(asked);
+    commands.perform(asked, "me", []);
+    expect(replies().at(-1)!.text).toContain("你的角色：maintainer。");
+    commands.receive(message(MAINTAINER, "/help"));
+    expect(replies().at(-1)!.text).toMatch(/^Commands: /);
+    brand = "feishu";
+    commands.receive(message(MAINTAINER, "/help"));
+    expect(replies().at(-1)!.text).toMatch(/^命令：/);
   });
   it("runs a command the router chose for a person's message as if they had typed it", () => {
     const asked = message(MAINTAINER, "what can I do here?");

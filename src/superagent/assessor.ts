@@ -12,10 +12,10 @@ import { said } from "./chatter.js";
 import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { updatePlacement } from "./placement.js";
-import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, directionAllowed, roleOf } from "./policy.js";
+import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, directionAllowed, repositoryFor, roleOf, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { admissionContext } from "./sources/admission-context.js";
-import { IM_WORDS, NOTE_WORDS, checkedImText, wordCount } from "./text.js";
+import { IM_WORDS, NOTE_WORDS, checkedImText, sameName, wordCount } from "./text.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
 export type Complete = (input: { purpose: string; system: string; user: string; model?: string }) => Promise<string>;
@@ -55,6 +55,8 @@ const RouteSchema = z.object({
   needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish(),
   /** Accepted work whose requester wants a pull request but has not linked GitHub: they get the code to link, and the ticket a take-over once they did. */
   link: z.boolean().nullish(),
+  /** The requester's repository the accepted work is about, as the card lists it, however the person called it. */
+  repository: z.string().nullish(),
   /** The bot command the router runs for the person, with its arguments. */
   command: z.string().nullish(),
   args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
@@ -70,6 +72,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   note: { check: RoutingNoteSchema, reads: ["accept", "attach"], needs: [] },
   reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] },
   reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] },
+  repository: { check: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/name"), reads: ["accept"], needs: [] },
   command: { check: z.enum(AGENT_COMMANDS), reads: ["command"], needs: ["command"] }
 };
 /** Why a routing answer cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
@@ -115,6 +118,8 @@ export function parseJsonObject(text: string): unknown {
 }
 const problem = (error: unknown): string => error instanceof z.ZodError ? z.prettifyError(error) : error instanceof Error ? error.message : String(error);
 
+/** How many of the requester's repositories the router's card lists. */
+const LISTED_REPOS = 300;
 /** Character limits in the thread window of an assessment, as upstream's orchestrator_eval served it. */
 const TRIGGER_CHARS = 4000, NEAR_CHARS = 1200, WINDOW_CHARS = 400, STUB_CHARS = 50;
 const cut = (text: string, limit: number) => text.length <= limit ? { text } : { text: `${text.slice(0, limit)}…`, chars: text.length };
@@ -183,12 +188,16 @@ export class ModelAssessor {
     const link = linkOf(this.host.client.store, evaluation.actor);
     const capability = capabilityOf(settings, evaluation, link, { repository: this.requestedRepository(candidate) });
     const app = githubApp(settings);
+    const unnamed = link && repositoryFor(link, watchedRepository(settings));
     const github = !app ? undefined : !link ? "not linked" : link.broken ? `@${link.login}, but the link stopped working`
-      : { account: `@${link.login}`, repositories: link.repos.slice(0, 8), ...(link.repos.length > 8 ? { more_repositories: link.repos.length - 8 } : {}),
-        ...(link.defaultRepo ? { default: link.defaultRepo } : {}), install_the_app_on_more: installUrl(app) };
+      : { account: `@${link.login}`, repositories: link.repos.slice(0, LISTED_REPOS), ...(link.repos.length > LISTED_REPOS ? { more_repositories: link.repos.length - LISTED_REPOS } : {}),
+        ...(unnamed ? { when_none_is_named: unnamed } : {}), install_the_app_on_more: installUrl(app) };
+    const mayWrite = allowedWrite(settings, evaluation);
+    // Without a repository to work on yet, work can still write to GitHub on the one the router sets.
+    const thisRequest = capability?.credential ? `github, as @${capability.credential.login}`
+      : link && !link.broken && mayWrite === "github" ? `github, as @${link.login}, on the repository you set; local if you set none` : capability?.write;
     return { requester: {
-      role: roleOf(settings, evaluation.actor), direct_message: primary.meta.direct === true, may_write: allowedWrite(settings, evaluation),
-      this_request: capability?.credential ? `github, as @${capability.credential.login} on ${capability.repository}` : capability?.write,
+      role: roleOf(settings, evaluation.actor), direct_message: primary.meta.direct === true, may_write: mayWrite, this_request: thisRequest,
       ...(github ? { github } : {})
     } };
   }
@@ -225,7 +234,7 @@ export class ModelAssessor {
       switch (route.kind) {
         case "accept": {
           const { client } = this.host;
-          const repository = this.requestedRepository(candidate);
+          const repository = this.chosenRepository(candidate, route.repository);
           const decision = client.store.atomic(() => {
             const decided = engine.decide(triggerId, {
               kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
@@ -284,6 +293,11 @@ export class ModelAssessor {
     }
   }
 
+  /** The repository the router chose for accepted work, when it is one of the requester's, else the one their request names. */
+  private chosenRepository(candidate: Candidate, chosen?: string | null): string | undefined {
+    const link = chosen && linkOf(this.host.client.store, candidate.thread.evaluating?.actor ?? candidate.triggers.at(-1)!.actor);
+    return (link && link.repos.find((repo) => sameName(repo, chosen))) || this.requestedRepository(candidate);
+  }
   /** The repository of the requester's linked account that the candidate's request names, if it names one. */
   private requestedRepository(candidate: Candidate): string | undefined {
     const evaluation = candidate.thread.evaluating;

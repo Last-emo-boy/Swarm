@@ -42,7 +42,10 @@ handlers.
   tools, and relayed worker reports. Swarm makes the first two structured model calls (`ModelAssessor`) whose answers
   the host checks and carries out through the same Engine commands; an answer that breaks a limit is asked again once
   with the problem. Relays are rule-based: a worker's `ticket_report` carries `message`, the one short text the person
-  reads, which the Engine's reply rules post as the result, the question or the answer.
+  reads, which the Engine's reply rules post as the result, the question or the answer. At a milestone a progress
+  report may carry one too; the host sends at most one such update every five minutes, none in a ticket's first two.
+  When work fails or blocks without a question, the person hears that it stopped and why, in the worker's words or
+  the report's summary (`notices.ts`). None of these go to GitHub, whose timeline shows the work.
 - **Follow-up stops.** Upstream's main Session heard of each follow-up and could stop work on it. Swarm asks the model
   once per follow-up that reached a ticket whether the person asks to stop; local messages skip this, since the TUI
   and CLI have a stop command.

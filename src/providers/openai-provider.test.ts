@@ -45,6 +45,21 @@ test("OpenAI-compatible provider usage reads DeepSeek prompt cache counters", as
   }
 });
 
+test("asks DeepSeek again without thinking when its JSON answer came back only as reasoning", async () => {
+  const fixture = await createProviderFixture({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    [{ content: "", reasoning_content: "The answer is a completed status." }]);
+  try {
+    const provider = new OpenAIProvider({ workspace: fixture.workspace });
+    const text = await provider.generateText({ model: "deepseek/test-chat", system: "Return JSON.", user: "Go.", responseFormat: "json_object" });
+    assert.equal(text, "{\"status\":\"completed\"}");
+    assert.equal(fixture.requests.length, 2);
+    assert.equal((fixture.requests[0] as Record<string, unknown>).thinking, undefined);
+    assert.deepEqual((fixture.requests[1] as Record<string, unknown>).thinking, { type: "disabled" });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("prompt cache diagnostics ignore dynamic non-cacheable system text", async () => {
   const fixture = await createProviderFixture({
     prompt_tokens: 1200,
@@ -186,7 +201,10 @@ test("non-cacheable system blocks are moved behind the cacheable request prefix"
   }
 });
 
-async function createProviderFixture(usage: Record<string, number>): Promise<{
+/** A chat completion's message; the fake server answers with these in turn, then with a completed JSON object. */
+type FakeMessage = { content: string; reasoning_content?: string };
+
+async function createProviderFixture(usage: Record<string, number>, replies: FakeMessage[] = []): Promise<{
   workspace: string;
   requests: unknown[];
   close: () => Promise<void>;
@@ -196,7 +214,7 @@ async function createProviderFixture(usage: Record<string, number>): Promise<{
   const previousHome = process.env.SWARM_HOME;
   const previousDisableCache = process.env.SWARM_DISABLE_PROMPT_CACHING;
   const requests: unknown[] = [];
-  const server = await startChatCompletionServer(usage, requests);
+  const server = await startChatCompletionServer(usage, requests, replies);
   process.env.SWARM_HOME = home;
   delete process.env.SWARM_DISABLE_PROMPT_CACHING;
 
@@ -233,7 +251,7 @@ async function createProviderFixture(usage: Record<string, number>): Promise<{
   };
 }
 
-function startChatCompletionServer(usage: Record<string, number>, requests: unknown[]): Promise<{
+function startChatCompletionServer(usage: Record<string, number>, requests: unknown[], replies: FakeMessage[]): Promise<{
   baseURL: string;
   close: () => Promise<void>;
 }> {
@@ -261,7 +279,7 @@ function startChatCompletionServer(usage: Record<string, number>, requests: unkn
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: "{\"status\":\"completed\"}" },
+            message: { role: "assistant", ...(replies.shift() ?? { content: "{\"status\":\"completed\"}" }) },
             finish_reason: "stop"
           }
         ],

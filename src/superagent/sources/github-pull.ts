@@ -2,7 +2,7 @@
 import { z } from 'zod/v4'
 import { key, liveTicket, type Follow, type OutboundMessage, type ThreadFact, type Ticket } from '../core/index.js'
 import { githubAccount, type Deployment } from '../setup.js'
-import { sameName } from '../text.js'
+import { inChinese, sameName } from '../text.js'
 import type { SourceContext } from './host.js'
 import { githubPage, SOURCE, UserSchema } from './github-trigger.js'
 
@@ -103,7 +103,7 @@ export function pullEndNotices(ticket: Ticket, request: string, repository: stri
   if ((outcome !== 'merged' && outcome !== 'closed') || !follow) return []
   const number = pullNumber(follow.thread)!
   const url = githubPage(repository, number, true)
-  const chinese = /\p{Script=Han}/u.test(request) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(request)
+  const chinese = inChinese(request)
   const text = chinese
     ? outcome === 'merged' ? `[PR #${number}](${url}) 已合并。` : `[PR #${number}](${url}) 已关闭，未合并。`
     : outcome === 'merged' ? `[PR #${number}](${url}) has merged.` : `[PR #${number}](${url}) was closed without merging.`

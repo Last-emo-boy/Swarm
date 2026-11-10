@@ -286,3 +286,24 @@ test("has the requester of accepted work link GitHub when the router says they w
   await judge(plain.id);
   assert.equal(done.length, 1);
 });
+
+test("works on the requester's repository the router chose, however they called it, and only on one of theirs", async () => {
+  start(ACCESS);
+  const { KV } = await import("./kv.js");
+  client.store.set(KV.links.github("feishu", "ou_alice"), { login: "alice-gh", id: 7, repos: ["owner/watched", "alice-gh/2048-DQN"], reposAt: "", linkedAt: "",
+    access: { iv: "", data: "", tag: "" } });
+  const named = await fromAlice("你拉一下2048 DQN这个repo试试", "om_1");
+  answers.push(accept({ repository: "Alice-GH/2048-dqn" }));
+  await judge(named.id);
+  const card = JSON.parse(calls[0]!.user).candidate.requester;
+  assert.deepEqual(card.github.repositories, ["owner/watched", "alice-gh/2048-DQN"]);
+  assert.equal(card.github.when_none_is_named, "owner/watched");
+  assert.equal(card.this_request, "github, as @alice-gh");
+  const ticketOf = (triggerId: string) => client.store.tickets.get(client.store.decisions.get(client.store.triggers.disposition(triggerId)!.decisionId!)!.ticketId!)!;
+  assert.equal(ticketOf(named.id).mandate.capability?.repository, "alice-gh/2048-DQN");
+  // A repository that is not one of theirs does not count.
+  const other = await fromAlice("fix the README in someone/else", "om_2");
+  answers.push(accept({ title: "Fix the README", worktree_name: "fix-readme", repository: "someone/else" }));
+  await judge(other.id);
+  assert.equal(ticketOf(other.id).mandate.capability?.repository, "owner/watched");
+});
