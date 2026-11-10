@@ -8945,7 +8945,7 @@ const provider = {
   workerModel: "eval-model",
   async generateText(request) {
     modelCalls += 1;
-    prompts.push(String(request.user ?? ""));
+    prompts.push(typeof request.user === "string" ? request.user : JSON.stringify(request.user ?? ""));
     if (modelCalls === 1) {
       return JSON.stringify({
         status: "continue",
