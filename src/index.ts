@@ -3337,7 +3337,7 @@ Usage:
   ${binary} [--debug] [--debug-trace]
   ${binary} --version
   ${binary} update [--check]
-  ${binary} usage [--since 24h|7d|30d|<date>] [--by model|provider|harness|device|ticket|day|source] [--all-devices] [--json]
+  ${binary} usage [--since 24h|7d|30d|<date>] [--by model|provider|harness|device|ticket|day|source|purpose] [--all-devices] [--json]
   ${binary} --yolo
   ${binary} yolo
   ${binary} chat [--debug]

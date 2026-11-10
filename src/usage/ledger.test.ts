@@ -107,4 +107,8 @@ test("harness turns, the host's own calls and ticket workers' calls are told apa
 
   const totals = groupLedger(priceLedger([harness, route, worker], DEFAULT_PRICES), "source");
   assert.deepEqual(totals.map((total) => [total.key, total.calls]), [["harness", 1], ["assessor", 1], ["ticket", 1]]);
+  // The host's calls are told apart by what they were for: routing, chatter, memory.
+  const chatter = ledgerEntry(event({ ...report({ purpose: "superagent_chatter", inputTokens: 300, outputTokens: 20 }) }), "mac")!;
+  assert.deepEqual(groupLedger(priceLedger([route, chatter, chatter], DEFAULT_PRICES), "purpose").map((total) => [total.key, total.calls]),
+    [["superagent_route", 1], ["superagent_chatter", 2]]);
 });
