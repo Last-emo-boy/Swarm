@@ -136,7 +136,7 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
-| `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own |
+| `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own, whatever `/listen` says |
 
 People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo`, `/takeover` and `/devices` for someone whose
 message asks for what one does, as if they had typed it. The others change settings or remove a link, so only people type
@@ -211,15 +211,23 @@ bots and the agent's own words, which the outbox records from everything it post
 the `people` tool and `chat/<chat-id>`: the latest messages of a group the agent is in, or of its ticket's own chat, but
 never someone else's direct messages. None of these ask Feishu at the time, so naming someone never waits on it.
 
-In a group an owner listed with `/listen all`, `/chatter on` lets the agent join the conversation on its own, reading the
-room (読空気): once the chat has been quiet for `lullSeconds`, one model call reads its latest messages, with what the
-agent said there, and decides whether a member would say something now. Saying nothing is the usual answer. It posts as
-a plain message in the chat, or a reply that quotes the one message it answers, at most `perHour` times an hour, never in
-`quiet` hours, and considers a chat at most every `considerMinutes`. `/chatter off`, or listening to mentions only, ends it.
+Anyone may have the agent message someone else: "帮我私聊小王说…" or "去群里@一下大家". The router's `message` kind
+sends a direct message to a person, by id or by the name the requester used, or posts into a group it is in, and can tell
+the requester it did. A name that fits several people is asked about. A worker's `message` tool does the same for its
+ticket, at most ten times an hour. Chat answers, messages and the agent's own remarks can @ people for real: the text names
+them as `@name`, and the Feishu sender turns each into a mention (`all` for everyone, only when asked).
+
+`/chatter on` in a group lets the agent join the conversation there on its own, reading the room (読空気). With
+`everywhere`, it does so in every group it is in, except those an owner turned off with `/chatter off`. Once a chat has
+been quiet for `lullSeconds`, one model call reads its latest messages, with what the agent said there, and decides
+whether a member would say something now. Saying nothing is the usual answer. It posts as a plain message in the chat, or
+a reply that quotes the one message it answers and may @ its writer. It speaks on its own at most `perHour` times an hour
+(answers it was asked for do not count), never in `quiet` hours, and considers a chat at most every `considerMinutes`.
+It reads the chat from the messages it keeps, so this works whatever `/listen` says there.
 
 ```json
-{ "chatter": { "chats": ["oc_..."], "persona": "Who the agent is in conversation", "perHour": 2,
-  "lullSeconds": 90, "considerMinutes": 10, "quiet": { "from": 23, "to": 8, "timeZone": "Asia/Shanghai" } } }
+{ "chatter": { "everywhere": true, "off": ["oc_..."], "chats": ["oc_..."], "persona": "Who the agent is in conversation",
+  "perHour": 2, "lullSeconds": 90, "considerMinutes": 10, "quiet": { "from": 23, "to": 8, "timeZone": "Asia/Shanghai" } } }
 ```
 
 The persona also shapes its answers to messages addressed to it. Reading every message of a group needs the Feishu app's

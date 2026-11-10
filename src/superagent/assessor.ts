@@ -17,7 +17,7 @@ import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
   seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
-import { chatName, conversation, peopleIn, senderOf } from "./people.js";
+import { addressee, channelTo, chatName, chatsOf, conversation, mentionsFor, peopleIn, senderOf } from "./people.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
 import { IM_WORDS, NOTE_WORDS, checkedImText, sameName, wordCount } from "./text.js";
@@ -54,7 +54,7 @@ const AcknowledgementSchema = z.string().trim().min(1)
 const RoutingNoteSchema = z.string().trim()
   .refine((text) => wordCount(text) <= NOTE_WORDS, `A routing note has at most ${NOTE_WORDS} words.`);
 const RouteSchema = z.object({
-  kind: z.enum(["accept", "attach", "ignore", "stop", "chat", "command"]),
+  kind: z.enum(["accept", "attach", "ignore", "stop", "chat", "command", "message"]),
   title: z.string().nullish(),
   worktree_name: z.string().nullish(),
   acknowledgement: z.string().nullish(),
@@ -65,6 +65,11 @@ const RouteSchema = z.object({
   reply: z.string().nullish(),
   /** Where a chat's answer or accepted work's messages go, for a Feishu message outside a topic: a plain message, a quote or a topic. */
   reply_as: z.string().nullish(),
+  /** A message's addressee, a person or a chat the agent is in, and what it says to them. */
+  to: z.string().nullish(),
+  text: z.string().nullish(),
+  /** The people a chat answer or a message @s, by id, or all for everyone in the chat. */
+  mentions: z.array(z.string().trim().min(1).max(64)).max(10).nullish(),
   /** What accepted work needs of the machine its worker runs on, such as gpu: it places the worker on a paired node fit for it. */
   needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish(),
   /** Accepted work whose requester wants a pull request but has not linked GitHub: they get the code to link, and the ticket a take-over once they did. */
@@ -78,7 +83,7 @@ const RouteSchema = z.object({
   args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
 });
 type Route = z.infer<typeof RouteSchema>;
-type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args">;
+type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args" | "mentions">;
 /** Each field's check, the kinds that read it and those that need it, as upstream's orchestrator_route checked them. */
 const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][]; needs: readonly Route["kind"][] }> = {
   ticket_id: { check: z.string(), reads: ["attach", "stop"], needs: ["attach", "stop"] },
@@ -87,7 +92,9 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   acknowledgement: { check: AcknowledgementSchema, reads: ["accept"], needs: ["accept"] },
   note: { check: RoutingNoteSchema, reads: ["accept", "attach"], needs: [] },
   reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] },
-  reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] },
+  reply: { check: AcknowledgementSchema, reads: ["chat", "message"], needs: ["chat"] },
+  to: { check: z.string().max(200), reads: ["message"], needs: ["message"] },
+  text: { check: AcknowledgementSchema, reads: ["message"], needs: ["message"] },
   reply_as: { check: z.enum(REPLY_STYLES), reads: ["chat", "accept"], needs: [] },
   repository: { check: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/name"), reads: ["accept"], needs: [] },
   harness: { check: z.string().max(64), reads: ["accept"], needs: [] },
@@ -237,9 +244,11 @@ export class ModelAssessor {
     const lines = conversation(store, primary, { since: new Date(Date.now() - CONVERSATION_MS).toISOString(), limit: CONVERSATION_LINES,
       chars: LINE_CHARS, exclude: new Set(candidate.triggers.map((trigger) => trigger.id)), self: this.host.client.resolvedDeployment()?.feishu?.name ?? "" });
     const here = primary.meta.direct === true ? [] : peopleIn(store, chatId, PEOPLE_HERE);
+    const groups = chatsOf(store).filter((item) => !item.direct).map(({ chat_id, name }) => ({ chat_id, name }));
     return {
       ...(sender !== primary.actor.id ? { from_name: sender } : {}), ...(chat ? { chat_name: chat } : {}),
-      ...(mentioned.length ? { mentioned } : {}), ...(lines.length ? { conversation: lines } : {}), ...(here.length ? { people_here: here } : {})
+      ...(mentioned.length ? { mentioned } : {}), ...(lines.length ? { conversation: lines } : {}), ...(here.length ? { people_here: here } : {}),
+      ...(groups.length ? { your_chats: groups } : {})
     };
   }
   /**
@@ -397,11 +406,35 @@ export class ModelAssessor {
           const trigger = client.store.triggers.get(triggerId);
           if (!trigger?.channel) return "chat needs a message with a conversation to answer in; ignore it instead";
           const text = checkedImText(route.reply!);
+          const mentions = mentionsFor(client.store, route.mentions ?? []);
+          if ("problem" in mentions) return mentions.problem;
           // In a Feishu chat it answers as a member does, quoting the message unless the router chose otherwise; in a topic, there.
           const channel = replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote")!;
           client.store.atomic(() => {
             engine.decide(triggerId, { kind: "ignore", reason: { code: "chatted" }, evalId: candidate.evalId });
-            client.outbox.send({ id: key("chat", triggerId), channel, text, kind: "reply" });
+            client.outbox.send({ id: key("chat", triggerId), channel, text, kind: "reply", ...(mentions.length ? { mentions } : {}) });
+          });
+          return undefined;
+        }
+        case "message": {
+          // Anyone may have the agent message someone, in their direct messages or in a chat it is in.
+          const { client } = this.host;
+          const trigger = client.store.triggers.get(triggerId);
+          if (!client.settings().sources.feishu?.enabled) return "Messages go out only on Feishu, which is off here; answer with chat instead";
+          const target = addressee(client.store, route.to!);
+          if ("problem" in target) return target.problem;
+          const mentions = mentionsFor(client.store, route.mentions ?? []);
+          if ("problem" in mentions) return mentions.problem;
+          const text = checkedImText(route.text!);
+          const reply = route.reply ? checkedImText(route.reply) : undefined;
+          const channel = channelTo(target);
+          const name = "person" in target ? target.person.name : target.chat.name;
+          client.store.atomic(() => {
+            engine.decide(triggerId, { kind: "ignore", reason: { code: "messaged", values: { to: name } }, evalId: candidate.evalId });
+            client.outbox.send({ id: key("message", triggerId), channel, text, kind: "notice", ...(mentions.length ? { mentions } : {}) });
+            if (reply && trigger?.channel) {
+              client.outbox.send({ id: key("chat", triggerId), channel: replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote")!, text: reply, kind: "reply" });
+            }
           });
           return undefined;
         }

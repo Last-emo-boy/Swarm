@@ -14,7 +14,7 @@ import { textPage, ticketCard } from "./cards.js";
 import { watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
-import { chatLog, chatName, chatsOf, findPeople, peopleIn } from "./people.js";
+import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
@@ -78,6 +78,8 @@ const readable = (client: SuperagentClient, ticket: Ticket, trigger: Trigger): b
 
 /** How far back, and how many messages, a worker's chat/<chat-id> read goes. */
 const CHAT_DAYS = 7, CHAT_MESSAGES = 50;
+/** How many messages to people a ticket's worker may send in an hour. */
+const MESSAGES_PER_HOUR = 10;
 
 /** The ticket tools as a worker's model sees them; `ticketTools` runs them on the ticket's store. */
 const TOOLS = {
@@ -94,6 +96,15 @@ const TOOLS = {
     description: "Who is who on Feishu, from the bot's records: with no arguments, the chats the bot is in; with chat, that chat's people and bots; with name, the people whose name contains it and the chats they are in.",
     input: { chat: z.string().trim().min(1).optional().describe("A chat id from the chat list, such as oc_..."), name: z.string().trim().min(1).max(100).optional() },
     readOnly: true
+  },
+  message: {
+    description: "Send a message on Feishu to someone other than this ticket's requester, as a direct message, or into a chat the bot is in: to tell or ask them something for this ticket. The requester's own updates and answers go with report.",
+    input: {
+      to: z.string().trim().min(1).max(200).describe("A person's id or name, or a chat's id or name, as the people tool lists them."),
+      text: AcknowledgementSchema.describe(`At most ${IM_WORDS} words, in the language its reader uses; say who it is for when it is on someone's behalf.`),
+      mentions: z.array(z.string().trim().min(1).max(64)).max(10).optional().describe("Ids of people to @, each written as @name in the text; all for everyone in the chat, only when asked.")
+    },
+    readOnly: false
   },
   ack: {
     description: "Acknowledge one original human request before substantial work, as the Replies section says; it posts as a reply to that message.",
@@ -224,6 +235,23 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };
       if (typeof args.chat === "string") return { chat: args.chat, name: chatName(client.store, args.chat) ?? null, people: peopleIn(client.store, args.chat, 500) };
       return { chats: chatsOf(client.store) };
+    },
+    message: async (args) => {
+      if (!client.settings().sources.feishu?.enabled) throw new Error("Messages go out only on Feishu, which is off here");
+      const target = addressee(client.store, String(args.to));
+      if ("problem" in target) throw new Error(target.problem);
+      const mentions = mentionsFor(client.store, Array.isArray(args.mentions) ? args.mentions.map(String) : []);
+      if ("problem" in mentions) throw new Error(mentions.problem);
+      const text = checkedImText(String(args.text));
+      const now = Date.now();
+      const sent = (client.store.get(KV.people.sent(ticketId)) ?? []).filter((at) => now - Date.parse(at) < 3_600_000);
+      if (sent.length >= MESSAGES_PER_HOUR) throw new Error(`This ticket sent ${MESSAGES_PER_HOUR} messages in the last hour: wait, or report what is left`);
+      const channel = channelTo(target);
+      client.store.atomic(() => {
+        client.outbox.send({ id: key("message", ticketId, JSON.stringify(channel.address), text), channel, text, kind: "notice", ticketId, ...(mentions.length ? { mentions } : {}) });
+        client.store.set(KV.people.sent(ticketId), [...sent, new Date(now).toISOString()]);
+      });
+      return { sent: true, to: "person" in target ? target.person.name : target.chat.name };
     },
     ack: async (args) => {
       const reply = client.engine.reply({ purpose: "acknowledgement", ticketId, triggerId: String(args.trigger_id), text: String(args.text) });

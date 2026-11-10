@@ -347,8 +347,6 @@ export class BotCommands {
       const kept = chats.find((chat) => chat.chatId === chatId);
       const others = chats.filter((chat) => chat.chatId !== chatId);
       source.config = { ...source.config, chats: mode === "off" ? others : [...others, { ...kept, chatId, listen: mode }] };
-      // The agent joins a conversation on its own only where it reads all of it.
-      if (mode !== "all" && next.chatter) next.chatter = { ...next.chatter, chats: next.chatter.chats.filter((chat) => chat !== chatId) };
       return next;
     }, settingsPath(this.client.stateDir));
     return mode === "off" ? say("This chat is off the list now; an owner can list it again in the settings file.", "这个群已移出列表；owner 可以在设置文件里重新列入。")
@@ -374,13 +372,14 @@ export class BotCommands {
   }
 
   /**
-   * `/chatter on|off`, in a group an owner listed with /listen all: whether the agent joins the conversation there on its
-   * own; without an argument, whether it does.
+   * `/chatter on|off`, in a group, for an owner: whether the agent joins the conversation there on its own; without an
+   * argument, for anyone, whether it does.
    */
   private chatter(command: Command, trigger: Trigger, settings: Settings): string {
     const say = this.say(trigger);
     const chatId = String(trigger.meta.chatId ?? "");
-    const on = chatterOf(settings).chats.includes(chatId);
+    const current = chatterOf(settings);
+    const on = current.everywhere ? !current.off.includes(chatId) : current.chats.includes(chatId);
     if (trigger.meta.direct === true) return say("/chatter works in a group chat.", "/chatter 要在群里用。");
     const mode = command.args[0];
     const perHour = chatterOf(settings).perHour;
@@ -388,13 +387,12 @@ export class BotCommands {
       : say("I speak here only when someone mentions me.", "只有有人 @ 我时，我才在这里说话。");
     this.owner(trigger, settings);
     if (mode !== "on" && mode !== "off") return say("Usage: /chatter on|off", "用法：/chatter on|off");
-    const listed = z.array(z.looseObject({ chatId: z.string(), listen: z.string().optional() })).catch([]).parse(settings.sources[FEISHU]?.config.chats);
-    if (mode === "on" && listed.find((chat) => chat.chatId === chatId)?.listen !== "all") {
-      return say("First send /listen all here: I need to read the whole conversation.", "先在这里发 /listen all：我需要读到整段对话。");
-    }
+    // It reads the chat from the messages it keeps, whatever /listen says; `off` holds where every group is on but this one.
     updateSettings((next) => {
-      const current = chatterOf(next);
-      next.chatter = { ...current, chats: mode === "on" ? [...new Set([...current.chats, chatId])] : current.chats.filter((chat) => chat !== chatId) };
+      const chatter = chatterOf(next);
+      const without = (list: string[]) => list.filter((chat) => chat !== chatId);
+      next.chatter = mode === "on" ? { ...chatter, chats: [...new Set([...chatter.chats, chatId])], off: without(chatter.off) }
+        : { ...chatter, chats: without(chatter.chats), off: [...new Set([...chatter.off, chatId])] };
       return next;
     }, settingsPath(this.client.stateDir));
     return mode === "on" ? say("I'll join the conversation here now and then.", "我会时不时加入这里的对话。")

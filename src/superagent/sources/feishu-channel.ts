@@ -22,6 +22,23 @@ const gone = (error: unknown): boolean => error instanceof CliError && error.cod
  * a message such as "@小王 好的" is sent as written, never read from a file.
  */
 export const cliText = (text: string): string => text.startsWith('@') ? `@${text}` : text
+/** Ids a Feishu mention may name: a person's or bot's open_id, or everyone in the chat. */
+const MENTIONABLE = /^(ou_[A-Za-z0-9_-]+|all)$/
+/**
+ * The text with real Feishu mentions: the first `@name` of each person it @s becomes Feishu's at tag, and one the text does not
+ * name is put in front. Ids that name no one Feishu can mention are left out; names lose what would break the tag.
+ */
+export function withMentions(text: string, mentions: readonly { id: string; name: string }[] = []): string {
+  let result = text
+  const front: string[] = []
+  for (const { id, name } of mentions) {
+    if (!MENTIONABLE.test(id)) continue
+    const tag = `<at user_id="${id}">${name.replace(/[<>"&]/g, '').trim() || id}</at>`
+    if (name && result.includes(`@${name}`)) result = result.replace(`@${name}`, tag)
+    else front.push(tag)
+  }
+  return [...front, result].join(' ')
+}
 /**
  * Replies in the topic of the target message, or with mode `chat` into the chat itself, as a member writes there: a reply that
  * quotes the target message, or a plain message without one. Then it posts the attachment as a file the same way; Feishu
@@ -36,7 +53,7 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
   if (inChat && !messageId && !chatId) throw new Error('Missing Feishu chat')
   if (!inChat && !messageId) throw new Error('Missing Feishu reply target')
   const target = messageId ? ['im', '+messages-reply', '--message-id', messageId] : ['im', '+messages-send', '--chat-id', chatId!]
-  const text = checkedImText(message.text)
+  const text = withMentions(checkedImText(message.text), message.mentions)
   const post = (content: string[], key: string, cwd?: string) => host.commands.lark([...target, ...content,
     ...inChat ? [] : ['--reply-in-thread'], '--idempotency-key', key], cwd)
   try {
@@ -63,7 +80,7 @@ const NO_AVAILABILITY = 230013
 async function sendToUser(host: Pick<SourceContext, 'commands'>, message: OutboundMessage, userId?: string): Promise<'sent' | 'gone'> {
   if (!userId) throw new Error('Missing Feishu user')
   try {
-    await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', cliText(checkedImText(message.text)), '--idempotency-key', message.id])
+    await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', cliText(withMentions(checkedImText(message.text), message.mentions)), '--idempotency-key', message.id])
   } catch (error) {
     if (gone(error) || (error instanceof CliError && error.code === NO_AVAILABILITY)) return 'gone'
     throw error

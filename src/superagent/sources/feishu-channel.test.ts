@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { expect } from '../testing/expect.js'
 import { CliError, type Commands } from '../commands.js'
-import { sendFeishu } from './feishu-channel.js'
+import { sendFeishu, withMentions } from './feishu-channel.js'
 import { feishuUserChannel } from './feishu-trigger.js'
 import { sendGithub } from './github-channel.js'
 import type { OutboundMessage } from '../core/index.js'
@@ -57,6 +57,23 @@ describe('attachments', () => {
     await sendFeishu({ commands }, at({ chatId: 'oc_1', mode: 'chat' }))
     await sendFeishu({ commands }, { ...at({}), channel: feishuUserChannel('ou_alice') })
     expect(calls.map((args) => args[args.indexOf(args.includes('--text') ? '--text' : '--markdown') + 1])).toEqual(['@@小王 你好', '@@小王 你好', '@@小王 你好'])
+  })
+  it('turns the people a message @s into real Feishu mentions in every send, after its words were counted', async () => {
+    const calls: string[][] = []
+    const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands
+    const mentions = [{ id: 'ou_bob', name: 'Bob' }, { id: 'ou_carol', name: 'Carol' }]
+    const send = (channel: OutboundMessage['channel'], text = '@Bob ' + 'word '.repeat(98)) =>
+      sendFeishu({ commands }, { id: 'm1', kind: 'reply', text, channel, mentions })
+    await send({ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } })
+    await send({ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', mode: 'chat' } }, '@Bob 好的')
+    await send(feishuUserChannel('ou_bob'), 'see you at eight')
+    const texts = calls.map((args) => args[args.indexOf(args.includes('--text') ? '--text' : '--markdown') + 1]!)
+    expect(texts[0]).toMatch(/^<at user_id="ou_carol">Carol<\/at> <at user_id="ou_bob">Bob<\/at> word/)
+    expect(texts[1]).toBe('<at user_id="ou_carol">Carol</at> <at user_id="ou_bob">Bob</at> 好的')
+    expect(texts[2]).toBe('<at user_id="ou_bob">Bob</at> <at user_id="ou_carol">Carol</at> see you at eight')
+    // Only ids Feishu can mention, and names that cannot break the tag.
+    expect(withMentions('hi @all', [{ id: 'all', name: 'all' }, { id: 'x"><b', name: 'x' }, { id: 'ou_d', name: 'D<"' }]))
+      .toBe('<at user_id="ou_d">D</at> hi <at user_id="all">all</at>')
   })
   it('sends a direct message to a person by open_id, and drops one Feishu refuses for good, such as outside the app\'s availability', async () => {
     const calls: string[][] = []

@@ -146,8 +146,12 @@ export type Access = z.infer<typeof AccessSchema>;
  * there, and how often it may speak. A message that addresses it and asks for no work gets an answer anywhere.
  */
 export const ChatterSchema = z.object({
-  /** Feishu chats (oc_...) where it joins in on its own; owners set them with /chatter, and each must be listened to in full. */
+  /** Feishu chats (oc_...) where it joins in on its own; owners set them with /chatter. */
   chats: z.array(z.string().regex(/^oc_[A-Za-z0-9]+$/)).default([]),
+  /** Whether it joins in on its own in every group it is in, but those in `off`, instead of only those in `chats`. */
+  everywhere: z.boolean().default(false),
+  /** With `everywhere`, the groups an owner turned it off in with /chatter off. */
+  off: z.array(z.string().regex(/^oc_[A-Za-z0-9]+$/)).default([]),
   /** Who the agent is: its voice, manner and interests, in conversation and in every message its routing and workers write to people. */
   persona: z.string().trim().max(2000).default(""),
   model: ModelRefSchema,
