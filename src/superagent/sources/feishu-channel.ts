@@ -1,4 +1,4 @@
-/** Feishu outbound channel: posts threaded bot replies and constructs chat deep links (from dsh-superagent's sources/feishu-channel.ts). */
+/** Feishu outbound channel: posts bot replies in topics or the chat itself, and constructs chat deep links (from dsh-superagent's sources/feishu-channel.ts). */
 import { existsSync } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import type { OutboundMessage } from '../core/index.js'
@@ -18,41 +18,30 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
 const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
   || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
 /**
- * Replies in the topic of the target message, then with its attachment as a file; Feishu keeps at most one reply per
- * idempotency key (the outgoing message's `message.id`, and that with `-file` for its file). An attachment Feishu refuses for
- * good, such as without the permission to upload files, is replaced by a line that says it could not be attached, and why.
+ * Replies in the topic of the target message, or with mode `chat` into the chat itself, as a member writes there: a reply that
+ * quotes the target message, or a plain message without one. Then it posts the attachment as a file the same way; Feishu
+ * keeps at most one message per idempotency key (the outgoing message's `message.id`, and that with `-file` for its file).
+ * An attachment Feishu refuses for good, such as without the permission to upload files, is replaced by a line that says it
+ * could not be attached, and why.
  */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { messageId, chatId, mode, userId } = message.channel.address
-  if (mode === 'chat') return sendToChat(host, message, chatId, messageId)
   if (mode === 'user') return sendToUser(host, message, userId)
-  if (!messageId) throw new Error('Missing Feishu reply target')
+  const inChat = mode === 'chat'
+  if (inChat && !messageId && !chatId) throw new Error('Missing Feishu chat')
+  if (!inChat && !messageId) throw new Error('Missing Feishu reply target')
+  const target = messageId ? ['im', '+messages-reply', '--message-id', messageId] : ['im', '+messages-send', '--chat-id', chatId!]
   const text = checkedImText(message.text)
-  const reply = (content: string[], key: string, cwd?: string) => host.commands.lark(['im', '+messages-reply', '--message-id', messageId, ...content,
-    '--reply-in-thread', '--idempotency-key', key], cwd)
+  const post = (content: string[], key: string, cwd?: string) => host.commands.lark([...target, ...content,
+    ...inChat ? [] : ['--reply-in-thread'], '--idempotency-key', key], cwd)
   try {
-    if (text.trim()) await reply(['--markdown', text], message.id)
+    if (text.trim()) await post(['--markdown', text], message.id)
     if (message.attachment && existsSync(message.attachment)) {
-      await reply(['--file', basename(message.attachment)], `${message.id}-file`, dirname(message.attachment)).catch(async (error: unknown) => {
+      await post(['--file', basename(message.attachment)], `${message.id}-file`, dirname(message.attachment)).catch(async (error: unknown) => {
         if (!(error instanceof CliError) || error.code === undefined || gone(error)) throw error
-        await reply(['--markdown', `(${basename(message.attachment!)} could not be attached: ${error.message.slice(0, 200)})`], `${message.id}-nofile`)
+        await post(['--markdown', `(${basename(message.attachment!)} could not be attached: ${error.message.slice(0, 200)})`], `${message.id}-nofile`)
       })
     }
-  } catch (error) {
-    if (gone(error)) return 'gone'
-    throw error
-  }
-  return 'sent'
-}
-/**
- * Posts into the chat itself, as a member writes there, rather than in a message's topic: a plain message, or a reply that
- * quotes `messageId`. The agent's own words in a group chat (chatter.ts) go out this way.
- */
-async function sendToChat(host: Pick<SourceContext, 'commands'>, message: OutboundMessage, chatId?: string, messageId?: string): Promise<'sent' | 'gone'> {
-  if (!chatId) throw new Error('Missing Feishu chat')
-  const text = ['--text', checkedImText(message.text), '--idempotency-key', message.id]
-  try {
-    await host.commands.lark(messageId ? ['im', '+messages-reply', '--message-id', messageId, ...text] : ['im', '+messages-send', '--chat-id', chatId, ...text])
   } catch (error) {
     if (gone(error)) return 'gone'
     throw error

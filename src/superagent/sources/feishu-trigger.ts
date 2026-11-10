@@ -4,9 +4,24 @@ import { key, type ChannelRef, type Trigger } from '../core/index.js'
 import type { FeishuMessage, FeishuRef } from './feishu-read.js'
 
 export const SOURCE = 'feishu'
-/** Constructs a Feishu reply channel address; records `direct` explicitly because both group and direct chat IDs start with `oc_`. */
-export const feishuChannel = (chatId: string, messageId: string, direct = false): ChannelRef =>
-  ({ source: SOURCE, thread: `feishu:${chatId}`, address: { chatId, messageId, ...direct ? { direct: 'true' } : {} } })
+/**
+ * Constructs a Feishu reply channel address; records `direct` explicitly because both group and direct chat IDs start with `oc_`.
+ * A reply goes in the message's topic, or with `inChat` into the chat itself, quoting the message (feishu-channel.ts).
+ */
+export const feishuChannel = (chatId: string, messageId: string, direct = false, inChat = false): ChannelRef =>
+  ({ source: SOURCE, thread: `feishu:${chatId}`, address: { chatId, messageId, ...direct ? { direct: 'true' } : {}, ...inChat ? { mode: 'chat' } : {} } })
+/** Where an answer to a Feishu message outside a topic goes: in a topic on it, quoting it in the chat, or as a plain message in the chat. */
+export const REPLY_STYLES = ['thread', 'quote', 'message'] as const
+export type ReplyStyle = typeof REPLY_STYLES[number]
+/** The channel that answers `trigger` in `style`: a Feishu message in a topic is answered in its topic, and other sources as they are. */
+export function replyChannel(trigger: Pick<Trigger, 'source' | 'channel' | 'meta'>, style: ReplyStyle): ChannelRef | undefined {
+  const { channel } = trigger
+  if (!channel || trigger.source !== SOURCE || trigger.meta.threadId) return channel
+  const { mode: _mode, messageId: _message, ...address } = channel.address
+  if (style === 'message') return { ...channel, address: { ...address, mode: 'chat' } }
+  const { messageId } = channel.address
+  return { ...channel, address: { ...address, ...messageId ? { messageId } : {}, ...style === 'quote' ? { mode: 'chat' } : {} } }
+}
 /** A channel to a person's direct messages by their open_id, which needs no chat with them yet (see feishu-channel.ts). */
 export const feishuUserChannel = (userId: string): ChannelRef =>
   ({ source: SOURCE, thread: `feishu:user:${userId}`, address: { userId, mode: 'user', direct: 'true' } })
@@ -42,11 +57,13 @@ export function feishuTrigger(input: unknown, botId: string, botAppId: string): 
   const direct = event.chat_type === 'p2p'
   const mentioned = event.mentions.some(mention => mention.id === botId || mention.id === botAppId)
   const thread = feishuThreadId(event.chat_id, event.root_id, event.message_id)
+  // A reply written in the chat itself, rather than in a topic, is answered there too, quoting it.
+  const inChat = !!event.root_id && !event.thread_id
   return { id: feishuTriggerId(event.message_id), source: SOURCE, threads: [{ source: SOURCE, id: thread }],
     actor: { source: SOURCE, id: event.sender_id }, human: event.sender_type === 'user',
     ...(direct ? { addressed: 'direct' as const } : mentioned ? { addressed: 'mention' as const } : {}),
     at: feishuTime(event.create_time), text: withMentionNames(event.content, event.mentions),
-    channel: feishuChannel(event.chat_id, event.message_id, direct), ...(event.message_app_link ? { url: event.message_app_link } : {}),
+    channel: feishuChannel(event.chat_id, event.message_id, direct, inChat), ...(event.message_app_link ? { url: event.message_app_link } : {}),
     meta: { chatId: event.chat_id, messageId: event.message_id, direct, mentioned, ...mentionsMeta(event.mentions), ...(event.root_id ? { rootId: event.root_id } : {}),
       ...(event.parent_id ? { parentId: event.parent_id } : {}), ...(event.thread_id ? { threadId: event.thread_id } : {}) } }
 }
@@ -86,12 +103,13 @@ export function historyEvent(message: HistoricalMessage, chatId: string, direct:
     message_app_link: message.message_app_link }
 }
 /**
- * Adapts a topic-page message into the live-event schema, falling back to `root` when Feishu omits `root_id` on replies;
- * an app's message carries its bot's `open_bot_id`, and a deleted message may have no content.
+ * Adapts a topic-page message into the live-event schema, falling back to `root` when Feishu omits `root_id` on replies and to
+ * the page's `topic` when it omits `thread_id`; an app's message carries its bot's `open_bot_id`, and a deleted message may
+ * have no content.
  */
-export function topicEvent(message: FeishuMessage, chatId: string, direct: boolean, root: string): unknown {
+export function topicEvent(message: FeishuMessage, chatId: string, direct: boolean, root: string, topic?: string): unknown {
   return { message_id: message.message_id, chat_id: chatId, chat_type: direct ? 'p2p' : 'group', create_time: message.create_time,
     sender_id: message.sender.open_bot_id ?? message.sender.id, sender_type: message.sender.sender_type === 'user' ? 'user' : 'bot',
-    content: message.content ?? '', mentions: message.mentions ?? [], parent_id: message.parent_id, thread_id: message.thread_id,
+    content: message.content ?? '', mentions: message.mentions ?? [], parent_id: message.parent_id, thread_id: message.thread_id ?? topic,
     root_id: message.root_id ?? (message.message_id === root ? undefined : root), message_app_link: message.message_app_link }
 }

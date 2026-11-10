@@ -121,7 +121,8 @@ export const ROUTE_CONTRACT = [
   '{"kind": "accept" | "attach" | "stop" | "ignore" | "chat" | "command",',
   ' "title": "accept: a label of at most 200 characters for the original request, without added requirements",',
   ' "worktree_name": "accept: 1-4 lowercase English words in kebab-case, at most 32 characters, such as fix-plan-color",',
-  ' "acknowledgement": "accept: one sentence of at most 100 words in the source language naming the concrete change and intended result; it is posted as a reply to the request",',
+  ' "acknowledgement": "accept: one sentence of at most 100 words in the source language naming the concrete change and intended result; it is posted as a reply to the request, where reply_as says",',
+  ' "reply_as": "chat and accept, for a Feishu message outside a topic: message, quote or thread, as the Where to reply section says; omit it otherwise",',
   ' "note": "accept or attach: optional routing background or an explicit human constraint, at most 30 words",',
   ' "needs": "accept: optional list of what the work needs of the machine its worker runs on, from gpu (an NVIDIA GPU), macos, linux, windows; omit it when any machine will do",',
   ' "harness": "accept: optional id from the card\'s harnesses choices, only when the person asks for the work to run on that agent harness, as the Harness section says; omit it otherwise",',
@@ -131,7 +132,7 @@ export const ROUTE_CONTRACT = [
   ' "args": "command: optional list of its arguments, such as [\"owner/name\"] for repo or [\"<ticket id>\"] for takeover",',
   ' "ticket_id": "attach and stop: the ticket",',
   ' "reason": "ignore and stop: why, at most 500 characters",',
-  ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted as a reply"}'
+  ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted where reply_as says"}'
 ].join("\n");
 /** What the card's requester means for routing, and the commands the router runs for a person. */
 const REQUESTER_LINES = [
@@ -152,8 +153,17 @@ const HARNESS_LINES = [
 /** When the router answers a message itself instead of routing it. */
 const CHAT_LINES = [
   "Use chat for a message that asks for no work: a greeting, thanks, small talk, or a question you can answer from the card alone, without reading the project, running anything or changing anything.",
-  "Answer it in reply, briefly and naturally, in the person's language, as a member of the conversation rather than a help desk; it starts no ticket.",
+  "Answer it briefly and naturally, in the person's language, as a member of the conversation rather than a help desk; it starts no ticket.",
   "Anything that needs the project read, a command run or a change made is work: accept it, or attach it to the ticket it belongs to."
+].join("\n");
+
+/** Where the router's words go in a Feishu chat, for a message that is not in a topic. */
+const REPLY_LINES = [
+  "On Feishu, the card's posted_in says where the message was written: a topic, a group chat or a direct message. A reply to a message in a topic stays in that topic; for any other message, reply_as says where your reply or acknowledgement goes, as a person in the chat would choose:",
+  "message: a plain message in the chat, with no quote. For a greeting, thanks or small talk, and for most replies in a direct message, where it is plain what you answer.",
+  "quote: a reply in the chat that quotes the message. For a short answer to one person in a busy group, and for quick work whose result comes back soon in a message or two.",
+  "thread: a reply in a topic on the message. For work that may take long or bring several messages, such as progress, questions and a result, so they stay together out of the main chat.",
+  "Without reply_as, a chat answer quotes the message and accepted work goes in a topic. Accepted work takes quote or thread: its acknowledgement, questions and result all go there."
 ].join("\n");
 
 /** The router's instructions for an explicit candidate; `persona` says who the agent is in its replies and acknowledgements. */
@@ -166,6 +176,7 @@ export function routerPrompt(persona = ""): string {
       .filter((line) => !/relays worker reports|assesses proactive candidates/.test(line)).join("\n")),
     section("Routing", routingLines()),
     section("Chat", CHAT_LINES),
+    section("Where to reply", REPLY_LINES),
     ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),
     section("Harness", HARNESS_LINES),

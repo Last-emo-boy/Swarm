@@ -253,7 +253,7 @@ async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSign
     const { botId, appId } = bot(ctx)
     for (const message of result.messages.filter(item => !known.has(item.message_id) && !item.deleted).reverse()) {
       if (signal?.aborted) return
-      const trigger = feishuTrigger(topicEvent(message, ref.chatId, direct, root), botId, appId)
+      const trigger = feishuTrigger(topicEvent(message, ref.chatId, direct, root, 'thread_id' in result ? result.thread_id : undefined), botId, appId)
       // Ignore messages older than the thread subscription on initial poll.
       if (!trigger || (!initialized && Date.parse(trigger.at) < since)) continue
       await receive(ctx, trigger)

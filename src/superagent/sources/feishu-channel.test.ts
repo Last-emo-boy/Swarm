@@ -27,6 +27,7 @@ describe('attachments', () => {
       [['--markdown', 'The patch is ready.'], 'm1', undefined],
       [['--file', 'fix-typo-abc.patch'], 'm1-file', join(path, '..')]
     ])
+    expect(calls.every(([args]) => args.includes('--reply-in-thread'))).toBe(true)
   }))
   it('says that an attachment Feishu refuses for good could not be attached, and retries one that fails for a while', () => withPatch(async (path) => {
     const calls: string[][] = []
@@ -35,17 +36,19 @@ describe('attachments', () => {
     expect(calls.at(-1)).toContain('m1-nofile')
     await expect(sendFeishu({ commands: refuse(new CliError('lark-cli timed out')) }, message(path))).rejects.toThrow('timed out')
   }))
-  it('posts into the chat itself, as a plain message or a reply that quotes a message, not in a topic', async () => {
-    const calls: string[][] = []
-    const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands
-    const chat = (address: Record<string, string>): OutboundMessage => ({ id: 'c1', kind: 'notice', text: 'Tea time?', channel: { source: 'feishu', thread: 'feishu:oc_1', address } })
+  it('posts into the chat itself, as a plain message or a reply that quotes a message, not in a topic, attachments too', () => withPatch(async (path) => {
+    const calls: [string[], string | undefined][] = []
+    const commands = { lark: async (args: string[], cwd?: string) => { calls.push([args, cwd]); return {} } } as unknown as Commands
+    const chat = (address: Record<string, string>, attachment?: string): OutboundMessage => ({ id: 'c1', kind: 'notice', text: 'Tea time?',
+      channel: { source: 'feishu', thread: 'feishu:oc_1', address }, ...attachment ? { attachment } : {} })
     expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat' }))).toBe('sent')
-    expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat', messageId: 'om_9' }))).toBe('sent')
+    expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat', messageId: 'om_9' }, path))).toBe('sent')
     expect(calls).toEqual([
-      ['im', '+messages-send', '--chat-id', 'oc_1', '--text', 'Tea time?', '--idempotency-key', 'c1'],
-      ['im', '+messages-reply', '--message-id', 'om_9', '--text', 'Tea time?', '--idempotency-key', 'c1']
+      [['im', '+messages-send', '--chat-id', 'oc_1', '--markdown', 'Tea time?', '--idempotency-key', 'c1'], undefined],
+      [['im', '+messages-reply', '--message-id', 'om_9', '--markdown', 'Tea time?', '--idempotency-key', 'c1'], undefined],
+      [['im', '+messages-reply', '--message-id', 'om_9', '--file', 'fix-typo-abc.patch', '--idempotency-key', 'c1-file'], join(path, '..')]
     ])
-  })
+  }))
   it('sends a direct message to a person by open_id, and drops one Feishu refuses for good, such as outside the app\'s availability', async () => {
     const calls: string[][] = []
     const send = (error?: Error) => ({ lark: async (args: string[]) => { calls.push(args); if (error) throw error; return {} } }) as unknown as Commands
