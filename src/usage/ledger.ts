@@ -117,8 +117,8 @@ export const priceLedger = (entries: readonly LedgerEntry[], prices: Readonly<Re
     return cost ? { ...entry, cost } : { ...entry };
   });
 
-export type LedgerGrouping = "model" | "provider" | "harness" | "device" | "ticket" | "day" | "source";
-export const LEDGER_GROUPINGS: readonly LedgerGrouping[] = ["model", "provider", "harness", "device", "ticket", "day", "source"];
+export type LedgerGrouping = "model" | "provider" | "harness" | "device" | "ticket" | "day" | "source" | "purpose";
+export const LEDGER_GROUPINGS: readonly LedgerGrouping[] = ["model", "provider", "harness", "device", "ticket", "day", "source", "purpose"];
 
 /** Calls added up: tokens, cost by currency, and how many calls had no price. */
 export interface LedgerTotal { key: string; calls: number; input: number; cached: number; output: number; cost: Record<string, number>; unpriced: number }
@@ -135,6 +135,7 @@ export function groupKey(entry: LedgerEntry, by: LedgerGrouping): string {
   if (by === "device") return entry.device;
   if (by === "ticket") return entry.ticketId?.slice(0, 8) ?? "-";
   if (by === "source") return entry.source;
+  if (by === "purpose") return entry.purpose;
   return localDay(entry.at);
 }
 

@@ -12,7 +12,7 @@ import { LEDGER_GROUPINGS, groupLedger, openUsageDatabase, priceLedger, readLedg
 import { mergedPrices } from "./prices.js";
 import { budgetLines, usageTable } from "./report.js";
 
-const USAGE = `Usage: swarm usage [--since 24h|7d|30d|<date>] [--by model|provider|harness|device|ticket|day|source] [--all-devices] [--json]
+const USAGE = `Usage: swarm usage [--since 24h|7d|30d|<date>] [--by model|provider|harness|device|ticket|day|source|purpose] [--all-devices] [--json]
 
 Each model call and harness turn counts once, with its tokens and its cost from the price table (usage.prices in
 ${getSwarmPaths().settingsPath} replaces or adds prices; a model without one shows its tokens and "unpriced").
