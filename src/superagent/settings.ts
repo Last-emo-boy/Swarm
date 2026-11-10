@@ -79,10 +79,31 @@ export const EvalConfigSchema = z.object({
 export const WORKER_COMMANDS: readonly string[] = ["gh", "lark-cli", "git"];
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine((name) => name !== "." && name !== "..", "Not a command name")
   .refine((name) => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(", ")} cannot be blocked`);
-/** Ticket VMs (vm/vm-work.ts): how many run at once, and the first of their gateways' ports on 127.0.0.1, one per slot upward. */
+/**
+ * Cluster ticket VMs (vm/kube-control.ts): VMs in pods of a Kubernetes cluster that the deployment set up, which take tickets
+ * once the local slots are full. The host reaches the cluster with `kubeconfig` (empty: its service's `kubeconfig`
+ * credential); each cluster slot's guest reaches its gateway, on `port` plus the slot, through the deployment's tunnel.
+ * `image` is the runner image (empty: SWARM_TICKET_RUNNER_IMAGE, which the deployment sets for its build).
+ */
+const KubeSchema = z.object({
+  kubeconfig: z.string().trim().default(""),
+  namespace: z.string().regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/).default("swarm-tickets"),
+  slots: z.number().int().min(1).max(32).default(10),
+  port: z.number().int().min(1024).max(65_000).default(47_200),
+  image: z.string().trim().default(""),
+  cpu: z.number().int().min(1).max(32).default(3),
+  memoryMiB: z.number().int().min(1024).max(262_144).default(6144),
+  diskGiB: z.number().int().min(5).max(1000).default(20)
+}).strict();
+export type KubeVm = z.infer<typeof KubeSchema>;
+/**
+ * Ticket VMs (vm/vm-work.ts): how many run at once on this host, the first of their gateways' ports on 127.0.0.1, one per
+ * slot upward, and the cluster whose VMs take tickets once those are full.
+ */
 const VmSchema = z.object({
   slots: z.number().int().min(1).max(32).default(4),
-  port: z.number().int().min(1024).max(65_000).default(47_100)
+  port: z.number().int().min(1024).max(65_000).default(47_100),
+  kube: KubeSchema.optional()
 }).strict();
 /**
  * Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare`

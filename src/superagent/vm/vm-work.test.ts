@@ -17,6 +17,7 @@ import { startFakeModel, writeFakeModelHome } from "../testing/fake-model.js";
 import { testDeployment } from "../testing/fixtures.js";
 import type { GuestSpec } from "./gateway.js";
 import { guestSettings, opencodeConfig } from "./guest.js";
+import type { ClusterControl } from "./kube-control.js";
 import { VmWork, vmHarnessIds, type VmControl } from "./vm-work.js";
 
 let stateDir: string;
@@ -24,6 +25,8 @@ let client: SuperagentClient;
 let work: VmWork | undefined;
 let port: number;
 let calls: string[];
+/** The token each cluster slot's pod got. */
+let tokens: Map<number, string>;
 let model: Awaited<ReturnType<typeof startFakeModel>>;
 const swarmHome = mkdtempSync(join(tmpdir(), "swarm-vm-home-"));
 const savedHome = process.env.SWARM_HOME;
@@ -32,6 +35,12 @@ const control = (): VmControl => ({
   start: async (slot) => { calls.push(`start ${slot}`); },
   stop: async (slot) => { calls.push(`stop ${slot}`); },
   collect: async () => { calls.push("collect"); }
+});
+const cluster = (): ClusterControl => ({
+  start: async (index, ticketId, secret) => { calls.push(`cluster start ${index} ${ticketId}`); tokens.set(index, secret); },
+  stop: async (index) => { calls.push(`cluster stop ${index}`); },
+  discard: async (ticketId) => { calls.push(`cluster discard ${ticketId}`); },
+  guard: async () => { calls.push("cluster guard"); }
 });
 
 before(async () => {
@@ -49,6 +58,7 @@ beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "swarm-vm-"));
   port = 42_000 + Math.floor(Math.random() * 8000);
   calls = [];
+  tokens = new Map();
   writeSettings({ access: {}, sources: { github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },
     policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "maintainer" } } } },
     executor: { isolation: "vm", vm: { slots: 2, port }, prepare: "true" } }, settingsPath(stateDir));
@@ -77,7 +87,7 @@ async function start(credential?: string): Promise<VmWork> {
   chmodSync(gh, 0o755);
   work = new VmWork({ client, stateDir, deployment: () => testDeployment({ stateDir, github: { cli: gh, login: "agent-bot", noreply: "7+agent-bot@users.noreply.github.com" } }),
     environment: (found) => ({ SWARM_TICKET_ID: found.id }),
-    credential: async () => credential ? { token: credential, login: "alice-gh", id: 7 } : undefined, log: () => {} }, undefined, control());
+    credential: async () => credential ? { token: credential, login: "alice-gh", id: 7 } : undefined, log: () => {} }, undefined, control(), cluster());
   await work.start();
   return work;
 }
@@ -274,4 +284,42 @@ test("OpenCode in a VM calls Swarm's chat-completions providers at the gateway w
   });
   assert.deepEqual(auth, { deepseek: { type: "api", key: "slot-token" }, other: { type: "api", key: "slot-token" } });
   assert.throws(() => opencodeConfig({ providers, models, model: "claude/sonnet" }, gateway), /chat completions, and claude\/sonnet uses anthropic-messages/);
+});
+
+test("a full house spills over to the cluster, where a ticket stays for good, and its volume goes when it ends", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 1, port, kube: { slots: 2, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const vm = await start();
+  const a = ticket("add a NOTICE file", "add-notice");
+  const b = ticket("add a VERSION file", "add-version");
+  const c = ticket("add a LICENSE file", "add-license");
+  const d = ticket("add a README file", "add-readme");
+  await vm.run(a.ticket, a.assignmentId);
+  await vm.run(b.ticket, b.assignmentId);
+  await vm.run(c.ticket, c.assignmentId);
+  await assert.rejects(vm.run(d.ticket, d.assignmentId), Later);
+  assert.deepEqual(calls, ["start 0", `cluster start 0 ${b.ticket.id}`, `cluster start 1 ${c.ticket.id}`]);
+  // A cluster slot's gateway listens on the cluster's port for it and takes the token its pod got, which no file holds.
+  const spec = await fetch(`http://127.0.0.1:${port + 10}/v1/spec`, { headers: { authorization: `Bearer ${tokens.get(0)}` } });
+  assert.equal(((await spec.json()) as GuestSpec).ticketId, b.ticket.id);
+  assert.equal((await fetch(`http://127.0.0.1:${port + 11}/v1/spec`, { headers: { authorization: `Bearer ${tokens.get(0)}` } })).status, 401);
+  assert.ok(!existsSync(join(stateDir, "vm", "1")));
+  (vm as unknown as { guard(): void }).guard();
+  assert.equal(calls.at(-1), "cluster guard", "running cluster VMs keep their egress rules current");
+  // With this host's slot free, the VERSION ticket's follow-up still boots in the cluster, where its disk is.
+  await vm.release(0);
+  await vm.release(1);
+  assert.deepEqual(calls.slice(-2), ["stop 0", "cluster stop 0"]);
+  calls.length = 0;
+  await vm.run(b.ticket, b.assignmentId);
+  await vm.run(d.ticket, d.assignmentId);
+  assert.deepEqual(calls, [`cluster start 0 ${b.ticket.id}`, "start 0"]);
+  // The ended ticket's volume is deleted in the cluster, and no local disk is marked for it.
+  client.engine.stopTicket(b.ticket.id);
+  await vm.release(1);
+  (vm as unknown as { collect(): void }).collect();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(calls.includes(`cluster discard ${b.ticket.id}`));
+  assert.equal(client.store.get(KV.vm.cluster(b.ticket.id)), undefined);
+  assert.equal(client.store.get(KV.vm.disk(b.ticket.id)), undefined);
+  assert.ok(!existsSync(join(stateDir, "vm", "ended", b.ticket.id)));
 });
