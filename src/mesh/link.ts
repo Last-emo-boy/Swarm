@@ -25,6 +25,8 @@ const CONNECT_MS = 8_000;
 const HANDSHAKE_MS = 10_000;
 const OPENER_MAX = 64 * 1024;
 const REQUEST_MS = 10_000;
+/** How long a pooled link may sit idle, before a peer's Keep-Alive header shortens it. */
+const IDLE_LINK_MS = 60_000;
 
 /** How a link reached its peer. */
 export type LinkPath = { kind: "direct"; address: string } | { kind: "relay"; relay: string };
@@ -239,10 +241,14 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
   });
 }
 
-/** A keep-alive pool per peer, so calls after the first reuse its link instead of shaking hands again. */
+/**
+ * A keep-alive pool per peer, so calls after the first reuse its link instead of shaking hands again. An idle link leaves
+ * the pool a second before the peer's server closes it, as that server's Keep-Alive header announces: Node shortens the
+ * agent's own timeout to it, and without one would keep the link until a call goes out on it as the server hangs up.
+ */
 class PeerAgent extends Agent {
   constructor(public peer: Peer) {
-    super({ keepAlive: true, maxSockets: 8 });
+    super({ keepAlive: true, maxSockets: 8, timeout: IDLE_LINK_MS });
     // An idle link over the relay must not hold the process open, as an idle TCP socket in the pool does not.
     this.on("free", (socket: Duplex) => underlying(socket)?.unref());
   }
