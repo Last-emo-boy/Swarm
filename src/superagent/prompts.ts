@@ -60,7 +60,13 @@ export interface WorkerPromptInput {
   github: boolean;
   /** How far the ticket's capability lets its work write; a local or read-only ticket delivers no pull request. */
   write?: WriteLevel;
+  /** Who the agent is and how it writes to people (`chatter.persona`), or empty. */
+  persona?: string;
 }
+
+/** The persona, as the voice of every text a person reads: replies, acknowledgements, questions, results. */
+const voiceSection = (persona: string, records: string): string =>
+  section("Voice", `Who you are and how you write to people: ${persona.trim()}\nEvery text a person reads follows it. ${records}`);
 
 /** The instructions appended to Swarm's coding-loop prompt for a ticket's worker. */
 export function workerPrompt(input: WorkerPromptInput): string {
@@ -78,7 +84,8 @@ export function workerPrompt(input: WorkerPromptInput): string {
     ...(input.sources.includes("github") ? [section("GitHub", BUILT_IN.github)] : []),
     ...(input.sources.includes("feishu") ? [section("Feishu", BUILT_IN.feishu)] : []),
     section("Execution environment", input.environment || "No execution variables."),
-    ...(input.mandate ? [section("Mandate", input.mandate)] : [])
+    ...(input.mandate ? [section("Mandate", input.mandate)] : []),
+    ...(input.persona?.trim() ? [voiceSection(input.persona, "Report summaries for the record, commits, pull requests and code stay plain and factual.")] : [])
   ];
   return parts.join("\n\n");
 }
@@ -149,7 +156,7 @@ const CHAT_LINES = [
   "Anything that needs the project read, a command run or a change made is work: accept it, or attach it to the ticket it belongs to."
 ].join("\n");
 
-/** The router's instructions for an explicit candidate; `persona` says who the agent is when it answers a message itself. */
+/** The router's instructions for an explicit candidate; `persona` says who the agent is in its replies and acknowledgements. */
 export function routerPrompt(persona = ""): string {
   return [
     "You route requests for Swarm's ticket host. Each call gives you one candidate card: a person's message that the Policy admitted as an explicit request.",
@@ -158,7 +165,8 @@ export function routerPrompt(persona = ""): string {
     section("Shared", BUILT_IN.shared.replaceAll("orchestrator", "router").split("\n")
       .filter((line) => !/relays worker reports|assesses proactive candidates/.test(line)).join("\n")),
     section("Routing", routingLines()),
-    section("Chat", persona.trim() ? `${CHAT_LINES}\nWho you are in conversation: ${persona.trim()}` : CHAT_LINES),
+    section("Chat", CHAT_LINES),
+    ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),
     section("Harness", HARNESS_LINES),
     section("Output", ROUTE_CONTRACT)
