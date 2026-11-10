@@ -141,7 +141,7 @@ export const ROUTE_CONTRACT = [
   ' "reason": "ignore and stop: why, at most 500 characters",',
   ' "to": "message: who it goes to: a person, by the id or the name the card gives, who gets it as a direct message, or a chat from your_chats, by id or name",',
   ' "text": "message: what you send, at most 100 words, in the language its reader uses",',
-  ' "remember": "any kind: optional list of at most 3 notes the message asks you to keep, as the Memory section says: [{\"about\": \"<id>|chat|self\", \"kind\": \"fact|preference|event|promise\", \"text\": \"...\", \"due\": \"promises only\"}]",',
+  ' "remember": "any kind: optional list of at most 3 notes worth keeping from this message, as the Memory section says: [{\"about\": \"<id>|chat|self\", \"kind\": \"fact|preference|event|promise\", \"text\": \"...\", \"due\": \"promises only\"}]",',
   ' "mentions": "chat and message: optional ids of the people to @, from the card, each written as @name in the text where you would say it; all for everyone in the chat, only when asked",',
   ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted where reply_as says. message: optional, what you tell the person who asked"}'
 ].join("\n");
@@ -181,11 +181,12 @@ const PEOPLE_LINES = [
   "Asked who someone is or who is here, answer with chat from these, and say plainly when a name is not among them. your_chats lists the groups you are in."
 ].join("\n");
 
-/** What the router remembers, and when it keeps something a message asks it to. */
+/** What the router remembers, and how it judges what in a message is worth keeping. */
 const MEMORY_LINES = [
   "The card's memory holds what you remember about the sender, the people the message mentions, this chat and yourself: short notes, each with its kind and where you learned it. Use them as a person uses what they know of someone, naturally and without reciting them, and with tact about what was said in private.",
-  "When the message asks you to remember something, or to remind someone or do something later, add it to remember: about is a person's id from the card, chat for this chat, or self; kind is fact, preference, event or promise. A promise has due, a time from the card's now in its time_zone with the offset, such as 2026-11-11T09:00:00+08:00, and its text says what to do and for whom; when it falls due you write the message yourself. Your reply or acknowledgement then says you will.",
-  "Leave out what nobody asked you to keep: you note that later on your own. Never keep secrets, passwords, tokens or keys. Asked what you remember of someone or to forget something, use command memory or forget."
+  "Keep what this message tells you that will still matter later, as a person would remember it, whether or not it asks you to: who someone is or what they work on, what they like or dislike and how they want things done, their plans, what this chat decided, and anything you are to remind someone of or do later. Judge by what it means, not by words such as 记住: 我最近在学 Rust, 以后别在群里刷屏 and 下周三提醒我交报告 all count; a plain question, small talk or a request for work alone leaves nothing to keep, and neither does what the card's memory already holds.",
+  "Add each to remember: about is a person's id from the card, chat for this chat, or self; kind is fact, preference, event or promise. A promise has due, a time from the card's now in its time_zone with the offset, such as 2026-11-11T09:00:00+08:00, and its text says what to do and for whom; when it falls due you write the message yourself. When they asked you to remember or remind, your reply or acknowledgement says you will; otherwise you keep it quietly, as a person would.",
+  "Never keep secrets, passwords, tokens or keys. Asked what you remember of someone or to forget something, use command memory or forget."
 ].join("\n");
 
 /** When the router sends a message to someone other than the person who wrote. */

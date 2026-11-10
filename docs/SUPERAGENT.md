@@ -245,8 +245,10 @@ and promises, which have a due time.
 - **Writing.** Once a chat (a group or a direct message) has gone quiet for `lullSeconds` with at least `minMessages` new
   messages, or one addressed to the agent, and at most every `reflectMinutes`, one model call reads what was said and
   changes the notes about the people who spoke, the chat and itself. A ticket that ends gets the same about its requester.
-  A message that asks it to remember something or to remind someone ("明天十点提醒我…") is kept by the router with its
-  answer, so the answer can say so. Workers keep notes with the `remember` tool and look them up with `recall`.
+  The router also keeps what a message addressed to it tells that will matter later, judged by what it means, with or
+  without words such as 记住: a preference ("以后别在群里刷屏"), a plan, or a promise ("明天十点提醒我…"), kept with its answer
+  so that an answer to a request to remember can say so. Workers keep notes with the `remember` tool and look them up with
+  `recall`.
 - **Reading.** The router, chatter and each ticket's worker get the notes about whoever and wherever they talk: the sender,
   the people mentioned, the chat and the agent itself. Notes are used everywhere, like one person's memory; the prompts ask
   for tact about what was said in private, and never to keep secrets or keys.
