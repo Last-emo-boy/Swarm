@@ -5,14 +5,17 @@
  * Session made the same decisions through tools.
  */
 import { z } from "zod/v4";
-import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, type Trigger } from "./core/index.js";
+import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, type Capability, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
 import { said } from "./chatter.js";
 import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js";
+import { harnessIds } from "./harness.js";
+import { KV } from "./kv.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
-import { updatePlacement } from "./placement.js";
-import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, directionAllowed, repositoryFor, roleOf, watchedRepository } from "./policy.js";
+import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
+import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
+  watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { IM_WORDS, NOTE_WORDS, checkedImText, sameName, wordCount } from "./text.js";
@@ -35,6 +38,11 @@ export interface AssessorHost {
   configured(): boolean;
   /** The bot commands the router may run; without them it runs none. */
   readonly commands?: AgentCommands;
+  /**
+   * This node and its paired nodes with their abilities, on a host that is a mesh node, which say where work on a harness
+   * runs; without it every harness profile counts as this node's.
+   */
+  mesh?(): Promise<MeshView | undefined>;
 }
 
 const AcknowledgementSchema = z.string().trim().min(1)
@@ -57,6 +65,8 @@ const RouteSchema = z.object({
   link: z.boolean().nullish(),
   /** The requester's repository the accepted work is about, as the card lists it, however the person called it. */
   repository: z.string().nullish(),
+  /** The agent harness profile the person asked the accepted work to run on, one of the card's harness choices. */
+  harness: z.string().trim().nullish(),
   /** The bot command the router runs for the person, with its arguments. */
   command: z.string().nullish(),
   args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
@@ -73,6 +83,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] },
   reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] },
   repository: { check: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/name"), reads: ["accept"], needs: [] },
+  harness: { check: z.string().max(64), reads: ["accept"], needs: [] },
   command: { check: z.enum(AGENT_COMMANDS), reads: ["command"], needs: ["command"] }
 };
 /** Why a routing answer cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
@@ -88,6 +99,31 @@ export function routeProblem(route: Route): string | undefined {
     if (!checked.success) return `${field}: ${checked.error.issues[0]?.message ?? "invalid"}`;
   }
   return undefined;
+}
+
+/** The harness profiles a candidate's requester may choose and where each runs: the router's card shows them and its accept is checked against them. */
+interface Harnesses {
+  /** The profile the request was filed to run on (`--harness`), which the router leaves as it is. */
+  filed?: string;
+  /** Whether the requester may choose one (`choosesHarness`). */
+  mayChoose: boolean;
+  /** This node's name on the mesh, on a mesh node. */
+  here?: string;
+  /** Each profile and where its work runs: on this node, else on these paired nodes; on none when neither. */
+  places: Map<string, { here: boolean; peers: string[] }>;
+}
+/** The profile an accept's `harness` names, when work on it can run for this request; else why not, for the router to answer. */
+function checkedHarness(chosen: string, harnesses: Harnesses, capability: Capability | undefined): { id: string } | { problem: string } {
+  if (!harnesses.mayChoose) return { problem: "Only maintainers and owners choose a harness: omit harness, and say in the acknowledgement that the work runs on the default one" };
+  const ids = [...harnesses.places.keys()];
+  const id = ids.find((item) => sameName(item, chosen));
+  if (!id) return { problem: `No harness profile "${chosen}": the choices are ${ids.join(", ")}; for a harness no node has, answer with chat` };
+  const { here, peers } = harnesses.places.get(id)!;
+  if (!here && !peers.length) return { problem: `No node can run ${id} now: answer with chat, saying so plainly` };
+  if (!here && capability?.credential) {
+    return { problem: `Only ${peers.join(", ")} can run ${id}, and work that acts as @${capability.credential.login} on GitHub runs only on this node: answer with chat, saying so plainly` };
+  }
+  return { id };
 }
 
 export const AssessmentSchema = z.object({
@@ -186,7 +222,7 @@ export class ModelAssessor {
     const primary = candidate.triggers.find((trigger) => trigger.id === evaluation?.primary) ?? candidate.triggers.at(-1)!;
     if (!settings.access || !evaluation) return {};
     const link = linkOf(this.host.client.store, evaluation.actor);
-    const capability = capabilityOf(settings, evaluation, link, { repository: this.requestedRepository(candidate) });
+    const capability = this.capability(candidate);
     const app = githubApp(settings);
     const unnamed = link && repositoryFor(link, watchedRepository(settings));
     const github = !app ? undefined : !link ? "not linked" : link.broken ? `@${link.login}, but the link stopped working`
@@ -202,10 +238,43 @@ export class ModelAssessor {
     } };
   }
 
+  /** What a ticket accepted now for the candidate may do, working on `repository`; undefined without the access model. */
+  private capability(candidate: Candidate, repository = this.requestedRepository(candidate)): Capability | undefined {
+    const { client } = this.host;
+    const evaluation = candidate.thread.evaluating;
+    return evaluation && capabilityOf(client.settings(), evaluation, linkOf(client.store, evaluation.actor), { repository });
+  }
+
+  /** The harness profiles the candidate's requester may choose, and where each runs now. */
+  private async harnesses(candidate: Candidate): Promise<Harnesses> {
+    const { client } = this.host;
+    const settings = client.settings();
+    const filed = candidate.triggers.map((trigger) => client.store.get(KV.harness.chosen(trigger.id))).find(Boolean);
+    const mayChoose = choosesHarness(settings, candidate.thread.evaluating?.actor ?? candidate.triggers.at(-1)!.actor);
+    const view = mayChoose && !filed ? await this.host.mesh?.() : undefined;
+    const places = new Map(harnessIds(settings.executor.harnesses).map((id) => [id, view ? harnessNodes(id, view) : { here: true, peers: [] }]));
+    return { ...(filed ? { filed } : {}), mayChoose, ...(view ? { here: view.here.name } : {}), places };
+  }
+  /** The card's harnesses: what a ticket runs on when the person names none, and what they may name, with where each runs for this request. */
+  private harnessCard(candidate: Candidate, harnesses: Harnesses): Record<string, unknown> {
+    const fallback = this.host.client.settings().executor.harness ?? "swarm (Swarm's own coding loop)";
+    if (harnesses.filed) return { default: fallback, filed_with: harnesses.filed };
+    if (!harnesses.mayChoose) return { default: fallback, choices: "only maintainers and owners choose a harness: this requester's work runs on the default" };
+    const login = this.capability(candidate)?.credential?.login;
+    const where = ({ here, peers }: { here: boolean; peers: string[] }): string => {
+      const nodes = `paired node${peers.length > 1 ? "s" : ""} ${peers.join(", ")}`;
+      if (here) return harnesses.here ? `this node (${harnesses.here})` : "this node";
+      if (!peers.length) return "no node: none has it installed and signed in";
+      return login ? `no node for this request: only ${nodes} has it, and work that acts as @${login} on GitHub runs only on this node` : nodes;
+    };
+    return { default: fallback, choices: Object.fromEntries([...harnesses.places].map(([id, place]) => [id, where(place)])) };
+  }
+
   /** Routes an explicit candidate: one model answer, checked once and asked again with the problem when it does not hold. */
   private async route(candidate: Candidate): Promise<void> {
     const { client, complete } = this.host;
-    const card = this.card(candidate);
+    const harnesses = await this.harnesses(candidate);
+    const card = { ...this.card(candidate), harnesses: this.harnessCard(candidate, harnesses) };
     const triggerId = candidate.triggers.at(-1)!.id;
     let last = "";
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -219,7 +288,7 @@ export class ModelAssessor {
         last = problem(error);
         continue;
       }
-      const refused = routeProblem(route) ?? this.carryOut(candidate, triggerId, route);
+      const refused = routeProblem(route) ?? this.carryOut(candidate, triggerId, route, harnesses);
       if (!refused) return;
       last = refused;
     }
@@ -227,15 +296,20 @@ export class ModelAssessor {
     throw new Error(`The router's answer could not be used: ${last}`);
   }
 
-  /** Carries out a routing answer as its Engine command; returns why the Engine refused it, if it did. */
-  private carryOut(candidate: Candidate, triggerId: string, route: Route): string | undefined {
+  /** Carries out a routing answer as its Engine command; returns why it cannot run or the Engine refused it, if it did. */
+  private carryOut(candidate: Candidate, triggerId: string, route: Route, harnesses: Harnesses): string | undefined {
     const { engine } = this.host.client;
     try {
       switch (route.kind) {
         case "accept": {
           const { client } = this.host;
           const repository = this.chosenRepository(candidate, route.repository);
+          const checked = route.harness && !harnesses.filed ? checkedHarness(route.harness, harnesses, this.capability(candidate, repository)) : undefined;
+          if (checked && "problem" in checked) return checked.problem;
+          const harness = checked?.id;
           const decision = client.store.atomic(() => {
+            // Recorded with the request, as `--harness` records it, so the ticket's execution takes it when it is created.
+            if (harness) client.store.set(KV.harness.chosen(triggerId), harness);
             const decided = engine.decide(triggerId, {
               kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
               acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}),
@@ -243,6 +317,7 @@ export class ModelAssessor {
             });
             // Recorded with the ticket, before its worker launches, so a mesh node places the worker where the work can run.
             if (decided.ticketId && route.needs?.length) updatePlacement(client, decided.ticketId, { needs: [...new Set(route.needs)] });
+            if (harness && !decided.ticketId) client.store.delete(KV.harness.chosen(triggerId));
             return decided;
           });
           if (decision.kind !== "accept" || !decision.ticketId) return `Ticket was not created: ${reasonText(decision.reason)}`;

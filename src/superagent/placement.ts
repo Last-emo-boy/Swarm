@@ -55,6 +55,21 @@ export function workNeeds(ticket: Ticket, placement: Placement | undefined): str
   return [...new Set([...placement?.needs ?? [], ...(harness ? [harnessAbility(harness)] : [])])];
 }
 
+/** A node by its name, with the abilities its card lists. */
+export interface NodeAbilities { name: string; abilities: readonly string[] }
+/** This mesh node and the paired nodes that answered, with their abilities: where work that needs an ability can run now. */
+export interface MeshView { here: NodeAbilities; peers: readonly NodeAbilities[] }
+
+/**
+ * Where work on harness `id` runs, as a mesh node places it: here when this node lists the harness, else on a paired node
+ * that does; none when no node does.
+ */
+export function harnessNodes(id: string, view: MeshView): { here: boolean; peers: string[] } {
+  const need = harnessAbility(id);
+  if (view.here.abilities.includes(need)) return { here: true, peers: [] };
+  return { here: false, peers: view.peers.filter((peer) => peer.abilities.includes(need)).map((peer) => peer.name) };
+}
+
 export const leaseOf = (client: Records, ticketId: string): Lease | undefined => client.store.get(KV.mesh.lease(ticketId));
 
 /**

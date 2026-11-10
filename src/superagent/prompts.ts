@@ -117,6 +117,7 @@ export const ROUTE_CONTRACT = [
   ' "acknowledgement": "accept: one sentence of at most 100 words in the source language naming the concrete change and intended result; it is posted as a reply to the request",',
   ' "note": "accept or attach: optional routing background or an explicit human constraint, at most 30 words",',
   ' "needs": "accept: optional list of what the work needs of the machine its worker runs on, from gpu (an NVIDIA GPU), macos, linux, windows; omit it when any machine will do",',
+  ' "harness": "accept: optional id from the card\'s harnesses choices, only when the person asks for the work to run on that agent harness, as the Harness section says; omit it otherwise",',
   ' "link": "accept: true to send the requester a code to link their GitHub account, as the Requester section says; omit it otherwise",',
   ' "repository": "accept: owner/name of the requester\'s repository the work is about, exactly as the card lists it, as the Requester section says; omit it otherwise",',
   ` "command": "command: one of ${AGENT_COMMANDS.join(", ")}",`,
@@ -133,6 +134,13 @@ const REQUESTER_LINES = [
   "Set link: true on an accept when the person wants a pull request, a push or another change on GitHub, may_write is github, and their GitHub is not linked or its link stopped working. The host then sends them a code to link their account in a direct message, and once they linked it turns the finished patch into a pull request as them; the acknowledgement says both.",
   "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them.",
   "Changing roles, the chats the agent reads, ceilings or whether it joins conversations on its own, and unlinking, are only for people to type themselves (/role, /listen, /ceiling, /chatter, /unlink): asked for one, answer with chat and name the command to send."
+].join("\n");
+/** What the card's harnesses mean, and when the router sets one on accepted work. */
+const HARNESS_LINES = [
+  "The card's harnesses says what a ticket's worker runs on: default, when the person names none, and choices, the agent harnesses they may name (Claude Code is claude, Codex codex, Kimi Code kimi, OpenCode opencode, Claude Code on GLM or DeepSeek claude-glm or claude-deepseek), each with where its work runs: this node, a paired node, or no node.",
+  "Set harness on an accept only when the person asks for the work to run on one, such as codex for \"用 codex 做\" or claude for \"run this on Claude Code\". The acknowledgement then names the harness and where it runs: this node, or the paired node choices names.",
+  "When the harness they ask for runs on no node, for this request or at all, or is not among the choices, start no ticket: answer with chat, saying plainly that no node can run it now and why, and naming the choices that can run, if any.",
+  "When choices says the requester may not choose one, accept without harness and say in the acknowledgement that the work runs on the default, since only maintainers and owners choose a harness. When harnesses has filed_with, the request already runs on that harness: set none."
 ].join("\n");
 /** When the router answers a message itself instead of routing it. */
 const CHAT_LINES = [
@@ -152,6 +160,7 @@ export function routerPrompt(persona = ""): string {
     section("Routing", routingLines()),
     section("Chat", persona.trim() ? `${CHAT_LINES}\nWho you are in conversation: ${persona.trim()}` : CHAT_LINES),
     section("Requester", REQUESTER_LINES),
+    section("Harness", HARNESS_LINES),
     section("Output", ROUTE_CONTRACT)
   ].join("\n\n");
 }
