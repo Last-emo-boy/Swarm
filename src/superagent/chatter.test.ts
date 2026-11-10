@@ -6,7 +6,7 @@ import { expect } from "./testing/expect.js";
 import type { Trigger } from "./core/index.js";
 import { ChatterRoom, chatterPrompt, cutToFit, namesAgent, quietAt } from "./chatter.js";
 import { wordCount } from "./text.js";
-import { ask, openAsks } from "./asks.js";
+import { ask, closeAsks, openAsks } from "./asks.js";
 import { posted } from "./people.js";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
@@ -251,6 +251,78 @@ describe("when messages call for the agent that its router does not answer", () 
     const [relay] = posts();
     expect(wordCount(relay!.text) <= 100 && relay!.text.endsWith("。…") && relay!.text.startsWith("规范基本定完了")).toBe(true);
     expect(openAsks(client.store, now)).toEqual([]);
+  });
+
+  it("counts only what is said to it as an answer: those it asked talk to others there too", () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 进度如何？", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    botMessage("ou_feifei", "@Tickey 版本号和 schemaVersion 怎么对应？", 0);
+    now += 16_000;
+    room.pass();
+    expect(attending()).toEqual([]);
+    const answer = botMessage("ou_feifei", "进度：规范基本定了", 0, { mention: true });
+    now += 16_000;
+    room.pass();
+    expect(attending()[0]?.ids).toEqual([answer.id]);
+  });
+
+  it("asks the person it acts for what only they can give when a bot asks for it, and takes their answer back to the bot", async () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 Alice 想要 repo 的地址", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    closeAsks(client.store, ["ask-1"], now);
+    const wants = botMessage("ou_feifei", "要加 collaborator 的话，请告诉我你们的 GitHub 账号名", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: "我去问一下 Alice", reply_to: wants.meta.messageId }, relay: [],
+      ask_back: [{ for: "ou_alice", text: "飞飞要你的 GitHub 账号名来加 collaborator，是哪个？" }] }));
+    await room.attend(CHAT, [wants.id]);
+    expect(JSON.parse(calls[0]!.user).acting_for).toEqual([{ id: "ou_alice", name: "Alice", you_asked_here: "@飞飞 Alice 想要 repo 的地址" }]);
+    const sent = () => client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as
+      { text: string; channel: { address: Record<string, string> }; mentions?: { id: string }[] });
+    expect(sent().map((post) => [post.channel.address.chatId, post.channel.address.messageId, post.text, post.mentions?.map((mention) => mention.id) ?? []])).toEqual([
+      ["oc_home", "om_q", "飞飞要你的 GitHub 账号名来加 collaborator，是哪个？", ["ou_alice"]],
+      [CHAT, wants.meta.messageId, "我去问一下 Alice", []]
+    ]);
+    const [waiting] = openAsks(client.store, now);
+    expect([waiting?.chatId, waiting?.to, waiting?.for.id, waiting?.for.channel.address.messageId]).toEqual(["oc_home", ["ou_alice"], "ou_feifei", wants.meta.messageId]);
+    // Alice answers where she was asked; the answer goes back to 飞飞, quoting its message and @-ing it.
+    now += 5000;
+    const reply = feishuTrigger({ message_id: "om_alice", chat_id: "oc_home", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+      content: "@_user_1 我的是 alice-gh", create_time: String(now), mentions: [{ id: BOT, key: "@_user_1", name: "w33d" }] }, BOT, "cli_app")!;
+    client.engine.receive(reply);
+    room.pass();
+    now += 16_000;
+    room.pass();
+    const queuedAttend = attending().find((item) => item.chatId === "oc_home");
+    expect(queuedAttend?.ids).toEqual([reply.id]);
+    answers.push(JSON.stringify({ reply: null, relay: [{ question: waiting!.id, text: "Alice 说她的 GitHub 账号是 alice-gh" }] }));
+    await room.attend("oc_home", queuedAttend!.ids);
+    expect(sent().slice(2).map((post) => [post.channel.address.chatId, post.channel.address.messageId, post.text, post.mentions?.map((mention) => mention.id)])).toEqual([
+      [CHAT, wants.meta.messageId, "Alice 说她的 GitHub 账号是 alice-gh", ["ou_feifei"]]
+    ]);
+    expect(openAsks(client.store, now)).toEqual([]);
+  });
+
+  it("answers other bots at most three times in a row, until a person writes again", async () => {
+    room.pass();
+    message("ou_bob", "大家好", 0);
+    now += 1000;
+    const pinged = botMessage("ou_tickey", "你那边有 fixtures 的结果吗？", 0, { mention: true });
+    const turns = Array.from({ length: 3 }, (_, index) => ({ at: new Date(now - 500 + index).toISOString(), bot: true as const }));
+    client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: turns });
+    await room.attend(CHAT, [pinged.id]);
+    expect(calls).toEqual([]);
+    // Once a person writes, it may answer a bot again, and the card says how often it already did.
+    now += 1000;
+    message("ou_bob", "Tickey 问你呢", 0);
+    now += 1000;
+    const again = botMessage("ou_tickey", "@w33d fixtures 结果呢？", 0, { mention: true });
+    client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: turns.slice(0, 1) });
+    await room.attend(CHAT, [again.id]);
+    expect(calls.length).toBe(1);
+    expect(JSON.parse(calls[0]!.user).replies_to_bots_in_a_row).toBeUndefined();
   });
 
   it("cuts a sentence too long alone where it fits", () => {
