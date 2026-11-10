@@ -138,7 +138,8 @@ describe('Source registry', () => {
     expect(sources.channelAllowed({ source: 'feishu', address: { chatId: 'oc_team' } })).toBe(false)
     sources.register(feishuKind); sources.register(githubKind)
     expect(sources.channelAllowed({ source: 'feishu', address: { chatId: 'oc_team' } })).toBe(true)
-    expect(sources.channelAllowed({ source: 'feishu', address: { chatId: 'oc_other' } })).toBe(false)
+    // Every group it is in is heard by default, so a reply goes to any of them.
+    expect(sources.channelAllowed({ source: 'feishu', address: { chatId: 'oc_other' } })).toBe(true)
     // A direct chat's id starts with oc_ too; the address says it is direct, and with direct messages off it gets no reply.
     expect(sources.channelAllowed(feishuChannel('oc_dm', 'om_1', true))).toBe(false)
     expect(sources.channelAllowed({ source: 'github', address: { number: '7' } })).toBe(true)

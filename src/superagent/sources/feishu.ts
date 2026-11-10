@@ -24,7 +24,8 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
     .refine(chats => new Set(chats.map(chat => chat.chatId)).size === chats.length, 'Duplicate chat IDs')
     .default([]),
   directMessages: z.boolean().default(true),
-  otherChats: z.enum(['none', 'mentions']).default('none'),
+  /** Groups not in `chats`: every group the bot is in is heard and answers when someone @s it, unless set to none. */
+  otherChats: z.enum(['none', 'mentions']).default('mentions'),
 }).strict()
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 export const feishuKind: SourceKind<FeishuConfig> = {

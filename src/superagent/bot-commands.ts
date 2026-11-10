@@ -24,7 +24,7 @@ import { inChinese, sameName, sayIn, wordCount, type Say } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 
 const HOUR_MS = 3_600_000;
-export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "listen", "ceiling", "chatter", "takeover", "devices", "memory", "forget"] as const;
+export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "ceiling", "chatter", "takeover", "devices", "memory", "forget"] as const;
 export type CommandName = typeof COMMANDS[number];
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 
@@ -35,10 +35,10 @@ const help = (say: Say): string => say(
     + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch; "
     + "/devices shows what I run work on; /memory shows what I remember about you, /forget <number>|all forgets it. "
     + "You can also ask for these in your own words. "
-    + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.",
+    + "Owners: /role @name owner|maintainer|everyone|none, /chatter on|off in a group, /ceiling read-only|local|github.",
   "命令：/me 查看你的角色和限额；/link 绑定 GitHub 账号（验证码私聊发给你），/unlink 解除绑定；/repo [owner/name] 列出或设置默认仓库；"
     + "/takeover [工单] 把本地工单的补丁做成拉取请求；/devices 看我能用的设备；/memory 看我记得你什么，/forget <编号>|all 让我忘掉。这些也可以直接跟我说。"
-    + "owner 还能用：/role @某人 owner|maintainer|everyone|none，群里的 /listen all|mentions|off 和 /chatter on|off，/ceiling read-only|local|github。");
+    + "owner 还能用：/role @某人 owner|maintainer|everyone|none，群里的 /chatter on|off，/ceiling read-only|local|github。");
 /** How many words one page of /memory holds, within a chat message's limit. */
 const MEMORY_PAGE_WORDS = 85;
 /** How many repositories an answer names before it says how many more there are. */
@@ -187,7 +187,6 @@ export class BotCommands {
       case "unlink": return this.unlink(trigger, settings);
       case "repo": return this.repo(command, trigger, settings);
       case "role": return this.role(command, trigger, settings);
-      case "listen": return this.listen(command, trigger, settings);
       case "ceiling": return this.ceiling(command, trigger, settings);
       case "chatter": return this.chatter(command, trigger, settings);
       case "takeover": return this.takeover(command, trigger, settings);
@@ -389,27 +388,6 @@ export class BotCommands {
     return role ? say(`${names}: ${role} from now on.`, `${names}：从现在起是 ${role}。`) : say(`${names}: no role from now on.`, `${names}：从现在起没有角色。`);
   }
 
-  /** `/listen all|mentions|off`, in a group: an owner lists the chat with what the agent reads there, or takes it off the list. */
-  private listen(command: Command, trigger: Trigger, settings: Settings): string {
-    this.owner(trigger, settings);
-    const say = this.say(trigger);
-    const mode = command.args[0];
-    const chatId = String(trigger.meta.chatId ?? "");
-    if (trigger.meta.direct === true) return say("/listen works in a group chat.", "/listen 要在群里用。");
-    if (mode !== "all" && mode !== "mentions" && mode !== "off") return say("Usage: /listen all|mentions|off", "用法：/listen all|mentions|off");
-    updateSettings((next) => {
-      const source = next.sources[FEISHU] ??= { enabled: true, config: {} };
-      const chats = z.array(z.looseObject({ chatId: z.string() })).catch([]).parse(source.config.chats);
-      const kept = chats.find((chat) => chat.chatId === chatId);
-      const others = chats.filter((chat) => chat.chatId !== chatId);
-      source.config = { ...source.config, chats: mode === "off" ? others : [...others, { ...kept, chatId, listen: mode }] };
-      return next;
-    }, settingsPath(this.client.stateDir));
-    return mode === "off" ? say("This chat is off the list now; an owner can list it again in the settings file.", "这个群已移出列表；owner 可以在设置文件里重新列入。")
-      : mode === "all" ? say("I read every message in this chat now.", "现在我会读这个群里的每条消息。")
-      : say("I read only messages that mention me in this chat now.", "现在我只读这个群里 @ 我的消息。");
-  }
-
   /** `/ceiling <level>`: an owner sets how far work asked for in this conversation's receiving scope may write. */
   private ceiling(command: Command, trigger: Trigger, settings: Settings): string {
     this.owner(trigger, settings);
@@ -443,7 +421,7 @@ export class BotCommands {
       : say("I speak here only when someone mentions me.", "只有有人 @ 我时，我才在这里说话。");
     this.owner(trigger, settings);
     if (mode !== "on" && mode !== "off") return say("Usage: /chatter on|off", "用法：/chatter on|off");
-    // It reads the chat from the messages it keeps, whatever /listen says; `off` holds where every group is on but this one.
+    // It reads the chat from the messages it keeps; `off` holds where every group is on but this one.
     updateSettings((next) => {
       const chatter = chatterOf(next);
       const without = (list: string[]) => list.filter((chat) => chat !== chatId);

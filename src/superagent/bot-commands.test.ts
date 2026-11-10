@@ -105,13 +105,10 @@ describe("bot commands", () => {
     expect(replies().map((reply) => reply.text)).toEqual(["Reader, Alice: maintainer from now on.", "Reader: no role from now on.",
       "That did not work: someone must stay an owner", "That did not work: only an owner can do that"]);
   });
-  it("lets an owner list the chat with what the agent reads there, and set how far work asked for there writes", () => {
-    commands.receive(message(BOSS, "/listen all"));
-    expect(current().sources.feishu?.config.chats).toEqual([{ chatId: CHAT, listen: "all" }]);
+  it("lets an owner set how far work asked for in a chat writes, and has no /listen: every group is heard", () => {
     commands.receive(message(BOSS, "/ceiling local"));
     expect(current().policy.sources.feishu?.ceilings).toEqual({ [CHAT]: "local" });
-    commands.receive(message(BOSS, "/listen all", { direct: true }));
-    expect(replies().at(-1)!.text).toBe("/listen works in a group chat.");
+    expect(commandOf(message(BOSS, "/listen all"))).toBeUndefined();
   });
   it("lets an owner have the agent join the conversation in a chat or keep out of it, whatever it listens to there", () => {
     commands.receive(message(MAINTAINER, "/chatter on"));
@@ -120,9 +117,6 @@ describe("bot commands", () => {
     expect(current().chatter?.chats).toEqual([CHAT]);
     commands.receive(message(MAINTAINER, "/chatter"));
     expect(replies().at(-1)!.text).toBe("I join the conversation here now and then, at most 2 times an hour.");
-    // What it listens to is apart: it reads the chat from the messages it keeps.
-    commands.receive(message(BOSS, "/listen mentions"));
-    expect(current().chatter?.chats).toEqual([CHAT]);
     commands.receive(message(BOSS, "/chatter off"));
     expect(replies().at(-1)!.text).toBe("I'll speak here only when someone mentions me.");
     expect(current().chatter).toMatchObject({ chats: [], off: [CHAT] });

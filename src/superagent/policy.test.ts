@@ -12,7 +12,7 @@ import type { Thread, Ticket, Trigger } from './core/index.js'
 const MEMBER = 'ou_alice'
 const CHAT = 'oc_team'
 const OBSERVED = 'oc_1111111111111111111111111111'
-const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean }, enabled = true) => ({ enabled, config })
+const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean; otherChats?: 'none' | 'mentions' }, enabled = true) => ({ enabled, config })
 const base = SettingsSchema.parse({
   policy: { sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'Alice' }] } } },
   eval: { mode: 'auto' },
@@ -34,7 +34,7 @@ describe('source scope', () => {
   it('listens to configured chats, reads every message only where configured, and follows the direct-message switch', () => {
     expect(sources.scope(feishu())).toEqual({ listened: true, observed: false, row: CHAT })
     expect(sources.scope(feishu({ meta: { chatId: OBSERVED, direct: false, mentioned: false } }))).toEqual({ listened: true, observed: true, row: OBSERVED })
-    expect(sources.scope(feishu({ meta: { chatId: 'oc_other', direct: false, mentioned: true } }))).toEqual({ listened: false, reason: 'chat_not_allowed' })
+    expect(sources.scope(feishu({ meta: { chatId: 'oc_other', direct: false, mentioned: true } }))).toEqual({ listened: true, observed: false, row: 'other' })
     expect(sources.scope(feishu({ meta: { chatId: 'p2p', direct: true, mentioned: false } }))).toEqual({ listened: true, observed: false, row: 'direct' })
     expect(setup({ ...base, sources: { feishu: feishuSource({ chats: [], directMessages: false }) } }).sources.scope(feishu({ meta: { chatId: 'p2p', direct: true, mentioned: false } }))).toEqual({ listened: false, reason: 'direct_messages_not_allowed' })
     // In Swarm the GitHub Source stays off until it is set up, so it listens to nothing; upstream turned it on by default.
@@ -123,8 +123,10 @@ describe('admission table', () => {
     expect(setup(withTable({ [CHAT]: { listedUnaddressed: 'inferred' } })).policy.gate(inChat(CHAT, MEMBER, false), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
     expect(setup(withTable({ [CHAT]: { unlistedUnaddressed: 'inferred' } })).policy.gate(inChat(CHAT, STRANGER, false), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
   })
-  it('listens to mentions in chats that are not listed, as the row other, only when the Feishu card says so', () => {
-    expect(sources.scope(inChat('oc_elsewhere'))).toEqual({ listened: false, reason: 'chat_not_allowed' })
+  it('hears every group it is in, as the row other, unless other chats are set to none', () => {
+    expect(sources.scope(inChat('oc_elsewhere'))).toEqual({ listened: true, observed: false, row: 'other' })
+    const none = setup({ ...base, sources: { feishu: { enabled: true, config: { chats: [], directMessages: true, otherChats: 'none' } } } })
+    expect(none.sources.scope(inChat('oc_elsewhere'))).toEqual({ listened: false, reason: 'chat_not_allowed' })
     const others = setup(withTable({ other: { unlistedAddressed: 'explicit' } }, { otherChats: 'mentions' }))
     expect(others.sources.scope(inChat('oc_elsewhere'))).toEqual({ listened: true, observed: false, row: 'other' })
     expect(others.policy.gate(inChat('oc_elsewhere'), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit', basis: { row: 'other' } })
@@ -191,7 +193,7 @@ describe('revalidating a Mandate from the admission table', () => {
     const chats = item.scope === 'none' ? [] : [{ chatId: CHAT, listen: item.scope }]
     const settings = SettingsSchema.parse({
       eval: { mode: item.mode },
-      sources: { feishu: feishuSource({ chats, directMessages: true }) },
+      sources: { feishu: feishuSource({ chats, directMessages: true, ...item.scope === 'none' ? { otherChats: 'none' as const } : {} }) },
       policy: {
         rules: [{ id: 'copy', name: 'Copy', enabled: item.rule, instruction: 'x' }],
         sources: { feishu: { allowed: item.listed ? [{ id: SENDER }] : [], admission: { [CHAT]: Object.fromEntries(cells.map(cell => [cell, grant(cell)])) } } },
@@ -212,7 +214,7 @@ describe('revalidate and version', () => {
     expect(policy.revalidate(mandate)).toBe(true)
     const nobody = { ...base, policy: { ...base.policy, sources: {} } }
     expect(setup(nobody).policy.revalidate(mandate)).toBe(false)
-    const silent = { ...base, sources: { feishu: feishuSource({ chats: [], directMessages: true }) } }
+    const silent = { ...base, sources: { feishu: feishuSource({ chats: [], directMessages: true, otherChats: 'none' }) } }
     expect(setup(silent).policy.revalidate(mandate)).toBe(false)
     // A Mandate from before the gate recorded how it admitted a Trigger holds while its sender is listed and the Source listens.
     const listed: MandateBasis = { via: 'listed', source: 'feishu', scope: { chatId: CHAT, direct: false }, sender: 'Alice' }

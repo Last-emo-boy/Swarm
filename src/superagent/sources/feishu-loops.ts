@@ -157,8 +157,10 @@ async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<vo
       continue
     }
     const seen = ctx.state.get(KV.feishu.chats) ?? {}
-    const known = Object.entries(seen).filter(([, direct]) => direct && config.directMessages)
-    const chats = { ...Object.fromEntries(config.chats.map(chat => [chat.chatId, false])), ...Object.fromEntries(known) }
+    const known = Object.entries(seen).filter(([, direct]) => direct ? config.directMessages : config.otherChats === 'mentions')
+    // Every group it is in is heard, unless other chats are off: its messages fill in what the live stream missed.
+    const groups = config.otherChats === 'mentions' ? Object.keys(ctx.state.get(KV.sources.labels(SOURCE)) ?? {}).map(chatId => [chatId, false] as const) : []
+    const chats = { ...Object.fromEntries(groups), ...Object.fromEntries(config.chats.map(chat => [chat.chatId, false])), ...Object.fromEntries(known) }
     const errors: string[] = []
     const tally = { skipped: 0 }
     for (const [chatId, direct] of Object.entries(chats)) {

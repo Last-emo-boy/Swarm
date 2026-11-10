@@ -869,13 +869,14 @@ People send these commands to the Feishu bot, after mentioning it or in a direct
 | `/takeover [ticket]` | the requester or a maintainer | Opens a pull request from a local ticket's patch, as a new ticket of yours. It waits until you linked and the ticket has its patch; a ticket is taken over only once. |
 | `/devices` | anyone; maintainers and owners see the node names | Shows what the agent runs work on now: this node and its paired nodes, online or not, with their harnesses, and how many ticket workers are free. |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned. |
-| `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list. |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this chat may write. |
-| `/chatter [on\|off]` | owner, in a group listed with `/listen all`; anyone may ask | Whether the agent joins the conversation here on its own. |
+| `/chatter [on\|off]` | owner, in a group; anyone may ask | Whether the agent joins the conversation here on its own. |
+| `/memory [@name] [page]` | anyone (an owner, about someone else) | What the agent remembers about you, numbered, in a direct message. |
+| `/forget <number>\|all [@name]` | anyone (an owner, about someone else) | Forgets one note about you, by its number in `/memory`, or all of them. |
 
-People can also ask in their own words: the agent runs `/help`, `/me`, `/link`, `/repo`, `/takeover` and `/devices` for them, as if
-they had typed it. `/role`, `/listen`, `/ceiling`, `/chatter` and `/unlink` change settings or remove a link, so they
-have to be typed.
+People can also ask in their own words: the agent runs `/help`, `/me`, `/link`, `/repo`, `/takeover`, `/devices`, `/memory` and `/forget`
+for them, as if they had typed it. `/role`, `/ceiling`, `/chatter` and `/unlink` change settings or remove a link, so they
+have to be typed. The agent hears every group it is in: there is nothing to list.
 
 A message that asks for no work, such as thanks or a question the agent can answer at once, gets a short answer and
 starts no ticket. With `/chatter on`, the agent also speaks up in the group on its own when the chat has gone quiet and
