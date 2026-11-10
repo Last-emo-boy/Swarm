@@ -326,7 +326,7 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
         posted.push("progress");
       }
     } else if (notice && (report.state === "blocked" || report.state === "failed")) {
-      client.outbox.send({ id: stoppedId(ticketId, at), channel: notice, text: given!, kind: "reply", ticketId });
+      client.outbox.send({ id: stoppedId(ticketId, at, report.state), channel: notice, text: given!, kind: "reply", ticketId });
       posted.push("notice");
     } else if (report.state === "ready" && message && !answerIsResult) {
       client.engine.reply({ purpose: "result", ticketId, text: message, ...(attachment ? { attachment } : {}) });

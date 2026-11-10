@@ -28,8 +28,11 @@ export function progressDue(store: Pick<Store, "get" | "set">, ticket: Pick<Tick
   return due;
 }
 
-/** The id of the notice that a report stopped a ticket's work, shared by the worker's own words and the host's, so one goes out. */
-export const stoppedId = (ticketId: string, at: string): string => key("stopped", ticketId, at);
+/**
+ * The id of the notice that a report stopped a ticket's work, shared by the worker's own words and the host's, so one goes
+ * out; with the report's state, so a failure and a block reported in the same millisecond each get theirs.
+ */
+export const stoppedId = (ticketId: string, at: string, state: "failed" | "blocked"): string => key("stopped", ticketId, at, state);
 
 /** The host's notice that a ticket's work stopped, with the report's reason, in the language of its request. */
 export function stoppedNotice(state: "failed" | "blocked", summary: string, request: string): string {
