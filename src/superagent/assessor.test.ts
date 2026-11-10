@@ -6,6 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { liveTicket, type Trigger } from "./core/index.js";
 import { ModelAssessor, routeProblem, type AgentCommands, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
+import { devicesOf } from "./devices.js";
 import { KV } from "./kv.js";
 import { placementOf, workNeeds, type MeshView } from "./placement.js";
 import { settingsPath, writeSettings } from "./settings.js";
@@ -18,6 +19,8 @@ let calls: { purpose: string; system: string; user: string }[];
 let assessor: ModelAssessor;
 /** This node and its paired nodes as a mesh node shows them to the router; none on a host that is not a mesh node. */
 let view: MeshView | undefined;
+/** Why reading what the host runs work on fails, when it does. */
+let devicesFail: string | undefined;
 let opened = false;
 const complete: Complete = async (input) => {
   calls.push(input);
@@ -30,6 +33,7 @@ beforeEach(() => {
   answers = [];
   calls = [];
   view = undefined;
+  devicesFail = undefined;
 });
 afterEach(() => {
   if (opened) client.close();
@@ -40,7 +44,11 @@ function start(settings: unknown = {}, commands?: AgentCommands) {
   writeSettings(settings, settingsPath(stateDir));
   client = new SuperagentClient({ stateDir });
   opened = true;
-  assessor = new ModelAssessor({ client, complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}) });
+  assessor = new ModelAssessor({ client, complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}),
+    devices: async () => {
+      if (devicesFail) throw new Error(devicesFail);
+      return devicesOf({ settings: client.settings(), store: client.store, ...(view ? { view } : {}), running: 1 });
+    } });
 }
 /** Runs the Eval the Trigger is in, as the host's assessment effect does. */
 async function judge(triggerId: string) {
@@ -508,4 +516,36 @@ test("keeps the harness a request was filed with, and counts every profile as th
   await judge(named.triggerId);
   assert.equal(JSON.parse(calls[1]!.user).candidate.harnesses.choices.opencode, "this node");
   assert.equal(ticketOf(named.triggerId).execution?.harness, "opencode");
+});
+
+test("tells the router what it runs work on, naming the nodes to maintainers and owners and giving everyone else counts", async () => {
+  start({ ...ACCESS, policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }], roles: { ou_bob: "everyone" } } } } });
+  view = { ...MESH, offline: ["pc"] };
+  const chat = (reply: string) => JSON.stringify({ kind: "chat", reply });
+  const alice = await fromAlice("你现在能调用哪些设备？", "om_1");
+  answers.push(chat("我在 bot-vm 上跑，mac 在线、有 codex 和 claude，pc 离线。"));
+  await judge(alice.id);
+  assert.match(calls[0]!.system, /## Devices\n\nThe card's devices says what you run work on now/);
+  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.devices, {
+    this_node: { name: "bot-vm", machine: ["linux"], harnesses: [] },
+    paired_nodes: [{ name: "mac", online: true, machine: ["macos"], harnesses: ["codex", "claude"] }, { name: "pc", online: false }],
+    ticket_workers: { runs_as: "processes on this node", total: 3, busy: 1, free: 2 }
+  });
+  assert.equal(client.store.tickets.list().length, 0);
+
+  const bob = await fromFeishu("ou_bob", "你现在能调用哪些设备？", "om_2");
+  answers.push(chat("现在配了 2 个节点，1 个在线，还有 2 个空闲的 worker。"));
+  await judge(bob.id);
+  const counts = JSON.parse(calls[1]!.user).candidate.devices;
+  assert.deepEqual(counts.paired_nodes, { total: 2, online: 1 });
+  assert.match(counts.node_names, /only maintainers and owners see which nodes these are/);
+  // The devices the card shows name no node; what the agent said in this chat before, which Bob read there, may.
+  assert.doesNotMatch(JSON.stringify(counts), /bot-vm|"mac"|"pc"/);
+
+  // Routing goes on when the host cannot tell, and the card says so.
+  devicesFail = "the mesh state could not be read";
+  const again = await fromAlice("还有哪些机器在线？", "om_3");
+  answers.push(chat("现在查不到设备情况。"));
+  await judge(again.id);
+  assert.equal(JSON.parse(calls[2]!.user).candidate.devices, "unknown now: the mesh state could not be read");
 });

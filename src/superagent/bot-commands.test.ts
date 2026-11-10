@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import { liveTicket, type Ticket, type Trigger } from "./core/index.js";
 import { BotCommands, commandOf } from "./bot-commands.js";
+import { devicesOf } from "./devices.js";
 import { GithubLinks, linkKey, linkOf } from "./github-link.js";
 import { KV } from "./kv.js";
 import { SuperagentClient } from "./client.js";
@@ -140,6 +141,29 @@ describe("bot commands", () => {
     expect(commands.receive(stranger)).toBe("stored");
     expect(client.store.triggers.disposition(stranger.id)?.command).toBeUndefined();
     expect(replies()).toEqual([]);
+  });
+});
+
+describe("devices", () => {
+  /** A bot VM with OpenCode, paired with a Mac that has Codex and a PC that does not answer, one of its three workers busy. */
+  const view = { here: { name: "bot-vm", abilities: ["linux", "harness:opencode"] }, peers: [{ name: "mac", abilities: ["macos", "harness:codex"] }], offline: ["pc"] };
+  it("shows a maintainer which nodes the agent runs work on and everyone else counts, also when the router runs it for them", async () => {
+    commands = new BotCommands(client, { links, devices: async () => devicesOf({ settings: client.settings(), store: client.store, view, running: 1 }) });
+    commands.receive(message(MAINTAINER, "/devices"));
+    await until(() => replies().length === 1);
+    expect(replies()[0]!.text).toBe("This node: bot-vm (linux; harnesses: opencode). Paired nodes: mac, online (macos; harnesses: codex); pc, offline. "
+      + "Workers: 2 of 3 free, as processes on this node.");
+    commands.receive(message(READER, "/devices"));
+    await until(() => replies().length === 2);
+    expect(replies()[1]!.text).toBe("Paired nodes: 2, 1 online. Workers: 2 of 3 free, as processes on this node. Only maintainers and owners see which nodes these are.");
+    const asked = message(READER, "你现在能调用哪些设备？");
+    commands.receive(asked);
+    commands.perform(asked, "devices", []);
+    await until(() => replies().length === 3);
+    expect(replies()[2]!.text).toBe("配对节点：2 个，1 个在线。worker：3 个，空闲 2 个，在本机以进程运行。只有 maintainer 和 owner 能看到具体是哪些节点。");
+    commands = new BotCommands(client, { links });
+    commands.receive(message(MAINTAINER, "/devices"));
+    expect(replies().at(-1)!.text).toBe("This host does not tell what it runs work on.");
   });
 });
 

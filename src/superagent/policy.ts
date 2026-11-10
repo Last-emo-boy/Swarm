@@ -148,6 +148,11 @@ export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strengt
  * without the access model, else maintainers and owners.
  */
 export const choosesHarness = (settings: Settings, actor: ActorRef): boolean => !settings.access || atLeast(roleOf(settings, actor), 'maintainer')
+/**
+ * Whether `actor` learns which nodes the agent runs work on and what each runs (devices.ts): anyone without the access
+ * model, else maintainers and owners. Everyone else learns how many there are and how many workers are free.
+ */
+export const seesNodes = (settings: Settings, actor: ActorRef): boolean => !settings.access || atLeast(roleOf(settings, actor), 'maintainer')
 /** Whether `actor` steers a ticket under `mandate`: always without the access model, else its requester and maintainers do. */
 export function steers(settings: Settings, mandate: Pick<Mandate, 'actor'>, actor: ActorRef): boolean {
   if (!settings.access) return true

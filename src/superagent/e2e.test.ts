@@ -402,3 +402,23 @@ test("a worker whose reply is tool-call markup instead of the loop's JSON is ask
   const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
   assert.ok(replies.some((reply) => reply.text === "The smoke test is written."));
 });
+
+test("the host tells what it runs work on, asking its paired nodes again only after a while or after a read that failed", async () => {
+  let reads = 0;
+  host.meshView = async () => {
+    reads++;
+    if (reads === 1) throw new Error("the mesh state could not be read");
+    return { here: { name: "here", abilities: ["linux"] }, peers: [], offline: ["mac"] };
+  };
+  try {
+    await assert.rejects(host.devices(), /could not be read/);
+    const first = await host.devices();
+    await host.devices();
+    assert.equal(reads, 2);
+    assert.deepEqual(first.here, { name: "here", machine: ["linux"], harnesses: [] });
+    assert.deepEqual(first.peers, [{ name: "mac", online: false, machine: [], harnesses: [] }]);
+    assert.deepEqual(first.workers, { isolation: "process", slots: { total: 3, busy: 0, free: 3 } });
+  } finally {
+    host.meshView = undefined;
+  }
+});

@@ -867,12 +867,13 @@ People send these commands to the Feishu bot, after mentioning it or in a direct
 | `/repo [owner/name]` | anyone, in a direct message | Lists or sets your default repository. |
 | `/unlink` | anyone | Removes your GitHub link. |
 | `/takeover [ticket]` | the requester or a maintainer | Opens a pull request from a local ticket's patch, as a new ticket of yours. It waits until you linked and the ticket has its patch; a ticket is taken over only once. |
+| `/devices` | anyone; maintainers and owners see the node names | Shows what the agent runs work on now: this node and its paired nodes, online or not, with their harnesses, and how many ticket workers are free. |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned. |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list. |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this chat may write. |
 | `/chatter [on\|off]` | owner, in a group listed with `/listen all`; anyone may ask | Whether the agent joins the conversation here on its own. |
 
-People can also ask in their own words: the agent runs `/help`, `/me`, `/link`, `/repo` and `/takeover` for them, as if
+People can also ask in their own words: the agent runs `/help`, `/me`, `/link`, `/repo`, `/takeover` and `/devices` for them, as if
 they had typed it. `/role`, `/listen`, `/ceiling`, `/chatter` and `/unlink` change settings or remove a link, so they
 have to be typed.
 
