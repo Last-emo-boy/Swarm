@@ -49,6 +49,15 @@ describe('attachments', () => {
       [['im', '+messages-reply', '--message-id', 'om_9', '--file', 'fix-typo-abc.patch', '--idempotency-key', 'c1-file'], join(path, '..')]
     ])
   }))
+  it('sends a message that starts with @ as written, since lark-cli reads a file for a value that starts with one', async () => {
+    const calls: string[][] = []
+    const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands
+    const at = (address: Record<string, string>): OutboundMessage => ({ id: 'a1', kind: 'reply', text: '@小王 你好', channel: { source: 'feishu', thread: 'feishu:oc_1', address } })
+    await sendFeishu({ commands }, at({ chatId: 'oc_1', messageId: 'om_1' }))
+    await sendFeishu({ commands }, at({ chatId: 'oc_1', mode: 'chat' }))
+    await sendFeishu({ commands }, { ...at({}), channel: feishuUserChannel('ou_alice') })
+    expect(calls.map((args) => args[args.indexOf(args.includes('--text') ? '--text' : '--markdown') + 1])).toEqual(['@@小王 你好', '@@小王 你好', '@@小王 你好'])
+  })
   it('sends a direct message to a person by open_id, and drops one Feishu refuses for good, such as outside the app\'s availability', async () => {
     const calls: string[][] = []
     const send = (error?: Error) => ({ lark: async (args: string[]) => { calls.push(args); if (error) throw error; return {} } }) as unknown as Commands
