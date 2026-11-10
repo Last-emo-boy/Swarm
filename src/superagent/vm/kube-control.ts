@@ -35,6 +35,11 @@ export interface ClusterControl {
 const APP = "swarm-ticket", SLOT = "swarm.w33d.xyz/slot", TICKET = "swarm.w33d.xyz/ticket";
 /** The device plugin's resource for /dev/kvm, and the group that owns /dev/kvm on the nodes. */
 const KVM = "swarm.w33d.xyz/kvm", KVM_GROUP = 109;
+/**
+ * The taint of the cluster's nodes for tickets, which ticket pods tolerate: a pool of them, apart from the nodes the
+ * cluster's own pods run on, has nodes only while tickets need them.
+ */
+const TICKET_NODES = "swarm.w33d.xyz/tickets";
 /** The runner image's user, which owns the volume's files. */
 const RUNNER_USER = 10_001;
 /** The tunnel's Service, and the egress policy whose list of nodes' addresses this host keeps, in the annotation below. */
@@ -108,6 +113,7 @@ export class KubeControl implements ClusterControl {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
           terminationGracePeriodSeconds: 10,
+          tolerations: [{ key: TICKET_NODES, operator: "Exists", effect: "NoSchedule" }],
           securityContext: { runAsNonRoot: true, runAsUser: RUNNER_USER, runAsGroup: RUNNER_USER, fsGroup: RUNNER_USER, supplementalGroups: [KVM_GROUP],
             seccompProfile: { type: "RuntimeDefault" } },
           containers: [{
