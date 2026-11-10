@@ -13,6 +13,7 @@ import { ChatterRoom } from "./chatter.js";
 import { Memories } from "./memories.js";
 import { GithubLinks, githubApp, linkKey, type Credential, type LinkView } from "./github-link.js";
 import { SuperagentClient } from "./client.js";
+import { devicesOf, type Devices } from "./devices.js";
 import { writeEnvironment, verifyEnvironment, workerBin } from "./environment.js";
 import { SwarmExecutor, type RemoteWork } from "./executor.js";
 import { KV } from "./kv.js";
@@ -30,6 +31,8 @@ import type { VmControl } from "./vm/vm-work.js";
 const PASS_MS = 2000;
 /** How often the host deletes the patches it kept too long. */
 const PRUNE_MS = 3_600_000;
+/** How long the router and `/devices` reuse what the paired nodes answered, rather than asking each of them again. */
+const MESH_VIEW_MS = 30_000;
 
 export interface HostOptions {
   stateDir?: string;
@@ -93,6 +96,7 @@ export class SuperagentHost {
   remote?: RemoteWork;
   /** This node and its paired nodes with their abilities, which the router says work runs on; a mesh node sets it (src/mesh/cli.ts). */
   meshView?: () => Promise<MeshView>;
+  private meshRead?: { at: number; view: Promise<MeshView> };
   private timer?: NodeJS.Timeout;
   private closing = false;
   private passing = false;
@@ -117,9 +121,9 @@ export class SuperagentHost {
         remote: () => this.remote,
         credential: (ticket) => this.credential(ticket)
       });
-      this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log });
+      this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log, devices: () => this.devices() });
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands,
-        mesh: async () => this.meshView?.() });
+        mesh: () => this.mesh(), devices: () => this.devices() });
       this.assessor.install();
       this.chatter = new ChatterRoom({ client: this.client, complete: options.complete });
       this.chatter.install();
@@ -244,6 +248,22 @@ export class SuperagentHost {
 
   /** Worker processes running here now. */
   runningWorkers(): number { return this.executor.running().length; }
+
+  /** This node and its paired nodes, as `meshView` read them at most `MESH_VIEW_MS` ago; none on a host that is no mesh node. */
+  private async mesh(): Promise<MeshView | undefined> {
+    if (!this.meshView) return undefined;
+    if (!this.meshRead || Date.now() - this.meshRead.at > MESH_VIEW_MS) {
+      const view = this.meshView();
+      this.meshRead = { at: Date.now(), view };
+      // A read that failed is not reused.
+      view.catch(() => { if (this.meshRead?.view === view) this.meshRead = undefined; });
+    }
+    return this.meshRead.view;
+  }
+  /** What this host runs its tickets' work on now: its node, its paired nodes and its free workers (devices.ts). */
+  async devices(): Promise<Devices> {
+    return devicesOf({ settings: this.client.settings(), store: this.client.store, view: await this.mesh(), running: this.runningWorkers() });
+  }
 
   /** A changed Policy version discards running Evals and tells the live tickets it bears on, as a settings save did upstream. */
   private applyPolicy(settings: Settings): void {

@@ -11,11 +11,12 @@ import { UserError, key, latestReport, liveTicket, threadKey, type ActorRef, typ
   type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { chatterOf } from "./chatter.js";
+import { devicesText, type Devices } from "./devices.js";
 import { WorktreeNameSchema } from "./messages.js";
 import { AUTHORIZATIONS_URL, githubApp, installUrl, linkOf, namedRepository, type GithubApp, type GithubLinks, type LinkView } from "./github-link.js";
 import { KV } from "./kv.js";
 import { memoryOf, personSubject } from "./memories.js";
-import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, steers, watchedRepository } from "./policy.js";
+import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, seesNodes, steers, watchedRepository } from "./policy.js";
 import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
 import { SOURCE as FEISHU, feishuUserChannel } from "./sources/feishu-trigger.js";
@@ -23,7 +24,7 @@ import { inChinese, sameName, sayIn, wordCount, type Say } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 
 const HOUR_MS = 3_600_000;
-export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "listen", "ceiling", "chatter", "takeover", "memory", "forget"] as const;
+export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "listen", "ceiling", "chatter", "takeover", "devices", "memory", "forget"] as const;
 export type CommandName = typeof COMMANDS[number];
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 
@@ -32,11 +33,11 @@ const short = (id: string): string => id.slice(0, 8);
 const help = (say: Say): string => say(
   "Commands: /me shows your role and limits; /link links your GitHub account (its code comes in a direct message), /unlink removes it, "
     + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch; "
-    + "/memory shows what I remember about you, in a direct message, and /forget <number>|all forgets it. "
+    + "/devices shows what I run work on now; /memory shows what I remember about you, in a direct message, and /forget <number>|all forgets it. "
     + "You can also ask for these in your own words. "
     + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.",
   "命令：/me 查看你的角色和限额；/link 绑定 GitHub 账号（验证码私聊发给你），/unlink 解除绑定；/repo [owner/name] 列出或设置默认仓库；"
-    + "/takeover [工单] 把本地工单的补丁做成拉取请求；/memory 私聊告诉你我记得你什么，/forget <编号>|all 让我忘掉。这些也可以直接用自己的话跟我说。"
+    + "/takeover [工单] 把本地工单的补丁做成拉取请求；/devices 查看我现在能用哪些设备；/memory 私聊告诉你我记得你什么，/forget <编号>|all 让我忘掉。这些也可以直接用自己的话跟我说。"
     + "owner 还能用：/role @某人 owner|maintainer|everyone|none，群里的 /listen all|mentions|off 和 /chatter on|off，/ceiling read-only|local|github。");
 /** How many words one page of /memory holds, within a chat message's limit. */
 const MEMORY_PAGE_WORDS = 85;
@@ -73,6 +74,8 @@ export interface BotCommandsOptions {
   /** The host's linked accounts; without them /link, /unlink and /repo say linking is not set up. */
   links?: GithubLinks;
   log?: (message: string) => void;
+  /** What the host runs its tickets' work on now, which /devices shows; without it /devices says the host does not tell. */
+  devices?: () => Promise<Devices>;
 }
 
 export class BotCommands {
@@ -188,9 +191,19 @@ export class BotCommands {
       case "ceiling": return this.ceiling(command, trigger, settings);
       case "chatter": return this.chatter(command, trigger, settings);
       case "takeover": return this.takeover(command, trigger, settings);
+      case "devices": return this.devices(trigger, settings);
       case "memory": return this.memory(command, trigger, settings);
       case "forget": return this.forget(command, trigger, settings);
     }
+  }
+
+  /** `/devices`: what the agent runs work on now; which nodes these are only for maintainers and owners, counts for everyone. */
+  private devices(trigger: Trigger, settings: Settings): string | undefined {
+    const say = this.say(trigger);
+    const { devices } = this.options;
+    if (!devices) return say("This host does not tell what it runs work on.", "这台主机不提供设备信息。");
+    const names = seesNodes(settings, trigger.actor);
+    return this.later(trigger, async () => devicesText(await devices(), names, say));
   }
 
   private me(trigger: Trigger, settings: Settings): string {

@@ -18,7 +18,7 @@ import { testDeployment } from "../testing/fixtures.js";
 import type { GuestSpec } from "./gateway.js";
 import { guestSettings, opencodeConfig } from "./guest.js";
 import type { ClusterControl } from "./kube-control.js";
-import { VmWork, vmHarnessIds, type VmControl } from "./vm-work.js";
+import { VmWork, vmHarnessIds, vmSlotCounts, type VmControl } from "./vm-work.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -330,6 +330,20 @@ test("a full house spills over to the cluster, where a ticket stays for good, an
   assert.equal(client.store.get(KV.vm.cluster(b.ticket.id)), undefined);
   assert.equal(client.store.get(KV.vm.disk(b.ticket.id)), undefined);
   assert.ok(!existsSync(join(stateDir, "vm", "ended", b.ticket.id)));
+});
+
+test("counts the slots a ticket's VM holds as busy, here and in the cluster, from the leases any process reads", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 1, port, kube: { slots: 2, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const vm = await start();
+  const counts = () => vmSlotCounts(client.store, client.settings().executor.vm);
+  assert.deepEqual(counts(), { local: { total: 1, busy: 0, free: 1 }, cluster: { total: 2, busy: 0, free: 2 } });
+  const a = ticket("add a NOTICE file", "add-notice");
+  const b = ticket("add a VERSION file", "add-version");
+  await vm.run(a.ticket, a.assignmentId);
+  await vm.run(b.ticket, b.assignmentId);
+  assert.deepEqual(counts(), { local: { total: 1, busy: 1, free: 0 }, cluster: { total: 2, busy: 1, free: 1 } });
+  await vm.release(0);
+  assert.deepEqual(counts().local, { total: 1, busy: 0, free: 1 });
 });
 
 test("a host with no slots of its own runs every ticket in the cluster", async () => {
