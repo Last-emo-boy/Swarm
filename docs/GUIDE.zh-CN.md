@@ -15,7 +15,7 @@
 - [安全和权限](#安全和权限)
 - [本地 Gateway](#本地-gateway)
 - [Symphony](#symphony)
-- [工单](#工单)：[harness worker](#harness-worker)、[harness 子代理](#harness-子代理)
+- [工单](#工单)：[角色和机器人命令](#角色和机器人命令)、[harness worker](#harness-worker)、[harness 子代理](#harness-子代理)
 - [网格](#网格)：[让节点保持运行和最新](#让节点保持运行和最新)
 - [用量、价格和预算](#用量价格和预算)
 - [架构](#架构)
@@ -480,6 +480,38 @@ swarm superagent retry <id>
 在 TUI 中，`/ticket <request>` 提交工作，`/ticket <id>` 显示一个工单，`/ticket say|stop|retry <id>` 对某个工单执行操作，`/tickets` 打开工单面板（方向键选择，Enter 打开，`s` 停止，`r` 重试，Esc 返回）。没有宿主在运行时，TUI 会启动一个，并在 TUI 退出时停止它。
 
 主动式的工作（例如一条没有指名的评论恰好匹配某条团队规则）从 `observe` 模式开始：评估结果会被记录为“would accept”，在 `eval.mode` 设为 `auto` 之前什么都不会运行。在配置好 agent 账号和机器人之前，GitHub 和飞书保持关闭。worker 以你的操作系统用户身份、在 `full-auto` 权限模式下运行；`gh`/`lark-cli` 包装器和被阻止的命令只是默认设置，并不是安全边界，而且工单讨论串上的消息会作为上下文传给它的 worker，所以在有陌生人评论的仓库中，请使用专用的操作系统账号。评估时还不会读取飞书图片。参见 [SUPERAGENT.md](SUPERAGENT.md)。
+
+### 角色和机器人命令
+
+在 superagent 设置里加上 `access` 一块后，每个提需求的人都有一个角色，角色决定他们的工单能写到哪一步。没有这一块时，来源 `allowed` 列表里的人什么都能做。
+
+| 角色 | 谁有这个角色 | 他们的需求 | 未结工单 | 每小时请求 |
+| --- | --- | --- | --- | --- |
+| `owner` | 在 `roles` 里指定 | 可以写到 GitHub；owner 还能用下面的设置命令 | 8 | 不限 |
+| `maintainer` | 在 `roles` 里指定，或在 `allowed` 列表里 | 可以写到 GitHub | 4 | 60 |
+| `everyone` | 被列入的群放进来的其他人 | 只在本地做 | 1 | 10 |
+
+- **写到 GitHub** 用的是提需求的人自己的身份。他们先用 `/link` 绑定一次 GitHub 账号，worker 的 `gh` 和 git 就用这个账号操作他们的仓库。没有绑定账号，或者是没人要求的工作（推断出来的，或机器人发的），工单只在本地做：worker 在自己的目录里提交，没有 `gh` 和 `lark-cli` 账号，结果里附上这些提交的补丁。之后可以用 `/takeover` 把补丁变成拉取请求。
+- **群的上限**（`read-only`、`local` 或 `github`）会压低在那个群里提出的所有工作。没人列入的群是 `local`。
+- **谁能操控工单。** 提需求的人和 maintainer。其他人在工单对话里发的消息只作为上下文交给 worker，既不会让工单继续，也不能停下它。
+- **限额。** 超出发送者限额的消息会被搁下，并回复一次说明原因。`access.limits` 可以改这些数字。
+
+在飞书里 @ 机器人或私聊它，可以用这些命令：
+
+| 命令 | 谁能用 | 作用 |
+| --- | --- | --- |
+| `/me` | 任何人 | 显示你的角色、未结工单、最近一小时的请求、这个群的上限和你的 GitHub 账号。 |
+| `/link`、`/repo [owner/name]` | 任何人，私聊 | 用一个在 GitHub 上输入的验证码绑定你的 GitHub 账号；列出或设置你的默认仓库。 |
+| `/unlink` | 任何人 | 解除 GitHub 绑定。 |
+| `/takeover [工单]` | 提需求的人或 maintainer | 把本地工单的补丁做成拉取请求，作为你的一张新工单。 |
+| `/role @某人 owner\|maintainer\|everyone\|none` | owner | 设置被 @ 的人的角色。 |
+| `/listen all\|mentions\|off` | owner，在群里 | 把这个群列入，或移出列表。 |
+| `/ceiling read-only\|local\|github` | owner | 设置在这个群里提出的工作最多能写到哪一步。 |
+| `/chatter [on\|off]` | owner，在用 `/listen all` 列入的群里；任何人都能查询 | agent 是否在这里主动加入对话。 |
+
+不需要干活的消息，比如道谢，或者 agent 当场就能回答的问题，会得到一句简短的回复，不开工单。打开 `/chatter on` 后，群里安静下来、agent 又有话可说时，它也会主动发言：每小时最多几次，安静时段不说话。
+
+第一个 owner、`/link` 背后的 GitHub App，以及 agent 在群里的人设、发言频率和安静时段，都写在设置文件里，见 [SUPERAGENT.md](SUPERAGENT.md#access)（英文）。
 
 ### Harness worker
 

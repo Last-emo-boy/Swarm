@@ -16,7 +16,7 @@ Everything Swarm does, command by command. For what Swarm is and a first session
 - [Safety and permissions](#safety-and-permissions)
 - [Local Gateway](#local-gateway)
 - [Symphony](#symphony)
-- [Tickets](#tickets): [harness workers](#harness-workers), [harness subagents](#harness-subagents)
+- [Tickets](#tickets): [roles and bot commands](#roles-and-bot-commands), [harness workers](#harness-workers), [harness subagents](#harness-subagents)
 - [Mesh](#mesh): [keeping nodes up and current](#keeping-nodes-up-and-current)
 - [Usage, prices and budgets](#usage-prices-and-budgets)
 - [Architecture](#architecture)
@@ -828,6 +828,48 @@ permission mode; the `gh`/`lark-cli` wrappers and blocked commands are defaults,
 not a security boundary, and messages on a ticket's threads reach its worker as
 context, so use a dedicated OS account for repositories where strangers comment.
 Feishu images are not read during assessments yet. See [SUPERAGENT.md](SUPERAGENT.md).
+
+### Roles and bot commands
+
+With an `access` block in the superagent settings, each person who asks has a role, and the role decides how far their
+tickets may write. Without the block, everyone on a Source's `allowed` list may do everything.
+
+| Role | Who has it | Their requests | Open tickets | Requests an hour |
+| --- | --- | --- | --- | --- |
+| `owner` | set in `roles` | may write to GitHub; owners also run the setup commands below | 8 | no limit |
+| `maintainer` | set in `roles`, or on `allowed` | may write to GitHub | 4 | 60 |
+| `everyone` | anyone else a listed chat lets in | stay local | 1 | 10 |
+
+- **Writing to GitHub** happens as the person who asked. They link their GitHub account once with `/link`, and the
+  worker's `gh` and git use that account on their repository. Without a link, and for work nobody asked for (inferred,
+  or a bot's), the ticket stays local: its worker commits in its own directory, has no `gh` or `lark-cli` account, and
+  its result carries the commits as a patch. `/takeover` turns that patch into a pull request later.
+- **A chat's ceiling** (`read-only`, `local` or `github`) lowers this for everything asked there. Chats nobody listed
+  are `local`.
+- **Steering.** The person who asked and the maintainers steer a ticket. Anyone else's message on its conversation
+  reaches the worker as context only: it neither resumes the ticket nor stops it.
+- **Limits.** A message beyond its sender's limits is held back with one answer that says so. `access.limits` changes
+  the numbers.
+
+People send these commands to the Feishu bot, after mentioning it or in a direct message:
+
+| Command | Who | What it does |
+| --- | --- | --- |
+| `/me` | anyone | Shows your role, open tickets, requests in the last hour, this chat's ceiling and your GitHub account. |
+| `/link`, `/repo [owner/name]` | anyone, in a direct message | Links your GitHub account with a code you enter on GitHub; lists or sets your default repository. |
+| `/unlink` | anyone | Removes your GitHub link. |
+| `/takeover [ticket]` | the requester or a maintainer | Opens a pull request from a local ticket's patch, as a new ticket of yours. |
+| `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned. |
+| `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list. |
+| `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this chat may write. |
+| `/chatter [on\|off]` | owner, in a group listed with `/listen all`; anyone may ask | Whether the agent joins the conversation here on its own. |
+
+A message that asks for no work, such as thanks or a question the agent can answer at once, gets a short answer and
+starts no ticket. With `/chatter on`, the agent also speaks up in the group on its own when the chat has gone quiet and
+it has something to add: a few times an hour at most, and never in quiet hours.
+
+The first owner, the GitHub App behind `/link`, and the agent's persona, pace and quiet hours in a group are set in the
+settings file; see [SUPERAGENT.md](SUPERAGENT.md#access).
 
 ### Harness workers
 
