@@ -27,6 +27,8 @@ let port: number;
 let calls: string[];
 /** The token each cluster slot's pod got. */
 let tokens: Map<number, string>;
+/** Why the next cluster start fails, if it does. */
+let clusterFails: string | undefined;
 let model: Awaited<ReturnType<typeof startFakeModel>>;
 const swarmHome = mkdtempSync(join(tmpdir(), "swarm-vm-home-"));
 const savedHome = process.env.SWARM_HOME;
@@ -37,8 +39,13 @@ const control = (): VmControl => ({
   collect: async () => { calls.push("collect"); }
 });
 const cluster = (): ClusterControl => ({
-  start: async (index, ticketId, secret) => { calls.push(`cluster start ${index} ${ticketId}`); tokens.set(index, secret); },
-  stop: async (index) => { calls.push(`cluster stop ${index}`); },
+  start: async (index, pod, ticketId, secret) => {
+    calls.push(`cluster start ${index} ${ticketId}`);
+    assert.match(pod, new RegExp(`^swarm-ticket-${index}-`));
+    tokens.set(index, secret);
+    if (clusterFails) throw new Error(clusterFails);
+  },
+  stop: async (pod) => { calls.push(`cluster stop ${pod.replace(/-[0-9a-f]{6}$/, "")}`); },
   discard: async (ticketId) => { calls.push(`cluster discard ${ticketId}`); },
   guard: async () => { calls.push("cluster guard"); }
 });
@@ -59,6 +66,7 @@ beforeEach(() => {
   port = 42_000 + Math.floor(Math.random() * 8000);
   calls = [];
   tokens = new Map();
+  clusterFails = undefined;
   writeSettings({ access: {}, sources: { github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },
     policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "maintainer" } } } },
     executor: { isolation: "vm", vm: { slots: 2, port }, prepare: "true" } }, settingsPath(stateDir));
@@ -308,7 +316,7 @@ test("a full house spills over to the cluster, where a ticket stays for good, an
   // With this host's slot free, the VERSION ticket's follow-up still boots in the cluster, where its disk is.
   await vm.release(0);
   await vm.release(1);
-  assert.deepEqual(calls.slice(-2), ["stop 0", "cluster stop 0"]);
+  assert.deepEqual(calls.slice(-2), ["stop 0", "cluster stop swarm-ticket-0"]);
   calls.length = 0;
   await vm.run(b.ticket, b.assignmentId);
   await vm.run(d.ticket, d.assignmentId);
@@ -331,4 +339,33 @@ test("a host with no slots of its own runs every ticket in the cluster", async (
   await vm.run(a.ticket, a.assignmentId);
   assert.deepEqual(calls, [`cluster start 0 ${a.ticket.id}`]);
   assert.throws(() => writeSettings({ executor: { isolation: "vm", vm: { slots: 0 } } }, settingsPath(stateDir)), /slots is 0 and kube is not set/);
+});
+
+test("a cluster start runs in the background: the launch returns at once, and a start that fails launches again later, until its boots run out", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 0, port, kube: { slots: 1, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const vm = await start();
+  const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
+  clusterFails = "kubectl apply: the server is unavailable";
+  for (let boot = 1; boot <= 3; boot++) {
+    assert.equal(await vm.run(first, assignmentId), true, "the launch does not wait for the cluster");
+    await new Promise((resolve) => setImmediate(resolve));
+    const record = client.store.get(KV.vm.slot("c0"))!;
+    assert.equal(record.error, clusterFails);
+    const retry = Date.parse(record.expiresAt) - Date.now();
+    assert.ok(retry > 25_000 * boot && retry <= 30_000 * boot, `boot ${boot} launches again after ${retry} ms`);
+    // The shortened lease runs out: the slot lets the boot go and the Assignment launches again.
+    client.store.set(KV.vm.slot("c0"), { ...record, expiresAt: new Date(Date.now() - 1).toISOString() });
+    client.store.db.prepare("DELETE FROM effect").run();
+    (vm as unknown as { lapse(): void }).lapse();
+    assert.equal(client.store.get(KV.vm.slot("c0"))?.tokenHash, "");
+    assert.ok(client.store.db.prepare("SELECT 1 FROM effect WHERE kind = 'launch' AND key = ?").get(assignmentId));
+  }
+  await assert.rejects(vm.run(first, assignmentId), /stopped 3 times before its worker started: kubectl apply: the server is unavailable/);
+  // A start that fails after the slot let its boot go changes nothing.
+  clusterFails = undefined;
+  const other = ticket("add a VERSION file", "add-version");
+  await vm.run(other.ticket, other.assignmentId);
+  const held = client.store.get(KV.vm.slot("c0"))!;
+  assert.equal(held.error, undefined);
+  assert.ok(Date.parse(held.expiresAt) - Date.now() > 14 * 60_000, "a cluster boot holds its lease for 15 minutes");
 });

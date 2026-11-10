@@ -12,7 +12,9 @@
  * on a follow-up; its data disk is deleted when the ticket ends.
  *
  * With `executor.vm.kube`, a Kubernetes cluster's slots (kube-control.ts) take tickets once this host's are full. A ticket
- * keeps to the kind of slot it first booted in, where its data disk is.
+ * keeps to the kind of slot it first booted in, where its data disk is. A cluster VM starts in the background: the
+ * launch returns once the slot holds the ticket, and a start that fails ends the slot's lease early, so the ticket
+ * launches again as after any boot that never reached its gateway.
  */
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -30,7 +32,7 @@ import { harnessProfiles, type HarnessProfile } from "../harness.js";
 import { KV } from "../kv.js";
 import type { Deployment } from "../setup.js";
 import { VmGateway } from "./gateway.js";
-import { KubeControl, type ClusterControl } from "./kube-control.js";
+import { KubeControl, podName, type ClusterControl } from "./kube-control.js";
 
 const exec = promisify(execFile);
 
@@ -41,6 +43,8 @@ const exec = promisify(execFile);
 export const LEASE_MS = 60_000, BOOT_MS = 3 * 60_000, CLUSTER_BOOT_MS = 15 * 60_000;
 /** How many boots in a row may end before their guest started the worker, before the ticket fails. */
 const MAX_BOOTS = 3;
+/** How long after a cluster VM's start failed, times the boots so far, its ticket launches again. */
+const BOOT_RETRY_MS = 30_000;
 
 /** The ticket a VM slot runs, under the lease its guest renews, or ran last. */
 export interface VmSlot {
@@ -54,6 +58,10 @@ export interface VmSlot {
   directory?: string;
   /** How many times in a row the slot booted this Assignment without its guest starting the worker. */
   boots?: number;
+  /** A cluster slot's pod for this boot. */
+  pod?: string;
+  /** Why the last start of a cluster VM failed. */
+  error?: string;
 }
 
 /** Starts and stops the VMs, which the deployment lets the host's account do for these units only. */
@@ -182,7 +190,9 @@ export class VmWork implements RemoteWork {
     const place = this.place(free.slot);
     const previous = free.record;
     const boots = previous?.ticketId === ticket.id && previous.assignmentId === assignmentId && !previous.directory ? (previous.boots ?? 1) + 1 : 1;
-    if (boots > MAX_BOOTS) throw new Error(`The ticket VM stopped ${MAX_BOOTS} times before its worker started; see the host's log`);
+    if (boots > MAX_BOOTS) {
+      throw new Error(`The ticket VM stopped ${MAX_BOOTS} times before its worker started${previous?.error ? `: ${previous.error}` : "; see the host's log"}`);
+    }
     const token = randomBytes(32).toString("base64url");
     if (!place.cluster) {
       const dir = this.slotDir(free.slot);
@@ -195,16 +205,21 @@ export class VmWork implements RemoteWork {
       this.client.store.set(KV.vm.disk(ticket.id), at);
       if (place.cluster) this.client.store.set(KV.vm.cluster(ticket.id), at);
     }
+    const pod = place.cluster ? podName(place.index) : undefined;
     this.setSlot(free.slot, { ticketId: ticket.id, assignmentId, tokenHash: hashToken(token), at,
-      expiresAt: new Date(Date.now() + (place.cluster ? CLUSTER_BOOT_MS : BOOT_MS)).toISOString(), boots });
+      expiresAt: new Date(Date.now() + (place.cluster ? CLUSTER_BOOT_MS : BOOT_MS)).toISOString(), boots, ...pod ? { pod } : {} });
+    if (pod) {
+      void this.boot(free.slot, pod, ticket.id, token);
+      this.host.log(`superagent: ticket ${ticket.id.slice(0, 8)} starts in cluster ticket VM ${place.index}`);
+      return true;
+    }
     try {
-      if (place.cluster) await this.cluster.start(place.index, ticket.id, token);
-      else await this.control.start(free.slot);
+      await this.control.start(free.slot);
     } catch (error) {
       await this.release(free.slot);
       throw new Error(`The ticket VM did not start: ${error instanceof Error ? error.message : String(error)}`);
     }
-    this.host.log(`superagent: ticket ${ticket.id.slice(0, 8)} runs in ${place.cluster ? `cluster ticket VM ${place.index}` : `ticket VM ${free.slot}`}`);
+    this.host.log(`superagent: ticket ${ticket.id.slice(0, 8)} runs in ticket VM ${free.slot}`);
     return true;
   }
 
@@ -218,6 +233,24 @@ export class VmWork implements RemoteWork {
     if (slot !== undefined) await this.release(slot);
   }
 
+  /**
+   * Starts a cluster slot's VM, in the background of the launch that took the slot. A start that fails ends this boot's
+   * lease after a while, so lapse() lets the slot go and launches the ticket again, until its boots run out.
+   */
+  private async boot(slot: number, pod: string, ticketId: string, token: string): Promise<void> {
+    const { index } = this.place(slot);
+    try {
+      await this.cluster.start(index, pod, ticketId, token);
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+      this.host.log(`superagent: cluster ticket VM ${index} did not start for ticket ${ticketId.slice(0, 8)}: ${message}`);
+      const record = this.slot(slot);
+      // The slot may have let this boot go, or taken another, meanwhile.
+      if (!record || record.pod !== pod || !this.live(record)) return;
+      this.setSlot(slot, { ...record, error: message, expiresAt: new Date(Date.now() + BOOT_RETRY_MS * (record.boots ?? 1)).toISOString() });
+    }
+  }
+
   /** Whether a ticket is open with its VM off, which a follow-up would boot again in the slot that ran it last. */
   private idleTicket(ticketId: string): boolean {
     const ticket = this.client.store.tickets.get(ticketId);
@@ -229,7 +262,7 @@ export class VmWork implements RemoteWork {
     const record = this.slot(slot), place = this.place(slot);
     if (record) this.setSlot(slot, { ...record, tokenHash: "", expiresAt: new Date(0).toISOString() });
     if (place.cluster) {
-      await this.cluster.stop(place.index).catch((error: unknown) => this.host.log(`superagent: stopping cluster ticket VM ${place.index} failed: ${String(error)}`));
+      if (record?.pod) void this.cluster.stop(record.pod).catch((error: unknown) => this.host.log(`superagent: stopping cluster ticket VM ${place.index} failed: ${String(error)}`));
       return;
     }
     rmSync(join(this.slotDir(slot), "token"), { force: true });
@@ -254,7 +287,7 @@ export class VmWork implements RemoteWork {
   started(slot: number, directory: string): void {
     const record = this.slot(slot);
     if (!record) return;
-    this.setSlot(slot, { ...record, directory, boots: 0 });
+    this.setSlot(slot, { ...record, directory, boots: 0, error: undefined });
     const ticket = this.client.store.tickets.get(record.ticketId);
     if (ticket?.assignments.find((item) => item.id === record.assignmentId)?.state === "pending") this.client.engine.assignmentStarted(record.ticketId, record.assignmentId);
   }

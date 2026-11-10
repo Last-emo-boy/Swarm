@@ -223,9 +223,12 @@ of its own (`diskGiB` plus room for the filesystem), which is deleted once the t
 with `kubeconfig` (empty: its service's `kubeconfig` credential) and only creates and deletes ticket pods, their token
 Secrets and volumes; the deployment forwards each cluster slot's tunnel port to the host's gateway for it, on 127.0.0.1 at
 `port` (default 47200) plus the slot. A ticket keeps to the side its disk is on, so a follow-up waits for the cluster's
-slots even when the host's are free. With `executor.vm.slots` set to 0, every ticket runs in the cluster. A cluster VM's boot holds its lease for 15 minutes, while the cluster adds a node;
-while cluster VMs run, the host keeps the nodes' public addresses, which change as it scales, in the egress policy's
-except list.
+slots even when the host's are free. With `executor.vm.slots` set to 0, every ticket runs in the cluster. A cluster VM starts in the background: the launch returns once the slot holds the
+ticket, and the host applies the volume and pod, waits for the pod's node (which the cluster may add first), and only then
+creates the pod's token Secret, after the nodes' public addresses are in the egress policy's except list, so nothing in
+the pod runs before its node is out of its reach. A start that fails ends the boot's lease after 30 seconds per boot so
+far, and the ticket launches again, failing after three boots with the error. A boot holds its lease for 15 minutes;
+while cluster VMs run, the host keeps the except list current every 15 seconds.
 
 ## Safety
 
