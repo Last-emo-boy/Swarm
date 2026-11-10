@@ -3,7 +3,8 @@
  * VM for the ticket its slot runs. It reads the ticket's spec from its gateway, points Swarm's providers at the gateway's
  * model proxy with the slot's token as their key, prepares the ticket's directory once (the prepare command, a clone of its
  * requester's repository, the patch of a ticket it takes over), starts the worker, renews the slot's lease while it runs,
- * and tells the gateway when it exits. The VM powers off after it.
+ * and tells the gateway when it exits. The VM powers off after it. A ticket on an OpenCode profile gets OpenCode's
+ * configuration the same way: Swarm's providers at the gateway, with the slot's token as their key.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +13,7 @@ import { join } from "node:path";
 import { getSwarmPaths, type ProviderDefinition } from "../../config/settings.js";
 import { workerEnvironment, writeEnvironment } from "../environment.js";
 import { applyPatch, cloneRepository, prepareDirectory, WORKER_SHELL_AUTO_BACKGROUND_MS } from "../executor.js";
+import { settingsPath, writeSettings } from "../settings.js";
 import type { GuestSpec } from "./gateway.js";
 import { callGateway, GATEWAY_VARIABLE, gatewayFromEnv, TOKEN_VARIABLE, type Gateway } from "./gateway-link.js";
 
@@ -31,6 +33,50 @@ export function guestSettings(spec: Pick<GuestSpec, "models" | "providers">, gat
     return [id, guest];
   }));
   return { version: 1, models: spec.models, providers, enabledProviders: Object.keys(providers) };
+}
+
+/** A model reference as a provider and a model, with Swarm's default provider for one that names none. */
+function modelOf(ref: string, models: GuestSpec["models"]): { provider: string; model: string } {
+  const at = ref.indexOf("/");
+  return at < 0 ? { provider: models.defaultProvider, model: ref } : { provider: ref.slice(0, at), model: ref.slice(at + 1) };
+}
+
+/**
+ * OpenCode's configuration in the VM and its credentials: Swarm's chat-completions providers with the gateway's model proxy
+ * as their base URL and the slot's token as their key, the worker's model as OpenCode's, and the profile's model too.
+ * DeepSeek keeps OpenCode's own DeepSeek package, which passes reasoning back as DeepSeek's API asks of a call with tools;
+ * other providers go through OpenCode's OpenAI-compatible one. The gateway relays only chat-completions streams.
+ */
+export function opencodeConfig(spec: Pick<GuestSpec, "providers" | "models" | "model" | "harness">, gateway: Gateway):
+  { config: Record<string, unknown>; auth: Record<string, unknown> } {
+  const model = modelOf(spec.model, spec.models);
+  const protocol = spec.providers[model.provider]?.protocol;
+  if (protocol !== "openai-chat-completions") {
+    throw new Error(`OpenCode in a ticket VM calls its model through the gateway as chat completions, and ${spec.model} uses ${protocol ?? "no provider Swarm knows"}: set executor.model to a chat-completions model`);
+  }
+  const wanted = [model, ...spec.harness?.profile.model ? [modelOf(spec.harness.profile.model, spec.models)] : []];
+  const providers = Object.entries(spec.providers).filter(([, provider]) => provider.protocol === "openai-chat-completions");
+  const provider = Object.fromEntries(providers.map(([id, definition]) => [id, {
+    ...id === "deepseek" ? {} : { npm: "@ai-sdk/openai-compatible", name: `${definition.name} through Swarm` },
+    options: { baseURL: `${gateway.url}/v1/model/${id}`, includeUsage: true },
+    models: Object.fromEntries(wanted.filter((item) => item.provider === id).map((item) => [item.model, { name: item.model }]))
+  }]));
+  return {
+    config: { $schema: "https://opencode.ai/config.json", autoupdate: false, share: "disabled", model: `${model.provider}/${model.model}`, provider },
+    auth: Object.fromEntries(providers.map(([id]) => [id, { type: "api", key: gateway.token }]))
+  };
+}
+
+/** Writes OpenCode's configuration and credentials into the guest's home, and the ticket's profile into its superagent settings. */
+function writeOpencode(spec: GuestSpec & { harness: NonNullable<GuestSpec["harness"]> }, gateway: Gateway): void {
+  const { config, auth } = opencodeConfig(spec, gateway);
+  const configDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode");
+  const dataDir = join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode");
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, "opencode.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(join(dataDir, "auth.json"), `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
+  writeSettings({ executor: { harnesses: { [spec.harness.id]: spec.harness.profile } } }, settingsPath());
 }
 
 /** The worker's environment in the VM: the shims of its accounts, its ticket's variables and, with GitHub, its token. */
@@ -79,6 +125,7 @@ export async function runGuest(entry: readonly string[], log: (message: string) 
   writeFileSync(paths.settingsPath, `${JSON.stringify(guestSettings(spec, gateway), null, 2)}\n`, { mode: 0o600 });
   let env: NodeJS.ProcessEnv;
   try {
+    if (spec.harness) writeOpencode({ ...spec, harness: spec.harness }, gateway);
     env = await environment(spec, gateway);
     if (!existsSync(spec.directory)) await prepare(spec, gateway, env);
   } catch (error) {

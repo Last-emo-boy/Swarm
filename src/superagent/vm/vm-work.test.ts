@@ -16,8 +16,8 @@ import { localOperator } from "../sources/local.js";
 import { startFakeModel, writeFakeModelHome } from "../testing/fake-model.js";
 import { testDeployment } from "../testing/fixtures.js";
 import type { GuestSpec } from "./gateway.js";
-import { guestSettings } from "./guest.js";
-import { VmWork, type VmControl } from "./vm-work.js";
+import { guestSettings, opencodeConfig } from "./guest.js";
+import { VmWork, vmHarnessIds, type VmControl } from "./vm-work.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -201,7 +201,7 @@ test("a ticket that ended marks its disk for deletion, and a requester whose lin
   assert.deepEqual(calls.filter((item) => item.startsWith("start")), [], `the stopped ticket was ${assignmentId}'s`);
 });
 
-test("the model proxy forwards a worker's calls with the host's provider and refuses what Swarm's provider never sends", async () => {
+test("the model proxy forwards a worker's calls with the host's provider and refuses what Swarm's provider and OpenCode never send", async () => {
   const vm = await start();
   const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
   await vm.run(first, assignmentId);
@@ -211,9 +211,67 @@ test("the model proxy forwards a worker's calls with the host's provider and ref
   assert.equal(answer.status, 200);
   assert.equal((answer.body.choices as { message: { content: string } }[])[0]?.message.content, "pong");
   assert.equal(model.requests.length, before + 1);
-  assert.equal((await call(0, "POST", "/v1/model/local-test/chat/completions", secret, { model: "model", messages: [], stream: true })).status, 400);
+  // A streamed call, as OpenCode makes, is relayed as it comes, asked for its usage, and counted under the ticket's worker.
+  const streamed = await fetch(`http://127.0.0.1:${port}/v1/model/local-test/chat/completions`, { method: "POST",
+    headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "model", messages: [{ role: "user", content: "ping" }], stream: true }) });
+  assert.equal(streamed.status, 200);
+  assert.match(streamed.headers.get("content-type") ?? "", /text\/event-stream/);
+  const events = await streamed.text();
+  assert.match(events, /"content":"pong"/);
+  assert.match(events, /data: \[DONE\]/);
+  assert.deepEqual(model.requests.at(-1)?.body.stream_options, { include_usage: true });
+  const { DatabaseSync } = await import("node:sqlite");
+  const ledger = new DatabaseSync(join(swarmHome, "state", "swarm.db"), { readOnly: true });
+  const counted = ledger.prepare("SELECT count(*) AS n FROM usage_events WHERE session_id = ? AND kind = 'llm_call' AND unit = 'count'").get(`worker-${first.id}`) as { n: number };
+  ledger.close();
+  assert.equal(counted.n, 2, "both calls are in the ledger");
+  const callsBefore = model.requests.length;
+  assert.equal((await call(0, "POST", "/v1/model/local-test/chat/completions", secret, { model: "model", messages: [], background: true })).status, 400);
   assert.equal((await call(0, "POST", "/v1/model/local-test/models", secret, {})).status, 403);
   assert.equal((await call(0, "POST", "/v1/model/nowhere/chat/completions", secret, {})).status, 404);
   assert.equal((await call(0, "POST", "/v1/model/local-test/chat/completions", "wrong", {})).status, 401);
-  assert.equal(model.requests.length, before + 1, "nothing refused reached the provider");
+  assert.equal(model.requests.length, callsBefore, "nothing refused reached the provider");
+});
+
+test("a ticket on an OpenCode profile runs in a VM, whose spec carries the profile without its command or keys; other harnesses do not", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 2, port }, prepare: "true",
+    harnesses: { "opencode-ds": { kind: "opencode", command: "/opt/opencode", model: "local-test/model", keys: { LOCAL_TEST_API_KEY: "HOST_SECRET" } } } } }, settingsPath(stateDir));
+  const vm = await start();
+  const filed = (text: string, harness: string) => {
+    const { triggerId } = client.request(text, undefined, { harness });
+    client.engine.evaluateDue();
+    const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: text, scope: "x", reason: "asked", name: harness, evalId: client.engine.candidate(triggerId)!.evalId });
+    const found = client.store.tickets.get(ticketId!)!;
+    return { ticket: found, assignmentId: latestAssignment(found)!.id };
+  };
+  const open = filed("add a NOTICE file", "opencode-ds");
+  assert.equal(open.ticket.execution?.harness, "opencode-ds");
+  assert.equal(await vm.run(open.ticket, open.assignmentId), true);
+  const spec = (await call(0, "GET", "/v1/spec", token(0))).body as unknown as GuestSpec;
+  assert.deepEqual(spec.harness, { id: "opencode-ds", profile: { kind: "opencode", model: "local-test/model", args: [], env: {}, keys: {} } });
+  assert.equal(spec.model, "local-test/model");
+  const claude = filed("add a VERSION file", "claude");
+  await assert.rejects(vm.run(claude.ticket, claude.assignmentId), /Ticket VMs run Swarm's own coding loop and OpenCode, not claude/);
+  assert.deepEqual(vmHarnessIds({}), ["opencode"]);
+});
+
+test("OpenCode in a VM calls Swarm's chat-completions providers at the gateway with the slot's token, and refuses a model it cannot call", () => {
+  const gateway = { url: "http://10.0.2.2:47100", token: "slot-token" };
+  const providers = {
+    deepseek: { id: "deepseek", name: "DeepSeek", protocol: "openai-chat-completions", baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_API_KEY", apiKeyRequired: true, auth: "bearer", models: {} },
+    other: { id: "other", name: "Other", protocol: "openai-chat-completions", baseURL: "https://other.example", apiKeyEnv: "OTHER_API_KEY", apiKeyRequired: true, auth: "bearer", models: {} },
+    claude: { id: "claude", name: "Claude", protocol: "anthropic-messages", baseURL: "https://anthropic.example", apiKeyEnv: "A_KEY", apiKeyRequired: true, auth: "x-api-key", models: {} }
+  } as GuestSpec["providers"];
+  const models = { defaultProvider: "deepseek", planner: "", worker: "deepseek-flash", aggregator: "", apiKeyEnv: "", maxOutputTokens: null } as GuestSpec["models"];
+  const { config, auth } = opencodeConfig({ providers, models, model: "deepseek-flash",
+    harness: { id: "opencode", profile: { kind: "opencode", model: "other/big", args: [], env: {}, keys: {} } } }, gateway);
+  assert.equal(config.model, "deepseek/deepseek-flash");
+  assert.deepEqual(config.provider, {
+    deepseek: { options: { baseURL: "http://10.0.2.2:47100/v1/model/deepseek", includeUsage: true }, models: { "deepseek-flash": { name: "deepseek-flash" } } },
+    other: { npm: "@ai-sdk/openai-compatible", name: "Other through Swarm", options: { baseURL: "http://10.0.2.2:47100/v1/model/other", includeUsage: true },
+      models: { big: { name: "big" } } }
+  });
+  assert.deepEqual(auth, { deepseek: { type: "api", key: "slot-token" }, other: { type: "api", key: "slot-token" } });
+  assert.throws(() => opencodeConfig({ providers, models, model: "claude/sonnet" }, gateway), /chat completions, and claude\/sonnet uses anthropic-messages/);
 });

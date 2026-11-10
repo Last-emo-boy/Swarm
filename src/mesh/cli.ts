@@ -437,11 +437,15 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete() });
     // The harnesses this node can run its workers on, as abilities work on a harness needs. Sign-ins lapse and are renewed,
     // so they are checked again every few minutes; the array is updated in place for the card and the work that share it.
-    const { harnessAbilities } = await import("../superagent/harness.js");
+    const { harnessAbilities, harnessAbility } = await import("../superagent/harness.js");
+    const { vmHarnessIds } = await import("../superagent/vm/vm-work.js");
     const { settingsPath } = await import("../superagent/settings.js");
     const machine = [...abilities];
     const checkHarnesses = async (): Promise<void> => {
-      const found = await harnessAbilities(host.client.settings().executor.harnesses, settingsPath(host.stateDir));
+      const executor = host.client.settings().executor;
+      // With ticket VMs, harness work here runs in a VM, which has OpenCode, and calls its model through the host's gateway.
+      const found = executor.isolation === "vm" ? vmHarnessIds(executor.harnesses).map(harnessAbility)
+        : await harnessAbilities(executor.harnesses, settingsPath(host.stateDir));
       abilities.splice(0, abilities.length, ...machine, ...found);
     };
     await checkHarnesses();

@@ -30,6 +30,17 @@ export async function startFakeModel(answer: Answer): Promise<{ url: string; req
       };
       const index = requests.push(entry) - 1;
       void (async () => answer(entry, index))().then((content) => {
+        // A streamed request, as OpenCode sends, gets the answer as chat-completion chunks, its usage in the last one.
+        if ((body as { stream?: unknown }).stream === true) {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          const chunk = (rest: Record<string, unknown>) => `data: ${JSON.stringify({ id: `chatcmpl-${index + 1}`, object: "chat.completion.chunk", created: 0, model: "model", ...rest })}\n\n`;
+          response.write(chunk({ choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }] }));
+          response.write(chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }));
+          const usage = (body as { stream_options?: { include_usage?: unknown } }).stream_options?.include_usage === true;
+          if (usage) response.write(chunk({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }));
+          response.end("data: [DONE]\n\n");
+          return;
+        }
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({
           id: `chatcmpl-${index + 1}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: "model",
