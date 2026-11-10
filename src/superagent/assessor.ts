@@ -8,7 +8,6 @@ import { z } from "zod/v4";
 import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, type Capability, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
-import { said } from "./chatter.js";
 import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js";
 import { harnessIds } from "./harness.js";
 import { KV } from "./kv.js";
@@ -17,6 +16,7 @@ import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
   watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
+import { chatName, conversation, peopleIn, senderOf } from "./people.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
 import { IM_WORDS, NOTE_WORDS, checkedImText, sameName, wordCount } from "./text.js";
@@ -160,6 +160,8 @@ const problem = (error: unknown): string => error instanceof z.ZodError ? z.pret
 
 /** How many of the requester's repositories the router's card lists. */
 const LISTED_REPOS = 300;
+/** The conversation around a Feishu message on the router's card: how far back, how many messages, how long each, and how many of the chat's people. */
+const CONVERSATION_MS = 6 * 3_600_000, CONVERSATION_LINES = 12, LINE_CHARS = 300, PEOPLE_HERE = 40;
 /** Character limits in the thread window of an assessment, as upstream's orchestrator_eval served it. */
 const TRIGGER_CHARS = 4000, NEAR_CHARS = 1200, WINDOW_CHARS = 400, STUB_CHARS = 50;
 const cut = (text: string, limit: number) => text.length <= limit ? { text } : { text: `${text.slice(0, limit)}…`, chars: text.length };
@@ -207,6 +209,7 @@ export class ModelAssessor {
       ...triggerMessage(primary, primary.url ? { source_url: primary.url } : {}, undefined, parent),
       text: cut(primary.text, TRIGGER_CHARS).text,
       ...(primary.source === "feishu" ? { posted_in: primary.meta.threadId ? "a topic" : primary.meta.direct === true ? "a direct message" : "a group chat" } : {}),
+      ...this.people(candidate, primary),
       strength: candidate.strength,
       ...(others.length ? { batch: others.map((trigger) => triggerCard(trigger)) } : {}),
       ...(handedBack.length ? { handed_back: handedBack } : {}),
@@ -215,6 +218,25 @@ export class ModelAssessor {
       ...(referenced.length ? { referenced_tickets: referenced.map(ticketCard) } : {}),
       ...(recent.length ? { recent_tickets: recent } : {}),
       ...this.requester(candidate)
+    };
+  }
+  /**
+   * Who is who around a Feishu message: its sender's and chat's names, the people it mentions, the conversation it is
+   * part of (without the candidate's own messages, which the card has), and who else is in the chat.
+   */
+  private people(candidate: Candidate, primary: Trigger): Record<string, unknown> {
+    if (primary.source !== "feishu") return {};
+    const { store } = this.host.client;
+    const chatId = String(primary.meta.chatId ?? "");
+    const sender = senderOf(store, primary);
+    const chat = primary.meta.direct === true ? undefined : chatName(store, chatId);
+    const mentioned = Array.isArray(primary.meta.mentions) ? primary.meta.mentions : [];
+    const lines = conversation(store, primary, { since: new Date(Date.now() - CONVERSATION_MS).toISOString(), limit: CONVERSATION_LINES,
+      chars: LINE_CHARS, exclude: new Set(candidate.triggers.map((trigger) => trigger.id)), self: this.host.client.resolvedDeployment()?.feishu?.name ?? "" });
+    const here = primary.meta.direct === true ? [] : peopleIn(store, chatId, PEOPLE_HERE);
+    return {
+      ...(sender !== primary.actor.id ? { from_name: sender } : {}), ...(chat ? { chat_name: chat } : {}),
+      ...(mentioned.length ? { mentioned } : {}), ...(lines.length ? { conversation: lines } : {}), ...(here.length ? { people_here: here } : {})
     };
   }
   /**
@@ -362,7 +384,6 @@ export class ModelAssessor {
           client.store.atomic(() => {
             engine.decide(triggerId, { kind: "ignore", reason: { code: "chatted" }, evalId: candidate.evalId });
             client.outbox.send({ id: key("chat", triggerId), channel, text, kind: "reply" });
-            said(client.store, trigger, text);
           });
           return undefined;
         }

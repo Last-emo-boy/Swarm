@@ -271,6 +271,34 @@ test("puts its words on Feishu where the router chose: small talk as a plain mes
   assert.match(routeProblem({ kind: "chat", reply: "Hi", reply_as: "dm" }) ?? "", /reply_as/);
 });
 
+test("shows the router who is who on Feishu: the sender's and chat's names, who is mentioned and here, and the conversation around the message", async () => {
+  start({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } } });
+  const { feishuTrigger } = await import("./sources/feishu.js");
+  const { noticed, readMembers } = await import("./people.js");
+  client.store.set(KV.sources.labels("feishu"), { oc_team: "Team" });
+  await readMembers(async () => ({ users: [{ member_id: "ou_alice", name: "Alice" }, { member_id: "ou_bob", name: "Bob" }], bots: [] }), client.store, "oc_team");
+  const message = (id: string, sender: string, content: string, mentions: { id: string; key: string; name: string }[] = []) => {
+    const trigger = noticed(client.store, feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: sender, sender_type: "user",
+      content, create_time: String(Date.now() - (id === "om_0" ? 120_000 : 0)), mentions }, "ou_bot", "cli_app")!);
+    client.engine.receive(trigger);
+    return trigger;
+  };
+  message("om_0", "ou_bob", "the deploy is broken again");
+  const asked = message("om_1", "ou_alice", "@_user_1 can you check what @_user_2 said?",
+    [{ id: "ou_bot", key: "@_user_1", name: "w33d" }, { id: "ou_bob", key: "@_user_2", name: "Bob" }]);
+  answers.push(JSON.stringify({ kind: "chat", reply: "Bob says the deploy is broken again." }));
+  await judge(asked.id);
+  const card = JSON.parse(calls[0]!.user).candidate;
+  assert.equal(card.from, "ou_alice");
+  assert.equal(card.from_name, "Alice");
+  assert.equal(card.chat_name, "Team");
+  assert.deepEqual(card.mentioned, [{ id: "ou_bot", name: "w33d" }, { id: "ou_bob", name: "Bob" }]);
+  assert.deepEqual(card.conversation.map((line: { from: string; text: string }) => [line.from, line.text]), [["Bob", "the deploy is broken again"]]);
+  assert.deepEqual(card.people_here, [{ id: "ou_alice", name: "Alice" }, { id: "ou_bob", name: "Bob" }]);
+  assert.match(calls[0]!.system, /## People\n\nOn Feishu the card says who is who/);
+});
+
 /** Feishu settings with the access model on and a GitHub App people link their accounts with. */
 const ACCESS = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } },
   github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },

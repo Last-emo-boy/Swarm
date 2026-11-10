@@ -119,7 +119,7 @@ export class SuperagentHost {
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands,
         mesh: async () => this.meshView?.() });
       this.assessor.install();
-      this.chatter = new ChatterRoom({ client: this.client, complete: options.complete, configured: () => !!this.deployment?.feishu });
+      this.chatter = new ChatterRoom({ client: this.client, complete: options.complete });
       this.chatter.install();
     } catch (error) {
       this.release();
