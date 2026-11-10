@@ -25,7 +25,7 @@ const harnessSection = ({ label, tool }: HarnessKind): string => [
   `## Working in ${label}`,
   "",
   `You run in ${label} as this ticket's worker. Swarm's ticket host starts you for one turn at a time and resumes this session when the ticket has news.`,
-  `Swarm's ticket tools are the MCP server \`ticket\`: ${["read", "people", "message", "ack", "report", "handback", "thread_follow"].map(tool).join(", ")} and ${tool("thread_unrelated")}.`,
+  `Swarm's ticket tools are the MCP server \`ticket\`: ${["read", "people", "message", "remember", "recall", "ack", "report", "handback", "thread_follow"].map(tool).join(", ")} and ${tool("thread_unrelated")}.`,
   `Where the sections above mention tool_calls or a final JSON, call the tools as ${label} calls tools. Your final message is not a report and reaches nobody: end every turn with ${tool("report")}.`,
   "Nobody can answer a permission prompt: an action that is denied stays denied, so choose another way, or report blocked with human_action naming what it needs.",
   "Commit only what you changed for this ticket: stage those files by path, never with `git add -A` or `git add .`, and leave files you did not make, such as a tool's untracked state directory, out of every commit and where they are.",

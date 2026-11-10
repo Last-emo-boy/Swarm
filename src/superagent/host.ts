@@ -10,6 +10,7 @@ import { key, liveTicket, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
 import { BotCommands } from "./bot-commands.js";
 import { ChatterRoom } from "./chatter.js";
+import { Memories } from "./memories.js";
 import { GithubLinks, githubApp, linkKey, type Credential, type LinkView } from "./github-link.js";
 import { SuperagentClient } from "./client.js";
 import { devicesOf, type Devices } from "./devices.js";
@@ -85,6 +86,7 @@ export class SuperagentHost {
   private readonly assessor: ModelAssessor;
   private readonly botCommands: BotCommands;
   private readonly chatter: ChatterRoom;
+  private readonly memories: Memories;
   private readonly links: GithubLinks;
   private release?: () => void;
   private prunedAt = 0;
@@ -125,6 +127,8 @@ export class SuperagentHost {
       this.assessor.install();
       this.chatter = new ChatterRoom({ client: this.client, complete: options.complete });
       this.chatter.install();
+      this.memories = new Memories({ client: this.client, complete: options.complete });
+      this.memories.install();
     } catch (error) {
       this.release();
       throw error;
@@ -223,6 +227,7 @@ export class SuperagentHost {
       this.client.engine.evaluateDue();
       if (!settings.paused) {
         this.chatter.pass();
+        this.memories.pass();
         this.botCommands.takeOverWanted();
       }
       this.client.effects.kick();

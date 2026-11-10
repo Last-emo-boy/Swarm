@@ -56,7 +56,14 @@ export const KV = {
   people: { person: family<{ name: string; at: string }, [source: string, id: string]>('person:'),
     members: family<Members, [chat: string]>('chatter-members:'),
     /** When a ticket's worker sent its messages to people in the last hour, by ticket id (ticket-tools.ts). */
-    sent: family<string[]>('messages-sent:') },
+    sent: family<string[]>('messages-sent:'),
+    /** What the agent said in a person's direct messages by their open_id, where it wrote to them rather than replied (outbox.ts). */
+    dm: family<Said[], [person: string]>('dm-said:') },
+  /**
+   * The agent's memory (memories.ts): when it last reflected on each chat and on which of its messages, by chat id, and
+   * the direct messages it started on its own lately, to whom and when.
+   */
+  memory: { reflected: family<{ at: string; from: string; upTo: string }, [chat: string]>('memory-reflected:'), reached: record<{ at: string; person: string }[]>('memory-reached') },
   /**
    * Ticket VMs (vm/vm-work.ts): the ticket each slot runs, under a lease its guest renews, by slot number; the tickets that
    * have a data disk, by ticket id, since their first boot; and of those, the ones whose disk is a volume of the cluster.

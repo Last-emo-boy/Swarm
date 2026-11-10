@@ -10,6 +10,7 @@ import { dirname } from 'node:path'
 import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, type ReplyStatus, type Repositories, type Thread, type ThreadFact,
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from './core/index.js'
 import { KV, type Family, type Key } from './kv.js'
+import type { Note } from './memories.js'
 import { storeReads } from './store-read.js'
 
 /** A Trigger's position on its thread timeline, ordered by timestamp and then `id` as tie-breaker. */
@@ -38,6 +39,8 @@ const SETS: Record<string, Record<string, string>> = {
   // Composite key (ticketId + thread) used to preserve per-conversation reply order.
   outbox: { dropped: "TEXT AS (value ->> '$.dropped.at')", pending: `TEXT AS (CASE WHEN value ->> '$.status' = 'pending'
     AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
+  // The promises the agent has yet to keep, by when they fall due (memories.ts).
+  memory: { due: "TEXT AS (CASE WHEN value ->> '$.kind' = 'promise' AND value -> '$.done' IS NULL THEN value ->> '$.due' END)" },
 }
 export const SCHEMA_VERSION = 1
 /**
@@ -76,6 +79,8 @@ export class Store implements Repositories {
             generation INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', due INTEGER NOT NULL,
             since TEXT NOT NULL, PRIMARY KEY (kind, key));
           CREATE TABLE IF NOT EXISTS local_request (id TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS memory (id TEXT PRIMARY KEY, about TEXT NOT NULL, value TEXT NOT NULL, updated TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS memory_about ON memory(about, updated);
           CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
           CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
           CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
@@ -172,6 +177,23 @@ export class Store implements Repositories {
     const prefix = typeof family === 'string' ? family : family.prefix
     const pattern = `${prefix.replace(/[\\%_]/g, match => `\\${match}`)}%`
     return this.db.prepare("SELECT key FROM kv WHERE key LIKE ? ESCAPE '\\'").all(pattern).map(row => String(row.key))
+  }
+
+  /** What the agent remembers (memories.ts): notes by id, each about one subject, newest first. */
+  readonly memory = {
+    get: (id: string): Note | undefined => this.values<Note>('SELECT value FROM memory WHERE id=?', id)[0],
+    about: (subject: string, limit = 1000): Note[] => this.values<Note>('SELECT value FROM memory WHERE about=? ORDER BY updated DESC LIMIT ?', subject, limit),
+    count: (subject: string): number => Number(this.db.prepare('SELECT COUNT(*) AS n FROM memory WHERE about=?').get(subject)?.n ?? 0),
+    save: (note: Note): void => { this.db.prepare('INSERT INTO memory VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET about=excluded.about, value=excluded.value, updated=excluded.updated')
+      .run(note.id, note.about, JSON.stringify(note), note.updated) },
+    delete: (id: string): void => { this.db.prepare('DELETE FROM memory WHERE id=?').run(id) },
+    /** Forgets every note about `subject`; returns how many there were. */
+    deleteAbout: (subject: string): number => Number(this.db.prepare('DELETE FROM memory WHERE about=?').run(subject).changes),
+    /** Notes whose text contains `text`, newest first. */
+    search: (text: string, limit: number): Note[] => this.values<Note>(`SELECT value FROM memory WHERE value ->> '$.text' LIKE ? ESCAPE '\\'
+      ORDER BY updated DESC LIMIT ?`, `%${text.replace(/[\\%_]/g, match => `\\${match}`)}%`, limit),
+    /** Promises due at or before `at`, soonest first. */
+    due: (at: string): Note[] => this.values<Note>('SELECT value FROM memory INDEXED BY memory_due WHERE due IS NOT NULL AND due <= ? ORDER BY due', at),
   }
 
   readonly triggers = {

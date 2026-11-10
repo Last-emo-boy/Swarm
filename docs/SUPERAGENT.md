@@ -137,8 +137,10 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
 | `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own, whatever `/listen` says |
+| `/memory [@name] [page]` | anyone (an owner, about someone else) | What the agent remembers about you, numbered, in a direct message |
+| `/forget <number>\|all [@name]` | anyone (an owner, about someone else) | Forgets one note about you, by its number in `/memory`, or all of them |
 
-People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo`, `/takeover` and `/devices` for someone whose
+People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo`, `/takeover`, `/devices`, `/memory` and `/forget` for someone whose
 message asks for what one does, as if they had typed it. The others change settings or remove a link, so only people type
 them. The first owner is set in the settings file.
 
@@ -232,6 +234,33 @@ It reads the chat from the messages it keeps, so this works whatever `/listen` s
 
 The persona also shapes its answers to messages addressed to it. Reading every message of a group needs the Feishu app's
 `im:message.group_msg` permission.
+
+### Memory
+
+With `memory.enabled`, the agent remembers people, chats and itself across conversations and tickets, as a person would.
+Its notes are short, one thing each, about one subject, and record where it learned them: facts, preferences, events,
+and promises, which have a due time.
+
+- **Writing.** Once a chat (a group or a direct message) has gone quiet for `lullSeconds` with at least `minMessages` new
+  messages, or one addressed to the agent, and at most every `reflectMinutes`, one model call reads what was said and
+  changes the notes about the people who spoke, the chat and itself. A ticket that ends gets the same about its requester.
+  A message that asks it to remember something or to remind someone ("明天十点提醒我…") is kept by the router with its
+  answer, so the answer can say so. Workers keep notes with the `remember` tool and look them up with `recall`.
+- **Reading.** The router, chatter and each ticket's worker get the notes about whoever and wherever they talk: the sender,
+  the people mentioned, the chat and the agent itself. Notes are used everywhere, like one person's memory; the prompts ask
+  for tact about what was said in private, and never to keep secrets or keys.
+- **Acting on it.** When a promise falls due, the agent writes the message itself and posts it where it was made, with an @,
+  or in the person's direct messages. After a conversation it may also write to someone on its own, at most `dmPerDay`
+  times a day, once a day per person, and never in chatter's quiet hours.
+- **Upkeep.** A subject with more than `perSubject` notes is tidied by the model into about half.
+- **Control.** `/memory` shows anyone what it remembers about them, and `/forget` erases it; owners can name anyone.
+
+Every model call here runs as an effect in the background: `superagent_memory` reflects and tidies, and
+`superagent_promise` keeps promises.
+
+```json
+{ "memory": { "enabled": true, "lullSeconds": 300, "reflectMinutes": 30, "minMessages": 4, "perSubject": 40, "dmPerDay": 3 } }
+```
 
 ## Ticket VMs
 

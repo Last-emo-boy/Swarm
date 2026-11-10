@@ -133,6 +133,34 @@ describe("bot commands", () => {
     commands.receive(message(BOSS, "/chatter on"));
     expect(current().chatter).toMatchObject({ everywhere: true, off: [] });
   });
+  it("tells a person what it remembers about them in a direct message, a page at a time, and forgets what they ask; an owner, about anyone", async () => {
+    const { personSubject } = await import("./memories.js");
+    commands.receive(message(MAINTAINER, "/memory"));
+    expect(replies().at(-1)!.text).toBe("My memory is off here.");
+    writeSettings({ ...settings(), memory: { enabled: true } }, settingsPath(stateDir));
+    commands.receive(message(MAINTAINER, "/memory"));
+    expect(replies().at(-1)!.text).toBe("I don't remember anything about you yet.");
+    for (let index = 0; index < 20; index++) {
+      const at = new Date(Date.parse("2026-11-01T00:00:00Z") + index * 60_000).toISOString();
+      client.store.memory.save({ id: `n${index}`, about: personSubject(MAINTAINER), kind: "fact", text: `Alice note number ${index} about something long enough`,
+        origin: { chatId: CHAT }, created: at, updated: at });
+    }
+    commands.receive(message(MAINTAINER, "/memory"));
+    const [list, answer] = replies().slice(-2);
+    expect(list!.channel.address).toEqual({ userId: MAINTAINER, mode: "user", direct: "true" });
+    expect(list!.text).toMatch(/^What I remember about you:\n1\. Alice note number 19 /);
+    expect(list!.text).toMatch(/\(page 1 of 3: \/memory 2 for more\)$/);
+    expect(answer!.text).toBe("I sent you the list in a direct message.");
+    commands.receive(message(MAINTAINER, "/memory 3", { direct: true }));
+    expect(replies().at(-1)!.text).toMatch(/^What I remember about you:\n\d+\. .*\n20\. Alice note number 0 [^(]*$/s);
+    commands.receive(message(MAINTAINER, "/forget 1", { direct: true }));
+    expect(replies().at(-1)!.text).toBe("Forgot: Alice note number 19 about something long enough");
+    commands.receive(message(MAINTAINER, "/memory @Boss", { mentions: [BOT, BOSS] }));
+    expect(replies().at(-1)!.text).toBe("That did not work: only an owner can do that");
+    commands.receive(message(BOSS, "/forget all @Alice", { mentions: [BOT, MAINTAINER] }));
+    expect(replies().at(-1)!.text).toBe("Forgot everything about Alice (19).");
+    expect(client.store.memory.count(personSubject(MAINTAINER))).toBe(0);
+  });
   it("hands every other message, and anything from a sender the gate would not take, to the Engine", () => {
     const request = message(READER, "fix the typo");
     expect(commands.receive(request)).toBe("stored");

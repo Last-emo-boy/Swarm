@@ -170,6 +170,23 @@ export const SourceInstanceSchema = z.object({
   enabled: z.boolean().default(true),
   config: z.record(z.string(), z.unknown()).default({})
 }).strict();
+/** The agent's memory of people, chats and itself (memories.ts): off unless an owner turns it on. */
+export const MemorySchema = z.object({
+  enabled: z.boolean().default(false),
+  /** The model that reflects on conversations; the eval model by default. */
+  model: ModelRefSchema,
+  /** How long a chat stays quiet before the agent reflects on what was said there. */
+  lullSeconds: z.number().int().min(10).max(86_400).default(300),
+  /** The least time between two reflections on one chat. */
+  reflectMinutes: z.number().int().min(1).max(1440).default(30),
+  /** How many new messages a chat needs before a reflection, unless one of them addressed the agent. */
+  minMessages: z.number().int().min(1).max(200).default(4),
+  /** How many notes one subject keeps before the agent tidies them into fewer. */
+  perSubject: z.number().int().min(5).max(500).default(40),
+  /** How many direct messages it starts on its own in a day, at most one per person. */
+  dmPerDay: z.number().int().min(0).max(50).default(3)
+}).strict();
+export type Memory = z.infer<typeof MemorySchema>;
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
   sources: z.record(SourceIdSchema, SourceInstanceSchema).default({}),
@@ -177,7 +194,8 @@ export const SettingsSchema = z.object({
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
   access: AccessSchema.optional(),
-  chatter: ChatterSchema.optional()
+  chatter: ChatterSchema.optional(),
+  memory: MemorySchema.optional()
 }).strict();
 export type Settings = z.infer<typeof SettingsSchema>;
 

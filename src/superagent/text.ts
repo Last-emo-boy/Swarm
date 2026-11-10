@@ -31,3 +31,14 @@ export type Say = (english: string, chinese: string) => string;
 export const sayIn = (chinese: boolean): Say => (english, inChineseWords) => chinese ? inChineseWords : english;
 /** The wording of a message to a person, in the language of what they wrote. */
 export const wording = (written: string): Say => sayIn(inChinese(written));
+
+/** The first JSON object in a model's answer. */
+export function parseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = /\{[\s\S]*\}/.exec(text);
+    if (!match) throw new Error("The model returned no JSON object");
+    return JSON.parse(match[0]);
+  }
+}

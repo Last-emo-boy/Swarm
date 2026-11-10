@@ -12,6 +12,7 @@ import { workerPrompt } from "./prompts.js";
 import type { Deployment } from "./setup.js";
 import { fileReport, type ReportArgs } from "./ticket-tools.js";
 import { ticketVariables, variableLines } from "./variables.js";
+import { memoryOf, notesCard, subjectsOf } from "./memories.js";
 
 /** A report a worker on another machine files itself, as its owner's routes take it. */
 export const ReportSchema = z.object({ state: z.enum(["progress", "waiting", "ready", "blocked", "failed", "dropped"]), summary: z.string().min(1).max(8000) });
@@ -67,7 +68,8 @@ export function workStart(client: SuperagentClient, deployment: Deployment, tick
     directory, blockedCommands: settings.executor.blockedCommands, ...(settings.executor.model ? { model: settings.executor.model } : {}),
     ...(write ? { write } : {}),
     prompt: workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(ticket.mandate, watchedRepository(settings)), sources,
-      github: !!deployment.github, ...(write ? { write } : {}), persona: settings.chatter?.persona ?? "" })
+      github: !!deployment.github, ...(write ? { write } : {}), persona: settings.chatter?.persona ?? "",
+      ...(memoryOf(settings) && origin?.source === "feishu" ? { memory: notesCard(client.store, subjectsOf(origin), 8, 20) } : {}) })
   };
 }
 

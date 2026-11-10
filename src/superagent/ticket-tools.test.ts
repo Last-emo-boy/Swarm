@@ -70,3 +70,21 @@ test("a worker messages people on Feishu for its ticket, in their direct message
   for (let index = 0; index < 8; index++) await run({ to: "Bob", text: `Update ${index}.` });
   await assert.rejects(run({ to: "Bob", text: "One more." }), /sent 10 messages in the last hour/);
 });
+
+test("a worker keeps notes for later and looks up what the agent remembers, when its memory is on", async () => {
+  const { personSubject } = await import("./memories.js");
+  const { triggerId } = client.request("set up the CI");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Set up CI", scope: "x", reason: "asked", name: "set-up-ci", evalId: candidate.evalId });
+  const run = (name: string, args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === name)!.run(args);
+  await assert.rejects(run("remember", { about: "self", text: "I set up CI with GitHub Actions" }), /memory is off/);
+  writeSettings({ memory: { enabled: true } }, settingsPath(stateDir));
+  assert.deepEqual(await run("remember", { about: "self", kind: "fact", text: "I set up CI with GitHub Actions" }), { remembered: true });
+  assert.deepEqual(await run("remember", { about: "ou_bob", kind: "preference", text: "Bob wants CI to run on every push" }), { remembered: true });
+  await assert.rejects(run("remember", { about: "requester", text: "x" }), /not someone or something here/, "a local request has no Feishu requester");
+  const found = await run("recall", { query: "every push" }) as { notes: { text: string; about: string }[] };
+  assert.deepEqual(found.notes.map((note) => [note.about, note.text]), [["ou_bob", "Bob wants CI to run on every push"]]);
+  assert.equal(client.store.memory.about(personSubject("ou_bob"))[0]!.origin.ticketId, ticketId);
+  assert.deepEqual(((await run("recall", { about: "self" })) as { notes: { text: string }[] }).notes.map((note) => note.text), ["I set up CI with GitHub Actions"]);
+});
