@@ -27,7 +27,7 @@ import { SetupError, commandProbe, defaultMachine, resolveGithub, type Deploymen
 import { PatchSchema, ticketTools, type TicketTool } from "../superagent/ticket-tools.js";
 import { ticketVariables, variableValues } from "../superagent/variables.js";
 import { hostStatus } from "../superagent/views.js";
-import { workDelivered, workStart, workView } from "../superagent/work-link.js";
+import { ReportSchema, workDelivered, workStart, workView } from "../superagent/work-link.js";
 import type { NodeCard, NodeLoad } from "./card.js";
 import { callPeer, MeshError, peerHealth } from "./client.js";
 import type { MeshHandler, MeshRequest, MeshServer } from "./server.js";
@@ -59,7 +59,6 @@ const OfferSchema = z.object({
 });
 type Offer = z.infer<typeof OfferSchema>;
 const ClaimSchema = z.object({ ticketId: z.string().min(1).max(128), assignmentId: z.string().min(1).max(128) });
-const ReportSchema = z.object({ state: z.enum(["progress", "waiting", "ready", "blocked", "failed", "dropped"]), summary: z.string().min(1).max(8000) });
 
 export interface MeshWorkOptions {
   /** This node's mesh state directory. */
@@ -200,6 +199,8 @@ export class MeshWork implements RemoteWork {
 
   async run(ticket: Ticket, assignmentId: string): Promise<boolean> {
     if (this.closing) throw new Later("The node is stopping");
+    // A ticket that acts as its requester runs on this node, which keeps their token.
+    if (ticket.mandate.capability?.credential) return false;
     // The offer of a claim decides where it runs.
     if (this.claiming.has(ticket.id)) throw new Later("A paired node that pulls is taking the work");
     const lease = this.lease(ticket.id);

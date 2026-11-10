@@ -6,6 +6,7 @@ import type { GithubLink } from './github-link.js'
 import type { Health } from './health.js'
 import type { Lease, Placement } from './placement.js'
 import type { Retry } from './sources/github.js'
+import type { VmSlot } from './vm/vm-work.js'
 
 /** Key of a KV record whose value has type `V`. */
 export type Key<V> = string & { readonly __value?: V }
@@ -47,6 +48,8 @@ export const KV = {
    */
   chatter: { chat: family<{ consideredAt?: string; said: { at: string; text: string }[] }, [chat: string]>('chatter:'),
     members: family<{ at: string; names: Record<string, string> }, [chat: string]>('chatter-members:') },
+  /** Ticket VMs (vm/vm-work.ts): the ticket each slot runs, under a lease its guest renews, by slot number. */
+  vm: { slot: family<VmSlot, [slot: string]>('vm-slot:') },
   /** When a ticket's last update went to its person (notices.ts), by ticket id. */
   notices: { progress: family<string>('progress-sent:') },
   /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */

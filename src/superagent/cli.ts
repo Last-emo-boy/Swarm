@@ -1,7 +1,8 @@
 /**
  * `swarm superagent`: run the ticket host, inspect tickets, file requests and answer, stop or retry tickets from the
  * terminal, and place a ticket's worker on a paired mesh node. `worker` and `mcp` are the host's own entry points for a
- * ticket's worker process and its tools; with `--remote` they serve a ticket that a paired node owns.
+ * ticket's worker process and its tools; with `--remote` they serve a ticket that a paired node owns, and with `--gateway`
+ * one in a ticket VM, whose supervisor `guest` starts them (vm/guest.ts).
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -76,6 +77,11 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
   if (command === "run") return runHost();
   if (command === "worker") return runWorkerCommand(args);
   if (command === "mcp") return runMcpCommand(args);
+  if (command === "guest") {
+    const { runGuest } = await import("./vm/guest.js");
+    process.exitCode = await runGuest(selfCommand());
+    return;
+  }
   if (command === "config") return runConfig(args);
   if (command === "harness") return (await import("./harness-cli.js")).runHarnessCommand(args);
   if (command === "pause" || command === "resume") {
@@ -258,9 +264,13 @@ async function runWorkerCommand(args: string[]): Promise<void> {
   const ticketId = value(args, "ticket");
   const assignmentId = value(args, "assignment");
   const owner = value(args, "remote");
-  if (!ticketId || !assignmentId) throw new Error("Usage: swarm superagent worker --ticket <id> --assignment <id> [--remote <node>]");
+  const gateway = flag(args, "gateway");
+  if (!ticketId || !assignmentId) throw new Error("Usage: swarm superagent worker --ticket <id> --assignment <id> [--remote <node> | --gateway]");
   let link: WorkLink;
-  if (owner) {
+  if (gateway) {
+    const { gatewayFromEnv, gatewayLink } = await import("./vm/gateway-link.js");
+    link = gatewayLink(gatewayFromEnv(), ticketId);
+  } else if (owner) {
     const { meshLink } = await import("../mesh/work-link.js");
     link = meshLink(await ownerNode(owner), ticketId, assignmentId, process.cwd());
   } else {
@@ -276,13 +286,19 @@ async function runMcpCommand(args: string[]): Promise<void> {
   const ticketId = value(args, "ticket");
   const owner = value(args, "remote");
   const assignmentId = value(args, "assignment");
-  if (!ticketId || (owner && !assignmentId)) throw new Error("Usage: swarm superagent mcp --ticket <id> [--remote <node> --assignment <id>]");
+  const gateway = flag(args, "gateway");
+  if (!ticketId || (owner && !assignmentId)) throw new Error("Usage: swarm superagent mcp --ticket <id> [--remote <node> --assignment <id> | --gateway]");
   const { serveTicketTools, ticketTools, withPatch } = await import("./ticket-tools.js");
   // The tools act as the agent's accounts; a worker that acts as its requester holds their token, which they never use.
   delete process.env.GH_TOKEN;
   delete process.env.GH_REPO;
   // The worker starts its tools in its ticket's directory, whose commits a local ticket's ready report sends as a patch.
   const directory = process.env.SWARM_TICKET_DIR || process.cwd();
+  if (gateway) {
+    const { gatewayFromEnv, gatewayTicketTools } = await import("./vm/gateway-link.js");
+    await serveTicketTools(withPatch(gatewayTicketTools(gatewayFromEnv()), directory));
+    return;
+  }
   if (owner) {
     const { remoteTicketTools } = await import("../mesh/work-link.js");
     await serveTicketTools(withPatch(remoteTicketTools(await ownerNode(owner), ticketId, assignmentId!), directory));
