@@ -8,12 +8,13 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeF
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod/v4";
-import { key, latestReport, liveTicket, reached, threadKey, ticketStage, type Ticket, type Trigger } from "./core/index.js";
+import { key, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { textPage, ticketCard } from "./cards.js";
-import { watchedRepository } from "./policy.js";
+import { seesNodes, watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
+import { devicesCard } from "./devices.js";
 import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
 import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
@@ -106,6 +107,11 @@ const TOOLS = {
   people: {
     description: "Who is who on Feishu, from the bot's records: with no arguments, the chats the bot is in; with chat, that chat's people and bots; with name, the people whose name contains it and the chats they are in.",
     input: { chat: z.string().trim().min(1).optional().describe("A chat id from the chat list, such as oc_..."), name: z.string().trim().min(1).max(100).optional() },
+    readOnly: true
+  },
+  devices: {
+    description: "What the agent runs tickets' work on now, from the host's records: its own node, its paired nodes with what each runs, and how many ticket workers are free. Answer questions about the agent's devices or mesh from it: where you run, such as a ticket VM, `swarm mesh` shows only that machine.",
+    input: {},
     readOnly: true
   },
   message: {
@@ -257,6 +263,13 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       if (found === undefined) throw new Error("Unknown resource");
       return page(resource, offset, limit, () => found);
     },
+    devices: async () => {
+      const snapshot = client.store.get(KV.host.devices);
+      if (!snapshot) throw new Error("The host has not read its devices yet: try again in a minute");
+      // Which nodes these are is for a requester who may see them, as /devices tells them.
+      const requester = sourceTrigger(client, ticket())?.actor;
+      return { as_of: snapshot.at, ...devicesCard(snapshot.devices, !!requester && seesNodes(client.settings(), requester)) };
+    },
     people: async (args) => {
       if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };
       if (typeof args.chat === "string") return { chat: args.chat, name: chatName(client.store, args.chat) ?? null, people: peopleIn(client.store, args.chat, 500) };
@@ -348,9 +361,37 @@ const PATCH_RESULT = "The change is ready as the attached patch; nothing was pus
  * Files a worker's report and posts what it says to the person: its question, its ready result or its answer, each under
  * the Engine's reply rules. The report tool and the worker's fallback for an unreported turn both file through it.
  */
+/**
+ * Gives the ticket's running worker the messages of people who steer it that wait for it, other than the one its report
+ * answers, and returns them as the worker reads them. They came during its turn: a harness takes no message until its turn
+ * ends, so a report that ends the ticket would let them go, and the router would start the work again for them.
+ */
+function handOver(client: SuperagentClient, ticket: Ticket, answers?: string): string[] {
+  const assignment = runningAssignment(ticket);
+  if (!assignment) return [];
+  const inputs = ticket.inputs.filter((input): input is Extract<TicketInput, { kind: "trigger" }> => input.kind === "trigger" && !!input.human
+    && !input.context && !input.advisory && input.triggerId !== answers && ticket.undelivered.includes(input.id));
+  if (!inputs.length) return [];
+  const ids = inputs.map((input) => input.id);
+  client.engine.inputsDelivered(ticket.id, assignment.id, ids);
+  client.engine.inputsRead(ticket.id, ids);
+  return inputs.flatMap((input) => {
+    const trigger = client.store.triggers.get(input.triggerId);
+    const message = inputMessage(input, trigger ? triggerMessage(trigger, trigger.url ? { source_url: trigger.url } : {}, input.note) : undefined);
+    return message === undefined ? [] : [message];
+  });
+}
+
 export async function fileReport(client: SuperagentClient, ticketId: string, args: ReportArgs) {
   const current = client.store.tickets.get(ticketId);
   if (!current || !liveTicket(current)) throw new Error("Ticket ended (its PR closed or the work finished); do not resume it");
+  // A report that ends the ticket waits for what a person wrote meanwhile, which its worker takes into the same answer.
+  if (args.state === "ready" || args.state === "dropped") {
+    const waiting = handOver(client, current, args.reply_to_trigger_id);
+    if (waiting.length) {
+      throw new Error(`Not filed: a person wrote while you worked, which you had not read. Take it into this answer, then report again: ready with one message_for_person that covers it too, after any more work it asks for; if it only confirms what you did, say nothing more about it.\n${waiting.join("\n")}`);
+    }
+  }
   // A local ticket's result is its commits as a patch, which the host keeps and sends with the result.
   const local = current.mandate.capability?.write === "local" && args.state === "ready" && args.patch ? args.patch : undefined;
   if (local?.uncommitted) throw new Error("Tracked files have uncommitted changes: commit the change on this ticket's branch first, since the person gets its commits as a patch.");

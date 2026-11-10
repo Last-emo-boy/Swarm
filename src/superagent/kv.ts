@@ -2,6 +2,7 @@
  * Typed key-value store keys grouped by the component that owns and writes each family (from dsh-superagent's kv.ts).
  * Readers and writers refer to a record by its entry here so each key is spelled once with its value type.
  */
+import type { Devices } from './devices.js'
 import type { GithubLink } from './github-link.js'
 import type { Health } from './health.js'
 import type { Lease, Placement } from './placement.js'
@@ -21,11 +22,13 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 export const KV = {
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },
-  /** Host: the process that holds the lock, the settings version it last applied, and its health snapshot for other processes. */
+  /** Host: the process that holds the lock, the settings version it last applied, and its health and devices snapshots for other processes. */
   host: {
     owner: record<{ pid: number; startedAt: string; heartbeatAt: string }>('host-owner'),
     applied: record<{ policyVersion: string; settings: unknown }>('host-applied-settings'),
     health: record<{ at: string; entries: Record<string, Health> }>('host-health'),
+    /** What it runs its tickets' work on, as it last read it (devices.ts), which its tickets' workers ask about wherever they run. */
+    devices: record<{ at: string; devices: Devices }>('host-devices'),
   },
   /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },

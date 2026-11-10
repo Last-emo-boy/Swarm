@@ -1,6 +1,6 @@
 /** Ticket tools that read the host's records of people and chats (people.ts), which work wherever the worker runs. */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -87,4 +87,28 @@ test("a worker keeps notes for later and looks up what the agent remembers, when
   assert.deepEqual(found.notes.map((note) => [note.about, note.text]), [["ou_bob", "Bob wants CI to run on every push"]]);
   assert.equal(client.store.memory.about(personSubject("ou_bob"))[0]!.origin.ticketId, ticketId);
   assert.deepEqual(((await run("recall", { about: "self" })) as { notes: { text: string }[] }).notes.map((note) => note.text), ["I set up CI with GitHub Actions"]);
+});
+
+test("a worker answers what the agent runs work on from the host's devices, with the nodes' names only for a requester who may see them", async () => {
+  const { triggerId } = client.request("which machines can you run work on?");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Devices", scope: "x", reason: "asked", name: "devices", evalId: candidate.evalId });
+  const run = () => ticketTools(client, ticketId!).find((tool) => tool.name === "devices")!.run({});
+  await assert.rejects(run(), /not read its devices yet/);
+  const devices = { here: { name: "bot-vm", machine: ["linux"], harnesses: ["opencode"] },
+    peers: [{ name: "mac", online: true, machine: ["macos"], harnesses: ["codex"] }],
+    workers: { isolation: "vm" as const, local: { total: 4, busy: 1, free: 3 } } };
+  client.store.set(KV.host.devices, { at: "2026-11-10T10:15:00.000Z", devices });
+  // Without an access model everyone may see the nodes, as /devices shows them.
+  assert.deepEqual(await run(), { as_of: "2026-11-10T10:15:00.000Z", this_node: devices.here, paired_nodes: devices.peers,
+    ticket_workers: { runs_as: "a VM of its own for each ticket; the cluster takes tickets once this node's VMs are busy", on_this_node: devices.workers.local } });
+  // Under the access model, a requester below maintainer gets counts.
+  const { localOperator } = await import("./sources/local.js");
+  writeSettings({ access: {}, policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "everyone" } } } } }, settingsPath(stateDir));
+  utimesSync(settingsPath(stateDir), new Date(), new Date(Date.now() + 2000));
+  const counts = await run() as Record<string, unknown>;
+  assert.deepEqual(counts.paired_nodes, { total: 1, online: 1 });
+  assert.equal(counts.this_node, undefined);
+  assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "devices" && tool.readOnly));
 });

@@ -33,6 +33,8 @@ const PASS_MS = 2000;
 const PRUNE_MS = 3_600_000;
 /** How long the router and `/devices` reuse what the paired nodes answered, rather than asking each of them again. */
 const MESH_VIEW_MS = 30_000;
+/** How old the devices snapshot its tickets' workers read may grow while any of them works. */
+const DEVICES_MS = 60_000;
 
 export interface HostOptions {
   stateDir?: string;
@@ -231,6 +233,11 @@ export class SuperagentHost {
         this.botCommands.takeOverWanted();
       }
       this.client.effects.kick();
+      // Workers read what the host runs work on from its snapshot; while any works, it stays at most a minute old.
+      if (Date.now() - this.devicesAt > DEVICES_MS && this.client.store.tickets.active().length) {
+        this.devicesAt = Date.now();
+        void this.devices().catch((error: unknown) => { this.log(`superagent: could not read the devices: ${String(error)}`); });
+      }
       this.client.store.set(KV.host.owner, { pid: process.pid, startedAt: this.startedAt, heartbeatAt: new Date().toISOString() });
       this.client.store.set(KV.host.health, { at: new Date().toISOString(), entries: {
         ...this.client.health.all,
@@ -245,6 +252,7 @@ export class SuperagentHost {
     }
   }
   private readonly startedAt = new Date().toISOString();
+  private devicesAt = 0;
 
   /** Worker processes running here now. */
   runningWorkers(): number { return this.executor.running().length; }
@@ -262,7 +270,9 @@ export class SuperagentHost {
   }
   /** What this host runs its tickets' work on now: its node, its paired nodes and its free workers (devices.ts). */
   async devices(): Promise<Devices> {
-    return devicesOf({ settings: this.client.settings(), store: this.client.store, view: await this.mesh(), running: this.runningWorkers() });
+    const devices = devicesOf({ settings: this.client.settings(), store: this.client.store, view: await this.mesh(), running: this.runningWorkers() });
+    this.client.store.set(KV.host.devices, { at: new Date().toISOString(), devices });
+    return devices;
   }
 
   /** A changed Policy version discards running Evals and tells the live tickets it bears on, as a settings save did upstream. */

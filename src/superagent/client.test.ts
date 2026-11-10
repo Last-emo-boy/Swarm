@@ -108,6 +108,29 @@ test("a ready report that answers a person's message in the ticket's own convers
   assert.deepEqual(replies.map((reply) => reply.text), ["Yes, it is ready for review."]);
 });
 
+test("a person who writes while the worker works gets one answer: the ending report waits until the worker has read it", async () => {
+  const { fileReport } = await import("./ticket-tools.js");
+  const { triggerId } = client.request("read my repo");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Read the repo", scope: "x", reason: "asked", name: "read-repo", evalId: candidate.evalId });
+  client.engine.assignmentStarted(ticketId!, client.store.tickets.get(ticketId!)!.assignments[0]!.id);
+  // A harness takes no message during its turn, so the follow-up waits undelivered when the worker reports.
+  client.message(ticketId!, "the swarm one, please");
+  await assert.rejects(fileReport(client, ticketId!, { state: "ready", summary: "Read it.", message_for_person: "Read Swarm: a coding agent." }),
+    /Not filed: a person wrote while you worked[\s\S]*the swarm one, please/);
+  const ticket = client.store.tickets.get(ticketId!)!;
+  assert.deepEqual(ticket.undelivered, []);
+  assert.ok(ticket.inputs.every((input) => input.kind !== "trigger" || input.readAt), "the worker read it in the refusal");
+  const filed = await fileReport(client, ticketId!, { state: "ready", summary: "Read Swarm.", message_for_person: "Read Swarm: a coding agent." });
+  assert.deepEqual(filed.posted, ["result"]);
+  assert.ok(client.store.tickets.get(ticketId!)!.ended);
+  const replies = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => (JSON.parse(String(row.value)) as { text: string }).text);
+  assert.deepEqual(replies, ["Read Swarm: a coding agent."]);
+  assert.equal(client.engine.candidate(client.store.tickets.get(ticketId!)!.inputs.find((input) => input.kind === "trigger")!.triggerId), undefined,
+    "nothing went back to the router to start the work again");
+});
+
 test("a local ticket's ready report keeps its committed patch and attaches it to the result, and refuses uncommitted work", async () => {
   const { fileReport, patchPath } = await import("./ticket-tools.js");
   const { localOperator } = await import("./sources/local.js");
