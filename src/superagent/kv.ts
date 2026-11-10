@@ -36,6 +36,12 @@ export const KV = {
   mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
   /** People's linked GitHub accounts, by the Source and id they write from (see github-link.ts); only the host writes them. */
   links: { github: family<GithubLink, [source: string, actor: string]>('github-link:') },
+  /**
+   * The agent in group chats (chatter.ts): by chat, when it last considered speaking, what it said there lately, and the
+   * names of the chat's members as Feishu last listed them.
+   */
+  chatter: { chat: family<{ consideredAt?: string; said: { at: string; text: string }[] }, [chat: string]>('chatter:'),
+    members: family<{ at: string; names: Record<string, string> }, [chat: string]>('chatter-members:') },
   /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */
   harness: { chosen: family<string>('harness-chosen:') },
   /**

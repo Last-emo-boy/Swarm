@@ -5,9 +5,10 @@
  * Session made the same decisions through tools.
  */
 import { z } from "zod/v4";
-import { UserError, followupOwners, reasonText, threadKey, type Candidate, type Trigger } from "./core/index.js";
+import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
+import { said } from "./chatter.js";
 import { linkOf, namedRepository } from "./github-link.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { updatePlacement } from "./placement.js";
@@ -31,13 +32,15 @@ const AcknowledgementSchema = z.string().trim().min(1)
 const RoutingNoteSchema = z.string().trim()
   .refine((text) => wordCount(text) <= NOTE_WORDS, `A routing note has at most ${NOTE_WORDS} words.`);
 const RouteSchema = z.object({
-  kind: z.enum(["accept", "attach", "ignore", "stop"]),
+  kind: z.enum(["accept", "attach", "ignore", "stop", "chat"]),
   title: z.string().nullish(),
   worktree_name: z.string().nullish(),
   acknowledgement: z.string().nullish(),
   note: z.string().nullish(),
   ticket_id: z.string().nullish(),
   reason: z.string().nullish(),
+  /** A chat's answer: what the agent says back to a message that asks it for no work. */
+  reply: z.string().nullish(),
   /** What accepted work needs of the machine its worker runs on, such as gpu: it places the worker on a paired node fit for it. */
   needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish()
 });
@@ -50,7 +53,8 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   worktree_name: { check: WorktreeNameSchema, reads: ["accept"], needs: ["accept"] },
   acknowledgement: { check: AcknowledgementSchema, reads: ["accept"], needs: ["accept"] },
   note: { check: RoutingNoteSchema, reads: ["accept", "attach"], needs: [] },
-  reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] }
+  reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] },
+  reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] }
 };
 /** Why a routing answer cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
 export function routeProblem(route: Route): string | undefined {
@@ -159,7 +163,8 @@ export class ModelAssessor {
     let last = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       const user = JSON.stringify(attempt ? { candidate: card, previous_answer: last, problem: last } : { candidate: card }, null, 2);
-      const answer = await complete({ purpose: "superagent_route", system: routerPrompt(), user, model: client.settings().eval.model ?? undefined });
+      const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? ""), user,
+        model: client.settings().eval.model ?? undefined });
       let route: Route;
       try {
         route = RouteSchema.parse(parseJsonObject(answer));
@@ -204,6 +209,22 @@ export class ModelAssessor {
         case "ignore":
           engine.decide(triggerId, { kind: "ignore", reason: route.reason!, evalId: candidate.evalId });
           return undefined;
+        case "chat": {
+          // A message that asks for no work is answered where it was written, and starts no ticket.
+          const { client } = this.host;
+          const trigger = client.store.triggers.get(triggerId);
+          if (!trigger?.channel) return "chat needs a message with a conversation to answer in; ignore it instead";
+          const text = checkedImText(route.reply!);
+          // In a Feishu chat it answers as a member does, quoting the message, unless that message is in a topic.
+          const inChat = trigger.source === "feishu" && !trigger.meta.rootId;
+          const channel = inChat ? { ...trigger.channel, address: { ...trigger.channel.address, mode: "chat" } } : trigger.channel;
+          client.store.atomic(() => {
+            engine.decide(triggerId, { kind: "ignore", reason: { code: "chatted" }, evalId: candidate.evalId });
+            client.outbox.send({ id: key("chat", triggerId), channel, text, kind: "reply" });
+            said(client.store, trigger, text);
+          });
+          return undefined;
+        }
       }
     } catch (error) {
       if (error instanceof UserError) return error.message;

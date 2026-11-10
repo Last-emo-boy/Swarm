@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { key, liveTicket, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
 import { BotCommands } from "./bot-commands.js";
+import { ChatterRoom } from "./chatter.js";
 import { GithubLinks, githubApp, linkKey, type Credential, type LinkView } from "./github-link.js";
 import { SuperagentClient } from "./client.js";
 import { writeEnvironment, verifyEnvironment, workerBin } from "./environment.js";
@@ -76,6 +77,7 @@ export class SuperagentHost {
   private readonly executor: SwarmExecutor;
   private readonly assessor: ModelAssessor;
   private readonly botCommands: BotCommands;
+  private readonly chatter: ChatterRoom;
   private readonly links: GithubLinks;
   private release?: () => void;
   private prunedAt = 0;
@@ -110,6 +112,8 @@ export class SuperagentHost {
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment });
       this.assessor.install();
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log });
+      this.chatter = new ChatterRoom({ client: this.client, complete: options.complete, configured: () => !!this.deployment?.feishu });
+      this.chatter.install();
     } catch (error) {
       this.release();
       throw error;
@@ -198,6 +202,7 @@ export class SuperagentHost {
       this.syncSources(settings);
       if (Date.now() - this.prunedAt > PRUNE_MS) { prunePatches(this.stateDir); this.prunedAt = Date.now(); }
       this.client.engine.evaluateDue();
+      if (!settings.paused) this.chatter.pass();
       this.client.effects.kick();
       this.client.store.set(KV.host.owner, { pid: process.pid, startedAt: this.startedAt, heartbeatAt: new Date().toISOString() });
       this.client.store.set(KV.host.health, { at: new Date().toISOString(), entries: {

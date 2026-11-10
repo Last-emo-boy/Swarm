@@ -23,7 +23,8 @@ const gone = (error: unknown): boolean => error instanceof CliError && error.cod
  * good, such as without the permission to upload files, is replaced by a line that says it could not be attached, and why.
  */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
-  const messageId = message.channel.address.messageId
+  const { messageId, chatId, mode } = message.channel.address
+  if (mode === 'chat') return sendToChat(host, message, chatId, messageId)
   if (!messageId) throw new Error('Missing Feishu reply target')
   const text = checkedImText(message.text)
   const reply = (content: string[], key: string, cwd?: string) => host.commands.lark(['im', '+messages-reply', '--message-id', messageId, ...content,
@@ -36,6 +37,21 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
         await reply(['--markdown', `(${basename(message.attachment!)} could not be attached: ${error.message.slice(0, 200)})`], `${message.id}-nofile`)
       })
     }
+  } catch (error) {
+    if (gone(error)) return 'gone'
+    throw error
+  }
+  return 'sent'
+}
+/**
+ * Posts into the chat itself, as a member writes there, rather than in a message's topic: a plain message, or a reply that
+ * quotes `messageId`. The agent's own words in a group chat (chatter.ts) go out this way.
+ */
+async function sendToChat(host: Pick<SourceContext, 'commands'>, message: OutboundMessage, chatId?: string, messageId?: string): Promise<'sent' | 'gone'> {
+  if (!chatId) throw new Error('Missing Feishu chat')
+  const text = ['--text', checkedImText(message.text), '--idempotency-key', message.id]
+  try {
+    await host.commands.lark(messageId ? ['im', '+messages-reply', '--message-id', messageId, ...text] : ['im', '+messages-send', '--chat-id', chatId, ...text])
   } catch (error) {
     if (gone(error)) return 'gone'
     throw error

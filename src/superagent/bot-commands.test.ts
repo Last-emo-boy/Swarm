@@ -109,6 +109,22 @@ describe("bot commands", () => {
     commands.receive(message(BOSS, "/listen all", { direct: true }));
     expect(replies().at(-1)!.text).toBe("/listen works in a group chat.");
   });
+  it("lets an owner have the agent join the conversation in a chat it reads in full, and stop", () => {
+    commands.receive(message(BOSS, "/chatter on"));
+    expect(replies().at(-1)!.text).toBe("First send /listen all here: I need to read the whole conversation.");
+    commands.receive(message(BOSS, "/listen all"));
+    commands.receive(message(MAINTAINER, "/chatter on"));
+    expect(replies().at(-1)!.text).toBe("That did not work: only an owner can do that");
+    commands.receive(message(BOSS, "/chatter on"));
+    expect(current().chatter?.chats).toEqual([CHAT]);
+    commands.receive(message(MAINTAINER, "/chatter"));
+    expect(replies().at(-1)!.text).toBe("I join the conversation here now and then, at most 2 times an hour.");
+    // Listening to mentions only also ends joining in, which needs the whole conversation.
+    commands.receive(message(BOSS, "/listen mentions"));
+    expect(current().chatter?.chats).toEqual([]);
+    commands.receive(message(BOSS, "/chatter off"));
+    expect(replies().at(-1)!.text).toBe("I'll speak here only when someone mentions me.");
+  });
   it("hands every other message, and anything from a sender the gate would not take, to the Engine", () => {
     const request = message(READER, "fix the typo");
     expect(commands.receive(request)).toBe("stored");

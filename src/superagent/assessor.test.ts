@@ -178,3 +178,42 @@ test("routes a request again when the Engine refuses to attach it to a ticket it
   assert.deepEqual(mine?.mandate.capability, { role: "everyone", write: "local" });
   assert.ok(liveTicket(client.store.tickets.get(ticketId)!));
 });
+
+test("answers a message that asks for no work in its own conversation, with no ticket", async () => {
+  start();
+  const { triggerId } = client.request("good morning!");
+  answers.push(JSON.stringify({ kind: "chat", reply: "Morning! Coffee first." }));
+  await judge(triggerId);
+  assert.match(calls[0]!.system, /Use chat for a message that asks for no work/);
+  const decision = client.store.decisions.get(client.store.triggers.disposition(triggerId)!.decisionId!)!;
+  assert.equal(decision.kind, "ignore");
+  assert.deepEqual(decision.reason, [{ code: "chatted" }]);
+  assert.equal(client.store.tickets.list().length, 0);
+  const replies = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => JSON.parse(String(row.value)) as { text: string; kind: string });
+  assert.deepEqual(replies.map((reply) => [reply.kind, reply.text]), [["reply", "Morning! Coffee first."]]);
+  // A chat answer needs its reply.
+  assert.equal(routeProblem({ kind: "chat" } as never), "chat needs reply");
+});
+
+test("tells the router who it is in conversation when the settings give a persona", async () => {
+  start({ chatter: { persona: "Speaks like a pirate." } });
+  const { triggerId } = client.request("hello");
+  answers.push(JSON.stringify({ kind: "chat", reply: "Ahoy!" }));
+  await judge(triggerId);
+  assert.match(calls[0]!.system, /Who you are in conversation: Speaks like a pirate\./);
+});
+
+test("answers chit-chat on Feishu in the chat itself, quoting the message, and remembers what it said there", async () => {
+  start({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } } });
+  const { feishuTrigger } = await import("./sources/feishu.js");
+  const { KV } = await import("./kv.js");
+  const trigger = feishuTrigger({ message_id: "om_1", chat_id: "oc_team", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+    content: "@_user_1 morning!", create_time: String(Date.now()), mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] }, "ou_bot", "cli_app")!;
+  client.engine.receive(trigger);
+  answers.push(JSON.stringify({ kind: "chat", reply: "Morning, Alice!" }));
+  await judge(trigger.id);
+  const [reply] = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => JSON.parse(String(row.value)) as { channel: { address: Record<string, string> } });
+  assert.deepEqual(reply!.channel.address, { chatId: "oc_team", messageId: "om_1", mode: "chat" });
+  assert.deepEqual(client.store.get(KV.chatter.chat("oc_team"))?.said.map((item) => item.text), ["Morning, Alice!"]);
+});
