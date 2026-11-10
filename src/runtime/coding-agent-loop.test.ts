@@ -126,6 +126,70 @@ test("coding loop still fails closed when repaired tool calls remain malformed",
   assert.match(result.content, /file\.read/);
 });
 
+/** A reply as deepseek-flash wrote one on OVH: its own tool-call markup around a script, with the opening tags lost. */
+const MARKUP_REPLY = `\n\n${" ".repeat(40)}\n[]\n\nprint("smoke ok")\n</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>`;
+const loopReply = (result: Record<string, unknown>) => JSON.stringify({ files_touched: [], next_actions: [], tool_calls: [], ...result });
+
+test("coding loop asks again for a reply it cannot use with the turn's own prompt", async () => {
+  const requests: GenerateTextRequest[] = [];
+  const result = await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    if (requests.length === 1) return Promise.resolve(MARKUP_REPLY);
+    if (requests.length === 2) {
+      return Promise.resolve(loopReply({ status: "continue", summary: "Read the README", message: "Reading README.md.", tool_calls: [
+        { id: "read", action: "file.read", inputs: { path: "README.md" } }
+      ] }));
+    }
+    return Promise.resolve(loopReply({ status: "completed", summary: "Read it", message: "README.md says hello." }));
+  }, { setupWorkspace: (workspace) => writeFileSync(join(workspace, "README.md"), "hello\n") });
+
+  assert.equal(result.status, "completed", result.content);
+  const [turn, repair] = requests;
+  assert.equal(repair.usage?.purpose, "coding_loop_json_repair");
+  assert.deepEqual(repair.system, turn.system, "the repair has the turn's instructions, with its allowed tools");
+  assert.ok(Array.isArray(turn.user) && Array.isArray(repair.user));
+  assert.deepEqual(repair.user.slice(0, -1), turn.user, "and the turn's payload: tool schemas, history and objective");
+  const note = repair.user.at(-1)!.text;
+  assert.match(note, /not a JSON object/);
+  assert.match(note, /DSML/);
+  assert.equal(repair.maxOutputTokens, turn.maxOutputTokens, "with the turn's output budget");
+  assert.equal(repair.reasoning, "off", "and without reasoning first");
+  assert.equal(turn.reasoning, undefined);
+  assert.equal(repair.usage?.sessionId, turn.usage?.sessionId);
+});
+
+test("coding loop gives a reply it cannot use back to the model instead of failing the turn", async () => {
+  const requests: GenerateTextRequest[] = [];
+  const result = await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    const user = JSON.stringify(request.user);
+    if (!user.includes("UNUSABLE_MODEL_REPLY")) return Promise.resolve(MARKUP_REPLY);
+    return Promise.resolve(loopReply({ status: "completed", summary: "Recovered", message: "Answered with the JSON contract." }));
+  });
+
+  assert.equal(result.status, "completed", result.content);
+  assert.equal(requests.length, 3, "the reply, its repair, then the next turn with the feedback");
+  assert.match(JSON.stringify(requests[2].user), /Unusable model reply/);
+});
+
+test("coding loop tells a reply cut off at the output limit from one that is no JSON", async () => {
+  const requests: GenerateTextRequest[] = [];
+  const cutOff = JSON.stringify({ status: "continue", summary: "Write the smoke test", tool_calls: [
+    { id: "write", action: "file.write", inputs: { path: "smoke.py", content: "def check():\n    return 1\n".repeat(40) } }
+  ] }).slice(0, 400);
+  const result = await runCodingLoopWithFakeProvider((request) => {
+    requests.push(request);
+    if (requests.length <= 2) return Promise.resolve(cutOff);
+    return Promise.resolve(loopReply({ status: "completed", summary: "Recovered", message: "Wrote it in parts." }));
+  });
+
+  assert.equal(result.status, "completed", result.content);
+  const repairUser = requests[1].user;
+  assert.ok(Array.isArray(repairUser));
+  assert.match(repairUser.at(-1)!.text, /cut off before its JSON object ended/);
+  assert.match(JSON.stringify(requests[2].user), /Unusable model reply: The reply was cut off/);
+});
+
 test("coding loop activity keeps turn budget metadata out of default messages", async () => {
   const events = new RuntimeEvents();
   const recorded: RuntimeEvent[] = [];

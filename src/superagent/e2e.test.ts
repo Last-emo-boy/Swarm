@@ -20,6 +20,10 @@ let host: Host;
 let readmeStep = 0;
 /** Whether the config ticket's worker already answered the person's question, which it does once. */
 let configAnswered = false;
+/** How many of the DQN ticket's turns its worker answered, not counting a request to repair a reply. */
+let dqnStep = 0;
+/** A reply as deepseek-flash wrote one on OVH: its own tool-call markup around a script, with the opening tags lost. */
+const MARKUP_REPLY = `\n\n${" ".repeat(40)}\n[]\n\nprint("smoke ok")\n</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>`;
 
 const loop = (result: Record<string, unknown>) => JSON.stringify({ files_touched: [], next_actions: [], tool_calls: [], ...result });
 const reported = (request: ModelRequest) => request.user.includes("\"reported\":true") || request.user.includes("\\\"reported\\\":true");
@@ -29,6 +33,10 @@ function answer(request: ModelRequest): string {
     return JSON.stringify({ state: "ready", summary: "Bumped the version to 0.2.0 and committed.", message_for_person: "The version is bumped to 0.2.0." });
   }
   if (request.system.includes("You route requests for Swarm's ticket host")) {
+    // The DQN request comes last, so earlier tickets' titles on its card are matched after it.
+    if (request.user.includes("DQN")) {
+      return JSON.stringify({ kind: "accept", title: "Try the DQN repository", worktree_name: "try-dqn", acknowledgement: "On it: trying the DQN repository." });
+    }
     // Earlier tickets' titles reach the router's card too, so the NOTICE and VERSION requests are matched first.
     if (request.user.includes("VERSION")) {
       return JSON.stringify({ kind: "accept", title: "Add a VERSION file", worktree_name: "add-version", acknowledgement: "On it: adding a VERSION file." });
@@ -123,6 +131,32 @@ function answer(request: ModelRequest): string {
     if (!reported(request)) {
       return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
         { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Nothing to change in the changelog.", message_for_person: "The changelog is up to date." } }
+      ] });
+    }
+    return loop({ status: "completed", summary: "Reported", message: "Reported." });
+  }
+  // The DQN ticket's worker reports progress, then answers with its own tool-call markup instead of the loop's JSON, as
+  // deepseek-flash did on OVH. Asked again with its turn's prompt it writes the script it meant to; a repair without the
+  // turn's tools and history gets what the model said on OVH: that it has no shell.
+  if (request.system.includes("try-dqn-")) {
+    if (request.user.includes("unusable_reply") || request.user.includes("invalid_output")) {
+      if (!request.user.includes("mcp__ticket__report")) {
+        return loop({ status: "failed", summary: "I have no shell/exec tool binding here, so the smoke test cannot run.", message: "" });
+      }
+      return loop({ status: "continue", summary: "Write the smoke test", message: "Writing smoke.py.", tool_calls: [
+        { id: "write", action: "Write", inputs: { file_path: "smoke.py", content: "print(\"smoke ok\")\n" } }
+      ] });
+    }
+    dqnStep += 1;
+    if (dqnStep === 1) {
+      return loop({ status: "continue", summary: "Progress", message: "Recording progress.", tool_calls: [
+        { id: "progress", action: "mcp__ticket__report", inputs: { state: "progress", summary: "Read the repository; writing a smoke test next." } }
+      ] });
+    }
+    if (dqnStep === 2) return MARKUP_REPLY;
+    if (dqnStep === 3) {
+      return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
+        { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Wrote smoke.py and ran it.", message_for_person: "The smoke test is written." } }
       ] });
     }
     return loop({ status: "completed", summary: "Reported", message: "Reported." });
@@ -345,4 +379,26 @@ test("a ticket of a linked maintainer runs its worker as them: their token, the 
   } finally {
     rmSync(path, { force: true });
   }
+});
+
+test("a worker whose reply is tool-call markup instead of the loop's JSON is asked again with its turn, and its ticket goes on", { timeout: 120_000 }, async () => {
+  const { client } = host;
+  client.request("pull the 2048 DQN repository and try it");
+  const deadline = Date.now() + 100_000;
+  const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Try the DQN repository");
+  let ticket = find();
+  while (Date.now() < deadline && !ticket?.ended) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ticket = find();
+  }
+  assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)}`);
+  const worker = model.requests.filter((request) => request.system.includes("try-dqn-"));
+  const repair = worker.find((request) => request.user.includes("unusable_reply"));
+  assert.ok(repair, "the loop asked again for the reply it could not use");
+  assert.ok(repair.system.includes("## Swarm superagent") && repair.user.includes("mcp__ticket__report"), "with the turn's instructions and tools");
+  assert.ok(!worker.some((request) => request.user.includes("Your last turn failed")), "and the turn did not fail");
+  const script = join(ticket.execution!.directory, "smoke.py");
+  assert.ok(existsSync(script), "the worker wrote the script it meant to");
+  const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
+  assert.ok(replies.some((reply) => reply.text === "The smoke test is written."));
 });

@@ -291,7 +291,13 @@ const TOOL_RESULT_FRESH_BUDGET_BYTES = 8_000;
 const MODEL_OUTPUT_TOKENS_MAIN_LOOP = 8_000;
 const MODEL_OUTPUT_TOKENS_WORKER_LOOP = 6_000;
 const MODEL_OUTPUT_TOKENS_CONTROL = 1_200;
-const MODEL_OUTPUT_TOKENS_REPAIR = 1_500;
+/**
+ * How many replies in a row the loop may fail to use before the turn fails. A reply it cannot use is given back to the model
+ * as feedback, as a failed tool result is: on long tasks DeepSeek now and then answers with its own tool-call markup or a bare
+ * script instead of the JSON contract (a ticket on OVH), and goes on once told.
+ */
+const MAX_UNUSABLE_REPLIES = 3;
+const UNUSABLE_REPLY_PREVIEW_BYTES = 4_000;
 const ACTIVITY_PREVIEW_LENGTH = 80;
 const TOOL_SEARCH_TOOL_NAME = "ToolSearch";
 const DEFAULT_TOOL_NAMES = [
@@ -445,6 +451,8 @@ export class CodingAgentLoop {
     const testsRun = new Set<string>();
     const intermediateArtifacts = new Set<string>();
     let toolCallCount = 0;
+    /** Replies in a row the loop could not use, even repaired. */
+    let unusableReplies = 0;
     let lastResult: CodingLoopModelResult = {
       status: "continue",
       message: "",
@@ -483,6 +491,7 @@ export class CodingAgentLoop {
         status: "started"
       });
       let modelCapabilities: CapabilityDescriptor[] = [];
+      let unusableReply: string | undefined;
       try {
         const delegateAvailable = (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0;
         modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
@@ -539,7 +548,7 @@ export class CodingAgentLoop {
           remainingTurns: maxTurns - turn,
           remainingToolCalls: maxToolCalls - toolCallCount
         });
-        const modelText = await this.options.provider.generateText({
+        const turnRequest: CodingLoopTurnRequest = {
           model: this.options.provider.workerModel,
           system: systemPrompt,
           user: userPrompt,
@@ -560,8 +569,11 @@ export class CodingAgentLoop {
           },
           responseFormat: "json_object",
           maxOutputTokens: role === "worker" ? MODEL_OUTPUT_TOKENS_WORKER_LOOP : MODEL_OUTPUT_TOKENS_MAIN_LOOP
-        });
-        lastResult = await parseCodingLoopModelResultWithRepair(modelText, objective, this.options.provider);
+        };
+        const modelText = await this.options.provider.generateText(turnRequest);
+        const reply = await parseCodingLoopModelResultWithRepair(modelText, turnRequest, this.options.provider);
+        lastResult = reply.result;
+        unusableReply = reply.unusable;
       } catch (error) {
         this.options.events.emitEvent({
           type: "task_attempt",
@@ -574,6 +586,46 @@ export class CodingAgentLoop {
         throw error;
       }
       this.lastResultSummary = lastResult.summary;
+      unusableReplies = unusableReply ? unusableReplies + 1 : 0;
+      if (unusableReply && unusableReplies < MAX_UNUSABLE_REPLIES && turn < maxTurns) {
+        const feedback = unusableReplyResult(unusableReply);
+        toolResults.push(feedback);
+        this.options.events.emitEvent({
+          type: "tool_result",
+          session_id: sessionId,
+          task_id: feedback.id,
+          title: "Use the model reply",
+          action: feedback.action,
+          summary: feedback.summary,
+          content: feedback.content,
+          status: feedback.status,
+          errorCode: feedback.errorCode,
+          recoverySuggestion: feedback.recoverySuggestion,
+          attempt: turn,
+          agent: this.activityAgentIdentity()
+        });
+        lastResult = {
+          status: "continue",
+          summary: feedback.summary,
+          message: feedback.content ?? feedback.summary,
+          tool_calls: [],
+          files_touched: [...changedFiles],
+          next_actions: [feedback.recoverySuggestion ?? UNUSABLE_REPLY_INSTRUCTION]
+        };
+        this.emitActivity(sessionId, "turn_complete", `Unusable model reply: ${unusableReply}`, { turn, maxTurns, taskId: turnTaskId });
+        this.options.events.emitEvent({
+          type: "task_attempt",
+          session_id: sessionId,
+          task_id: turnTaskId,
+          title: role === "worker" ? "Worker loop turn" : "Coding loop turn",
+          attempt: turn,
+          status: "completed"
+        });
+        if (this.options.emitProgress !== false) {
+          this.options.events.emitEvent({ type: "progress", completed: turn, total: maxTurns });
+        }
+        continue;
+      }
       const workspaceCompletionGap = workspaceCompletionGapResult(lastResult, changedFiles, {
         expectedSideEffects: this.options.expectedSideEffects,
         writePolicy: this.options.writePolicy
@@ -1629,6 +1681,7 @@ function codingLoopSystemPrompt(input: {
     "Keep long verification commands to one or two tool_calls per turn so failures can be inspected before continuing.",
     "Do not append cleanup deletion to shell or test commands; leave temporary smoke artifacts or delete them later with file.delete.",
     "For tool_calls, each item is {id, action, inputs, reason}. The action must match an allowed tool, and inputs must match the tool_schemas in the user payload.",
+    "A tool call exists only as an item of tool_calls in that one JSON object: never write one as XML or function-call tags, a shell transcript or a bare script. A script goes into a tool call's inputs, such as file.write content.",
     input.delegateAvailable
       ? "You may dynamically upgrade the coding loop into an internal swarm by using Agent when the task naturally splits into independent roles, workstreams, or expert checks. The main Swarm remains responsible for user-facing synthesis and final decisions."
       : "Do not use Agent in this loop.",
@@ -2777,62 +2830,103 @@ function clampToolSearchLimit(value: unknown): number {
   return Math.min(Math.floor(parsed), 12);
 }
 
+/** A turn's model call; a repair asks it again with the reply the loop could not use. */
+type CodingLoopTurnRequest = Parameters<OpenAIProvider["generateText"]>[0] & { system: PromptBlock[]; user: PromptBlock[] };
+
+/** A turn's reply as the loop uses it, and why not when even its repair was unusable. */
+type CodingLoopReply = { result: CodingLoopModelResult; unusable?: string };
+
 async function parseCodingLoopModelResultWithRepair(
   text: string,
-  objective: string,
+  request: CodingLoopTurnRequest,
   provider: OpenAIProvider
-): Promise<CodingLoopModelResult> {
+): Promise<CodingLoopReply> {
   const parsed = parseCodingLoopModelResult(text);
   const validationError = validateCodingLoopModelResult(parsed);
   if (validationError) {
-    return repairCodingLoopModelResult(text, objective, provider, validationError);
+    return repairCodingLoopModelResult(text, request, provider, validationError);
   }
   if (parsed.message !== text || parsed.tool_calls.length > 0 || parsed.status !== "continue") {
-    return parsed;
+    return { result: parsed };
   }
-  return repairCodingLoopModelResult(text, objective, provider);
+  return repairCodingLoopModelResult(text, request, provider);
 }
 
+/**
+ * Asks the turn's question again, with the reply the loop could not use and why. A repair that saw only the objective and
+ * the reply knew neither the allowed tools nor the work so far: on OVH it invented tools and commands, or gave up for want
+ * of a shell, and the turn failed with that. It answers with the turn's output budget, as a reply that writes a script needs,
+ * and without reasoning first where the provider can turn it off: replayed so, DeepSeek's markup replies came back as JSON.
+ */
 async function repairCodingLoopModelResult(
   text: string,
-  objective: string,
+  request: CodingLoopTurnRequest,
   provider: OpenAIProvider,
   validationError?: string
-): Promise<CodingLoopModelResult> {
+): Promise<CodingLoopReply> {
   const repaired = await provider.generateText({
-    model: provider.workerModel,
-    system: [{
-      text: [
-        "You repair invalid JSON for Swarm's coding loop.",
-        "Return exactly one valid JSON object and nothing else.",
-        "The object must have keys: status, summary, message, files_touched, next_actions, tool_calls.",
-        "status must be continue, completed, or failed.",
-        "tool_calls must be an array.",
-        "status=continue must include at least one executable tool_call; if no tool is needed, set status=completed or status=failed.",
-        "Every tool call must include a non-empty action string that matches an allowed tool.",
-        validationError ? `Validation error: ${validationError}` : undefined
-      ].filter(Boolean).join(" "),
-      cache: true
-    }],
-    user: JSON.stringify({
-      objective,
-      invalid_output: text,
-      validation_error: validationError
-    }, null, 2),
-    usage: { purpose: "coding_loop_json_repair" },
-    responseFormat: "json_object",
-    maxOutputTokens: MODEL_OUTPUT_TOKENS_REPAIR
+    ...request,
+    user: [...request.user, unusableReplyBlock(text, validationError)],
+    usage: { ...request.usage, purpose: "coding_loop_json_repair" },
+    reasoning: "off"
   });
   const parsed = parseCodingLoopModelResult(repaired);
   const repairedValidationError = validateCodingLoopModelResult(parsed);
   if (repairedValidationError) {
     const safeFallback = completedResultFromRepairedBareContinue(parsed, repaired, repairedValidationError);
     if (safeFallback) {
-      return safeFallback;
+      return { result: safeFallback };
     }
-    return invalidCodingLoopModelResult(repairedValidationError, repaired);
+    return { result: invalidCodingLoopModelResult(repairedValidationError, repaired), unusable: unusableReplyProblem(repaired, repairedValidationError) };
   }
-  return parsed;
+  return { result: parsed };
+}
+
+/**
+ * Why the loop could not use a reply. A reply cut off at the output limit is told apart from one that is no JSON at all: on
+ * DeepSeek the reasoning shares that limit, and a reply that writes a long script ran out of it (a live trial).
+ */
+function unusableReplyProblem(text: string, validationError?: string): string {
+  if (Object.keys(parseJsonObject(text)).length > 0) {
+    return validationError ?? "The reply requested no tool and gave no final answer.";
+  }
+  return text.trim().startsWith("{") ? "The reply was cut off before its JSON object ended." : "The reply was not a JSON object.";
+}
+
+/** The end of a repair's prompt: why the loop could not use the reply, and the reply itself. */
+function unusableReplyBlock(text: string, validationError?: string): PromptBlock {
+  return {
+    text: stableJsonStringify({
+      unusable_reply: {
+        problem: unusableReplyProblem(text, validationError),
+        reply: truncateTextBytes(text, UNUSABLE_REPLY_PREVIEW_BYTES),
+        instruction: UNUSABLE_REPLY_INSTRUCTION
+      }
+    }),
+    cache: false,
+    section: "volatile_footer"
+  };
+}
+
+const UNUSABLE_REPLY_INSTRUCTION = [
+  "Swarm could not use that reply, so nothing ran.",
+  "Reply again with exactly one JSON object with keys status, summary, message, files_touched, next_actions, tool_calls.",
+  "Put each tool call into tool_calls as {id, action, inputs, reason}. Every tool call must include a non-empty action string that matches an allowed tool, and a script you meant to write or run goes into that call's inputs.",
+  "Never write a tool call as XML or function-call tags, a shell transcript or a bare script.",
+  "Keep the reply within the output limit, which your reasoning shares: write a long file in parts over several turns."
+].join(" ");
+
+/** What the next turn reads after replies the loop could not use, even repaired: feedback, as a failed tool result is. */
+function unusableReplyResult(validationError: string): CodingLoopToolResult {
+  return {
+    id: `unusable_reply_${randomUUID()}`,
+    action: "model.reply",
+    status: "failed",
+    summary: `Unusable model reply: ${validationError}`,
+    content: UNUSABLE_REPLY_INSTRUCTION,
+    errorCode: "UNUSABLE_MODEL_REPLY",
+    recoverySuggestion: "Return one JSON object whose tool_calls hold the next step, with actions from the allowed tools."
+  };
 }
 
 function parseCodingLoopModelResult(text: string): CodingLoopModelResult {
