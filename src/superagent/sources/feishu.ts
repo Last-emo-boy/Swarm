@@ -9,7 +9,7 @@ import { sourceContext } from './host.js'
 import type { SourceKind } from './kind.js'
 import type { SourceRegistry } from './registry.js'
 
-export { SOURCE, feishuRef, feishuThreadId, feishuTime, feishuTrigger, feishuTriggerId, historyEvent, withMentionNames }
+export { REPLY_STYLES, SOURCE, feishuRef, feishuThreadId, feishuTime, feishuTrigger, feishuTriggerId, historyEvent, replyChannel, withMentionNames, type ReplyStyle }
   from './feishu-trigger.js'
 export type { FeishuEvent } from './feishu-trigger.js'
 export { backfillChat, consumerRetry, pollThreads, refreshChatNames, threadRef } from './feishu-loops.js'

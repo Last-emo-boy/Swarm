@@ -18,6 +18,7 @@ import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmen
   watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { admissionContext } from "./sources/admission-context.js";
+import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
 import { IM_WORDS, NOTE_WORDS, checkedImText, sameName, wordCount } from "./text.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
@@ -59,6 +60,8 @@ const RouteSchema = z.object({
   reason: z.string().nullish(),
   /** A chat's answer: what the agent says back to a message that asks it for no work. */
   reply: z.string().nullish(),
+  /** Where a chat's answer or accepted work's messages go, for a Feishu message outside a topic: a plain message, a quote or a topic. */
+  reply_as: z.string().nullish(),
   /** What accepted work needs of the machine its worker runs on, such as gpu: it places the worker on a paired node fit for it. */
   needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish(),
   /** Accepted work whose requester wants a pull request but has not linked GitHub: they get the code to link, and the ticket a take-over once they did. */
@@ -82,6 +85,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   note: { check: RoutingNoteSchema, reads: ["accept", "attach"], needs: [] },
   reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] },
   reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] },
+  reply_as: { check: z.enum(REPLY_STYLES), reads: ["chat", "accept"], needs: [] },
   repository: { check: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/name"), reads: ["accept"], needs: [] },
   harness: { check: z.string().max(64), reads: ["accept"], needs: [] },
   command: { check: z.enum(AGENT_COMMANDS), reads: ["command"], needs: ["command"] }
@@ -202,6 +206,7 @@ export class ModelAssessor {
     return {
       ...triggerMessage(primary, primary.url ? { source_url: primary.url } : {}, undefined, parent),
       text: cut(primary.text, TRIGGER_CHARS).text,
+      ...(primary.source === "feishu" ? { posted_in: primary.meta.threadId ? "a topic" : primary.meta.direct === true ? "a direct message" : "a group chat" } : {}),
       strength: candidate.strength,
       ...(others.length ? { batch: others.map((trigger) => triggerCard(trigger)) } : {}),
       ...(handedBack.length ? { handed_back: handedBack } : {}),
@@ -310,6 +315,7 @@ export class ModelAssessor {
           const decision = client.store.atomic(() => {
             // Recorded with the request, as `--harness` records it, so the ticket's execution takes it when it is created.
             if (harness) client.store.set(KV.harness.chosen(triggerId), harness);
+            if (route.reply_as) this.answerAs(candidate, route.reply_as as ReplyStyle);
             const decided = engine.decide(triggerId, {
               kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
               acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}),
@@ -351,9 +357,8 @@ export class ModelAssessor {
           const trigger = client.store.triggers.get(triggerId);
           if (!trigger?.channel) return "chat needs a message with a conversation to answer in; ignore it instead";
           const text = checkedImText(route.reply!);
-          // In a Feishu chat it answers as a member does, quoting the message, unless that message is in a topic.
-          const inChat = trigger.source === "feishu" && !trigger.meta.rootId;
-          const channel = inChat ? { ...trigger.channel, address: { ...trigger.channel.address, mode: "chat" } } : trigger.channel;
+          // In a Feishu chat it answers as a member does, quoting the message unless the router chose otherwise; in a topic, there.
+          const channel = replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote")!;
           client.store.atomic(() => {
             engine.decide(triggerId, { kind: "ignore", reason: { code: "chatted" }, evalId: candidate.evalId });
             client.outbox.send({ id: key("chat", triggerId), channel, text, kind: "reply" });
@@ -366,6 +371,17 @@ export class ModelAssessor {
       if (error instanceof UserError) return error.message;
       throw error;
     }
+  }
+
+  /**
+   * Has accepted work answer its request in `style`: its acknowledgement, questions and result go where the request's
+   * channel says (core/replies.ts), and accepted work keeps them by the request, so a plain message quotes it.
+   */
+  private answerAs(candidate: Candidate, style: ReplyStyle): void {
+    const { store } = this.host.client;
+    const primary = store.triggers.get(candidate.thread.evaluating?.primary ?? candidate.triggers.at(-1)!.id);
+    const channel = primary && replyChannel(primary, style === "message" ? "quote" : style);
+    if (primary && channel) store.triggers.save({ ...primary, channel });
   }
 
   /** The repository the router chose for accepted work, when it is one of the requester's, else the one their request names. */

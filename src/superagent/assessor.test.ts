@@ -236,6 +236,41 @@ test("answers chit-chat on Feishu in the chat itself, quoting the message, and r
   assert.deepEqual(client.store.get(KV.chatter.chat("oc_team"))?.said.map((item) => item.text), ["Morning, Alice!"]);
 });
 
+test("puts its words on Feishu where the router chose: small talk as a plain message, quick work quoting the request, a topic's in the topic", async () => {
+  start({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } } });
+  const { feishuTrigger } = await import("./sources/feishu.js");
+  const message = (id: string, text: string, topic: { root_id?: string; thread_id?: string } = {}) => {
+    const trigger = feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+      content: `@_user_1 ${text}`, create_time: String(Date.now()), mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }], ...topic }, "ou_bot", "cli_app")!;
+    client.engine.receive(trigger);
+    return trigger;
+  };
+  const sent = () => client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all()
+    .map((row) => JSON.parse(String(row.value)) as { kind: string; text: string; channel: { address: Record<string, string> } });
+  const greeting = message("om_1", "morning!");
+  answers.push(JSON.stringify({ kind: "chat", reply: "Morning!", reply_as: "message" }));
+  await judge(greeting.id);
+  assert.equal(JSON.parse(calls[0]!.user).candidate.posted_in, "a group chat");
+  assert.match(calls[0]!.system, /## Where to reply\n\nOn Feishu/);
+  assert.deepEqual(sent().at(-1)!.channel.address, { chatId: "oc_team", mode: "chat" });
+  // Quick work quotes its request with its acknowledgement and, through the ticket's channel, what comes after.
+  const question = message("om_2", "what does the README say about installing?");
+  answers.push(accept({ title: "Summarize the README's install steps", worktree_name: "readme-install", acknowledgement: "Reading it now.", reply_as: "message" }));
+  await judge(question.id);
+  assert.deepEqual(sent().at(-1)!.channel.address, { chatId: "oc_team", messageId: "om_2", mode: "chat" });
+  const ticket = client.store.tickets.list().find((item) => item.title === "Summarize the README's install steps")!;
+  assert.deepEqual(ticket.channels.map((channel) => channel.address), [{ chatId: "oc_team", messageId: "om_2", mode: "chat" }]);
+  // A message in a topic is answered in the topic, whatever the router chose; one that replies in the chat itself, quoting it.
+  const inTopic = message("om_3", "thanks!", { root_id: "om_0", thread_id: "omt_1" });
+  answers.push(JSON.stringify({ kind: "chat", reply: "Anytime.", reply_as: "message" }));
+  await judge(inTopic.id);
+  assert.equal(JSON.parse(calls.at(-1)!.user).candidate.posted_in, "a topic");
+  assert.deepEqual(sent().at(-1)!.channel.address, { chatId: "oc_team", messageId: "om_3" });
+  assert.deepEqual(message("om_4", "and the tests?", { root_id: "om_2" }).channel!.address, { chatId: "oc_team", messageId: "om_4", mode: "chat" });
+  assert.match(routeProblem({ kind: "chat", reply: "Hi", reply_as: "dm" }) ?? "", /reply_as/);
+});
+
 /** Feishu settings with the access model on and a GitHub App people link their accounts with. */
 const ACCESS = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } },
   github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },
