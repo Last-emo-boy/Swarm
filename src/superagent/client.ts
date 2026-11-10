@@ -192,7 +192,7 @@ export class SuperagentClient {
     }
     const channel = noticeChannel(this.store, ticket);
     const request = this.store.triggers.get(ticket.origin.triggerId)?.text ?? "";
-    if (channel) this.outbox.send({ id: stoppedId(ticketId, report.at), channel, text: stoppedNotice(report.state, report.summary, request), kind: "reply", ticketId });
+    if (channel) this.outbox.send({ id: stoppedId(ticketId, report.at, report.state), channel, text: stoppedNotice(report.state, report.summary, request), kind: "reply", ticketId });
   }
   /** A ticket that ended with its pull request tells its chat conversations once; GitHub shows the outcome itself. */
   private pullEnded(ticketId: string): void {
