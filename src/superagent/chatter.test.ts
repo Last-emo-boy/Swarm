@@ -88,6 +88,27 @@ describe("when the agent considers a chat", () => {
   });
 });
 
+describe("in every group", () => {
+  it("joins in on its own wherever it is unless an owner turned it off there, counting only what it said on its own, and @s whom it answers", async () => {
+    const { readMembers } = await import("./people.js");
+    client.store.set(KV.sources.labels("feishu"), { [CHAT]: "Team" });
+    await readMembers(async () => ({ users: [{ member_id: "ou_alice", name: "Alice" }] }), client.store, CHAT);
+    write({ chats: [], everywhere: true, off: [CHAT] });
+    const asked = message("ou_alice", "anyone tried the new tea place?", 200);
+    room.pass();
+    expect(queued()).toEqual([]);
+    write({ chats: [], everywhere: true });
+    // Two answers it gave when asked leave its hourly budget for speaking on its own.
+    client.store.set(KV.chatter.chat(CHAT), { said: [{ at: new Date(now - 60_000).toISOString(), text: "a" }, { at: new Date(now - 90_000).toISOString(), text: "b" }], spoke: [] });
+    room.pass();
+    expect(queued()).toEqual([CHAT]);
+    answers.push(JSON.stringify({ say: "@Alice the oolong is worth the queue.", reply_to: asked.meta.messageId, mention: "ou_alice", reason: "a tea question" }));
+    await room.consider(CHAT);
+    expect(posts().at(-1)).toEqual(expect.objectContaining({ text: "@Alice the oolong is worth the queue.", mentions: [{ id: "ou_alice", name: "Alice" }] }));
+    expect(client.store.get(KV.chatter.chat(CHAT))?.spoke?.length).toBe(1);
+  });
+});
+
 describe("a consideration", () => {
   it("reads the chat and what the agent said there, and posts into the chat what it says, quoting the message it answers", async () => {
     const asked = message("ou_alice", "anyone tried the new tea place?", 300);

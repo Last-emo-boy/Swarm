@@ -5,7 +5,8 @@
  * waits on Feishu.
  */
 import { z } from "zod/v4";
-import { threadKey, type Trigger } from "./core/index.js";
+import { threadKey, type ChannelRef, type Trigger } from "./core/index.js";
+import { feishuUserChannel } from "./sources/feishu-trigger.js";
 import { KV, type Key } from "./kv.js";
 import type { Store } from "./store.js";
 
@@ -169,3 +170,44 @@ export function findPeople(store: Pick<Store, "get" | "keys">, name: string, lim
     return [{ id, name: person.name, chats: where }];
   }).slice(0, limit);
 }
+
+/** Someone or some chat a message goes to: a person by id and name, or a chat the agent is in. */
+export type Addressee = { person: { id: string; name: string } } | { chat: { id: string; name: string } };
+/**
+ * Who `to` names for a message: a chat the agent is in, by id or name; a person, by open_id or the one person with that
+ * name; else why not, naming the people it could mean.
+ */
+export function addressee(store: Pick<Store, "get" | "keys">, to: string): Addressee | { problem: string } {
+  const wanted = to.trim().replace(/^@/, "");
+  const chats = chatsOf(store);
+  const chat = chats.find((item) => item.chat_id === wanted || (!item.direct && item.name !== null && item.name.toLowerCase() === wanted.toLowerCase()));
+  if (chat && !chat.direct) return { chat: { id: chat.chat_id, name: chat.name ?? chat.chat_id } };
+  if (wanted.startsWith("oc_")) return { problem: `The agent is in no group ${wanted}: send to one of ${chats.filter((item) => !item.direct).map((item) => `${item.chat_id} (${item.name})`).join(", ") || "none"}` };
+  if (wanted.startsWith("ou_")) {
+    const name = personName(store, { source: SOURCE, id: wanted });
+    return name ? { person: { id: wanted, name } } : { problem: `No one with id ${wanted} is in the chats the agent is in` };
+  }
+  // The closest names first: the whole name, then a name with a word that starts so, then any that contains it.
+  const found = findPeople(store, wanted, 50);
+  const lower = wanted.toLowerCase();
+  const tiers = [found.filter((person) => person.name.toLowerCase() === lower),
+    found.filter((person) => person.name.toLowerCase().split(/[\s·._-]+/).some((word) => word.startsWith(lower))), found];
+  const matches = tiers.find((tier) => tier.length) ?? [];
+  if (matches.length === 1) return { person: { id: matches[0]!.id, name: matches[0]!.name } };
+  if (!matches.length) return { problem: `No one named ${wanted} is in the chats the agent is in; answer with chat and say so` };
+  return { problem: `Several people match ${wanted}: ${matches.slice(0, 8).map((person) => `${person.id} ${person.name} (${person.chats.join(", ")})`).join("; ")}. Use the id of the one meant, or answer with chat and ask which` };
+}
+/** The people a message @s, by id: anyone in the directory, or all for everyone in the chat; else why not. */
+export function mentionsFor(state: Pick<State, "get">, ids: readonly string[]): { id: string; name: string }[] | { problem: string } {
+  const mentions: { id: string; name: string }[] = [];
+  for (const id of new Set(ids)) {
+    if (id === "all") { mentions.push({ id, name: "all" }); continue; }
+    const name = personName(state, { source: SOURCE, id });
+    if (!name) return { problem: `mentions: ${id} is no one the agent knows; use ids from the card` };
+    mentions.push({ id, name });
+  }
+  return mentions;
+}
+/** The channel a message to `target` goes by: the person's direct messages, or into the chat itself. */
+export const channelTo = (target: Addressee): ChannelRef => "person" in target ? feishuUserChannel(target.person.id)
+  : { source: SOURCE, thread: `feishu:${target.chat.id}`, address: { chatId: target.chat.id, mode: "chat" } };

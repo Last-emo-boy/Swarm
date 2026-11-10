@@ -89,7 +89,9 @@ export interface Executor {
  * host keeps that goes with it, such as a local ticket's patch.
  */
 export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
-  attachment?: string }
+  attachment?: string
+  /** People the message @s, by id and name: the text names them as `@name`, and the Channel turns that into a real mention. */
+  mentions?: { id: string; name: string }[] }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */

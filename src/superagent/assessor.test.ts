@@ -299,6 +299,46 @@ test("shows the router who is who on Feishu: the sender's and chat's names, who 
   assert.match(calls[0]!.system, /## People\n\nOn Feishu the card says who is who/);
 });
 
+test("messages someone for the person who asked: by name in a direct message, with a reply to them, asking again when the name fits several", async () => {
+  start({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }], directMessages: true } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } } });
+  const { feishuTrigger } = await import("./sources/feishu.js");
+  const { readMembers } = await import("./people.js");
+  client.store.set(KV.sources.labels("feishu"), { oc_team: "Team" });
+  await readMembers(async () => ({ users: [{ member_id: "ou_alice", name: "Alice" }, { member_id: "ou_bob", name: "Bob" },
+    { member_id: "ou_lilei", name: "Li Lei" }, { member_id: "ou_lina", name: "Li Na" }], bots: [] }), client.store, "oc_team");
+  const ask = (id: string, text: string) => {
+    const trigger = feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+      content: `@_user_1 ${text}`, create_time: String(Date.now()), mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] }, "ou_bot", "cli_app")!;
+    client.engine.receive(trigger);
+    return trigger;
+  };
+  const sent = () => client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all()
+    .map((row) => JSON.parse(String(row.value)) as { kind: string; text: string; channel: { address: Record<string, string> }; mentions?: unknown });
+  const first = ask("om_1", "帮我私聊 Bob 说今晚的会改到八点");
+  answers.push(JSON.stringify({ kind: "message", to: "Bob", text: "Alice 让我告诉你：今晚的会改到八点。", reply: "好，已经私聊 Bob 了。" }));
+  await judge(first.id);
+  assert.match(calls[0]!.system, /## Messaging people/);
+  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.your_chats, [{ chat_id: "oc_team", name: "Team" }]);
+  assert.deepEqual(sent().map((item) => [item.kind, item.text, item.channel.address]), [
+    ["notice", "Alice 让我告诉你：今晚的会改到八点。", { userId: "ou_bob", mode: "user", direct: "true" }],
+    ["reply", "好，已经私聊 Bob 了。", { chatId: "oc_team", messageId: "om_1", mode: "chat" }]
+  ]);
+  const decision = client.store.decisions.get(client.store.triggers.disposition(first.id)!.decisionId!)!;
+  assert.deepEqual([decision.kind, decision.reason], ["ignore", [{ code: "messaged", values: { to: "Bob" } }]]);
+  const second = ask("om_2", "告诉 Li 一声明天放假");
+  answers.push(JSON.stringify({ kind: "message", to: "Li", text: "明天放假。" }), JSON.stringify({ kind: "chat", reply: "你说的是 Li Lei 还是 Li Na？" }));
+  await judge(second.id);
+  assert.match(JSON.parse(calls.at(-1)!.user).problem, /Several people match Li: ou_lilei Li Lei \(Team\); ou_lina Li Na \(Team\)/);
+  assert.equal(sent().at(-1)!.text, "你说的是 Li Lei 还是 Li Na？");
+  // A chat answer @s someone for real; an id nobody has is asked about again.
+  const third = ask("om_3", "叫一下 Bob");
+  answers.push(JSON.stringify({ kind: "chat", reply: "@Bob Alice 找你", mentions: ["ou_nobody"] }), JSON.stringify({ kind: "chat", reply: "@Bob Alice 找你", mentions: ["ou_bob"] }));
+  await judge(third.id);
+  assert.match(JSON.parse(calls.at(-1)!.user).problem, /ou_nobody is no one the agent knows/);
+  assert.deepEqual(sent().at(-1)!.mentions, [{ id: "ou_bob", name: "Bob" }]);
+});
+
 /** Feishu settings with the access model on and a GitHub App people link their accounts with. */
 const ACCESS = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } },
   github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },

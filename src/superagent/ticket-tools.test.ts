@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
+import { settingsPath, writeSettings } from "./settings.js";
 import { KV } from "./kv.js";
 import { noticed, readMembers } from "./people.js";
 import { feishuTrigger } from "./sources/feishu.js";
@@ -46,4 +47,26 @@ test("a worker reads who is who and a group's latest messages from the host's re
   assert.deepEqual(await run("people", { name: "bob" }), { people: [{ id: "ou_bob", name: "Bob", chats: ["Team"] }] });
   // Workers in VMs and on paired nodes get the same tool, run by the host.
   assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "people" && tool.readOnly));
+});
+
+test("a worker messages people on Feishu for its ticket, in their direct messages or a chat, at most ten times an hour", async () => {
+  writeSettings({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [], directMessages: true, otherChats: "mentions" } } } }, settingsPath(stateDir));
+  const { triggerId } = client.request("tell Bob the release moved to Friday");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Tell Bob", scope: "x", reason: "asked", name: "tell-bob", evalId: candidate.evalId });
+  client.store.set(KV.sources.labels("feishu"), { oc_team: "Team" });
+  await readMembers(async () => ({ users: [{ member_id: "ou_alice", name: "Alice" }, { member_id: "ou_bob", name: "Bob" }] }), client.store, "oc_team");
+  const run = (args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === "message")!.run(args);
+  const sent = () => client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all()
+    .map((row) => JSON.parse(String(row.value)) as { kind: string; ticketId?: string; channel: { address: Record<string, string> }; mentions?: unknown });
+  assert.deepEqual(await run({ to: "Bob", text: "The release moved to Friday." }), { sent: true, to: "Bob" });
+  assert.deepEqual(await run({ to: "Team", text: "@all the release moved to Friday.", mentions: ["all"] }), { sent: true, to: "Team" });
+  assert.deepEqual(sent().map((item) => [item.kind, item.ticketId, item.channel.address, item.mentions ?? null]), [
+    ["notice", ticketId, { userId: "ou_bob", mode: "user", direct: "true" }, null],
+    ["notice", ticketId, { chatId: "oc_team", mode: "chat" }, [{ id: "all", name: "all" }]]
+  ]);
+  await assert.rejects(run({ to: "Carol", text: "hi" }), /No one named Carol/);
+  for (let index = 0; index < 8; index++) await run({ to: "Bob", text: `Update ${index}.` });
+  await assert.rejects(run({ to: "Bob", text: "One more." }), /sent 10 messages in the last hour/);
 });

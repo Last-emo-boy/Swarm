@@ -9,7 +9,7 @@ import type { Complete } from "./assessor.js";
 import { parseJsonObject } from "./assessor.js";
 import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
-import { senderOf } from "./people.js";
+import { chatsOf, senderOf } from "./people.js";
 import type { Chatter, Settings } from "./settings.js";
 import { checkedImText, wordCount } from "./text.js";
 
@@ -19,7 +19,7 @@ const WINDOW_MS = 12 * HOUR_MS, WINDOW_MESSAGES = 30, MESSAGE_CHARS = 500;
 /** The longest message it posts on its own. */
 const SAY_WORDS = 60;
 
-export const CHATTER_DEFAULTS: Chatter = { chats: [], persona: "", model: null, lullSeconds: 90, considerMinutes: 10, perHour: 2 };
+export const CHATTER_DEFAULTS: Chatter = { chats: [], everywhere: false, off: [], persona: "", model: null, lullSeconds: 90, considerMinutes: 10, perHour: 2 };
 export const chatterOf = (settings: Pick<Settings, "chatter">): Chatter => settings.chatter ?? CHATTER_DEFAULTS;
 
 /** The hour of `at` in `timeZone`, 0–23. */
@@ -33,8 +33,8 @@ export function quietAt(chatter: Pick<Chatter, "quiet">, at: number): boolean {
   return quiet.from < quiet.to ? hour >= quiet.from && hour < quiet.to : hour >= quiet.from || hour < quiet.to;
 }
 
-const SaySchema = z.object({ say: z.string().trim().nullish(), reply_to: z.string().nullish(), reason: z.string().max(400).default("") });
-const CHATTER_CONTRACT = 'Return exactly one JSON object: {"say": "what you post" | null, "reply_to": "the id of the one message you answer" | null, "reason": "why, at most 200 characters"}';
+const SaySchema = z.object({ say: z.string().trim().nullish(), reply_to: z.string().nullish(), mention: z.string().nullish(), reason: z.string().max(400).default("") });
+const CHATTER_CONTRACT = 'Return exactly one JSON object: {"say": "what you post" | null, "reply_to": "the id of the one message you answer" | null, "mention": "the from_id of the one person you answer, to @ them, only when the chat is busy enough that they might miss it" | null, "reason": "why, at most 200 characters"}';
 
 /** The instructions for a consideration: who the agent is in the chat, and when a member would speak. */
 export function chatterPrompt(name: string, persona: string): string {
@@ -69,8 +69,16 @@ export class ChatterRoom {
   private silent(chatter: Chatter, chatId: string): boolean {
     const now = this.now();
     const state = this.host.client.store.get(KV.chatter.chat(chatId));
-    const lastHour = (state?.said ?? []).filter((item) => now - Date.parse(item.at) < HOUR_MS).length;
+    // What it said on its own; a state from before `spoke` counts what it said there at all.
+    const lastHour = (state?.spoke ?? state?.said.map((item) => item.at) ?? []).filter((at) => now - Date.parse(at) < HOUR_MS).length;
     return lastHour >= chatter.perHour || quietAt(chatter, now);
+  }
+  /** The chats it joins in on its own: every group it is in but those turned off, or those listed, which its Source receives. */
+  private chats(chatter: Chatter): string[] {
+    const { client } = this.host;
+    const chats = chatter.everywhere ? chatsOf(client.store).filter((chat) => !chat.direct && !chatter.off.includes(chat.chat_id)).map((chat) => chat.chat_id)
+      : chatter.chats;
+    return chats.filter((chatId) => client.sources.channelAllowed({ source: "feishu", address: { chatId } }));
   }
 
   /**
@@ -81,7 +89,7 @@ export class ChatterRoom {
     const { client } = this.host;
     const chatter = chatterOf(client.settings());
     const now = this.now();
-    for (const chatId of chatter.chats) {
+    for (const chatId of this.chats(chatter)) {
       const latest = client.store.read.chatMessages(chatId, new Date(now - WINDOW_MS).toISOString(), 1)[0];
       const state = client.store.get(KV.chatter.chat(chatId)) ?? { said: [] };
       if (!latest || (state.consideredAt && state.consideredAt >= latest.at)) continue;
@@ -100,14 +108,14 @@ export class ChatterRoom {
     const { client, complete } = this.host;
     const settings = client.settings();
     const chatter = chatterOf(settings);
-    if (!chatter.chats.includes(chatId) || this.silent(chatter, chatId)) return;
+    if (!this.chats(chatter).includes(chatId) || this.silent(chatter, chatId)) return;
     const messages = client.store.read.chatMessages(chatId, new Date(this.now() - WINDOW_MS).toISOString(), WINDOW_MESSAGES).reverse();
     const latest = messages.at(-1);
     if (!latest) return;
     const own = (client.store.get(KV.chatter.chat(chatId))?.said ?? []).filter((item) => Date.parse(item.at) >= this.now() - WINDOW_MS);
     const bot = client.deployment().feishu?.name ?? "";
     const timeline = [
-      ...messages.map((message) => ({ at: message.at, id: String(message.meta.messageId ?? message.id), from: senderOf(client.store, message),
+      ...messages.map((message) => ({ at: message.at, id: String(message.meta.messageId ?? message.id), from: senderOf(client.store, message), from_id: message.actor.id,
         text: message.text.length > MESSAGE_CHARS ? `${message.text.slice(0, MESSAGE_CHARS)}…` : message.text,
         ...(typeof message.meta.parentId === "string" ? { reply_to: message.meta.parentId } : {}) })),
       ...own.map((item) => ({ at: item.at, from: bot || "you", you: true, text: item.text }))
@@ -120,7 +128,13 @@ export class ChatterRoom {
     const replyTo = messages.find((message) => message.meta.messageId === answer.reply_to)?.meta.messageId;
     const channel: ChannelRef = { source: "feishu", thread: `feishu:${chatId}`,
       address: { chatId, mode: "chat", ...(typeof replyTo === "string" ? { messageId: replyTo } : {}) } };
-    // The outbox remembers what it says there (people.ts).
-    client.outbox.send({ id: key("chatter", chatId, latest.id), channel, text: checkedImText(text), kind: "notice" });
+    const mentioned = answer.mention ? messages.find((message) => message.actor.id === answer.mention) : undefined;
+    const mentions = mentioned ? [{ id: mentioned.actor.id, name: senderOf(client.store, mentioned) }] : [];
+    // The outbox remembers what it says there (people.ts); `spoke` counts what it said on its own.
+    client.store.atomic(() => {
+      client.outbox.send({ id: key("chatter", chatId, latest.id), channel, text: checkedImText(text), kind: "notice", ...(mentions.length ? { mentions } : {}) });
+      const state = client.store.get(KV.chatter.chat(chatId)) ?? { said: [] };
+      client.store.set(KV.chatter.chat(chatId), { ...state, spoke: [...(state.spoke ?? []), new Date(this.now()).toISOString()].slice(-20) });
+    });
   }
 }

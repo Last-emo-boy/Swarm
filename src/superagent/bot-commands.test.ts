@@ -112,21 +112,25 @@ describe("bot commands", () => {
     commands.receive(message(BOSS, "/listen all", { direct: true }));
     expect(replies().at(-1)!.text).toBe("/listen works in a group chat.");
   });
-  it("lets an owner have the agent join the conversation in a chat it reads in full, and stop", () => {
-    commands.receive(message(BOSS, "/chatter on"));
-    expect(replies().at(-1)!.text).toBe("First send /listen all here: I need to read the whole conversation.");
-    commands.receive(message(BOSS, "/listen all"));
+  it("lets an owner have the agent join the conversation in a chat or keep out of it, whatever it listens to there", () => {
     commands.receive(message(MAINTAINER, "/chatter on"));
     expect(replies().at(-1)!.text).toBe("That did not work: only an owner can do that");
     commands.receive(message(BOSS, "/chatter on"));
     expect(current().chatter?.chats).toEqual([CHAT]);
     commands.receive(message(MAINTAINER, "/chatter"));
     expect(replies().at(-1)!.text).toBe("I join the conversation here now and then, at most 2 times an hour.");
-    // Listening to mentions only also ends joining in, which needs the whole conversation.
+    // What it listens to is apart: it reads the chat from the messages it keeps.
     commands.receive(message(BOSS, "/listen mentions"));
-    expect(current().chatter?.chats).toEqual([]);
+    expect(current().chatter?.chats).toEqual([CHAT]);
     commands.receive(message(BOSS, "/chatter off"));
     expect(replies().at(-1)!.text).toBe("I'll speak here only when someone mentions me.");
+    expect(current().chatter).toMatchObject({ chats: [], off: [CHAT] });
+    // In every group, an owner's /chatter off keeps it out of this one.
+    writeSettings({ ...current(), chatter: { ...current().chatter, everywhere: true } }, settingsPath(stateDir));
+    commands.receive(message(MAINTAINER, "/chatter"));
+    expect(replies().at(-1)!.text).toBe("I speak here only when someone mentions me.");
+    commands.receive(message(BOSS, "/chatter on"));
+    expect(current().chatter).toMatchObject({ everywhere: true, off: [] });
   });
   it("hands every other message, and anything from a sender the gate would not take, to the Engine", () => {
     const request = message(READER, "fix the typo");
