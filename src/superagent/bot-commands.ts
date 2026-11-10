@@ -14,15 +14,16 @@ import { chatterOf } from "./chatter.js";
 import { WorktreeNameSchema } from "./messages.js";
 import { AUTHORIZATIONS_URL, githubApp, installUrl, linkOf, namedRepository, type GithubApp, type GithubLinks, type LinkView } from "./github-link.js";
 import { KV } from "./kv.js";
+import { memoryOf, personSubject } from "./memories.js";
 import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, steers, watchedRepository } from "./policy.js";
 import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
 import { SOURCE as FEISHU, feishuUserChannel } from "./sources/feishu-trigger.js";
-import { inChinese, sameName, sayIn, type Say } from "./text.js";
+import { inChinese, sameName, sayIn, wordCount, type Say } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 
 const HOUR_MS = 3_600_000;
-export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "listen", "ceiling", "chatter", "takeover"] as const;
+export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "listen", "ceiling", "chatter", "takeover", "memory", "forget"] as const;
 export type CommandName = typeof COMMANDS[number];
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 
@@ -30,12 +31,15 @@ const MentionsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
 const short = (id: string): string => id.slice(0, 8);
 const help = (say: Say): string => say(
   "Commands: /me shows your role and limits; /link links your GitHub account (its code comes in a direct message), /unlink removes it, "
-    + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch. "
+    + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch; "
+    + "/memory shows what I remember about you, in a direct message, and /forget <number>|all forgets it. "
     + "You can also ask for these in your own words. "
     + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.",
   "命令：/me 查看你的角色和限额；/link 绑定 GitHub 账号（验证码私聊发给你），/unlink 解除绑定；/repo [owner/name] 列出或设置默认仓库；"
-    + "/takeover [工单] 把本地工单的补丁做成拉取请求。这些也可以直接用自己的话跟我说。"
+    + "/takeover [工单] 把本地工单的补丁做成拉取请求；/memory 私聊告诉你我记得你什么，/forget <编号>|all 让我忘掉。这些也可以直接用自己的话跟我说。"
     + "owner 还能用：/role @某人 owner|maintainer|everyone|none，群里的 /listen all|mentions|off 和 /chatter on|off，/ceiling read-only|local|github。");
+/** How many words one page of /memory holds, within a chat message's limit. */
+const MEMORY_PAGE_WORDS = 85;
 /** How many repositories an answer names before it says how many more there are. */
 const LISTED_REPOS = 8;
 const repoList = (link: LinkView, say: Say): string => {
@@ -184,6 +188,8 @@ export class BotCommands {
       case "ceiling": return this.ceiling(command, trigger, settings);
       case "chatter": return this.chatter(command, trigger, settings);
       case "takeover": return this.takeover(command, trigger, settings);
+      case "memory": return this.memory(command, trigger, settings);
+      case "forget": return this.forget(command, trigger, settings);
     }
   }
 
@@ -207,6 +213,57 @@ export class BotCommands {
     const asked = of(requests, limitOf(settings, role, "requestsPerHour"));
     return say(`Your role: ${role}. Open tickets: ${open}. Requests in the last hour: ${asked}. Work asked for here writes ${ceiling} at most.${github}`,
       `你的角色：${role}。未结工单：${open}。最近一小时请求：${asked}。这里提出的工作最多写到 ${ceiling}。${github}`);
+  }
+
+  /** Whom a memory command is about: the person it names after the command, which only an owner may name for someone else, or the sender. */
+  private remembered(command: Command, trigger: Trigger, settings: Settings): { id: string; name: string } {
+    const bot = this.client.resolvedDeployment()?.feishu?.botId;
+    const rest = trigger.text.slice(Math.max(0, trigger.text.indexOf(`/${command.name}`)));
+    const named = command.mentions.find((mention) => mention.id !== bot && mention.id !== trigger.actor.id && rest.includes(`@${mention.name}`));
+    if (!named) return { id: trigger.actor.id, name: "" };
+    this.owner(trigger, settings);
+    return named;
+  }
+  /**
+   * `/memory [@name] [page]`: what the agent remembers about the sender, or for an owner about someone they name, a page
+   * at a time and numbered for /forget; in a group the list goes to the sender's direct messages.
+   */
+  private memory(command: Command, trigger: Trigger, settings: Settings): string {
+    const say = this.say(trigger);
+    if (!memoryOf(settings)) return say("My memory is off here.", "这里没有开记忆。");
+    const person = this.remembered(command, trigger, settings);
+    const notes = this.client.store.memory.about(personSubject(person.id));
+    const whom = person.name ? say(`about ${person.name}`, `关于 ${person.name}`) : say("about you", "关于你");
+    if (!notes.length) return say(`I don't remember anything ${whom} yet.`, `我还没有记住${whom}的事。`);
+    const pages: string[][] = [[]];
+    notes.forEach((note, index) => {
+      const line = `${index + 1}. ${note.text}${note.kind === "promise" && note.due && !note.done ? say(` (due ${note.due.slice(0, 16).replace("T", " ")} UTC)`, `（${note.due.slice(0, 16).replace("T", " ")} UTC 到期）`) : ""}`;
+      if (wordCount([...pages.at(-1)!, line].join("\n")) > MEMORY_PAGE_WORDS && pages.at(-1)!.length) pages.push([]);
+      pages.at(-1)!.push(line);
+    });
+    const page = Math.min(pages.length, Math.max(1, Number(command.args.find((arg) => /^\d+$/.test(arg)) ?? 1)));
+    const more = page < pages.length ? say(` (page ${page} of ${pages.length}: /memory ${page + 1} for more)`, `（第 ${page}/${pages.length} 页，发 /memory ${page + 1} 看下一页）`) : "";
+    const list = `${say(`What I remember ${whom}:`, `我记得${whom}的：`)}\n${pages[page - 1]!.join("\n")}${more}`;
+    if (trigger.meta.direct === true) return list;
+    this.client.outbox.send({ id: key("memory", trigger.id), channel: feishuUserChannel(trigger.actor.id), text: list, kind: "reply" });
+    return say("I sent you the list in a direct message.", "已经私聊发给你了。");
+  }
+  /** `/forget <number>|all [@name]`: the agent forgets one note about the sender, as /memory numbers them, or all of them; an owner, about someone they name. */
+  private forget(command: Command, trigger: Trigger, settings: Settings): string {
+    const say = this.say(trigger);
+    if (!memoryOf(settings)) return say("My memory is off here.", "这里没有开记忆。");
+    const person = this.remembered(command, trigger, settings);
+    const subject = personSubject(person.id);
+    const whom = person.name ? say(`about ${person.name}`, `关于 ${person.name}`) : say("about you", "关于你");
+    if (command.args.includes("all")) {
+      const count = this.client.store.memory.deleteAbout(subject);
+      return say(`Forgot everything ${whom} (${count}).`, `${whom}的都忘掉了（${count} 条）。`);
+    }
+    const number = Number(command.args.find((arg) => /^\d+$/.test(arg)));
+    const note = Number.isInteger(number) ? this.client.store.memory.about(subject)[number - 1] : undefined;
+    if (!note) return say("Usage: /forget <number from /memory>|all", "用法：/forget <在 /memory 里的编号>|all");
+    this.client.store.memory.delete(note.id);
+    return say(`Forgot: ${note.text}`, `忘掉了：${note.text}`);
   }
 
   /** The GitHub App and the host's links, for the commands that need both. */

@@ -102,8 +102,13 @@ export function said(state: State, chatId: string, entry: Said): void {
   state.set(KV.chatter.chat(chatId), { ...current, said: [...current.said, entry].slice(-SAID_KEPT) });
 }
 
+/** Remembers a message the agent sent to a person's direct messages by their open_id, where no chat id names the conversation. */
+export function saidTo(state: State, person: string, entry: Said): void {
+  state.set(KV.people.dm(person), [...(state.get(KV.people.dm(person)) ?? []), entry].slice(-SAID_KEPT));
+}
+
 /** One line of a conversation as the router and workers read it. */
-export interface Line { at: string; from: string; text: string; trigger_id?: string; bot?: true; you?: true }
+export interface Line { at: string; from: string; text: string; from_id?: string; trigger_id?: string; bot?: true; you?: true }
 const cut = (text: string, chars: number): string => text.length > chars ? `${text.slice(0, chars)}…` : text;
 
 /**
@@ -119,8 +124,10 @@ export function conversation(store: Pick<Store, "get" | "read">, trigger: Trigge
     : store.read.chatMessages(chatId, options.since, options.limit * 2, true).filter((message) => typeof message.meta.threadId !== "string");
   const kept = messages.filter((message) => message.at >= options.since && !options.exclude?.has(message.id));
   const ids = new Set(kept.map((message) => String(message.meta.messageId ?? "")));
-  return lines(store, kept, saidIn(store, chatId, options.since)
-    .filter((entry) => topic ? !!entry.to && ids.has(entry.to) && entry.topic === true : entry.topic !== true), options);
+  // In a direct message, what it wrote to the person on its own counts too.
+  const wrote = trigger.meta.direct === true ? (store.get(KV.people.dm(trigger.actor.id)) ?? []).filter((entry) => entry.at >= options.since) : [];
+  return lines(store, kept, [...saidIn(store, chatId, options.since)
+    .filter((entry) => topic ? !!entry.to && ids.has(entry.to) && entry.topic === true : entry.topic !== true), ...wrote], options);
 }
 /** A chat's latest messages, its topics' replies too, oldest first, with names and the agent's own words. */
 export const chatLog = (store: Pick<Store, "get" | "read">, chatId: string, options: LineOptions): Line[] =>
@@ -128,7 +135,7 @@ export const chatLog = (store: Pick<Store, "get" | "read">, chatId: string, opti
 const saidIn = (state: Pick<State, "get">, chatId: string, since: string): Said[] =>
   (state.get(KV.chatter.chat(chatId))?.said ?? []).filter((entry) => entry.at >= since);
 const lines = (store: Pick<Store, "get">, messages: Trigger[], own: Said[], options: LineOptions): Line[] => [
-  ...messages.map((message): Line => ({ at: message.at, from: senderOf(store, message), trigger_id: message.id, ...(message.human ? {} : { bot: true as const }),
+  ...messages.map((message): Line => ({ at: message.at, from: senderOf(store, message), from_id: message.actor.id, trigger_id: message.id, ...(message.human ? {} : { bot: true as const }),
     text: cut(message.text, options.chars) })),
   ...own.map((entry): Line => ({ at: entry.at, from: options.self || "you", you: true, text: cut(entry.text, options.chars) }))
 ].sort((a, b) => a.at.localeCompare(b.at)).slice(-options.limit);

@@ -6,12 +6,12 @@
 import { z } from "zod/v4";
 import { key, type ChannelRef } from "./core/index.js";
 import type { Complete } from "./assessor.js";
-import { parseJsonObject } from "./assessor.js";
 import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { chatsOf, senderOf } from "./people.js";
+import { chatSubject, memoryOf, notesCard, personSubject } from "./memories.js";
 import type { Chatter, Settings } from "./settings.js";
-import { checkedImText, wordCount } from "./text.js";
+import { checkedImText, parseJsonObject, wordCount } from "./text.js";
 
 const HOUR_MS = 3_600_000;
 /** How far back, and how many, of a chat's messages a consideration reads. */
@@ -40,7 +40,7 @@ const CHATTER_CONTRACT = 'Return exactly one JSON object: {"say": "what you post
 export function chatterPrompt(name: string, persona: string): string {
   return [
     `You are ${name || "the bot"}, a member of a group chat on Feishu: not an assistant on duty. ${persona.trim()}`.trim(),
-    "The card holds the chat's latest messages, oldest first, with what you said there among them, marked you: true.",
+    "The card holds the chat's latest messages, oldest first, with what you said there among them, marked you: true, and memory, what you remember of the chat and the people in it.",
     "Decide whether you say something now. Most of the time the right answer is nothing (say: null). Speak only when a member would: you can add something useful, kind or funny to what people are talking about, answer a question nobody answered, or join a light moment.",
     "Do not repeat yourself, summarize the chat, offer help nobody asked for, describe what you can do, bring up tickets or work unless they do, answer what you already answered or what was asked of someone else, step into a private or tense exchange, or speak when the last message is yours.",
     `Write as a person in the chat: one or two short sentences in the language they use, at most ${SAY_WORDS} words, no headings or lists. Set reply_to only when you answer one message in particular.`,
@@ -120,7 +120,10 @@ export class ChatterRoom {
         ...(typeof message.meta.parentId === "string" ? { reply_to: message.meta.parentId } : {}) })),
       ...own.map((item) => ({ at: item.at, from: bot || "you", you: true, text: item.text }))
     ].sort((a, b) => a.at.localeCompare(b.at));
-    const card = { chat: client.store.get(KV.sources.labels("feishu"))?.[chatId] ?? chatId, now: new Date(this.now()).toISOString(), messages: timeline };
+    // What it remembers of the chat and of the people talking there, when its memory is on.
+    const memory = memoryOf(settings) ? notesCard(client.store, [chatSubject(chatId), ...new Set(messages.map((message) => personSubject(message.actor.id)))], 4, 16) : [];
+    const card = { chat: client.store.get(KV.sources.labels("feishu"))?.[chatId] ?? chatId, now: new Date(this.now()).toISOString(), messages: timeline,
+      ...(memory.length ? { memory } : {}) };
     const answer = SaySchema.parse(parseJsonObject(await complete({ purpose: "superagent_chatter", system: chatterPrompt(bot, chatter.persona),
       user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) })));
     const text = answer.say?.trim();

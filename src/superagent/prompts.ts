@@ -62,6 +62,8 @@ export interface WorkerPromptInput {
   write?: WriteLevel;
   /** Who the agent is and how it writes to people (`chatter.persona`), or empty. */
   persona?: string;
+  /** What it remembers about the ticket's requester, its chat and itself, when its memory is on (memories.ts). */
+  memory?: readonly unknown[];
 }
 
 /** The persona, as the voice of every text a person reads: replies, acknowledgements, questions, results. */
@@ -85,6 +87,11 @@ export function workerPrompt(input: WorkerPromptInput): string {
     ...(input.sources.includes("feishu") ? [section("Feishu", BUILT_IN.feishu)] : []),
     section("Execution environment", input.environment || "No execution variables."),
     ...(input.mandate ? [section("Mandate", input.mandate)] : []),
+    ...(input.memory ? [section("Memory", [
+      "What you remember about this ticket's requester, its chat and yourself, from earlier conversations and tickets; use it as a colleague would, and with tact about what was said in private:",
+      JSON.stringify(input.memory),
+      "Keep what will matter after this ticket with mcp__ticket__remember, such as how the requester likes their work done or something you agreed to do later (a promise, with due); look up more with mcp__ticket__recall. Never keep secrets, passwords, tokens or keys."
+    ].join("\n"))] : []),
     ...(input.persona?.trim() ? [voiceSection(input.persona, "Report summaries for the record, commits, pull requests and code stay plain and factual.")] : [])
   ];
   return parts.join("\n\n");
@@ -114,7 +121,7 @@ function routingLines(): string {
 }
 
 /** The bot commands the router may run for a person whose message asks for what one does; the others only people type. */
-export const AGENT_COMMANDS = ["help", "me", "link", "repo", "takeover"] as const;
+export const AGENT_COMMANDS = ["help", "me", "link", "repo", "takeover", "memory", "forget"] as const;
 export type AgentCommand = typeof AGENT_COMMANDS[number];
 export const ROUTE_CONTRACT = [
   "Return exactly one JSON object for the candidate, with these fields:",
@@ -129,11 +136,12 @@ export const ROUTE_CONTRACT = [
   ' "link": "accept: true to send the requester a code to link their GitHub account, as the Requester section says; omit it otherwise",',
   ' "repository": "accept: owner/name of the requester\'s repository the work is about, exactly as the card lists it, as the Requester section says; omit it otherwise",',
   ` "command": "command: one of ${AGENT_COMMANDS.join(", ")}",`,
-  ' "args": "command: optional list of its arguments, such as [\"owner/name\"] for repo or [\"<ticket id>\"] for takeover",',
+  ' "args": "command: optional list of its arguments, such as [\"owner/name\"] for repo, [\"<ticket id>\"] for takeover or [\"2\"] or [\"all\"] for forget",',
   ' "ticket_id": "attach and stop: the ticket",',
   ' "reason": "ignore and stop: why, at most 500 characters",',
   ' "to": "message: who it goes to: a person, by the id or the name the card gives, who gets it as a direct message, or a chat from your_chats, by id or name",',
   ' "text": "message: what you send, at most 100 words, in the language its reader uses",',
+  ' "remember": "any kind: optional list of at most 3 notes the message asks you to keep, as the Memory section says: [{\"about\": \"<id>|chat|self\", \"kind\": \"fact|preference|event|promise\", \"text\": \"...\", \"due\": \"promises only\"}]",',
   ' "mentions": "chat and message: optional ids of the people to @, from the card, each written as @name in the text where you would say it; all for everyone in the chat, only when asked",',
   ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted where reply_as says. message: optional, what you tell the person who asked"}'
 ].join("\n");
@@ -143,7 +151,7 @@ const REQUESTER_LINES = [
   "An acknowledgement promises only what this_request allows: when it is local, the change comes back as a patch, never a pull request; when it is read-only, an answer.",
   "When accepted work is about one of the requester's GitHub repositories, set repository to its owner/name exactly as the card lists it, however the person called it (\"2048 DQN\" for owner/2048-DQN, a translated or shortened name). Without it, the work happens on when_none_is_named.",
   "Set link: true on an accept when the person wants a pull request, a push or another change on GitHub, may_write is github, and their GitHub is not linked or its link stopped working. The host then sends them a code to link their account in a direct message, and once they linked it turns the finished patch into a pull request as them; the acknowledgement says both.",
-  "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them.",
+  "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them. memory: what you remember about them, which goes to their direct messages. forget: with a number from that list, or all, forget it.",
   "Changing roles, the chats the agent reads, ceilings or whether it joins conversations on its own, and unlinking, are only for people to type themselves (/role, /listen, /ceiling, /chatter, /unlink): asked for one, answer with chat and name the command to send."
 ].join("\n");
 /** What the card's harnesses mean, and when the router sets one on accepted work. */
@@ -167,6 +175,13 @@ const PEOPLE_LINES = [
   "Asked who someone is or who is here, answer with chat from these, and say plainly when a name is not among them. your_chats lists the groups you are in."
 ].join("\n");
 
+/** What the router remembers, and when it keeps something a message asks it to. */
+const MEMORY_LINES = [
+  "The card's memory holds what you remember about the sender, the people the message mentions, this chat and yourself: short notes, each with its kind and where you learned it. Use them as a person uses what they know of someone, naturally and without reciting them, and with tact about what was said in private.",
+  "When the message asks you to remember something, or to remind someone or do something later, add it to remember: about is a person's id from the card, chat for this chat, or self; kind is fact, preference, event or promise. A promise has due, a time from the card's now in its time_zone with the offset, such as 2026-11-11T09:00:00+08:00, and its text says what to do and for whom; when it falls due you write the message yourself. Your reply or acknowledgement then says you will.",
+  "Leave out what nobody asked you to keep: you note that later on your own. Never keep secrets, passwords, tokens or keys. Asked what you remember of someone or to forget something, use command memory or forget."
+].join("\n");
+
 /** When the router sends a message to someone other than the person who wrote. */
 const MESSAGING_LINES = [
   "Use message when the person asks you to tell, ask or remind someone else, or to say something in another chat, such as \"帮我私聊小王说…\" or \"去群里@一下大家\". Anyone may ask this of you.",
@@ -185,7 +200,7 @@ const REPLY_LINES = [
 ].join("\n");
 
 /** The router's instructions for an explicit candidate; `persona` says who the agent is in its replies and acknowledgements. */
-export function routerPrompt(persona = ""): string {
+export function routerPrompt(persona = "", memory = false): string {
   return [
     "You route requests for Swarm's ticket host. Each call gives you one candidate card: a person's message that the Policy admitted as an explicit request.",
     "Decide only routing: accept it as a new ticket, attach it to a ticket it points at, stop a ticket the person asks to stop, answer it yourself when it asks for no work (chat), send a message to someone for the person (message), run a bot command for the person (command), or ignore it.",
@@ -196,6 +211,7 @@ export function routerPrompt(persona = ""): string {
     section("Chat", CHAT_LINES),
     section("People", PEOPLE_LINES),
     section("Messaging people", MESSAGING_LINES),
+    ...(memory ? [section("Memory", MEMORY_LINES)] : []),
     section("Where to reply", REPLY_LINES),
     ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),

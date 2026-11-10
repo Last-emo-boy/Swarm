@@ -15,6 +15,7 @@ import { watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
 import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
+import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
@@ -78,6 +79,16 @@ const readable = (client: SuperagentClient, ticket: Ticket, trigger: Trigger): b
 
 /** How far back, and how many messages, a worker's chat/<chat-id> read goes. */
 const CHAT_DAYS = 7, CHAT_MESSAGES = 50;
+/** How many notes one recall returns. */
+const RECALLED = 30;
+/** The subjects a ticket's worker names: its requester, a person by id, the ticket's chat, or the agent itself. */
+const subjectFor = (origin: Trigger | undefined) => (name: string): string | undefined => {
+  const chatId = origin?.source === "feishu" && typeof origin.meta.chatId === "string" && origin.meta.direct !== true ? origin.meta.chatId : undefined;
+  if (name === SELF) return SELF;
+  if (name === "chat") return chatId ? chatSubject(chatId) : undefined;
+  if (name === "requester") return origin?.source === "feishu" ? personSubject(origin.actor.id) : undefined;
+  return name.startsWith("ou_") ? personSubject(name) : name.startsWith("oc_") ? chatSubject(name) : undefined;
+};
 /** How many messages to people a ticket's worker may send in an hour. */
 const MESSAGES_PER_HOUR = 10;
 
@@ -105,6 +116,21 @@ const TOOLS = {
       mentions: z.array(z.string().trim().min(1).max(64)).max(10).optional().describe("Ids of people to @, each written as @name in the text; all for everyone in the chat, only when asked.")
     },
     readOnly: false
+  },
+  remember: {
+    description: "Keep a note for later conversations and tickets, as the Memory section says: about the requester, a person by id, this ticket's chat, or yourself.",
+    input: {
+      about: z.string().trim().min(1).max(100).describe("requester, a person's id such as ou_..., chat, or self"),
+      kind: z.enum(NOTE_KINDS).default("fact"),
+      text: z.string().trim().min(1).max(NOTE_CHARS),
+      due: z.string().optional().describe("Promises only: when it falls due, an ISO time with its offset")
+    },
+    readOnly: false
+  },
+  recall: {
+    description: "Look up what you remember: notes whose text contains query, the notes about one subject (requester, a person's id, chat or self), or without either, about this ticket's requester, chat and yourself.",
+    input: { query: z.string().trim().min(1).max(100).optional(), about: z.string().trim().min(1).max(100).optional() },
+    readOnly: true
   },
   ack: {
     description: "Acknowledge one original human request before substantial work, as the Replies section says; it posts as a reply to that message.",
@@ -252,6 +278,26 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
         client.store.set(KV.people.sent(ticketId), [...sent, new Date(now).toISOString()]);
       });
       return { sent: true, to: "person" in target ? target.person.name : target.chat.name };
+    },
+    remember: async (args) => {
+      if (!memoryOf(client.settings())) throw new Error("The agent's memory is off here");
+      const origin = sourceTrigger(client, ticket());
+      const problem = applyOps(client.store, [{ op: "add", about: String(args.about), kind: args.kind as NoteKind ?? "fact", text: String(args.text),
+        ...(typeof args.due === "string" ? { due: args.due } : {}) }], { subjects: subjectFor(origin), shown: new Set() },
+        { ticketId, ...(typeof origin?.meta.chatId === "string" ? { chatId: origin.meta.chatId } : {}), ...(origin?.meta.direct === true ? { direct: true } : {}) });
+      if (problem) throw new Error(problem);
+      return { remembered: true };
+    },
+    recall: async (args) => {
+      if (!memoryOf(client.settings())) throw new Error("The agent's memory is off here");
+      const origin = sourceTrigger(client, ticket());
+      if (typeof args.query === "string") return { notes: client.store.memory.search(args.query, RECALLED).map((note) => noteLine(client.store, note)) };
+      if (typeof args.about === "string") {
+        const about = subjectFor(origin)(args.about);
+        if (!about) throw new Error(`${args.about} is not someone or something here: use requester, a person's id, chat or self`);
+        return { notes: client.store.memory.about(about, RECALLED).map((note) => noteLine(client.store, note)) };
+      }
+      return { notes: origin?.source === "feishu" ? notesCard(client.store, subjectsOf(origin), RECALLED, RECALLED) : notesCard(client.store, [SELF], RECALLED, RECALLED) };
     },
     ack: async (args) => {
       const reply = client.engine.reply({ purpose: "acknowledgement", ticketId, triggerId: String(args.trigger_id), text: String(args.text) });

@@ -2,7 +2,7 @@
 import type { OutboundMessage, Outbox as OutboxPort, ReplyStatus } from './core/index.js'
 import type { Commands } from './commands.js'
 import { checkedImText } from './text.js'
-import { said } from './people.js'
+import { said, saidTo } from './people.js'
 import type { SourceRegistry } from './sources/registry.js'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.js'
 import type { Store } from './store.js'
@@ -33,10 +33,11 @@ export class Outbox implements OutboxPort {
       if (!store.receipts.add(message)) return
       effects.enqueue('reply', message.id, {})
       // Whatever sent it, a message to a Feishu chat is what the agent said there (people.ts).
-      const { chatId, messageId, mode } = message.channel.address
+      const { chatId, messageId, mode, userId } = message.channel.address
       if (message.channel.source === 'feishu' && chatId && mode !== 'user') {
         said(store, chatId, { at: new Date().toISOString(), text: message.text, ...(messageId ? { to: messageId } : {}), ...(mode !== 'chat' ? { topic: true } : {}) })
       }
+      if (message.channel.source === 'feishu' && mode === 'user' && userId) saidTo(store, userId, { at: new Date().toISOString(), text: message.text })
     })
   }
   status(id: string): ReplyStatus | undefined { return this.host.store.receipts.get(id)?.status }

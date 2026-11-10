@@ -339,6 +339,42 @@ test("messages someone for the person who asked: by name in a direct message, wi
   assert.deepEqual(sent().at(-1)!.mentions, [{ id: "ou_bob", name: "Bob" }]);
 });
 
+test("shows the router what it remembers, and keeps what a message asks it to remember with the route it takes, such as a reminder", async () => {
+  const feishu = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } } };
+  start({ ...feishu, memory: { enabled: true } });
+  const { feishuTrigger } = await import("./sources/feishu.js");
+  const { personSubject } = await import("./memories.js");
+  client.store.memory.save({ id: "n1", about: personSubject("ou_alice"), kind: "preference", text: "Alice likes short answers", origin: { chatId: "oc_team" },
+    created: "2026-11-01T00:00:00.000Z", updated: "2026-11-01T00:00:00.000Z" });
+  const ask = (id: string, text: string) => {
+    const trigger = feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+      content: `@_user_1 ${text}`, create_time: String(Date.now()), mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] }, "ou_bot", "cli_app")!;
+    client.engine.receive(trigger);
+    return trigger;
+  };
+  const first = ask("om_1", "明天上午十点提醒我交周报");
+  const due = new Date(Date.now() + 86_400_000).toISOString();
+  answers.push(JSON.stringify({ kind: "chat", reply: "好，明天十点提醒你。", remember: [{ about: "ou_nobody", kind: "promise", text: "Remind Alice", due }] }),
+    JSON.stringify({ kind: "chat", reply: "好，明天十点提醒你。", remember: [{ about: "ou_alice", kind: "promise", text: "提醒 Alice 交周报", due }] }));
+  await judge(first.id);
+  const card = JSON.parse(calls[0]!.user).candidate;
+  assert.deepEqual(card.memory.map((note: { text: string; about: string }) => [note.about, note.text]), [["ou_alice", "Alice likes short answers"]]);
+  assert.match(card.now, /\(.+, UTC\+08:00\)$/);
+  assert.match(calls[0]!.system, /## Memory\n\nThe card's memory holds what you remember/);
+  assert.match(JSON.parse(calls[1]!.user).problem, /ou_nobody is not someone or something here/);
+  const promise = client.store.memory.about(personSubject("ou_alice")).find((note) => note.kind === "promise")!;
+  assert.deepEqual([promise.text, promise.due, promise.origin.triggerId], ["提醒 Alice 交周报", due, first.id]);
+  // With its memory off, the router is told so and its prompt has no Memory section.
+  client.close();
+  start({ ...feishu });
+  const second = ask("om_2", "记住我喜欢茶");
+  answers.push(JSON.stringify({ kind: "chat", reply: "好。", remember: [{ about: "ou_alice", text: "Alice likes tea" }] }), JSON.stringify({ kind: "chat", reply: "这里没开记忆。" }));
+  await judge(second.id);
+  assert.doesNotMatch(calls.at(-1)!.system, /## Memory/);
+  assert.match(JSON.parse(calls.at(-1)!.user).problem, /memory is off here/);
+});
+
 /** Feishu settings with the access model on and a GitHub App people link their accounts with. */
 const ACCESS = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } },
   github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },

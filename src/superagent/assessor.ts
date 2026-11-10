@@ -16,10 +16,11 @@ import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
   watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
-import { addressee, channelTo, chatName, chatsOf, conversation, mentionsFor, peopleIn, senderOf } from "./people.js";
+import { addressee, channelTo, chatName, chatsOf, conversation, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
+import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, personSubject, planOps, subjectsOf } from "./memories.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
-import { IM_WORDS, NOTE_WORDS, checkedImText, sameName, wordCount } from "./text.js";
+import { IM_WORDS, NOTE_WORDS, checkedImText, parseJsonObject, sameName, wordCount } from "./text.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
 export type Complete = (input: { purpose: string; system: string; user: string; model?: string }) => Promise<string>;
@@ -67,6 +68,8 @@ const RouteSchema = z.object({
   text: z.string().nullish(),
   /** The people a chat answer or a message @s, by id, or all for everyone in the chat. */
   mentions: z.array(z.string().trim().min(1).max(64)).max(10).nullish(),
+  /** What the message asks the agent to remember, such as a reminder: notes it keeps whatever the route's kind (memories.ts). */
+  remember: z.array(RememberSchema).max(3).nullish(),
   /** What accepted work needs of the machine its worker runs on, such as gpu: it places the worker on a paired node fit for it. */
   needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish(),
   /** Accepted work whose requester wants a pull request but has not linked GitHub: they get the code to link, and the ticket a take-over once they did. */
@@ -80,7 +83,7 @@ const RouteSchema = z.object({
   args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
 });
 type Route = z.infer<typeof RouteSchema>;
-type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args" | "mentions">;
+type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args" | "mentions" | "remember">;
 /** Each field's check, the kinds that read it and those that need it, as upstream's orchestrator_route checked them. */
 const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][]; needs: readonly Route["kind"][] }> = {
   ticket_id: { check: z.string(), reads: ["attach", "stop"], needs: ["attach", "stop"] },
@@ -153,16 +156,7 @@ export const AssessmentSchema = z.object({
 
 const FollowupSchema = z.object({ stop: z.array(z.string()).default([]), reason: z.string().max(300).default("") });
 
-/** The first JSON object in a model's answer. */
-export function parseJsonObject(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const match = /\{[\s\S]*\}/.exec(text);
-    if (!match) throw new Error("The model returned no JSON object");
-    return JSON.parse(match[0]);
-  }
-}
+export { parseJsonObject } from "./text.js";
 const problem = (error: unknown): string => error instanceof z.ZodError ? z.prettifyError(error) : error instanceof Error ? error.message : String(error);
 
 /** How many of the requester's repositories the router's card lists. */
@@ -242,10 +236,13 @@ export class ModelAssessor {
       chars: LINE_CHARS, exclude: new Set(candidate.triggers.map((trigger) => trigger.id)), self: this.host.client.resolvedDeployment()?.feishu?.name ?? "" });
     const here = primary.meta.direct === true ? [] : peopleIn(store, chatId, PEOPLE_HERE);
     const groups = chatsOf(store).filter((item) => !item.direct).map(({ chat_id, name }) => ({ chat_id, name }));
+    const settings = this.host.client.settings();
+    const memory = memoryOf(settings) ? notesCard(store, subjectsOf(primary)) : undefined;
     return {
       ...(sender !== primary.actor.id ? { from_name: sender } : {}), ...(chat ? { chat_name: chat } : {}),
       ...(mentioned.length ? { mentioned } : {}), ...(lines.length ? { conversation: lines } : {}), ...(here.length ? { people_here: here } : {}),
-      ...(groups.length ? { your_chats: groups } : {})
+      ...(groups.length ? { your_chats: groups } : {}),
+      ...(memory ? { ...localNow(settings), memory } : {})
     };
   }
   /**
@@ -315,7 +312,7 @@ export class ModelAssessor {
     let last = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       const user = JSON.stringify(attempt ? { candidate: card, previous_answer: last, problem: last } : { candidate: card }, null, 2);
-      const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? ""), user,
+      const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? "", !!memoryOf(client.settings())), user,
         model: client.settings().eval.model ?? undefined });
       let route: Route;
       try {
@@ -324,12 +321,37 @@ export class ModelAssessor {
         last = problem(error);
         continue;
       }
-      const refused = routeProblem(route) ?? this.carryOut(candidate, triggerId, route, harnesses);
+      const remembered = this.remembered(candidate, route);
+      if (typeof remembered === "string") { last = remembered; continue; }
+      const refused = routeProblem(route) ?? client.store.atomic(() => {
+        const outcome = this.carryOut(candidate, triggerId, route, harnesses);
+        // What the message asked it to remember is kept with the route it took, so its reply can say so.
+        if (!outcome) remembered?.();
+        return outcome;
+      });
       if (!refused) return;
       last = refused;
     }
     // An Eval left undecided expires after its time limit and goes back to the queue, then ends unavailable.
     throw new Error(`The router's answer could not be used: ${last}`);
+  }
+
+  /**
+   * The notes a routing answer asks the agent to keep, as what keeps them, about the sender, the people the message
+   * mentions or who are in its chat, the chat or the agent itself; else why they cannot be kept.
+   */
+  private remembered(candidate: Candidate, route: Route): string | (() => void) | undefined {
+    if (!route.remember?.length) return undefined;
+    const { store } = this.host.client;
+    if (!memoryOf(this.host.client.settings())) return "remember: the agent's memory is off here; leave remember out";
+    const primary = candidate.triggers.at(-1)!;
+    if (primary.source !== "feishu") return "remember: the agent remembers only what is said on Feishu; leave remember out";
+    const chatId = typeof primary.meta.chatId === "string" && primary.meta.direct !== true ? primary.meta.chatId : undefined;
+    const known = (id: string) => id === primary.actor.id || personName(store, { source: "feishu", id }) !== undefined;
+    const scope = { subjects: (name: string) => name === SELF ? SELF : (name === "chat" || name === chatId) && chatId ? chatSubject(chatId)
+      : name.startsWith("ou_") && known(name) ? personSubject(name) : undefined, shown: new Set<string>() };
+    return planOps(store, route.remember.map((item) => ({ op: "add" as const, ...item })), scope,
+      { ...(typeof primary.meta.chatId === "string" ? { chatId: primary.meta.chatId } : {}), ...(primary.meta.direct === true ? { direct: true } : {}), triggerId: primary.id });
   }
 
   /** Carries out a routing answer as its Engine command; returns why it cannot run or the Engine refused it, if it did. */
