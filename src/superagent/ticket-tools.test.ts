@@ -112,3 +112,23 @@ test("a worker answers what the agent runs work on from the host's devices, with
   assert.equal(counts.this_node, undefined);
   assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "devices" && tool.readOnly));
 });
+
+test("a worker uses what paired nodes lend through its host's mesh, and each call it makes is kept with its ticket", async () => {
+  const { triggerId } = client.request("run kubectl get nodes on the kube node");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Kube nodes", scope: "x", reason: "asked", name: "kube-nodes", evalId: candidate.evalId });
+  const saved = process.env.SWARM_MESH_HOME;
+  process.env.SWARM_MESH_HOME = join(stateDir, "mesh");
+  try {
+    const run = (args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === "mesh")!.run(args);
+    assert.deepEqual(await run({}), { nodes: [] });
+    await assert.rejects(run({ node: "kube", tool: "shell", args: { command: "kubectl get nodes", timeout_ms: 600_000 } }), /No paired node is called kube/);
+    const [call] = client.store.get(KV.mesh.calls(ticketId!)) ?? [];
+    assert.deepEqual([call?.node, call?.tool, JSON.parse(call!.args)], ["kube", "shell", { command: "kubectl get nodes", timeout_ms: 100_000 }]);
+    assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "mesh" && !tool.readOnly), "workers in VMs and on paired nodes get it too, run by the host");
+  } finally {
+    if (saved === undefined) delete process.env.SWARM_MESH_HOME;
+    else process.env.SWARM_MESH_HOME = saved;
+  }
+});
