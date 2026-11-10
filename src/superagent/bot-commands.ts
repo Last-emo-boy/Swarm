@@ -33,11 +33,11 @@ const short = (id: string): string => id.slice(0, 8);
 const help = (say: Say): string => say(
   "Commands: /me shows your role and limits; /link links your GitHub account (its code comes in a direct message), /unlink removes it, "
     + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch; "
-    + "/devices shows what I run work on now; /memory shows what I remember about you, in a direct message, and /forget <number>|all forgets it. "
+    + "/devices shows what I run work on; /memory shows what I remember about you, /forget <number>|all forgets it. "
     + "You can also ask for these in your own words. "
     + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.",
   "命令：/me 查看你的角色和限额；/link 绑定 GitHub 账号（验证码私聊发给你），/unlink 解除绑定；/repo [owner/name] 列出或设置默认仓库；"
-    + "/takeover [工单] 把本地工单的补丁做成拉取请求；/devices 查看我现在能用哪些设备；/memory 私聊告诉你我记得你什么，/forget <编号>|all 让我忘掉。这些也可以直接用自己的话跟我说。"
+    + "/takeover [工单] 把本地工单的补丁做成拉取请求；/devices 看我能用的设备；/memory 看我记得你什么，/forget <编号>|all 让我忘掉。这些也可以直接跟我说。"
     + "owner 还能用：/role @某人 owner|maintainer|everyone|none，群里的 /listen all|mentions|off 和 /chatter on|off，/ceiling read-only|local|github。");
 /** How many words one page of /memory holds, within a chat message's limit. */
 const MEMORY_PAGE_WORDS = 85;
