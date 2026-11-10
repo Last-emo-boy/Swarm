@@ -1,19 +1,23 @@
 /**
  * Bot commands: a person's Feishu message to the agent that starts with a slash after the mentions that address it, such as
  * `/me`. The host carries each out itself before any model reads the message, records it once so a Source that reads it
- * again finds it known, and answers in the conversation. It also holds back a sender's messages beyond their role's requests
- * per hour, and new requests beyond their open tickets, with an answer that says so.
+ * again finds it known, and answers in the conversation. The router runs some of them for a person whose message asks for
+ * what one does (`perform`, see `AGENT_COMMANDS`), as their built-in tools. It also holds back a sender's messages beyond
+ * their role's requests per hour, and new requests beyond their open tickets, with an answer that says so.
  */
 import { existsSync } from "node:fs";
 import { z } from "zod/v4";
-import { UserError, key, liveTicket, threadKey, type ReceiveResult, type Role, type Ticket, type Trigger, type WriteLevel } from "./core/index.js";
+import { UserError, key, latestReport, liveTicket, threadKey, type ActorRef, type ChannelRef, type ReceiveResult, type Role, type Ticket, type Trigger,
+  type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { chatterOf } from "./chatter.js";
 import { WorktreeNameSchema } from "./messages.js";
 import { AUTHORIZATIONS_URL, githubApp, installUrl, linkOf, namedRepository, type GithubApp, type GithubLinks, type LinkView } from "./github-link.js";
-import { addressable, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, steers, watchedRepository } from "./policy.js";
+import { KV } from "./kv.js";
+import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, steers, watchedRepository } from "./policy.js";
+import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
-import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
+import { SOURCE as FEISHU, feishuUserChannel } from "./sources/feishu-trigger.js";
 import { sameName } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 
@@ -24,8 +28,9 @@ export interface Command { name: CommandName; args: string[]; mentions: { id: st
 
 const MentionsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
 const short = (id: string): string => id.slice(0, 8);
-const HELP = "Commands: /me shows your role and limits; /link (in a direct message) links your GitHub account, /unlink removes it, "
+const HELP = "Commands: /me shows your role and limits; /link links your GitHub account (its code comes in a direct message), /unlink removes it, "
   + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch. "
+  + "You can also ask for these in your own words. "
   + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.";
 /** How many repositories an answer names before it says how many more there are. */
 const LISTED_REPOS = 8;
@@ -33,7 +38,11 @@ const repoList = (link: LinkView): string => {
   const names = link.repos.map((repo) => repo === link.defaultRepo ? `${repo} (default)` : repo);
   return names.length > LISTED_REPOS ? `${names.slice(0, LISTED_REPOS).join(", ")} and ${names.length - LISTED_REPOS} more` : names.join(", ");
 };
-const NOT_LINKED = "Link your GitHub account first: send /link to me in a direct message.";
+const NOT_LINKED = "Link your GitHub account first: send /link.";
+const CODE_SENT = "I sent you a direct message with a code to link your GitHub account. If none arrives, send me a direct message saying /link.";
+const CODE_WAITS = "Enter the code I sent you in a direct message, or wait until it expires to ask for another.";
+/** How long a wanted pull request waits for its person to link and for its ticket's patch. */
+const WANTED_MS = 7 * 24 * HOUR_MS;
 
 const failure = (error: unknown): string => `That did not work: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
 
@@ -59,6 +68,8 @@ export interface BotCommandsOptions {
 
 export class BotCommands {
   private readonly lifetime = new AbortController();
+  /** The people whose device flow waits for them to enter its code. */
+  private readonly flows = new Set<string>();
   constructor(private readonly client: SuperagentClient, private readonly options: BotCommandsOptions = {}) {}
 
   /** Stops the device flows that still wait for people to enter their codes. */
@@ -94,6 +105,21 @@ export class BotCommands {
     if (text) this.answer(trigger, text, key("command", trigger.id));
     return result;
   }
+  /**
+   * Runs a command the router chose for a person's message as if they had typed it, which answers in the conversation as
+   * the command does; a take-over decides the message.
+   */
+  perform(trigger: Trigger, name: AgentCommand, args: readonly string[]): void {
+    let text: string | undefined;
+    try {
+      text = trigger.source !== FEISHU ? "Bot commands work in Feishu."
+        : this.run({ name, args: [...args], mentions: MentionsSchema.catch([]).parse(trigger.meta.mentions) }, trigger, this.client.settings());
+    } catch (error) {
+      text = failure(error);
+    }
+    if (text) this.answer(trigger, text, key("command", trigger.id));
+  }
+
   /** Runs a command that answers once GitHub has; its failure is its answer. */
   private later(trigger: Trigger, work: () => Promise<string>): undefined {
     void work().catch(failure).then((text) => this.answer(trigger, text, key("command", trigger.id)),
@@ -152,7 +178,7 @@ export class BotCommands {
     const scope = this.client.sources.scope(trigger);
     const ceiling = ceilingOf(settings, trigger.source, scope.listened ? scope.row : undefined);
     const link = githubApp(settings) ? linkOf(this.client.store, trigger.actor) : undefined;
-    const github = !githubApp(settings) ? "" : !link ? " GitHub: not linked; send /link in a direct message."
+    const github = !githubApp(settings) ? "" : !link ? " GitHub: not linked; send /link."
       : link.broken ? ` GitHub: @${link.login}, but the link stopped working; send /link again.`
       : trigger.meta.direct !== true ? ` GitHub: @${link.login}.`
       : ` GitHub: @${link.login}, working on ${link.repos.length ? repoList(link) : "no repository yet"}.`;
@@ -169,21 +195,38 @@ export class BotCommands {
   }
 
   /**
-   * `/link`, in a direct message: the device flow's code, then, once the person entered it on GitHub, the account and the
-   * repositories they may work on.
+   * `/link`: the device flow's code, then, once the person entered it on GitHub, the account and the repositories they may
+   * work on, in a direct message. Asked in a group, both go to their direct messages, since whoever enters the code links
+   * their own account to the person who asked.
    */
   private link(trigger: Trigger, settings: Settings): string | undefined {
-    if (trigger.meta.direct !== true) return "Send /link to me in a direct message.";
-    const { app, links } = this.linking(settings);
-    return this.later(trigger, async () => {
+    this.linking(settings);
+    const direct = trigger.meta.direct === true;
+    if (!this.startLink(trigger.actor, direct && trigger.channel ? trigger.channel : feishuUserChannel(trigger.actor.id), trigger.id)) return CODE_WAITS;
+    return direct ? undefined : CODE_SENT;
+  }
+  /**
+   * Starts the device flow of a person, whose code and outcome go to `channel`, a direct message with them; none starts while
+   * theirs still waits for its code. Once they linked, the pull requests they wanted are opened.
+   * @returns whether it started one.
+   */
+  private startLink(actor: ActorRef, channel: ChannelRef, id: string): boolean {
+    const { app, links } = this.linking(this.client.settings());
+    const flow = `${actor.source}:${actor.id}`;
+    if (this.flows.has(flow)) return false;
+    this.flows.add(flow);
+    const say = (text: string, part: string) => this.client.outbox.send({ id: key("link", id, part), channel, text, kind: "reply" });
+    void (async () => {
       const device = await links.start(app);
-      this.answer(trigger, `Open ${device.verification_uri} and enter ${device.user_code} within ${Math.round(device.expires_in / 60)} minutes `
-        + "to link your GitHub account.", key("link-code", trigger.id));
-      const tokens = await links.authorized(app, device, this.lifetime.signal);
-      const link = await links.link(trigger.actor, tokens, trigger.channel);
-      return link.repos.length ? `Linked as @${link.login}. You can work on ${repoList(link)}. Install the app on more repositories at ${installUrl(app)}.`
-        : `Linked as @${link.login}, but the app is not installed on a repository you can push to: install it at ${installUrl(app)}, then send /repo.`;
-    });
+      say(`Open ${device.verification_uri} and enter ${device.user_code} within ${Math.round(device.expires_in / 60)} minutes to link your GitHub account.`, "code");
+      const link = await links.link(actor, await links.authorized(app, device, this.lifetime.signal), channel);
+      say(link.repos.length ? `Linked as @${link.login}. You can work on ${repoList(link)}. Install the app on more repositories at ${installUrl(app)}.`
+        : `Linked as @${link.login}, but the app is not installed on a repository you can push to: install it at ${installUrl(app)}, then send /repo.`, "linked");
+      this.takeOverWanted();
+    })().catch((error: unknown) => say(failure(error), "failed"))
+      .catch((error: unknown) => this.options.log?.(`superagent: linking a GitHub account failed: ${String(error)}`))
+      .finally(() => this.flows.delete(flow));
+    return true;
   }
 
   /** `/unlink`: removes the person's link, after which their tickets cannot act as them. */
@@ -303,29 +346,51 @@ export class BotCommands {
    * nobody asked for, anyone who may write to GitHub here may take it over.
    */
   private takeover(command: Command, trigger: Trigger, settings: Settings): string {
-    const { client } = this;
     const ticket = this.ticketNamed(command.args[0], trigger);
     if (!ticket) return "Name the ticket: /takeover <ticket id>, or send /takeover in its thread.";
+    return this.takeOver(ticket, trigger, settings);
+  }
+  /**
+   * Takes a local ticket over for the sender of `trigger`, whose message decides the new ticket. Until they linked an account
+   * and the ticket has its patch, the take-over waits for both (see `takeOverWanted`), and a sender who has not linked yet
+   * gets the code to link in a direct message.
+   */
+  private takeOver(ticket: Ticket, trigger: Trigger, settings: Settings): string {
+    const { client } = this;
     const name = short(ticket.id);
     if (ticket.mandate.capability?.write !== "local") return `Ticket ${name} does not keep its work local, so there is nothing to take over.`;
-    if (!existsSync(patchPath(client.stateDir, ticket))) return `Ticket ${name} has no patch yet: take it over once it reports ready.`;
+    const taker = client.store.tickets.list().find((item) => item.mandate.capability?.from === ticket.id);
+    if (taker) return `Ticket ${name} was taken over as ticket ${short(taker.id)} already.`;
     if (ticket.mandate.strength !== "inferred" && !steers(settings, ticket.mandate, trigger.actor)) {
       return `Only the person who asked for ticket ${name} or a maintainer can take it over.`;
     }
     const scope = client.sources.scope(trigger);
     const row = scope.listened ? scope.row : undefined;
     const addressed = trigger.addressed === "direct" ? "direct" as const : "mention" as const;
+    const mandate = { strength: "explicit" as const, actor: trigger.actor,
+      basis: { via: "addressed" as const, addressed, source: trigger.source, ...(row === undefined ? {} : { row }) } };
     // A local ticket's patch is on the watched repository, where the taker opens the pull request as themselves.
     const watched = watchedRepository(settings);
+    const patched = existsSync(patchPath(client.stateDir, ticket));
     const link = linkOf(client.store, trigger.actor);
-    const would = capabilityOf(settings, { strength: "explicit", actor: trigger.actor,
-      basis: { via: "addressed", addressed, source: trigger.source, ...(row === undefined ? {} : { row }) } }, link, { repository: watched });
-    if (!link) return NOT_LINKED;
+    if (!link || link.broken) {
+      if (!githubApp(settings) || !this.options.links || allowedWrite(settings, mandate) !== "github") return NOT_LINKED;
+      this.want(ticket, trigger);
+      const direct = trigger.meta.direct === true && !!trigger.channel;
+      const started = this.startLink(trigger.actor, direct ? trigger.channel! : feishuUserChannel(trigger.actor.id), trigger.id);
+      return `Link your GitHub account first: enter the code ${started && direct ? "I'm sending you here" : "I sent you in a direct message"}. `
+        + `Once it is linked${patched ? "" : ` and ticket ${name} reports ready`}, I'll open the pull request as you.`;
+    }
+    const would = capabilityOf(settings, mandate, link, { repository: watched });
     if (would?.write !== "github" || !sameName(would.repository ?? "", watched)) {
       return `You cannot open pull requests on ${watched} from here (your role: ${roleOf(settings, trigger.actor)}, GitHub: @${link.login}).`;
     }
+    if (!patched) {
+      this.want(ticket, trigger);
+      return `Ticket ${name} has no patch yet: I'll open the pull request as @${link.login} once it reports ready.`;
+    }
     const limit = limitOf(settings, roleOf(settings, trigger.actor), "openTickets");
-    const mine = this.openTickets(trigger).length;
+    const mine = this.openTickets(trigger).filter((item) => item.id !== ticket.id).length;
     if (limit !== undefined && mine >= limit) return `You have ${mine} open tickets, as many as your role allows: take this over once one finishes.`;
     const request = client.store.triggers.get(ticket.origin.triggerId)?.text ?? "";
     const worktree = WorktreeNameSchema.safeParse(ticket.execution?.name.replace(/-[0-9a-f]{12}$/, "")).data ?? "takeover";
@@ -337,7 +402,55 @@ export class BotCommands {
       return decided;
     });
     if (!decision.ticketId) throw new UserError("notAdmissible", { reason: "the take-over was not accepted" });
+    client.store.delete(KV.links.wanted(ticket.id));
     return `Ticket ${short(decision.ticketId)} takes over ticket ${name}: it applies the patch and opens a pull request.`;
+  }
+  /** Remembers that the sender of `trigger` wants a pull request from a local ticket, which `takeOverWanted` opens. */
+  private want(ticket: Ticket, trigger: Trigger): void {
+    this.client.store.set(KV.links.wanted(ticket.id), { triggerId: trigger.id, at: new Date().toISOString() });
+  }
+  /**
+   * After the router accepted work from someone who wants a pull request from it but cannot open one yet, as their GitHub
+   * account is not linked: the ticket, kept local, is taken over once they linked it and it reported ready, and they get
+   * the code to link in a direct message (see `takeOver`).
+   */
+  wantPullRequest(trigger: Trigger, ticketId: string): void {
+    const ticket = this.client.store.tickets.get(ticketId);
+    if (!ticket || trigger.source !== FEISHU) return;
+    try {
+      this.takeOver(ticket, trigger, this.client.settings());
+    } catch (error) {
+      this.options.log?.(`superagent: a wanted pull request failed: ${String(error)}`);
+    }
+  }
+  /**
+   * Opens the pull requests people wanted from local tickets, once they linked an account and the ticket reported ready with
+   * its patch (which ends a local ticket), as a take-over their message decides, and tells them in its conversation how it
+   * went; forgets one whose message is gone, whose ticket ended otherwise, or that waited longer than `WANTED_MS`. The host
+   * calls it on each pass, and a link once linked.
+   */
+  takeOverWanted(): void {
+    const { store } = this.client;
+    for (const name of store.keys(KV.links.wanted)) {
+      const wanted = store.get(name);
+      const ticket = store.tickets.get(name.slice(KV.links.wanted.prefix.length));
+      const trigger = wanted && store.triggers.get(wanted.triggerId);
+      const patched = !!ticket && latestReport(ticket)?.state === "ready" && existsSync(patchPath(this.client.stateDir, ticket));
+      if (!wanted || !ticket || !trigger || (!liveTicket(ticket) && !patched) || Date.now() - Date.parse(wanted.at) > WANTED_MS) {
+        store.delete(name);
+        continue;
+      }
+      const link = linkOf(store, trigger.actor);
+      if (!patched || !link || link.broken) continue;
+      store.delete(name);
+      let text: string;
+      try {
+        text = this.takeOver(ticket, trigger, this.client.settings());
+      } catch (error) {
+        text = failure(error);
+      }
+      this.answer(trigger, text, key("wanted", ticket.id, trigger.id));
+    }
   }
 
   /** The ticket `/takeover` names: by its id's start or its name, else the latest local ticket on the message's Threads. */

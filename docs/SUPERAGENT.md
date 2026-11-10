@@ -100,10 +100,11 @@ steer it. Without the block, nothing changes: everyone on a list may do everythi
 
 - **Roles.** A sender has the role `roles` gives them. Otherwise someone on `allowed` is a `maintainer`, and anyone else
   is `everyone`. A sender with a role is on the list just as one on `allowed` is.
-- **Capability.** A maintainer's or an owner's explicit request may write to GitHub, as their linked account (below). Work for `everyone`, and work nobody
-  asked for (inferred, or a bot's), stays `local`: its worker commits in its directory, has no `gh` or `lark-cli` account,
-  and its ready result carries the commits as a patch. A receiving scope's `ceilings` entry (`read-only`, `local` or
-  `github`) lowers either; chats nobody listed (`other`) are `local` unless a ceiling says otherwise.
+- **Capability.** A person's explicit request may write to GitHub, as their linked account (below), whatever their role.
+  Without a working link, and for work nobody asked for (inferred, or a bot's), it stays `local`: its worker commits in its
+  directory, has no `gh` or `lark-cli` account, and its ready result carries the commits as a patch. A receiving scope's
+  `ceilings` entry (`read-only`, `local` or `github`) lowers either; chats nobody listed (`other`) are `local` unless a
+  ceiling says otherwise.
 - **Steering.** A ticket's requester and maintainers steer it. Anyone else's message on its Thread reaches the worker for
   context only (`advisory: true`). It neither resumes nor unblocks the ticket, and it goes to Eval as that person's own
   request. Attaching such a message to the ticket, or a stop from that person, is refused.
@@ -115,14 +116,17 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | Command | Who | What it does |
 |---|---|---|
 | `/me` | anyone | Shows your role, open tickets, requests in the last hour, the ceiling here and your GitHub account |
-| `/link`, `/unlink`, `/repo [owner/name]` | anyone, in a direct message | Links or removes your GitHub account, and lists or sets your default repository |
-| `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends |
+| `/link` | anyone | Links your GitHub account; its code comes in a direct message |
+| `/unlink`, `/repo [owner/name]` | anyone, in a direct message | Removes your GitHub account, and lists or sets your default repository |
+| `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends. It waits until you linked and the ticket has its patch |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
 | `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
 | `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own |
 
-The first owner is set in the settings file.
+People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo` and `/takeover` for someone whose
+message asks for what one does, as if they had typed it. The others change settings or remove a link, so only people type
+them. The first owner is set in the settings file.
 
 ### GitHub accounts
 
@@ -130,16 +134,19 @@ Work that writes to GitHub does so as the person who asked, through a GitHub App
 flow. Name the app (Device Flow on, expiring user tokens, Contents and Pull requests read and write) in the GitHub
 Source's settings: `"app": { "clientId": "Iv23...", "slug": "your-app" }` under `sources.github.config`.
 
-- `/link`, in a direct message, shows a code to enter at github.com/login/device. The host keeps the account's tokens,
-  sealed with AES-256-GCM under a key from `SWARM_LINK_KEY_FILE`, the service's `link-key` credential
-  (`$CREDENTIALS_DIRECTORY`), or `<stateDir>/link-key`. It refreshes them before they expire, and tells the person in the
-  conversation they linked from when GitHub refuses a refresh.
+- `/link` sends a code to enter at github.com/login/device, in a direct message even when asked in a group, since
+  whoever enters it links their own account to the person who asked. The host keeps the account's tokens, sealed with
+  AES-256-GCM under a key from `SWARM_LINK_KEY_FILE`, the service's `link-key` credential (`$CREDENTIALS_DIRECTORY`),
+  or `<stateDir>/link-key`. It refreshes them before they expire, and tells the person in the conversation they linked
+  from when GitHub refuses a refresh.
 - `/repo [owner/name]` lists the repositories where the person installed the app and may push, and sets their default.
   `/unlink` removes the link; GitHub's authorizations page revokes the app itself.
-- A maintainer's or an owner's explicit request writes to GitHub only once they linked an account. It works on the
-  repository the request names (as owner/name or a github.com link), else their default, else the watched repository,
-  else their only one; without any, it stays local. The worker's `gh` and git use that person's token, and their commits
-  carry that account's identity. A repository other than the watched one is cloned into the ticket's directory, and its
+- Someone who asks for a pull request before linking an account gets the work as a local ticket and the code to link.
+  Once they linked and the ticket reported ready, the host takes it over and opens the pull request as them.
+- A person's explicit request writes to GitHub only once they linked an account. It works on the repository the request
+  names (as owner/name or a github.com link), else their default, else the watched repository, else their only one;
+  without any, it stays local. The worker's `gh` and git use that person's token, and their commits carry that account's
+  identity. A repository other than the watched one is cloned into the ticket's directory, and its
   pull request's link comes back in the result: the host follows review and merge only on the watched repository.
 - What a worker does through the app, such as opening a pull request as the person, is the agent's own: the GitHub
   Source does not take it back in as their message.

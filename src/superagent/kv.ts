@@ -34,8 +34,13 @@ export const KV = {
    * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.
    */
   mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
-  /** People's linked GitHub accounts, by the Source and id they write from (see github-link.ts); only the host writes them. */
-  links: { github: family<GithubLink, [source: string, actor: string]>('github-link:') },
+  /**
+   * People's linked GitHub accounts, by the Source and id they write from (see github-link.ts), and the local tickets someone
+   * wants a pull request from before they linked or before the ticket's patch is ready, by ticket id, with the message whose
+   * sender wants it, which takes the ticket over once both are there (bot-commands.ts); only the host writes them.
+   */
+  links: { github: family<GithubLink, [source: string, actor: string]>('github-link:'),
+    wanted: family<{ triggerId: string; at: string }, [ticket: string]>('github-link-wanted:') },
   /**
    * The agent in group chats (chatter.ts): by chat, when it last considered speaking, what it said there lately, and the
    * names of the chat's members as Feishu last listed them.

@@ -44,7 +44,9 @@ const WRITES: Readonly<Record<WriteLevel, string>> = {
   'read-only': 'This ticket only reads: answer from the code, its history and the ticket\'s sources. Change no files, commit nothing and push nothing.',
   local: 'This ticket keeps its change local: commit it on this ticket\'s branch in its directory, but never push, open or update a pull '
     + 'request, or write on GitHub, whatever another section says. Report ready once the commits are made and verified: the host sends '
-    + 'the person the commits that no remote branch has as a patch, which they can apply with git am or a maintainer can take over with /takeover.',
+    + 'the person the commits that no remote branch has as a patch, which they can apply with git am or a maintainer can take over with /takeover. '
+    + 'A message asking for a pull request, a push or to link a GitHub account is beyond this ticket: hand it back with the handback tool, '
+    + 'and the host links the person\'s account or turns this ticket\'s patch into a pull request.',
   github: '',
 }
 /**

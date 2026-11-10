@@ -22,6 +22,7 @@ export const REASONS = {
   stopNotSteerer: 'A stop needs a sender who may steer the ticket: its requester or a maintainer',
   takeover: 'Takes over ticket {ticket}',
   chatted: 'Asked for no work; answered in the conversation',
+  commanded: 'Asked for what the bot command /{command} does, which ran for the sender',
   openTicketLimit: 'The sender has {open} open tickets, as many as their role allows ({limit})',
   directionUnsettled: 'Implementation intent or target direction is not established, or a product/design decision is still required',
   noRuleMatched: 'No enabled admission rule matched',

@@ -109,9 +109,9 @@ export class SuperagentHost {
         remote: () => this.remote,
         credential: (ticket) => this.credential(ticket)
       });
-      this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment });
-      this.assessor.install();
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log });
+      this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands });
+      this.assessor.install();
       this.chatter = new ChatterRoom({ client: this.client, complete: options.complete, configured: () => !!this.deployment?.feishu });
       this.chatter.install();
     } catch (error) {
@@ -202,7 +202,10 @@ export class SuperagentHost {
       this.syncSources(settings);
       if (Date.now() - this.prunedAt > PRUNE_MS) { prunePatches(this.stateDir); this.prunedAt = Date.now(); }
       this.client.engine.evaluateDue();
-      if (!settings.paused) this.chatter.pass();
+      if (!settings.paused) {
+        this.chatter.pass();
+        this.botCommands.takeOverWanted();
+      }
       this.client.effects.kick();
       this.client.store.set(KV.host.owner, { pid: process.pid, startedAt: this.startedAt, heartbeatAt: new Date().toISOString() });
       this.client.store.set(KV.host.health, { at: new Date().toISOString(), entries: {

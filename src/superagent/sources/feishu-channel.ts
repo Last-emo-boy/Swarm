@@ -23,8 +23,9 @@ const gone = (error: unknown): boolean => error instanceof CliError && error.cod
  * good, such as without the permission to upload files, is replaced by a line that says it could not be attached, and why.
  */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
-  const { messageId, chatId, mode } = message.channel.address
+  const { messageId, chatId, mode, userId } = message.channel.address
   if (mode === 'chat') return sendToChat(host, message, chatId, messageId)
+  if (mode === 'user') return sendToUser(host, message, userId)
   if (!messageId) throw new Error('Missing Feishu reply target')
   const text = checkedImText(message.text)
   const reply = (content: string[], key: string, cwd?: string) => host.commands.lark(['im', '+messages-reply', '--message-id', messageId, ...content,
@@ -54,6 +55,23 @@ async function sendToChat(host: Pick<SourceContext, 'commands'>, message: Outbou
     await host.commands.lark(messageId ? ['im', '+messages-reply', '--message-id', messageId, ...text] : ['im', '+messages-send', '--chat-id', chatId, ...text])
   } catch (error) {
     if (gone(error)) return 'gone'
+    throw error
+  }
+  return 'sent'
+}
+/** Feishu refuses for good to start a direct message with someone outside the app's availability. */
+const NO_AVAILABILITY = 230013
+/**
+ * Sends a direct message to a person by their open_id, which needs no chat with them yet: what must not be said in a group,
+ * such as the code that links their GitHub account. One Feishu refuses for good, such as to someone outside the app's
+ * availability, settles as gone.
+ */
+async function sendToUser(host: Pick<SourceContext, 'commands'>, message: OutboundMessage, userId?: string): Promise<'sent' | 'gone'> {
+  if (!userId) throw new Error('Missing Feishu user')
+  try {
+    await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', checkedImText(message.text), '--idempotency-key', message.id])
+  } catch (error) {
+    if (gone(error) || (error instanceof CliError && error.code === NO_AVAILABILITY)) return 'gone'
     throw error
   }
   return 'sent'

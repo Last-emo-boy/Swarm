@@ -133,8 +133,9 @@ export class Evals extends EnginePart {
     if (!trigger) throw new UserError('unknownTrigger')
     const held = this.holding(triggerId)
     if (outcome.evalId && held?.evaluating?.id !== outcome.evalId) throw new UserError('evalFinished', { eval: outcome.evalId })
-    // Prevent a replayed trigger that already created a ticket from spawning a second one.
-    const earlier = outcome.kind === 'accept' ? this.accepted(threadKey(trigger.threads[0]!)).get(triggerId) : undefined
+    // Prevent a replayed trigger that already created a ticket from spawning a second one; a take-over of a ticket is a
+    // ticket of its own, once.
+    const earlier = outcome.kind === 'accept' ? this.accepted(threadKey(trigger.threads[0]!), outcome.from).get(triggerId) : undefined
     if (earlier) {
       // Only an Eval started by an earlier version can still hold it; reassess the remaining triggers without it, or ignore it if alone.
       const others = held?.evaluating?.triggerIds.filter(id => id !== triggerId) ?? []
@@ -154,7 +155,7 @@ export class Evals extends EnginePart {
     }
     // A sender with as many live tickets as the Policy allows gets no more: an explicit request is refused, so its router can
     // attach it to one of theirs, and a candidate nobody asked for is ignored.
-    const full = outcome.kind === 'accept' ? this.openLimitReached(evaluation.actor) : undefined
+    const full = outcome.kind === 'accept' ? this.openLimitReached(evaluation.actor, outcome.from) : undefined
     if (full && evaluation.strength === 'explicit') throw new UserError('openTicketLimit', full)
     // It was assessed: its audit, even an empty one, keeps the Decision from reading as ignored from its card.
     if (full) return this.decideEval(thread, evaluation, { kind: 'ignore', reason: { code: 'openTicketLimit', values: full }, audit: { ...outcome.audit } })
@@ -258,13 +259,14 @@ export class Evals extends EnginePart {
     delete thread.expired
   }
   /**
-   * The accept Decisions of the Triggers whose primary Thread is `threadKey`, by Trigger: what each one started. An Eval and
-   * its Decision run on its Triggers' primary Thread, so the Thread's Decisions, read by their index, hold them all.
+   * The accept Decisions of the Triggers whose primary Thread is `threadKey`, by Trigger: what each one started, or with
+   * `from`, the take-over of that ticket each one started. An Eval and its Decision run on its Triggers' primary Thread, so
+   * the Thread's Decisions, read by their index, hold them all.
    */
-  private accepted(threadKey: string): Map<string, Decision> {
+  private accepted(threadKey: string, from?: string): Map<string, Decision> {
     const accepted = new Map<string, Decision>()
     for (const decision of this.repo.decisions.byThread(threadKey)) {
-      if (decision.kind !== 'accept' || !decision.ticketId) continue
+      if (decision.kind !== 'accept' || !decision.ticketId || decision.mandate?.capability?.from !== from) continue
       for (const id of decision.triggerIds) if (!accepted.has(id)) accepted.set(id, decision)
     }
     return accepted
@@ -325,11 +327,14 @@ export class Evals extends EnginePart {
     this.tickets.create(ticketId, decision.id, mandate, evaluation, outcome, at)
     return decision
   }
-  /** How many live tickets a sender has and may have, once they have as many as the Policy allows them. */
-  private openLimitReached(actor: ActorRef): { open: string; limit: string } | undefined {
+  /**
+   * How many live tickets a sender has and may have, once they have as many as the Policy allows them; the ticket a take-over
+   * replaces (`from`) does not count.
+   */
+  private openLimitReached(actor: ActorRef, from?: string): { open: string; limit: string } | undefined {
     const limit = this.policy().openLimit?.(actor)
     if (limit === undefined) return undefined
-    const open = this.repo.tickets.open().filter(ticket => liveTicket(ticket) && ticket.mandate.actor.source === actor.source
+    const open = this.repo.tickets.open().filter(ticket => liveTicket(ticket) && ticket.id !== from && ticket.mandate.actor.source === actor.source
       && ticket.mandate.actor.id === actor.id).length
     return open >= limit ? { open: String(open), limit: String(limit) } : undefined
   }
