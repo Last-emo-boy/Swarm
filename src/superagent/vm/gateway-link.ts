@@ -9,7 +9,8 @@ import type { WorkLink, WorkStart, WorkView } from "../work-link.js";
 
 /** Where the guest finds its gateway and its token: the supervisor sets both for the worker and its tools. */
 export const GATEWAY_VARIABLE = "SWARM_GUEST_GATEWAY", TOKEN_VARIABLE = "SWARM_GUEST_TOKEN";
-const TRIES = 4;
+/** Tries of a call the gateway does not answer, 2 to 32 seconds apart: a restart of the host takes up to a minute. */
+const TRIES = 6;
 /** How long a ticket tool may take on the host, within the worker's 120-second limit for a tool call. */
 const TOOL_TIMEOUT_MS = 110_000;
 const CALL_TIMEOUT_MS = 30_000;

@@ -20,10 +20,11 @@ export const workerSessionId = (ticketId: string): string => `worker-${ticketId}
 export const ticketOfSession = (sessionId: string): string | undefined => sessionId.startsWith('worker-') ? sessionId.slice('worker-'.length) : undefined
 
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
-  'network error', 'overloaded', 'rate limit', 'returned an empty response', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+  'network error', 'connection error', 'overloaded', 'rate limit', 'returned an empty response', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
 /**
  * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, a
- * connection that was refused, reset, timed out, or could not resolve its host, or a model that answered nothing this time.
+ * connection that was refused, reset, timed out, or could not resolve its host (the OpenAI SDK's "Connection error.", as
+ * while a ticket VM's host restarts), or a model that answered nothing this time.
  */
 export function transient(error: unknown): boolean {
   const status = (error as { status?: unknown } | undefined)?.status

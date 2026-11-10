@@ -10,7 +10,7 @@
  */
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { latestAssignment, liveTicket, waitsForPerson, type Ticket } from "../core/index.js";
@@ -179,6 +179,7 @@ export class VmWork implements RemoteWork {
   async release(slot: number): Promise<void> {
     const record = this.slot(slot);
     if (record) this.client.store.set(KV.vm.slot(String(slot)), { ...record, tokenHash: "", expiresAt: new Date(0).toISOString() });
+    rmSync(join(this.slotDir(slot), "token"), { force: true });
     await this.control.stop(slot).catch((error: unknown) => this.host.log(`superagent: stopping ticket VM ${slot} failed: ${String(error)}`));
   }
 
