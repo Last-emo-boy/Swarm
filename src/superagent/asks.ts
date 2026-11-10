@@ -2,7 +2,7 @@
  * What the agent asked people on someone else's behalf and waits to hear back on: "去问问他们进度" sends a question, and the
  * answer, whoever writes it, a person or another bot, goes back to the person who wanted to know (chatter.ts relays it).
  * An ask is open until one answer is relayed, or for `ASK_MS`; it is never a way in for work: an answer is passed on, not
- * acted on.
+ * acted on. An answered ask is kept as long, so the agent knows whom it acts for in that conversation.
  */
 import type { ChannelRef } from "./core/index.js";
 import { KV } from "./kv.js";
@@ -23,21 +23,26 @@ export interface Ask {
   /** What it asked. */
   text: string;
   at: string;
-  /** Who wanted to know, and where the answer goes: a quote of their message. */
+  /** Who wanted to know, a person or another bot, and where the answer goes: a quote of their message. */
   for: { id: string; name: string; channel: ChannelRef };
+  /** When its answer was passed on. */
+  answeredAt?: string;
 }
 type State = Pick<Store, "get" | "set">;
 
-/** The asks still open at `now`, oldest first. */
-export const openAsks = (state: Pick<Store, "get">, now: number): Ask[] =>
+/** The asks of the last `ASK_MS`, answered or not, oldest first. */
+export const recentAsks = (state: Pick<Store, "get">, now: number): Ask[] =>
   (state.get(KV.asks.open) ?? []).filter((ask) => now - Date.parse(ask.at) < ASK_MS);
+/** The asks still waiting for an answer at `now`, oldest first. */
+export const openAsks = (state: Pick<Store, "get">, now: number): Ask[] => recentAsks(state, now).filter((ask) => !ask.answeredAt);
 
 /** Opens an ask; one with the same id replaces it. */
 export function ask(state: State, opened: Ask, now: number): void {
-  state.set(KV.asks.open, [...openAsks(state, now).filter((item) => item.id !== opened.id), opened].slice(-OPEN_KEPT));
+  state.set(KV.asks.open, [...recentAsks(state, now).filter((item) => item.id !== opened.id), opened].slice(-OPEN_KEPT));
 }
 
 /** Closes asks once their answer is passed on. */
 export function closeAsks(state: State, ids: readonly string[], now: number): void {
-  state.set(KV.asks.open, openAsks(state, now).filter((item) => !ids.includes(item.id)));
+  const at = new Date(now).toISOString();
+  state.set(KV.asks.open, recentAsks(state, now).map((item) => ids.includes(item.id) ? { ...item, answeredAt: at } : item));
 }
