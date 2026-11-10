@@ -151,7 +151,7 @@ test("a ticket's worker runs in its VM: prepared there, its model calls through 
   const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string });
   assert.ok(replies.some((reply) => reply.text === "hello.txt is ready."));
   // The slot let the ticket go, and the ended ticket's disk was handed to the deployment to delete.
-  await until(() => collections > 0 && client.store.get(KV.vm.slot("0"))?.tokenHash === "", 20_000);
+  await until(() => collections > 0 && client.store.get(KV.vm.slot("0"))?.tokenHash === "", 40_000);
   const slot = client.store.get(KV.vm.slot("0"));
   assert.equal(slot?.ticketId, ticket.id);
   assert.equal(slot?.tokenHash, "");

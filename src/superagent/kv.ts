@@ -48,8 +48,11 @@ export const KV = {
    */
   chatter: { chat: family<{ consideredAt?: string; said: { at: string; text: string }[] }, [chat: string]>('chatter:'),
     members: family<{ at: string; names: Record<string, string> }, [chat: string]>('chatter-members:') },
-  /** Ticket VMs (vm/vm-work.ts): the ticket each slot runs, under a lease its guest renews, by slot number. */
-  vm: { slot: family<VmSlot, [slot: string]>('vm-slot:') },
+  /**
+   * Ticket VMs (vm/vm-work.ts): the ticket each slot runs, under a lease its guest renews, by slot number; and the tickets
+   * that have a data disk, by ticket id, since their first boot.
+   */
+  vm: { slot: family<VmSlot, [slot: string]>('vm-slot:'), disk: family<string>('vm-disk:') },
   /** When a ticket's last update went to its person (notices.ts), by ticket id. */
   notices: { progress: family<string>('progress-sent:') },
   /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */

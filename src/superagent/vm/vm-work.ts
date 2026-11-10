@@ -76,7 +76,6 @@ const sameHash = (a: string, b: string): boolean => a.length === b.length && tim
 export class VmWork implements RemoteWork {
   readonly gateway: VmGateway;
   private readonly timer: NodeJS.Timeout;
-  private readonly unsubscribe: () => void;
   private health?: HealthEntry;
   /** Why no VM can run, such as gateways that could not listen: the work waits rather than runs outside a VM. */
   private unavailable?: string;
@@ -85,9 +84,8 @@ export class VmWork implements RemoteWork {
   /** `inner` places work on paired nodes, as the mesh does; what it keeps here runs in a VM. */
   constructor(readonly host: VmHost, private readonly inner?: RemoteWork, private readonly control: VmControl = systemdControl) {
     this.gateway = new VmGateway(this);
-    this.timer = setInterval(() => this.lapse(), Math.max(250, Math.floor(LEASE_MS / 4)));
+    this.timer = setInterval(() => { this.lapse(); this.collect(); }, Math.max(250, Math.floor(LEASE_MS / 4)));
     this.timer.unref();
-    this.unsubscribe = host.client.subscribe((event) => { if (event.type === "ticket.ended") this.ended(event.data.ticketId); });
   }
 
   private get client() { return this.host.client; }
@@ -147,6 +145,7 @@ export class VmWork implements RemoteWork {
     writeFileSync(join(dir, "ticket"), `${ticket.id}\n`);
     writeFileSync(join(dir, "token"), token, { mode: 0o600 });
     const at = new Date().toISOString();
+    if (!this.client.store.get(KV.vm.disk(ticket.id))) this.client.store.set(KV.vm.disk(ticket.id), at);
     this.client.store.set(KV.vm.slot(String(free.slot)), { ticketId: ticket.id, assignmentId, tokenHash: hashToken(token), at,
       expiresAt: new Date(Date.now() + BOOT_MS).toISOString(), boots });
     try {
@@ -225,15 +224,27 @@ export class VmWork implements RemoteWork {
     }
   }
 
-  /** A ticket that ended no longer needs its data disk, which the deployment deletes once no VM runs it. */
-  private ended(ticketId: string): void {
+  /**
+   * Tickets that ended, wherever they were ended (a terminal or a TUI ends them in its own process), no longer need their
+   * data disks, which the deployment deletes once no VM runs them.
+   */
+  private collect(): void {
+    if (this.closing) return;
     try {
+      const ended = this.client.store.keys(KV.vm.disk).map((key) => key.slice(KV.vm.disk.prefix.length)).filter((ticketId) => {
+        const ticket = this.client.store.tickets.get(ticketId);
+        return !ticket || !liveTicket(ticket);
+      });
+      if (!ended.length) return;
       const dir = join(this.host.stateDir, "vm", "ended");
       mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(dir, ticketId), "");
+      for (const ticketId of ended) {
+        writeFileSync(join(dir, ticketId), "");
+        this.client.store.delete(KV.vm.disk(ticketId));
+      }
       void this.control.collect().catch((error: unknown) => this.host.log(`superagent: collecting ticket disks failed: ${String(error)}`));
     } catch (error) {
-      this.host.log(`superagent: marking ticket ${ticketId.slice(0, 8)}'s disk for deletion failed: ${String(error)}`);
+      this.host.log(`superagent: marking ended tickets' disks for deletion failed: ${String(error)}`);
     }
   }
 
@@ -241,7 +252,6 @@ export class VmWork implements RemoteWork {
   async close(): Promise<void> {
     this.closing = true;
     clearInterval(this.timer);
-    this.unsubscribe();
     this.health?.release();
     await this.gateway.close();
     await this.inner?.close();

@@ -175,10 +175,24 @@ test("a VM that keeps stopping before its worker starts fails the ticket after t
 
 test("a ticket that ended marks its disk for deletion, and a requester whose link stopped working gets no VM", async () => {
   const vm = await start();
+  const collect = () => (vm as unknown as { collect(): void }).collect();
   const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
-  client.engine.stopTicket(first.id);
+  const never = ticket("add a LICENSE file", "add-license");
+  await vm.run(first, assignmentId);
+  collect();
+  assert.ok(!existsSync(join(stateDir, "vm", "ended", first.id)), "an open ticket keeps its disk");
+  // Another process, such as a terminal, ends the ticket: the next sweep marks its disk, once.
+  const other = new SuperagentClient({ stateDir });
+  other.engine.stopTicket(first.id);
+  other.engine.stopTicket(never.ticket.id);
+  other.close();
+  collect();
   assert.ok(existsSync(join(stateDir, "vm", "ended", first.id)));
-  assert.ok(calls.includes("collect"));
+  assert.ok(!existsSync(join(stateDir, "vm", "ended", never.ticket.id)), "a ticket that never booted has no disk");
+  assert.deepEqual(calls.filter((item) => item === "collect"), ["collect"]);
+  collect();
+  assert.deepEqual(calls.filter((item) => item === "collect"), ["collect"]);
+  calls.length = 0;
   client.store.set(KV.links.github("local", localOperator()), { login: "alice-gh", id: 7, repos: ["owner/watched"], reposAt: "", linkedAt: "",
     access: { iv: "", data: "", tag: "" } });
   const linked = ticket("add a VERSION file", "add-version");
