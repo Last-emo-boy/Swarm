@@ -177,10 +177,13 @@ export class OpenAIProvider {
     this.emitUsage(resolved, "generateText", input.usage, usageFromOpenAIResponse(response), prompt, startedAt);
     const extracted = extractChatCompletionText(response);
     if (!extracted.text.trim() && shouldRetryEmptyChatCompletion(resolved, input, response)) {
+      // DeepSeek's thinking mode (on by default) now and then ends with all of its answer in reasoning_content and none in
+      // content; asked again without thinking, it answers in content.
       const retryResponse = await createChatCompletionWithResponseFormatFallback(
         client,
         {
           ...requestBody,
+          thinking: { type: "disabled" },
           messages: [
             ...messages,
             {

@@ -126,37 +126,37 @@ export class SessionContextStore {
     return rows.map(compactionFromRow);
   }
 
+  /**
+   * Compacts a session's context once what a render shows, the latest summary and the entries after it, outgrows the budget:
+   * a new summary of every entry but the recent tail, built afresh so it holds what happened since the last one too.
+   */
   compact(sessionId: string, budget: Partial<SessionContextBudget> = {}): SessionCompaction | undefined {
     const resolved = { ...DEFAULT_CONTEXT_BUDGET, ...budget };
     const entries = this.list(sessionId, 2_000);
     if (entries.length === 0) {
       return undefined;
     }
-    const totalTokens = entries.reduce((sum, entry) => sum + entry.tokens, 0);
-    if (totalTokens <= resolved.maxTokens) {
-      return this.latestCompaction(sessionId);
-    }
-
-    const recent = entries.slice(-resolved.keepRecentEntries);
-    const recentIds = new Set(recent.map((entry) => entry.entry_id));
-    const compactedPrefix = entries.filter((entry) => !recentIds.has(entry.entry_id));
-    if (compactedPrefix.length === 0) {
-      return this.latestCompaction(sessionId);
-    }
-
     const previous = this.latestCompaction(sessionId);
-    const toEntryId = compactedPrefix.at(-1)?.entry_id;
-    if (previous?.to_entry_id && previous.to_entry_id === toEntryId) {
+    const live = entries.slice(compactedCount(entries, previous));
+    const liveTokens = (previous ? estimateTokens(previous.summary) : 0) + live.reduce((sum, entry) => sum + entry.tokens, 0);
+    if (liveTokens <= resolved.maxTokens) {
       return previous;
     }
-    const summary = buildExtractiveSummary(compactedPrefix, previous?.summary, resolved.summaryMaxTokens);
+
+    const recent = live.slice(-resolved.keepRecentEntries);
+    const compactedPrefix = entries.slice(0, entries.length - recent.length);
+    const toEntryId = compactedPrefix.at(-1)?.entry_id;
+    if (!toEntryId || previous?.to_entry_id === toEntryId) {
+      return previous;
+    }
+    const summary = buildExtractiveSummary(compactedPrefix, resolved.summaryMaxTokens);
     const compaction: SessionCompaction = {
       compaction_id: `compact_${randomUUID()}`,
       session_id: sessionId,
       summary,
       from_entry_id: compactedPrefix[0]?.entry_id,
       to_entry_id: toEntryId,
-      pre_tokens: totalTokens,
+      pre_tokens: liveTokens,
       post_tokens: estimateTokens(summary) + recent.reduce((sum, entry) => sum + entry.tokens, 0),
       kept_entries: recent.map((entry) => entry.entry_id),
       strategy: "extractive_summary_keep_recent_tail",
@@ -192,13 +192,8 @@ export class SessionContextStore {
       return "";
     }
 
-    const compactedThrough = compaction?.to_entry_id;
-    const startIndex = compactedThrough
-      ? allEntries.findIndex((entry) => entry.entry_id === compactedThrough) + 1
-      : 0;
-    const recent = allEntries
-      .slice(Math.max(0, startIndex))
-      .slice(-resolved.keepRecentEntries);
+    // What came after the summary fits the budget, or `compact` would have summarized it.
+    const recent = allEntries.slice(compactedCount(allEntries, compaction));
 
     const sections = [
       compaction
@@ -219,14 +214,23 @@ export class SessionContextStore {
   }
 }
 
-function buildExtractiveSummary(entries: SessionContextEntry[], previousSummary: string | undefined, maxTokens: number): string {
+/** How many of `entries`, oldest first, a compaction summarized. */
+function compactedCount(entries: SessionContextEntry[], compaction: SessionCompaction | undefined): number {
+  return compaction?.to_entry_id ? entries.findIndex((entry) => entry.entry_id === compaction.to_entry_id) + 1 : 0;
+}
+
+/**
+ * An extractive summary of `entries`, oldest first: the objective and active task, then the latest decisions, failures,
+ * paths and checks, and the latest entries, so that cutting it to `maxTokens` drops the oldest details.
+ */
+function buildExtractiveSummary(entries: SessionContextEntry[], maxTokens: number): string {
   const importantFiles = new Set<string>();
   const tests = new Set<string>();
   const workers: string[] = [];
   const issues: string[] = [];
   const decisions: string[] = [];
   const protectedContext: string[] = [];
-  const tail = entries.slice(-20);
+  const tail = entries.slice(-10);
   for (const entry of entries) {
     collectPathCandidates(entry.content, importantFiles);
     collectPathCandidates(JSON.stringify(entry.metadata), importantFiles);
@@ -238,30 +242,31 @@ function buildExtractiveSummary(entries: SessionContextEntry[], previousSummary:
     if (entry.kind === "workspace_change") {
       collectPathCandidates(entry.content, importantFiles);
     }
-    if (entry.kind === "worker" && workers.length < 12) {
+    if (entry.kind === "worker") {
       workers.push(singleLine(entry.content, 240));
     }
-    if ((entry.kind === "tool_result" || entry.kind === "loop_activity") && /failed|error|denied|blocked/i.test(entry.content) && issues.length < 12) {
+    if ((entry.kind === "tool_result" || entry.kind === "loop_activity") && /failed|error|denied|blocked/i.test(entry.content)) {
       issues.push(singleLine(entry.content, 260));
     }
-    if ((entry.kind === "summary" || entry.kind === "final") && decisions.length < 8) {
+    if (entry.kind === "summary" || entry.kind === "final") {
       decisions.push(singleLine(entry.content, 260));
     }
-    if (/test|verify|check|lint|build/i.test(entry.content) && tests.size < 16) {
+    if (/test|verify|check|lint|build/i.test(entry.content)) {
+      tests.delete(singleLine(entry.content, 220));
       tests.add(singleLine(entry.content, 220));
     }
   }
+  const latest = (items: Iterable<string>, count: number) => [...items].slice(-count).map((item) => `- ${item}`).join("\n");
   const lines = [
-    previousSummary ? `Previous compacted summary:\n${previousSummary}` : undefined,
     "Compacted WorkSession memory:",
     protectedContext.length ? `Protected objective and active task:\n${protectedContext.map((item) => `- ${item}`).join("\n")}` : undefined,
-    decisions.length ? `Decisions and outcomes:\n${decisions.map((item) => `- ${item}`).join("\n")}` : undefined,
-    importantFiles.size ? `Files and paths seen:\n${[...importantFiles].slice(0, 30).map((item) => `- ${item}`).join("\n")}` : undefined,
-    tests.size ? `Verification and test signals:\n${[...tests].slice(0, 16).map((item) => `- ${item}`).join("\n")}` : undefined,
-    workers.length ? `Worker activity:\n${workers.map((item) => `- ${item}`).join("\n")}` : undefined,
-    issues.length ? `Open issues and failures:\n${issues.map((item) => `- ${item}`).join("\n")}` : undefined,
+    decisions.length ? `Decisions and outcomes:\n${latest(decisions, 8)}` : undefined,
+    issues.length ? `Open issues and failures:\n${latest(issues, 8)}` : undefined,
+    importantFiles.size ? `Files and paths seen:\n${latest(importantFiles, 30)}` : undefined,
     "Recent compacted tail:",
-    ...tail.map((entry) => `- ${entry.created_at} ${entry.kind}/${entry.role}: ${singleLine(entry.content, 500)}`)
+    ...tail.map((entry) => `- ${entry.created_at} ${entry.kind}/${entry.role}: ${singleLine(entry.content, 300)}`),
+    tests.size ? `Verification and test signals:\n${latest(tests, 12)}` : undefined,
+    workers.length ? `Worker activity:\n${latest(workers, 8)}` : undefined
   ].filter(Boolean);
   return truncateToTokens(lines.join("\n"), maxTokens);
 }
@@ -276,7 +281,7 @@ function isActiveTaskEntry(entry: SessionContextEntry): boolean {
 }
 
 function collectPathCandidates(content: string, target: Set<string>): void {
-  const matches = content.match(/[A-Za-z]:\\[^\s"',)]+|(?:\.{1,2}\/)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?:\.[A-Za-z0-9]{1,10})?/g) ?? [];
+  const matches = content.match(/[A-Za-z]:\\[^\s"',)]+|(?:\.{1,2}\/|\/)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?:\.[A-Za-z0-9]{1,10})?/g) ?? [];
   for (const match of matches) {
     const normalized = match.replace(/\\+/g, "\\").replace(/[.,;:]+$/, "");
     const lower = normalized.replace(/\\/g, "/").toLowerCase();
@@ -289,6 +294,8 @@ function collectPathCandidates(content: string, target: Set<string>): void {
     ) {
       continue;
     }
+    // A path seen again counts as recent.
+    target.delete(normalized);
     target.add(normalized);
   }
 }

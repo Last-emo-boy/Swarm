@@ -129,3 +129,33 @@ test("a local ticket's ready report keeps its committed patch and attaches it to
   assert.deepEqual(replies.map((reply) => [reply.text, reply.attachment]), [["The change is ready as the attached patch; nothing was pushed.", patchPath(stateDir, ticket)]]);
   assert.equal(readFileSync(patchPath(stateDir, ticket), "utf8"), patch);
 });
+
+test("tells the person when a ticket's work fails or blocks, once a report, in their language, and holds back early or frequent updates", async () => {
+  const { fileReport } = await import("./ticket-tools.js");
+  const { progressDue, FIRST_PROGRESS_MS, PROGRESS_MS } = await import("./notices.js");
+  const { triggerId } = client.request("修一下 README 的错别字");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Fix the typo", scope: "x", reason: "asked", name: "fix-typo", evalId: candidate.evalId });
+  const ticket = client.store.tickets.get(ticketId!)!;
+  client.engine.assignmentStarted(ticketId!, ticket.assignments[0]!.id);
+  const texts = () => client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => (JSON.parse(String(row.value)) as { text: string }).text);
+  // An update in the first minutes is held back; the report itself still counts.
+  const early = await fileReport(client, ticketId!, { state: "progress", summary: "Cloned it.", message_for_person: "代码拉下来了，正在跑测试。" });
+  assert.deepEqual(early.posted, []);
+  client.engine.report(ticketId!, { state: "failed", summary: "The worker failed: the model answered nothing." });
+  assert.equal(texts().at(-1), "这张工单没做完就停下了：The worker failed: the model answered nothing. 回复这条消息，我会接着做。");
+  // The worker's own words stand for the host's notice.
+  const blocked = await fileReport(client, ticketId!, { state: "blocked", summary: "Needs a branch name.", message_for_person: "需要你告诉我用哪个分支。" });
+  assert.deepEqual(blocked.posted, ["notice"]);
+  assert.deepEqual(texts(), ["这张工单没做完就停下了：The worker failed: the model answered nothing. 回复这条消息，我会接着做。", "需要你告诉我用哪个分支。"]);
+  // A question the host filed, such as for a link that stopped working, is asked.
+  client.engine.report(ticketId!, { state: "blocked", summary: "No link.", question: "请私聊我发送 /link 重新绑定 GitHub。" });
+  assert.equal(texts().at(-1), "请私聊我发送 /link 重新绑定 GitHub。");
+  const created = Date.parse(ticket.createdAt);
+  const record = { id: "t-progress", createdAt: ticket.createdAt };
+  assert.equal(progressDue(client.store, record, created + FIRST_PROGRESS_MS - 1), false);
+  assert.equal(progressDue(client.store, record, created + FIRST_PROGRESS_MS), true);
+  assert.equal(progressDue(client.store, record, created + FIRST_PROGRESS_MS + PROGRESS_MS - 1), false);
+  assert.equal(progressDue(client.store, record, created + FIRST_PROGRESS_MS + PROGRESS_MS), true);
+});

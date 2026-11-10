@@ -24,3 +24,10 @@ export const fill = (template: string, values: Record<string, string>): string =
 /** Case-insensitive comparison for GitHub logins and repository names. */
 export const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 export const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Whether a person writes Chinese: Han characters and no kana, which would make it Japanese. */
+export const inChinese = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text);
+/** Picks a message's English or Chinese wording. */
+export type Say = (english: string, chinese: string) => string;
+export const sayIn = (chinese: boolean): Say => (english, inChineseWords) => chinese ? inChineseWords : english;
+/** The wording of a message to a person, in the language of what they wrote. */
+export const wording = (written: string): Say => sayIn(inChinese(written));

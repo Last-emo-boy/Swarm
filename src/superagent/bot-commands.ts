@@ -18,7 +18,7 @@ import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, r
 import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
 import { SOURCE as FEISHU, feishuUserChannel } from "./sources/feishu-trigger.js";
-import { sameName } from "./text.js";
+import { inChinese, sameName, sayIn, type Say } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 
 const HOUR_MS = 3_600_000;
@@ -28,23 +28,28 @@ export interface Command { name: CommandName; args: string[]; mentions: { id: st
 
 const MentionsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
 const short = (id: string): string => id.slice(0, 8);
-const HELP = "Commands: /me shows your role and limits; /link links your GitHub account (its code comes in a direct message), /unlink removes it, "
-  + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch. "
-  + "You can also ask for these in your own words. "
-  + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.";
+const help = (say: Say): string => say(
+  "Commands: /me shows your role and limits; /link links your GitHub account (its code comes in a direct message), /unlink removes it, "
+    + "/repo [owner/name] lists or sets your default repository; /takeover [ticket] opens a pull request from a local ticket's patch. "
+    + "You can also ask for these in your own words. "
+    + "Owners: /role @name owner|maintainer|everyone|none, /listen all|mentions|off and /chatter on|off in a group, /ceiling read-only|local|github.",
+  "命令：/me 查看你的角色和限额；/link 绑定 GitHub 账号（验证码私聊发给你），/unlink 解除绑定；/repo [owner/name] 列出或设置默认仓库；"
+    + "/takeover [工单] 把本地工单的补丁做成拉取请求。这些也可以直接用自己的话跟我说。"
+    + "owner 还能用：/role @某人 owner|maintainer|everyone|none，群里的 /listen all|mentions|off 和 /chatter on|off，/ceiling read-only|local|github。");
 /** How many repositories an answer names before it says how many more there are. */
 const LISTED_REPOS = 8;
-const repoList = (link: LinkView): string => {
-  const names = link.repos.map((repo) => repo === link.defaultRepo ? `${repo} (default)` : repo);
-  return names.length > LISTED_REPOS ? `${names.slice(0, LISTED_REPOS).join(", ")} and ${names.length - LISTED_REPOS} more` : names.join(", ");
+const repoList = (link: LinkView, say: Say): string => {
+  const names = link.repos.map((repo) => repo === link.defaultRepo ? say(`${repo} (default)`, `${repo}（默认）`) : repo);
+  const more = names.length - LISTED_REPOS;
+  return more > 0 ? say(`${names.slice(0, LISTED_REPOS).join(", ")} and ${more} more`, `${names.slice(0, LISTED_REPOS).join("、")} 等另外 ${more} 个`)
+    : names.join(say(", ", "、"));
 };
-const NOT_LINKED = "Link your GitHub account first: send /link.";
-const CODE_SENT = "I sent you a direct message with a code to link your GitHub account. If none arrives, send me a direct message saying /link.";
-const CODE_WAITS = "Enter the code I sent you in a direct message, or wait until it expires to ask for another.";
+const notLinked = (say: Say): string => say("Link your GitHub account first: send /link.", "先绑定你的 GitHub 账号：发 /link。");
 /** How long a wanted pull request waits for its person to link and for its ticket's patch. */
 const WANTED_MS = 7 * 24 * HOUR_MS;
 
-const failure = (error: unknown): string => `That did not work: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+const failure = (say: Say, error: unknown): string =>
+  `${say("That did not work: ", "没成功：")}${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
 
 /** The bot command a person's Feishu message to the agent gives, after the mentions it starts with, if it gives one. */
 export function commandOf(trigger: Trigger): Command | undefined {
@@ -85,7 +90,8 @@ export class BotCommands {
     const settings = this.client.settings();
     if (!trigger.human || !trigger.addressed || !addressable(settings, sources, trigger)) return engine.receive(trigger);
     const command = commandOf(trigger);
-    const held = this.held(trigger, settings, !command);
+    const say = this.say(trigger);
+    const held = this.held(trigger, settings, !command, say);
     if (held) {
       const result = engine.receiveCommand(trigger, "limit");
       // One answer per sender and hour says so; the messages after it go unanswered.
@@ -100,7 +106,7 @@ export class BotCommands {
     try {
       text = this.run(command, trigger, settings);
     } catch (error) {
-      text = failure(error);
+      text = failure(say, error);
     }
     if (text) this.answer(trigger, text, key("command", trigger.id));
     return result;
@@ -110,38 +116,50 @@ export class BotCommands {
    * the command does; a take-over decides the message.
    */
   perform(trigger: Trigger, name: AgentCommand, args: readonly string[]): void {
+    const settings = this.client.settings();
+    const say = this.say(trigger);
     let text: string | undefined;
     try {
-      text = trigger.source !== FEISHU ? "Bot commands work in Feishu."
-        : this.run({ name, args: [...args], mentions: MentionsSchema.catch([]).parse(trigger.meta.mentions) }, trigger, this.client.settings());
+      text = trigger.source !== FEISHU ? say("Bot commands work in Feishu.", "机器人命令只在飞书里能用。")
+        : this.run({ name, args: [...args], mentions: MentionsSchema.catch([]).parse(trigger.meta.mentions) }, trigger, settings);
     } catch (error) {
-      text = failure(error);
+      text = failure(say, error);
     }
     if (text) this.answer(trigger, text, key("command", trigger.id));
   }
 
+  /**
+   * How answers to a message are worded: in the language it is written in, or, for a typed command, which has none,
+   * Chinese on Feishu and English on Lark.
+   */
+  private say(trigger: Trigger): Say {
+    return sayIn(inChinese(trigger.text) || (!!commandOf(trigger) && this.client.deployment().feishu?.brand !== "lark"));
+  }
+
   /** Runs a command that answers once GitHub has; its failure is its answer. */
   private later(trigger: Trigger, work: () => Promise<string>): undefined {
-    void work().catch(failure).then((text) => this.answer(trigger, text, key("command", trigger.id)),
+    void work().catch((error: unknown) => failure(this.say(trigger), error)).then((text) => this.answer(trigger, text, key("command", trigger.id)),
       (error: unknown) => this.options.log?.(`superagent: a bot command failed: ${String(error)}`));
     return undefined;
   }
 
   /** Why a sender's message is held back: beyond their requests per hour, or, for one that starts new work, their open tickets. */
-  private held(trigger: Trigger, settings: Settings, request: boolean): string | undefined {
+  private held(trigger: Trigger, settings: Settings, request: boolean, say: Say): string | undefined {
     const { store } = this.client;
     const role = roleOf(settings, trigger.actor);
     const perHour = limitOf(settings, role, "requestsPerHour");
     const from = new Date(Date.parse(trigger.at) - HOUR_MS).toISOString();
     if (perHour !== undefined && store.read.requests(trigger.actor, from, trigger.at) >= perHour) {
-      return `You sent ${perHour} requests in the last hour, as many as your role allows, so I did not take this one in. Try again later.`;
+      return say(`You sent ${perHour} requests in the last hour, as many as your role allows, so I did not take this one in. Try again later.`,
+        `你最近一小时已经发了 ${perHour} 条请求，达到你角色的上限，这条我没接。稍后再试。`);
     }
     const open = limitOf(settings, role, "openTickets");
     // A message on a Thread without tickets starts new work; one on a ticket's Thread follows it up.
     const thread = store.threads.get(threadKey(trigger.threads[0]!));
     if (!request || open === undefined || thread?.subscriptions.length) return undefined;
     const mine = this.openTickets(trigger).length;
-    return mine >= open ? `You have ${mine} open tickets, as many as your role allows. Reply in one of their threads, or wait until one finishes.` : undefined;
+    return mine >= open ? say(`You have ${mine} open tickets, as many as your role allows. Reply in one of their threads, or wait until one finishes.`,
+      `你有 ${mine} 张未结工单，达到你角色的上限。请在其中一张的对话里回复，或等一张结束。`) : undefined;
   }
 
   private openTickets(trigger: Trigger): Ticket[] {
@@ -156,7 +174,7 @@ export class BotCommands {
   /** A command's answer, or undefined for one that answers later. */
   private run(command: Command, trigger: Trigger, settings: Settings): string | undefined {
     switch (command.name) {
-      case "help": return HELP;
+      case "help": return help(this.say(trigger));
       case "me": return this.me(trigger, settings);
       case "link": return this.link(trigger, settings);
       case "unlink": return this.unlink(trigger, settings);
@@ -170,27 +188,32 @@ export class BotCommands {
   }
 
   private me(trigger: Trigger, settings: Settings): string {
+    const say = this.say(trigger);
     const role = roleOf(settings, trigger.actor);
-    if (!settings.access) return `Your role: ${role}. The access model is off, so everyone on the list may do everything.`;
-    const of = (count: number, limit: number | undefined) => limit === undefined ? String(count) : `${count} of ${limit}`;
+    if (!settings.access) return say(`Your role: ${role}. The access model is off, so everyone on the list may do everything.`,
+      `你的角色：${role}。访问模型没有开启，列表里的人什么都能做。`);
+    const of = (count: number, limit: number | undefined) => limit === undefined ? String(count) : say(`${count} of ${limit}`, `${count}/${limit}`);
     const from = new Date(Date.parse(trigger.at) - HOUR_MS).toISOString();
     const requests = this.client.store.read.requests(trigger.actor, from, trigger.at);
     const scope = this.client.sources.scope(trigger);
     const ceiling = ceilingOf(settings, trigger.source, scope.listened ? scope.row : undefined);
     const link = githubApp(settings) ? linkOf(this.client.store, trigger.actor) : undefined;
-    const github = !githubApp(settings) ? "" : !link ? " GitHub: not linked; send /link."
-      : link.broken ? ` GitHub: @${link.login}, but the link stopped working; send /link again.`
+    const github = !githubApp(settings) ? "" : !link ? say(" GitHub: not linked; send /link.", " GitHub：未绑定，发 /link 绑定。")
+      : link.broken ? say(` GitHub: @${link.login}, but the link stopped working; send /link again.`, ` GitHub：@${link.login}，但绑定已失效，再发一次 /link。`)
       : trigger.meta.direct !== true ? ` GitHub: @${link.login}.`
-      : ` GitHub: @${link.login}, working on ${link.repos.length ? repoList(link) : "no repository yet"}.`;
-    return `Your role: ${role}. Open tickets: ${of(this.openTickets(trigger).length, limitOf(settings, role, "openTickets"))}. `
-      + `Requests in the last hour: ${of(requests, limitOf(settings, role, "requestsPerHour"))}. Work asked for here writes ${ceiling} at most.${github}`;
+      : say(` GitHub: @${link.login}, working on ${link.repos.length ? repoList(link, say) : "no repository yet"}.`,
+        ` GitHub：@${link.login}，可用仓库：${link.repos.length ? repoList(link, say) : "还没有"}。`);
+    const open = of(this.openTickets(trigger).length, limitOf(settings, role, "openTickets"));
+    const asked = of(requests, limitOf(settings, role, "requestsPerHour"));
+    return say(`Your role: ${role}. Open tickets: ${open}. Requests in the last hour: ${asked}. Work asked for here writes ${ceiling} at most.${github}`,
+      `你的角色：${role}。未结工单：${open}。最近一小时请求：${asked}。这里提出的工作最多写到 ${ceiling}。${github}`);
   }
 
   /** The GitHub App and the host's links, for the commands that need both. */
-  private linking(settings: Settings): { app: GithubApp; links: GithubLinks } {
+  private linking(settings: Settings, say?: Say): { app: GithubApp; links: GithubLinks } {
     const app = githubApp(settings);
     const { links } = this.options;
-    if (!app || !links) throw new Error("linking GitHub accounts is not set up here");
+    if (!app || !links) throw new Error((say ?? sayIn(false))("linking GitHub accounts is not set up here", "这里没有开启 GitHub 账号绑定"));
     return { app, links };
   }
 
@@ -200,30 +223,39 @@ export class BotCommands {
    * their own account to the person who asked.
    */
   private link(trigger: Trigger, settings: Settings): string | undefined {
-    this.linking(settings);
+    const say = this.say(trigger);
+    this.linking(settings, say);
     const direct = trigger.meta.direct === true;
-    if (!this.startLink(trigger.actor, direct && trigger.channel ? trigger.channel : feishuUserChannel(trigger.actor.id), trigger.id)) return CODE_WAITS;
-    return direct ? undefined : CODE_SENT;
+    if (!this.startLink(trigger.actor, direct && trigger.channel ? trigger.channel : feishuUserChannel(trigger.actor.id), trigger.id, say)) {
+      return say("Enter the code I sent you in a direct message, or wait until it expires to ask for another.", "请输入我私聊发你的验证码，或等它过期后再要一个。");
+    }
+    return direct ? undefined : say("I sent you a direct message with a code to link your GitHub account. If none arrives, send me a direct message saying /link.",
+      "我私聊发了你一个验证码，用来绑定 GitHub 账号。没收到的话，私聊我发 /link。");
   }
   /**
    * Starts the device flow of a person, whose code and outcome go to `channel`, a direct message with them; none starts while
    * theirs still waits for its code. Once they linked, the pull requests they wanted are opened.
    * @returns whether it started one.
    */
-  private startLink(actor: ActorRef, channel: ChannelRef, id: string): boolean {
-    const { app, links } = this.linking(this.client.settings());
+  private startLink(actor: ActorRef, channel: ChannelRef, id: string, say: Say): boolean {
+    const { app, links } = this.linking(this.client.settings(), say);
     const flow = `${actor.source}:${actor.id}`;
     if (this.flows.has(flow)) return false;
     this.flows.add(flow);
-    const say = (text: string, part: string) => this.client.outbox.send({ id: key("link", id, part), channel, text, kind: "reply" });
+    const send = (text: string, part: string) => this.client.outbox.send({ id: key("link", id, part), channel, text, kind: "reply" });
     void (async () => {
       const device = await links.start(app);
-      say(`Open ${device.verification_uri} and enter ${device.user_code} within ${Math.round(device.expires_in / 60)} minutes to link your GitHub account.`, "code");
+      const minutes = Math.round(device.expires_in / 60);
+      send(say(`Open ${device.verification_uri} and enter ${device.user_code} within ${minutes} minutes to link your GitHub account.`,
+        `打开 ${device.verification_uri}，在 ${minutes} 分钟内输入 ${device.user_code}，绑定你的 GitHub 账号。`), "code");
       const link = await links.link(actor, await links.authorized(app, device, this.lifetime.signal), channel);
-      say(link.repos.length ? `Linked as @${link.login}. You can work on ${repoList(link)}. Install the app on more repositories at ${installUrl(app)}.`
-        : `Linked as @${link.login}, but the app is not installed on a repository you can push to: install it at ${installUrl(app)}, then send /repo.`, "linked");
+      send(link.repos.length
+        ? say(`Linked as @${link.login}. You can work on ${repoList(link, say)}. Install the app on more repositories at ${installUrl(app)}.`,
+          `已绑定 @${link.login}。可用仓库：${repoList(link, say)}。要用更多仓库，到 ${installUrl(app)} 安装应用。`)
+        : say(`Linked as @${link.login}, but the app is not installed on a repository you can push to: install it at ${installUrl(app)}, then send /repo.`,
+          `已绑定 @${link.login}，但应用还没装在你能推送的仓库上：到 ${installUrl(app)} 安装后，再发 /repo。`), "linked");
       this.takeOverWanted();
-    })().catch((error: unknown) => say(failure(error), "failed"))
+    })().catch((error: unknown) => send(failure(say, error), "failed"))
       .catch((error: unknown) => this.options.log?.(`superagent: linking a GitHub account failed: ${String(error)}`))
       .finally(() => this.flows.delete(flow));
     return true;
@@ -231,41 +263,47 @@ export class BotCommands {
 
   /** `/unlink`: removes the person's link, after which their tickets cannot act as them. */
   private unlink(trigger: Trigger, settings: Settings): string | undefined {
-    const { app, links } = this.linking(settings);
+    const say = this.say(trigger);
+    const { app, links } = this.linking(settings, say);
     return this.later(trigger, async () => await links.unlink(app, trigger.actor)
-      ? `Unlinked. To revoke the app's access on GitHub too, go to ${AUTHORIZATIONS_URL}.` : "You have no linked GitHub account.");
+      ? say(`Unlinked. To revoke the app's access on GitHub too, go to ${AUTHORIZATIONS_URL}.`, `已解除绑定。要在 GitHub 上也撤销应用的权限，去 ${AUTHORIZATIONS_URL}。`)
+      : say("You have no linked GitHub account.", "你没有绑定 GitHub 账号。"));
   }
 
   /** `/repo [owner/name]`: reads again which repositories the person may work on, and sets their default. */
   private repo(command: Command, trigger: Trigger, settings: Settings): string | undefined {
-    if (trigger.meta.direct !== true) return "Send /repo to me in a direct message.";
-    const { app, links } = this.linking(settings);
-    if (!linkOf(this.client.store, trigger.actor)) return NOT_LINKED;
+    const say = this.say(trigger);
+    if (trigger.meta.direct !== true) return say("Send /repo to me in a direct message.", "请私聊我发 /repo。");
+    const { app, links } = this.linking(settings, say);
+    if (!linkOf(this.client.store, trigger.actor)) return notLinked(say);
     return this.later(trigger, async () => {
       const link = await links.refreshRepos(app, trigger.actor);
-      if (!link) return "Your GitHub link stopped working: send /link to me in a direct message.";
+      if (!link) return say("Your GitHub link stopped working: send /link to link again.", "你的 GitHub 绑定已失效：发 /link 重新绑定。");
       const wanted = command.args[0] && namedRepository(command.args[0], link.repos);
       if (command.args[0] && !wanted) {
-        return `@${link.login} cannot push to ${command.args[0]} through the app: install it there at ${installUrl(app)}, then send /repo again.`;
+        return say(`@${link.login} cannot push to ${command.args[0]} through the app: install it there at ${installUrl(app)}, then send /repo again.`,
+          `@${link.login} 没法通过应用推送到 ${command.args[0]}：到 ${installUrl(app)} 在那里安装应用，然后再发一次 /repo。`);
       }
       const now = wanted ? links.setDefault(trigger.actor, wanted)! : link;
-      return now.repos.length ? `You can work on ${repoList(now)}.` : `The app is not installed on a repository you can push to: install it at ${installUrl(app)}.`;
+      return now.repos.length ? say(`You can work on ${repoList(now, say)}.`, `可用仓库：${repoList(now, say)}。`)
+        : say(`The app is not installed on a repository you can push to: install it at ${installUrl(app)}.`, `应用还没装在你能推送的仓库上：到 ${installUrl(app)} 安装。`);
     });
   }
 
   private owner(trigger: Trigger, settings: Settings): void {
-    if (!atLeast(roleOf(settings, trigger.actor), "owner")) throw new Error("only an owner can do that");
+    if (!atLeast(roleOf(settings, trigger.actor), "owner")) throw new Error(this.say(trigger)("only an owner can do that", "只有 owner 能这么做"));
   }
 
   /** `/role @name… <role>`: an owner gives the people the message mentions a role, or with `none` takes theirs away. */
   private role(command: Command, trigger: Trigger, settings: Settings): string {
     this.owner(trigger, settings);
+    const say = this.say(trigger);
     const wanted = command.args.at(-1) ?? "";
     const role = wanted === "none" ? undefined : RoleSchema.safeParse(wanted).data;
     const bot = this.client.deployment().feishu?.botId;
     const rest = trigger.text.slice(trigger.text.indexOf("/role"));
     const people = command.mentions.filter((mention) => mention.id !== bot && rest.includes(`@${mention.name}`));
-    if ((wanted !== "none" && !role) || !people.length) return "Usage: /role @name owner|maintainer|everyone|none";
+    if ((wanted !== "none" && !role) || !people.length) return say("Usage: /role @name owner|maintainer|everyone|none", "用法：/role @某人 owner|maintainer|everyone|none");
     updateSettings((next) => {
       const part = next.policy.sources[FEISHU] ??= { allowed: [], admission: {} };
       const roles: Record<string, Role> = { ...part.roles };
@@ -273,21 +311,22 @@ export class BotCommands {
         if (role) roles[person.id] = role;
         else delete roles[person.id];
       }
-      if (!Object.values(roles).includes("owner")) throw new Error("someone must stay an owner");
+      if (!Object.values(roles).includes("owner")) throw new Error(say("someone must stay an owner", "至少要留一个 owner"));
       part.roles = roles;
       return next;
     }, settingsPath(this.client.stateDir));
-    const names = people.map((person) => person.name).join(", ");
-    return role ? `${names}: ${role} from now on.` : `${names}: no role from now on.`;
+    const names = people.map((person) => person.name).join(say(", ", "、"));
+    return role ? say(`${names}: ${role} from now on.`, `${names}：从现在起是 ${role}。`) : say(`${names}: no role from now on.`, `${names}：从现在起没有角色。`);
   }
 
   /** `/listen all|mentions|off`, in a group: an owner lists the chat with what the agent reads there, or takes it off the list. */
   private listen(command: Command, trigger: Trigger, settings: Settings): string {
     this.owner(trigger, settings);
+    const say = this.say(trigger);
     const mode = command.args[0];
     const chatId = String(trigger.meta.chatId ?? "");
-    if (trigger.meta.direct === true) return "/listen works in a group chat.";
-    if (mode !== "all" && mode !== "mentions" && mode !== "off") return "Usage: /listen all|mentions|off";
+    if (trigger.meta.direct === true) return say("/listen works in a group chat.", "/listen 要在群里用。");
+    if (mode !== "all" && mode !== "mentions" && mode !== "off") return say("Usage: /listen all|mentions|off", "用法：/listen all|mentions|off");
     updateSettings((next) => {
       const source = next.sources[FEISHU] ??= { enabled: true, config: {} };
       const chats = z.array(z.looseObject({ chatId: z.string() })).catch([]).parse(source.config.chats);
@@ -298,24 +337,26 @@ export class BotCommands {
       if (mode !== "all" && next.chatter) next.chatter = { ...next.chatter, chats: next.chatter.chats.filter((chat) => chat !== chatId) };
       return next;
     }, settingsPath(this.client.stateDir));
-    return mode === "off" ? "This chat is off the list now; an owner can list it again in the settings file."
-      : mode === "all" ? "I read every message in this chat now." : "I read only messages that mention me in this chat now.";
+    return mode === "off" ? say("This chat is off the list now; an owner can list it again in the settings file.", "这个群已移出列表；owner 可以在设置文件里重新列入。")
+      : mode === "all" ? say("I read every message in this chat now.", "现在我会读这个群里的每条消息。")
+      : say("I read only messages that mention me in this chat now.", "现在我只读这个群里 @ 我的消息。");
   }
 
   /** `/ceiling <level>`: an owner sets how far work asked for in this conversation's receiving scope may write. */
   private ceiling(command: Command, trigger: Trigger, settings: Settings): string {
     this.owner(trigger, settings);
+    const say = this.say(trigger);
     const level: WriteLevel | undefined = WriteLevelSchema.safeParse(command.args[0]).data;
     const scope = this.client.sources.scope(trigger);
-    if (!level) return "Usage: /ceiling read-only|local|github";
-    if (!scope.listened || scope.row === undefined) return "I cannot set a ceiling for this conversation.";
+    if (!level) return say("Usage: /ceiling read-only|local|github", "用法：/ceiling read-only|local|github");
+    if (!scope.listened || scope.row === undefined) return say("I cannot set a ceiling for this conversation.", "这个对话没法设置上限。");
     const row = scope.row;
     updateSettings((next) => {
       const part = next.policy.sources[FEISHU] ??= { allowed: [], admission: {} };
       part.ceilings = { ...part.ceilings, [row]: level };
       return next;
     }, settingsPath(this.client.stateDir));
-    return `Work asked for here writes ${level} at most from now on.`;
+    return say(`Work asked for here writes ${level} at most from now on.`, `从现在起，这里提出的工作最多写到 ${level}。`);
   }
 
   /**
@@ -323,21 +364,27 @@ export class BotCommands {
    * own; without an argument, whether it does.
    */
   private chatter(command: Command, trigger: Trigger, settings: Settings): string {
+    const say = this.say(trigger);
     const chatId = String(trigger.meta.chatId ?? "");
     const on = chatterOf(settings).chats.includes(chatId);
-    if (trigger.meta.direct === true) return "/chatter works in a group chat.";
+    if (trigger.meta.direct === true) return say("/chatter works in a group chat.", "/chatter 要在群里用。");
     const mode = command.args[0];
-    if (!mode) return on ? `I join the conversation here now and then, at most ${chatterOf(settings).perHour} times an hour.` : "I speak here only when someone mentions me.";
+    const perHour = chatterOf(settings).perHour;
+    if (!mode) return on ? say(`I join the conversation here now and then, at most ${perHour} times an hour.`, `我会时不时加入这里的对话，每小时最多 ${perHour} 次。`)
+      : say("I speak here only when someone mentions me.", "只有有人 @ 我时，我才在这里说话。");
     this.owner(trigger, settings);
-    if (mode !== "on" && mode !== "off") return "Usage: /chatter on|off";
+    if (mode !== "on" && mode !== "off") return say("Usage: /chatter on|off", "用法：/chatter on|off");
     const listed = z.array(z.looseObject({ chatId: z.string(), listen: z.string().optional() })).catch([]).parse(settings.sources[FEISHU]?.config.chats);
-    if (mode === "on" && listed.find((chat) => chat.chatId === chatId)?.listen !== "all") return "First send /listen all here: I need to read the whole conversation.";
+    if (mode === "on" && listed.find((chat) => chat.chatId === chatId)?.listen !== "all") {
+      return say("First send /listen all here: I need to read the whole conversation.", "先在这里发 /listen all：我需要读到整段对话。");
+    }
     updateSettings((next) => {
       const current = chatterOf(next);
       next.chatter = { ...current, chats: mode === "on" ? [...new Set([...current.chats, chatId])] : current.chats.filter((chat) => chat !== chatId) };
       return next;
     }, settingsPath(this.client.stateDir));
-    return mode === "on" ? "I'll join the conversation here now and then." : "I'll speak here only when someone mentions me.";
+    return mode === "on" ? say("I'll join the conversation here now and then.", "我会时不时加入这里的对话。")
+      : say("I'll speak here only when someone mentions me.", "之后只有有人 @ 我时，我才在这里说话。");
   }
 
   /**
@@ -347,7 +394,7 @@ export class BotCommands {
    */
   private takeover(command: Command, trigger: Trigger, settings: Settings): string {
     const ticket = this.ticketNamed(command.args[0], trigger);
-    if (!ticket) return "Name the ticket: /takeover <ticket id>, or send /takeover in its thread.";
+    if (!ticket) return this.say(trigger)("Name the ticket: /takeover <ticket id>, or send /takeover in its thread.", "请指明工单：/takeover <工单 id>，或在那张工单的对话里发 /takeover。");
     return this.takeOver(ticket, trigger, settings);
   }
   /**
@@ -357,12 +404,15 @@ export class BotCommands {
    */
   private takeOver(ticket: Ticket, trigger: Trigger, settings: Settings): string {
     const { client } = this;
+    const say = this.say(trigger);
     const name = short(ticket.id);
-    if (ticket.mandate.capability?.write !== "local") return `Ticket ${name} does not keep its work local, so there is nothing to take over.`;
+    if (ticket.mandate.capability?.write !== "local") {
+      return say(`Ticket ${name} does not keep its work local, so there is nothing to take over.`, `工单 ${name} 不是本地工单，没有可接手的补丁。`);
+    }
     const taker = client.store.tickets.list().find((item) => item.mandate.capability?.from === ticket.id);
-    if (taker) return `Ticket ${name} was taken over as ticket ${short(taker.id)} already.`;
+    if (taker) return say(`Ticket ${name} was taken over as ticket ${short(taker.id)} already.`, `工单 ${name} 已经由工单 ${short(taker.id)} 接手了。`);
     if (ticket.mandate.strength !== "inferred" && !steers(settings, ticket.mandate, trigger.actor)) {
-      return `Only the person who asked for ticket ${name} or a maintainer can take it over.`;
+      return say(`Only the person who asked for ticket ${name} or a maintainer can take it over.`, `只有提出工单 ${name} 的人或 maintainer 能接手它。`);
     }
     const scope = client.sources.scope(trigger);
     const row = scope.listened ? scope.row : undefined;
@@ -374,24 +424,29 @@ export class BotCommands {
     const patched = existsSync(patchPath(client.stateDir, ticket));
     const link = linkOf(client.store, trigger.actor);
     if (!link || link.broken) {
-      if (!githubApp(settings) || !this.options.links || allowedWrite(settings, mandate) !== "github") return NOT_LINKED;
+      if (!githubApp(settings) || !this.options.links || allowedWrite(settings, mandate) !== "github") return notLinked(say);
       this.want(ticket, trigger);
       const direct = trigger.meta.direct === true && !!trigger.channel;
-      const started = this.startLink(trigger.actor, direct ? trigger.channel! : feishuUserChannel(trigger.actor.id), trigger.id);
-      return `Link your GitHub account first: enter the code ${started && direct ? "I'm sending you here" : "I sent you in a direct message"}. `
-        + `Once it is linked${patched ? "" : ` and ticket ${name} reports ready`}, I'll open the pull request as you.`;
+      const here = this.startLink(trigger.actor, direct ? trigger.channel! : feishuUserChannel(trigger.actor.id), trigger.id, say) && direct;
+      return say(`Link your GitHub account first: enter the code ${here ? "I'm sending you here" : "I sent you in a direct message"}. `
+        + `Once it is linked${patched ? "" : ` and ticket ${name} reports ready`}, I'll open the pull request as you.`,
+        `先绑定你的 GitHub 账号：输入${here ? "我在这里发你" : "我私聊发你"}的验证码。绑定好${patched ? "" : `、工单 ${name} 完成`}后，我会以你的身份开拉取请求。`);
     }
     const would = capabilityOf(settings, mandate, link, { repository: watched });
     if (would?.write !== "github" || !sameName(would.repository ?? "", watched)) {
-      return `You cannot open pull requests on ${watched} from here (your role: ${roleOf(settings, trigger.actor)}, GitHub: @${link.login}).`;
+      return say(`You cannot open pull requests on ${watched} from here (your role: ${roleOf(settings, trigger.actor)}, GitHub: @${link.login}).`,
+        `你在这里不能在 ${watched} 上开拉取请求（你的角色：${roleOf(settings, trigger.actor)}，GitHub：@${link.login}）。`);
     }
     if (!patched) {
       this.want(ticket, trigger);
-      return `Ticket ${name} has no patch yet: I'll open the pull request as @${link.login} once it reports ready.`;
+      return say(`Ticket ${name} has no patch yet: I'll open the pull request as @${link.login} once it reports ready.`,
+        `工单 ${name} 还没有补丁：等它完成后，我会以 @${link.login} 的身份开拉取请求。`);
     }
     const limit = limitOf(settings, roleOf(settings, trigger.actor), "openTickets");
     const mine = this.openTickets(trigger).filter((item) => item.id !== ticket.id).length;
-    if (limit !== undefined && mine >= limit) return `You have ${mine} open tickets, as many as your role allows: take this over once one finishes.`;
+    if (limit !== undefined && mine >= limit) {
+      return say(`You have ${mine} open tickets, as many as your role allows: take this over once one finishes.`, `你有 ${mine} 张未结工单，达到你角色的上限：等一张结束后再接手。`);
+    }
     const request = client.store.triggers.get(ticket.origin.triggerId)?.text ?? "";
     const worktree = WorktreeNameSchema.safeParse(ticket.execution?.name.replace(/-[0-9a-f]{12}$/, "")).data ?? "takeover";
     const decision = client.store.atomic(() => {
@@ -403,7 +458,8 @@ export class BotCommands {
     });
     if (!decision.ticketId) throw new UserError("notAdmissible", { reason: "the take-over was not accepted" });
     client.store.delete(KV.links.wanted(ticket.id));
-    return `Ticket ${short(decision.ticketId)} takes over ticket ${name}: it applies the patch and opens a pull request.`;
+    return say(`Ticket ${short(decision.ticketId)} takes over ticket ${name}: it applies the patch and opens a pull request.`,
+      `工单 ${short(decision.ticketId)} 接手了工单 ${name}：它会应用补丁并开拉取请求。`);
   }
   /** Remembers that the sender of `trigger` wants a pull request from a local ticket, which `takeOverWanted` opens. */
   private want(ticket: Ticket, trigger: Trigger): void {
@@ -447,7 +503,7 @@ export class BotCommands {
       try {
         text = this.takeOver(ticket, trigger, this.client.settings());
       } catch (error) {
-        text = failure(error);
+        text = failure(this.say(trigger), error);
       }
       this.answer(trigger, text, key("wanted", ticket.id, trigger.id));
     }

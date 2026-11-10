@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { Engine, followupOwners, latestAssignment, liveTicket, threadKey, type DomainEvent, type Executor, type Ticket } from "./core/index.js";
+import { Engine, UserError, followupOwners, key, latestAssignment, latestReport, liveTicket, threadKey, type DomainEvent, type Executor, type Ticket } from "./core/index.js";
 import { Commands } from "./commands.js";
 import { Effects } from "./effects.js";
 import { linkOf } from "./github-link.js";
@@ -13,6 +13,7 @@ import { harnessIds } from "./harness.js";
 import { HealthBoard } from "./health.js";
 import { KV } from "./kv.js";
 import { ticketExecution } from "./messages.js";
+import { noticeChannel, stoppedId, stoppedNotice } from "./notices.js";
 import { Outbox } from "./outbox.js";
 import { settingsPolicy } from "./policy.js";
 import { readSettings, settingsPath, superagentStateDir, type Settings, type SettingsRead } from "./settings.js";
@@ -156,6 +157,7 @@ export class SuperagentClient {
       // A person's message that reached a ticket, also one that resumed an ended ticket or that an earlier Eval queue released.
       if (event.type === "trigger.received" || event.type === "ticket.resumed" || event.type === "trigger.followup") this.followup(event.data.triggerId);
       if (event.type === "ticket.ended") this.pullEnded(event.data.ticketId);
+      if (event.type === "assignment.reported" && (event.data.state === "failed" || event.data.state === "blocked")) this.stopped(event.data.ticketId);
     } finally {
       for (const listener of this.listeners) listener(event);
     }
@@ -168,6 +170,29 @@ export class SuperagentClient {
     const trigger = this.store.triggers.get(triggerId);
     if (!trigger || trigger.source === LOCAL || !followupOwners(trigger, this.store).length) return;
     this.store.atomic(() => { this.effects.enqueue("followup", triggerId, { triggerId }); });
+  }
+  /**
+   * A ticket whose work failed or blocked tells its person, once a report: the question it asks them, else that the work
+   * stopped and why, unless the worker's report already told them so (see `stoppedId`).
+   */
+  private stopped(ticketId: string): void {
+    const ticket = this.store.tickets.get(ticketId);
+    const report = ticket && latestReport(ticket);
+    if (!ticket || !report || !liveTicket(ticket) || (report.state !== "failed" && report.state !== "blocked")) return;
+    const { attention } = ticket;
+    if (attention) {
+      if (this.outbox.status(key("attention-reply", attention.id))) return;
+      try {
+        this.engine.reply({ purpose: "attention", ticketId, question: attention.question, text: attention.question });
+      } catch (error) {
+        // A question with no conversation to ask it in stays on the ticket for `swarm superagent tickets`.
+        if (!(error instanceof UserError)) throw error;
+      }
+      return;
+    }
+    const channel = noticeChannel(this.store, ticket);
+    const request = this.store.triggers.get(ticket.origin.triggerId)?.text ?? "";
+    if (channel) this.outbox.send({ id: stoppedId(ticketId, report.at), channel, text: stoppedNotice(report.state, report.summary, request), kind: "reply", ticketId });
   }
   /** A ticket that ended with its pull request tells its chat conversations once; GitHub shows the outcome itself. */
   private pullEnded(ticketId: string): void {

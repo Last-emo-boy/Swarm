@@ -13,6 +13,7 @@ import type { SuperagentClient } from "./client.js";
 import { textPage, ticketCard } from "./cards.js";
 import { watchedRepository } from "./policy.js";
 import { inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
+import { noticeChannel, progressDue, stoppedId } from "./notices.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
 import { feishuSettings } from "./sources/feishu.js";
@@ -113,7 +114,8 @@ const TOOLS = {
       question_for_trigger_id: z.string().optional().describe("With human_action: the human message that raised the question, which is asked where that person wrote."),
       pr_number: z.number().int().positive().nullish().describe("The ticket's PR: its source PR, or one by the agent account from a branch named after this ticket (SWARM_TICKET_NAME)."),
       reply_to_trigger_id: z.string().optional().describe("The explicit human question this report answers; never for ordinary progress."),
-      message_for_person: z.string().trim().min(1).optional().describe(`What the person reads, at most ${IM_WORDS} words, in the language of the source conversation.`)
+      message_for_person: z.string().trim().min(1).optional().describe(`What the person reads, at most ${IM_WORDS} words, in the language of the source conversation. `
+        + "With progress, one sentence at a milestone they would care about, never for a routine step; the host sends at most one every few minutes.")
     },
     readOnly: false
   }
@@ -288,9 +290,20 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
     const asked = answering ? client.store.triggers.get(report.answers!)?.channel : undefined;
     const origin = sourceTrigger(client, updated)?.channel ?? updated.channels[0];
     const answerIsResult = !!asked && !!origin && asked.source === origin.source && asked.thread === origin.thread;
+    // An update at a milestone, and the worker's own words when its work stops, go where the ticket started (notices.ts).
+    const notice = !report.question && !report.answers && given ? noticeChannel(client.store, updated) : undefined;
+    const at = latestReport(updated)!.at;
     if (report.question && updated.attention) {
       client.engine.reply({ purpose: "attention", ticketId, question: updated.attention.question, text: message ?? updated.attention.question });
       posted.push("attention");
+    } else if (notice && report.state === "progress") {
+      if (progressDue(client.store, updated)) {
+        client.outbox.send({ id: key("progress", ticketId, at), channel: notice, text: given!, kind: "reply", ticketId });
+        posted.push("progress");
+      }
+    } else if (notice && (report.state === "blocked" || report.state === "failed")) {
+      client.outbox.send({ id: stoppedId(ticketId, at), channel: notice, text: given!, kind: "reply", ticketId });
+      posted.push("notice");
     } else if (report.state === "ready" && message && !answerIsResult) {
       client.engine.reply({ purpose: "result", ticketId, text: message, ...(attachment ? { attachment } : {}) });
       posted.push("result");
