@@ -199,12 +199,26 @@ test("answers a message that asks for no work in its own conversation, with no t
   assert.equal(routeProblem({ kind: "chat" } as never), "chat needs reply");
 });
 
-test("tells the router who it is in conversation when the settings give a persona", async () => {
+test("tells the router who it is, for its replies and acknowledgements, when the settings give a persona", async () => {
   start({ chatter: { persona: "Speaks like a pirate." } });
   const { triggerId } = client.request("hello");
   answers.push(JSON.stringify({ kind: "chat", reply: "Ahoy!" }));
   await judge(triggerId);
-  assert.match(calls[0]!.system, /Who you are in conversation: Speaks like a pirate\./);
+  assert.match(calls[0]!.system, /## Voice\n\nWho you are and how you write to people: Speaks like a pirate\.\nEvery text a person reads follows it\./);
+});
+
+test("gives a ticket's worker the persona for what it writes to people, and none without one", async () => {
+  const { workStart } = await import("./work-link.js");
+  const { testDeployment } = await import("./testing/fixtures.js");
+  start({ chatter: { persona: "Speaks like a pirate." } });
+  const { triggerId } = client.request("add a NOTICE file");
+  answers.push(JSON.stringify({ kind: "accept", title: "Add a NOTICE file", worktree_name: "add-notice", acknowledgement: "Aye, adding NOTICE." }));
+  await judge(triggerId);
+  const ticket = client.store.tickets.list()[0]!;
+  const deployment = testDeployment({ stateDir: client.stateDir });
+  assert.match(workStart(client, deployment, ticket, "/tmp/work").prompt, /## Voice\n\nWho you are and how you write to people: Speaks like a pirate\.[\s\S]*stay plain and factual/);
+  writeSettings({}, settingsPath(stateDir));
+  assert.doesNotMatch(workStart(client, deployment, ticket, "/tmp/work").prompt, /## Voice/);
 });
 
 test("answers chit-chat on Feishu in the chat itself, quoting the message, and remembers what it said there", async () => {

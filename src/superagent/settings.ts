@@ -127,7 +127,7 @@ export type Access = z.infer<typeof AccessSchema>;
 export const ChatterSchema = z.object({
   /** Feishu chats (oc_...) where it joins in on its own; owners set them with /chatter, and each must be listened to in full. */
   chats: z.array(z.string().regex(/^oc_[A-Za-z0-9]+$/)).default([]),
-  /** Who the agent is in conversation: its voice, manner and interests. */
+  /** Who the agent is: its voice, manner and interests, in conversation and in every message its routing and workers write to people. */
   persona: z.string().trim().max(2000).default(""),
   model: ModelRefSchema,
   /** How long a chat stays quiet before the agent considers saying something. */

@@ -67,7 +67,7 @@ export function workStart(client: SuperagentClient, deployment: Deployment, tick
     directory, blockedCommands: settings.executor.blockedCommands, ...(settings.executor.model ? { model: settings.executor.model } : {}),
     ...(write ? { write } : {}),
     prompt: workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(ticket.mandate, watchedRepository(settings)), sources,
-      github: !!deployment.github, ...(write ? { write } : {}) })
+      github: !!deployment.github, ...(write ? { write } : {}), persona: settings.chatter?.persona ?? "" })
   };
 }
 
