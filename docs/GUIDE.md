@@ -854,6 +854,8 @@ may do and how much they may ask for. Without the block, everyone on a Source's 
   reaches the worker as context only: it neither resumes the ticket nor stops it.
 - **Limits.** A message beyond its sender's limits is held back with one answer that says so. `access.limits` changes
   the numbers.
+- **Choosing a harness.** Owners and maintainers may ask for the agent harness their work runs on ([harness
+  workers](#harness-workers)); its turns use the owner's harness accounts. `everyone`'s work runs on the default.
 
 People send these commands to the Feishu bot, after mentioning it or in a direct message:
 
@@ -892,6 +894,16 @@ Swarm's loop); `swarm superagent request --harness claude "..."` or `/ticket
 --harness codex <request>` chooses one for a single request. The choice is stored with the ticket's execution, so its follow-ups run
 on the same harness, and `swarm superagent tickets`/`ticket` and the TUI show it
 as `via claude`.
+
+People who message the bot can ask for one in their own words, such as "用 codex
+做" or "run this on Claude Code". With the access model on, owners and
+maintainers may ([roles](#roles-and-bot-commands)); without it, anyone who may
+ask. The acknowledgement names the harness and where the work runs: this node,
+or the paired node that has the harness signed in ([mesh](#mesh)). When no node
+has it, or no profile here is called that, the bot says so and starts no ticket.
+Work that writes to GitHub as the person who asked runs only on the node that
+accepted it, which keeps their token, so it can use only a harness signed in
+there.
 
 Each turn is one headless run in the ticket's directory, with Swarm's ticket
 tools (`swarm superagent mcp`, plus `--remote` for a worker placed on a paired
@@ -1127,7 +1139,7 @@ call waits for approval; a peer that does not answer is skipped.
 A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>` (or
 `/ticket --on <node> <request>`) files it that way, `swarm superagent place <id> <node>|here` moves its next worker,
 and when the router says the work needs `gpu` or `macos`, the worker goes to a paired node that has that ability and a
-free slot. Work on a harness (`--harness claude`, or `executor.harness`) needs it the same way: a node lists
+free slot. Work on a harness (`--harness claude`, one a person named to the bot, or `executor.harness`) needs it the same way: a node lists
 `harness:<id>` among its abilities for each harness profile that is installed and signed in there, with its keys set,
 and checks again every 10 minutes, so a ticket on Claude Code runs on a device where Claude Code is signed in. The
 node that accepted the ticket remains its record and the only writer of its store. The other node prepares its own

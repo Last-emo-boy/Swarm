@@ -496,6 +496,7 @@ swarm superagent retry <id>
 - **群的上限**（`read-only`、`local` 或 `github`）会压低在那个群里提出的所有工作。没人列入的群是 `local`。
 - **谁能操控工单。** 提需求的人和 maintainer。其他人在工单对话里发的消息只作为上下文交给 worker，既不会让工单继续，也不能停下它。
 - **限额。** 超出发送者限额的消息会被搁下，并回复一次说明原因。`access.limits` 可以改这些数字。
+- **选择 harness。** owner 和 maintainer 可以指定自己的工作运行在哪个 agent harness 上（见 [harness worker](#harness-worker)）；它的轮次用的是 owner 的 harness 账号。`everyone` 的工作运行在默认的 harness 上。
 
 在飞书里 @ 机器人或私聊它，可以用这些命令：
 
@@ -521,6 +522,8 @@ swarm superagent retry <id>
 ### Harness worker
 
 工单的 worker 可以不用 Swarm 自己的 coding loop，而是运行在本机安装的其他 agent harness 上：Claude Code（`claude`）、Codex（`codex`）、Kimi Code（`kimi`）或 OpenCode（`opencode`），或者运行在 GLM 或 DeepSeek 上的 Claude Code（`claude-glm`、`claude-deepseek`，见下文）。superagent 设置中的 `executor.harness` 指定新工单运行在哪个 harness 上（默认值 `null` 保留 Swarm 的循环）；`swarm superagent request --harness claude "..."` 或 `/ticket --harness codex <request>` 为单个请求选择一个 harness。这个选择会和工单的执行记录一起保存，因此它的后续消息也在同一个 harness 上运行，`swarm superagent tickets`/`ticket` 和 TUI 会把它显示为 `via claude`。
+
+给机器人发消息的人也可以用自己的话指定一个，例如“用 codex 做”或 “run this on Claude Code”。开启访问模型时，owner 和 maintainer 可以这样做（见[角色](#角色和机器人命令)）；没有开启时，任何能提需求的人都可以。确认回复会说明由哪个 harness 来做、工作在哪里运行：本节点，或已登录该 harness 的已配对节点（见[网格](#网格)）。如果没有任何节点有它，或者本机没有叫这个名字的配置档，机器人会直接说明，不创建工单。以提需求者身份写到 GitHub 的工作只在接受它的节点上运行，因为那里保存着他们的 token，所以它只能使用在那里登录的 harness。
 
 每一轮都是在工单目录中进行的一次无头运行：Swarm 的工单工具（`swarm superagent mcp`，对放在已配对节点上的 worker 还会加上 `--remote`）作为名为 `ticket` 的 MCP 服务器提供，Swarm 的 worker 说明会附加在 harness 自己的说明之后：
 
@@ -610,7 +613,7 @@ swarm mesh remove gpu                      # 把一台设备移出 swarm：每�
 
 设备还可以把工具借给已配对的对端，对端的 Swarm 会话把它们当作 MCP 工具调用。在你指定文件夹之前，什么都不会借出：`swarm mesh lend shell ~/src/app` 借出在该文件夹中启动的命令执行（shell 仍然可以访问这个用户能访问的任何东西），`swarm mesh lend files ~/data` 借出在该文件夹内列出、读取和写入文件的能力，并拒绝通向文件夹之外的路径，包括符号链接。`swarm mesh lend` 显示借出了什么，`swarm mesh lend --stop shell` 收回借出。在其他设备上，`swarm mesh tools` 列出每个对端借出的工具，那里的每个 Swarm 会话都会把它们看作 `mcp__<peer>__shell`、`mcp__<peer>__read_file` 等工具，由对端的 `swarm node run` 在通往该对端的链路上通过 Streamable HTTP 提供。借来的工具算作远程工具，因此在 `ask` 模式下每次调用都要等待审批；不响应的对端会被跳过。
 
-工单也可以留在本节点，而它的 worker 在一个已配对的节点上运行。`swarm superagent request --on <node>`（或 `/ticket --on <node> <request>`）以这种方式提交工单，`swarm superagent place <id> <node>|here` 移动它的下一个 worker；当路由器判断这项工作需要 `gpu` 或 `macos` 时，worker 会去往具备该能力且有空闲槽位的已配对节点。在 harness 上运行的工作（`--harness claude` 或 `executor.harness`）也以同样的方式提出要求：节点会为每个在本机已安装、已登录且 key 已设置的 harness 配置档，在自己的能力中列出 `harness:<id>`，并每 10 分钟重新检查一次，这样在 Claude Code 上运行的工单就会在已登录 Claude Code 的设备上运行。接受该工单的节点始终是它的记录方，也是其存储的唯一写入者。另一个节点用自己的准备命令和凭据准备自己的工单目录（运行 GitHub 工单的节点需要在那里登录 agent 账号的 CLI），并持有一个它会续期的租约；如果租约失效，所有者会把该 worker 视为丢失，并重新放置这项工作。`swarm superagent ticket` 显示 worker 在哪里运行。放置只对以 `swarm node run` 方式运行的节点生效。
+工单也可以留在本节点，而它的 worker 在一个已配对的节点上运行。`swarm superagent request --on <node>`（或 `/ticket --on <node> <request>`）以这种方式提交工单，`swarm superagent place <id> <node>|here` 移动它的下一个 worker；当路由器判断这项工作需要 `gpu` 或 `macos` 时，worker 会去往具备该能力且有空闲槽位的已配对节点。在 harness 上运行的工作（`--harness claude`、有人向机器人指定的 harness，或 `executor.harness`）也以同样的方式提出要求：节点会为每个在本机已安装、已登录且 key 已设置的 harness 配置档，在自己的能力中列出 `harness:<id>`，并每 10 分钟重新检查一次，这样在 Claude Code 上运行的工单就会在已登录 Claude Code 的设备上运行。接受该工单的节点始终是它的记录方，也是其存储的唯一写入者。另一个节点用自己的准备命令和凭据准备自己的工单目录（运行 GitHub 工单的节点需要在那里登录 agent 账号的 CLI），并持有一个它会续期的租约；如果租约失效，所有者会把该 worker 视为丢失，并重新放置这项工作。`swarm superagent ticket` 显示 worker 在哪里运行。放置只对以 `swarm node run` 方式运行的节点生效。
 
 有空闲 worker 槽位的节点还可以主动拉取工作，而不必等着被分配。拉取默认关闭，直到运行 `swarm mesh pull on`（加上可重复使用的 `--repo owner/name`，只接这些仓库的工作）；之后节点会每 15 秒（没有开放的工作时频率更低）向已配对的节点询问在那里等待 worker 的工作：排在 `executor.maxWorkers` 之后的工作，或者需要所有者缺少的某种能力、而具备该能力并开启了拉取的已配对节点都在忙的工作（这类工作会等待它们，而不是在所有者上运行）。它会认领符合自己能力和仓库范围的工作，最早的优先。由所有者来决定：第一个仍然有效的认领会通过与放置相同的提议和租约拿到这项工作，之后的认领会被拒绝，所有者自己永远不会启动一个已被认领的 Assignment。通过 `--on` 或 `place` 放置的工作、处于租约之下的工作，或在等待人处理的工作，永远不会开放。所有者默认会把自己等待中的工作交给开启了拉取的已配对节点，因为配对本来就允许对端在工作被放置到那里时运行本节点的工作，而拉取者只会拿走原本要等待的工作；`swarm mesh offer off` 会把这些工作留在本地。`swarm mesh status` 显示每个节点是否在拉取，以及两个方向上被拉取的工作，工单行会显示“pulled by <node>”。
 

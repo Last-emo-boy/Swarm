@@ -15,6 +15,7 @@ import { SuperagentClient } from "./client.js";
 import { writeEnvironment, verifyEnvironment, workerBin } from "./environment.js";
 import { SwarmExecutor, type RemoteWork } from "./executor.js";
 import { KV } from "./kv.js";
+import type { MeshView } from "./placement.js";
 import { policyEffects } from "./policy.js";
 import { policyVersion, superagentStateDir, type Settings } from "./settings.js";
 import { SETUP_FIELDS, SetupError, commandProbe, defaultMachine, resolveFeishuBot, resolveGithub, type Deployment, type SetupProblem } from "./setup.js";
@@ -88,6 +89,8 @@ export class SuperagentHost {
   problem?: SetupProblem;
   /** Where tickets placed on paired nodes run; a mesh node sets it before it starts the host (src/mesh/work.ts). */
   remote?: RemoteWork;
+  /** This node and its paired nodes with their abilities, which the router says work runs on; a mesh node sets it (src/mesh/cli.ts). */
+  meshView?: () => Promise<MeshView>;
   private timer?: NodeJS.Timeout;
   private closing = false;
   private passing = false;
@@ -113,7 +116,8 @@ export class SuperagentHost {
         credential: (ticket) => this.credential(ticket)
       });
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log });
-      this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands });
+      this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands,
+        mesh: async () => this.meshView?.() });
       this.assessor.install();
       this.chatter = new ChatterRoom({ client: this.client, complete: options.complete, configured: () => !!this.deployment?.feishu });
       this.chatter.install();

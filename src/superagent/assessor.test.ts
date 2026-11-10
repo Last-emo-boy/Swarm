@@ -6,7 +6,8 @@ import { afterEach, beforeEach, test } from "node:test";
 import { liveTicket, type Trigger } from "./core/index.js";
 import { ModelAssessor, routeProblem, type AgentCommands, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
-import { placementOf } from "./placement.js";
+import { KV } from "./kv.js";
+import { placementOf, workNeeds, type MeshView } from "./placement.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import { commentTrigger } from "./sources/github-trigger.js";
 
@@ -15,6 +16,8 @@ let client: SuperagentClient;
 let answers: string[];
 let calls: { purpose: string; system: string; user: string }[];
 let assessor: ModelAssessor;
+/** This node and its paired nodes as a mesh node shows them to the router; none on a host that is not a mesh node. */
+let view: MeshView | undefined;
 let opened = false;
 const complete: Complete = async (input) => {
   calls.push(input);
@@ -26,6 +29,7 @@ beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-assessor-"));
   answers = [];
   calls = [];
+  view = undefined;
 });
 afterEach(() => {
   if (opened) client.close();
@@ -36,7 +40,7 @@ function start(settings: unknown = {}, commands?: AgentCommands) {
   writeSettings(settings, settingsPath(stateDir));
   client = new SuperagentClient({ stateDir });
   opened = true;
-  assessor = new ModelAssessor({ client, complete, configured: () => false, ...(commands ? { commands } : {}) });
+  assessor = new ModelAssessor({ client, complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}) });
 }
 /** Runs the Eval the Trigger is in, as the host's assessment effect does. */
 async function judge(triggerId: string) {
@@ -223,9 +227,11 @@ const ACCESS = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", 
   github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },
   policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } }, access: {} };
 /** Alice's message to the agent in the team chat, taken in. */
-async function fromAlice(text: string, id: string): Promise<Trigger> {
+const fromAlice = (text: string, id: string): Promise<Trigger> => fromFeishu("ou_alice", text, id);
+/** A message to the agent in the team chat from `sender`, taken in. */
+async function fromFeishu(sender: string, text: string, id: string): Promise<Trigger> {
   const { feishuTrigger } = await import("./sources/feishu.js");
-  const trigger = feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+  const trigger = feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: sender, sender_type: "user",
     content: `@_user_1 ${text}`, create_time: String(Date.now()), mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] }, "ou_bot", "cli_app")!;
   client.engine.receive(trigger);
   return trigger;
@@ -306,4 +312,83 @@ test("works on the requester's repository the router chose, however they called 
   answers.push(accept({ title: "Fix the README", worktree_name: "fix-readme", repository: "someone/else" }));
   await judge(other.id);
   assert.equal(ticketOf(other.id).mandate.capability?.repository, "owner/watched");
+});
+
+/** The ticket the router's accept of `triggerId` created. */
+const ticketOf = (triggerId: string) => client.store.tickets.get(client.store.decisions.get(client.store.triggers.disposition(triggerId)!.decisionId!)!.ticketId!)!;
+/** A bot VM with no harness signed in, paired with a Mac that has Codex and Claude Code. */
+const MESH: MeshView = { here: { name: "bot-vm", abilities: ["linux"] }, peers: [{ name: "mac", abilities: ["macos", "harness:codex", "harness:claude"] }] };
+
+test("runs a Feishu request on the harness its sender named, needing it of the machine so the paired node that has it runs the worker", async () => {
+  start(ACCESS);
+  view = { ...MESH, here: { name: "bot-vm", abilities: ["linux", "harness:kimi"] } };
+  const trigger = await fromAlice("用 codex 做：修一下 README 的错字", "om_1");
+  answers.push(accept({ harness: "Codex", acknowledgement: "好的，用 Codex 在 mac 上修 README 的错字。" }));
+  await judge(trigger.id);
+  assert.match(calls[0]!.system, /## Harness/);
+  const { harnesses } = JSON.parse(calls[0]!.user).candidate;
+  assert.equal(harnesses.default, "swarm (Swarm's own coding loop)");
+  assert.equal(harnesses.choices.codex, "paired node mac");
+  assert.equal(harnesses.choices.kimi, "this node (bot-vm)");
+  assert.equal(harnesses.choices.opencode, "no node: none has it installed and signed in");
+  const ticket = ticketOf(trigger.id);
+  assert.equal(ticket.execution?.harness, "codex");
+  assert.deepEqual(workNeeds(ticket, placementOf(client, ticket)), ["harness:codex"]);
+});
+
+test("answers plainly, with no ticket, when no node runs the harness a person names or it is no profile here", async () => {
+  start(ACCESS);
+  view = MESH;
+  const missing = await fromAlice("run this on Kimi Code: fix the README", "om_1");
+  answers.push(accept({ harness: "kimi" }), JSON.stringify({ kind: "chat", reply: "No node can run Kimi Code now; Codex and Claude Code run on mac." }));
+  await judge(missing.id);
+  assert.match(JSON.parse(calls[1]!.user).problem, /No node can run kimi now: answer with chat/);
+  const unknown = await fromAlice("do it with Cursor", "om_2");
+  answers.push(accept({ harness: "cursor" }), JSON.stringify({ kind: "chat", reply: "There is no Cursor harness here." }));
+  await judge(unknown.id);
+  assert.match(JSON.parse(calls[3]!.user).problem, /No harness profile "cursor": the choices are claude, codex, kimi, opencode/);
+  assert.equal(client.store.tickets.list().length, 0);
+  assert.equal(client.store.get(KV.harness.chosen(missing.id)), undefined);
+  const replies = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => (JSON.parse(String(row.value)) as { text: string }).text);
+  assert.equal(replies.length, 2);
+});
+
+test("lets only maintainers and owners choose a harness, and runs work that acts as its requester on GitHub only on a harness here", async () => {
+  start({ ...ACCESS, policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }], roles: { ou_bob: "everyone" } } } } });
+  view = { ...MESH, here: { name: "bot-vm", abilities: ["linux", "harness:claude"] } };
+  const bob = await fromFeishu("ou_bob", "use codex to fix the README", "om_1");
+  answers.push(accept({ harness: "codex" }), accept({ acknowledgement: "On it on the default harness: only maintainers choose one." }));
+  await judge(bob.id);
+  assert.match(JSON.parse(calls[0]!.user).candidate.harnesses.choices, /only maintainers and owners choose a harness/);
+  assert.match(JSON.parse(calls[1]!.user).problem, /Only maintainers and owners choose a harness/);
+  assert.equal(ticketOf(bob.id).execution?.harness, undefined);
+
+  client.store.set(KV.links.github("feishu", "ou_alice"), { login: "alice-gh", id: 7, repos: ["owner/watched"], reposAt: "", linkedAt: "",
+    access: { iv: "", data: "", tag: "" } });
+  const alice = await fromAlice("用 codex 修 README 然后开个 PR", "om_2");
+  answers.push(accept({ harness: "codex", title: "Fix the README", worktree_name: "fix-readme" }),
+    accept({ harness: "claude", title: "Fix the README", worktree_name: "fix-readme" }));
+  await judge(alice.id);
+  const { choices } = JSON.parse(calls[2]!.user).candidate.harnesses;
+  assert.match(choices.codex, /^no node for this request: only paired node mac has it, and work that acts as @alice-gh on GitHub runs only on this node$/);
+  assert.equal(choices.claude, "this node (bot-vm)");
+  assert.match(JSON.parse(calls[3]!.user).problem, /Only mac can run codex, and work that acts as @alice-gh on GitHub runs only on this node/);
+  const ticket = ticketOf(alice.id);
+  assert.equal(ticket.mandate.capability?.credential?.login, "alice-gh");
+  assert.equal(ticket.execution?.harness, "claude");
+});
+
+test("keeps the harness a request was filed with, and counts every profile as this node's on a host that is no mesh node", async () => {
+  start();
+  const filed = client.request("fix the typo in README", undefined, { harness: "codex" });
+  answers.push(accept({ harness: "claude" }));
+  await judge(filed.triggerId);
+  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.harnesses, { default: "swarm (Swarm's own coding loop)", filed_with: "codex" });
+  assert.equal(ticketOf(filed.triggerId).execution?.harness, "codex");
+
+  const named = client.request("run this on opencode: fix the CHANGELOG");
+  answers.push(accept({ harness: "opencode", title: "Fix the CHANGELOG", worktree_name: "fix-changelog" }));
+  await judge(named.triggerId);
+  assert.equal(JSON.parse(calls[1]!.user).candidate.harnesses.choices.opencode, "this node");
+  assert.equal(ticketOf(named.triggerId).execution?.harness, "opencode");
 });

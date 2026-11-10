@@ -115,6 +115,9 @@ steer it. Without the block, nothing changes: everyone on a list may do everythi
   request. Attaching such a message to the ticket, or a stop from that person, is refused.
 - **Limits.** Defaults: `everyone` 1 open ticket and 10 requests an hour, `maintainer` 4 and 60, `owner` 8 and no hourly
   limit. A message beyond them is held back with one answer that says so.
+- **Harness.** Maintainers and owners may ask for the agent harness their work runs on (below), since its turns are paid
+  for by the owner's harness accounts. `everyone`'s work runs on the default (`executor.harness`), and the
+  acknowledgement says so.
 
 People run these bot commands in Feishu, after mentioning the bot or in a direct message:
 
@@ -133,6 +136,21 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 People may also ask in their own words: the router runs `/help`, `/me`, `/link`, `/repo` and `/takeover` for someone whose
 message asks for what one does, as if they had typed it. The others change settings or remove a link, so only people type
 them. The first owner is set in the settings file.
+
+### Harness choice
+
+A person may name the agent harness their work runs on, such as "用 codex 做" or "run this on Claude Code", in Feishu, on
+GitHub or in the TUI. The router's card lists every harness profile of this node's settings with where its work runs:
+this node, when its mesh card lists `harness:<id>` (installed and signed in here), else the paired nodes that answered
+and list it, else no node. On an accept the router sets `harness` to one of them, the host records it with the request as
+`--harness` does, and the ticket's execution takes it; its acknowledgement names the harness and the node. A mesh node
+then places the worker on that node, since the work needs `harness:<id>` (`workNeeds`). When no node runs the harness
+named, or it is no profile here, the router starts no ticket and answers plainly with chat, naming the harnesses that
+can run. A host that is not a mesh node counts every profile as its own; one not signed in fails when the worker starts.
+
+Work that acts as its requester on GitHub (`capability.credential`) runs only on the node that holds their token, so for
+it only a harness this node has counts: a harness only a paired node has is answered as unavailable for that request. A
+request filed with `--harness` keeps that harness whatever the router says.
 
 ### GitHub accounts
 

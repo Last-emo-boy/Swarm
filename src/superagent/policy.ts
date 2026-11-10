@@ -143,6 +143,11 @@ export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strengt
   if (!link || !repository) return { role, write: 'local' }
   return { role, write, credential: { login: link.login, id: link.id }, repository }
 }
+/**
+ * Whether `actor` may choose the agent harness their work runs on, which the owner's harness accounts pay for: anyone
+ * without the access model, else maintainers and owners.
+ */
+export const choosesHarness = (settings: Settings, actor: ActorRef): boolean => !settings.access || atLeast(roleOf(settings, actor), 'maintainer')
 /** Whether `actor` steers a ticket under `mandate`: always without the access model, else its requester and maintainers do. */
 export function steers(settings: Settings, mandate: Pick<Mandate, 'actor'>, actor: ActorRef): boolean {
   if (!settings.access) return true

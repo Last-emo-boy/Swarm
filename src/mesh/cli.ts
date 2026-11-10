@@ -447,6 +447,9 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     await checkHarnesses();
     harnessTimer = setInterval(() => void checkHarnesses().catch((error: unknown) => console.log(`Could not check this node's harnesses: ${String(error)}`)), HARNESS_CHECK_MS);
     harnessTimer.unref();
+    // What the router tells a person who names a harness: whether this node runs it, or which paired nodes that answer do.
+    host.meshView = async () => ({ here: { name: readMesh(home).node.name, abilities },
+      peers: (await peerHealth(home, 3000)).flatMap((health) => health.card ? [{ name: health.card.name, abilities: health.card.abilities }] : []) });
     const { MeshWork } = await import("./work.js");
     const work = new MeshWork(host, { home, abilities, workerCommand: selfCommand() });
     await host.start();
