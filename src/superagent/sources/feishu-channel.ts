@@ -18,6 +18,11 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
 const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
   || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
 /**
+ * The value of a text flag for lark-cli, which reads a file when a value starts with `@` and takes `@@` for a literal one:
+ * a message such as "@小王 好的" is sent as written, never read from a file.
+ */
+export const cliText = (text: string): string => text.startsWith('@') ? `@${text}` : text
+/**
  * Replies in the topic of the target message, or with mode `chat` into the chat itself, as a member writes there: a reply that
  * quotes the target message, or a plain message without one. Then it posts the attachment as a file the same way; Feishu
  * keeps at most one message per idempotency key (the outgoing message's `message.id`, and that with `-file` for its file).
@@ -35,7 +40,7 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
   const post = (content: string[], key: string, cwd?: string) => host.commands.lark([...target, ...content,
     ...inChat ? [] : ['--reply-in-thread'], '--idempotency-key', key], cwd)
   try {
-    if (text.trim()) await post(['--markdown', text], message.id)
+    if (text.trim()) await post(['--markdown', cliText(text)], message.id)
     if (message.attachment && existsSync(message.attachment)) {
       await post(['--file', basename(message.attachment)], `${message.id}-file`, dirname(message.attachment)).catch(async (error: unknown) => {
         if (!(error instanceof CliError) || error.code === undefined || gone(error)) throw error
@@ -58,7 +63,7 @@ const NO_AVAILABILITY = 230013
 async function sendToUser(host: Pick<SourceContext, 'commands'>, message: OutboundMessage, userId?: string): Promise<'sent' | 'gone'> {
   if (!userId) throw new Error('Missing Feishu user')
   try {
-    await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', checkedImText(message.text), '--idempotency-key', message.id])
+    await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', cliText(checkedImText(message.text)), '--idempotency-key', message.id])
   } catch (error) {
     if (gone(error) || (error instanceof CliError && error.code === NO_AVAILABILITY)) return 'gone'
     throw error
