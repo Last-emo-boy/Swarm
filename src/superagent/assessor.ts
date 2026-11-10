@@ -9,22 +9,32 @@ import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, 
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
 import { said } from "./chatter.js";
-import { linkOf, namedRepository } from "./github-link.js";
+import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { updatePlacement } from "./placement.js";
-import { AdmissionDirectionSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed } from "./policy.js";
-import { assessmentPrompt, followupPrompt, routerPrompt } from "./prompts.js";
+import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, directionAllowed, roleOf } from "./policy.js";
+import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { IM_WORDS, NOTE_WORDS, checkedImText, wordCount } from "./text.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
 export type Complete = (input: { purpose: string; system: string; user: string; model?: string }) => Promise<string>;
 
+/** The bot commands the router runs for a person as their built-in tools (bot-commands.ts). */
+export interface AgentCommands {
+  /** Runs a command for the sender of `trigger` as if they had typed it; it answers them itself. */
+  perform(trigger: Trigger, name: AgentCommand, args: readonly string[]): void;
+  /** Has the sender of `trigger` link their GitHub account, and opens a pull request from the local ticket it started once they did. */
+  wantPullRequest(trigger: Trigger, ticketId: string): void;
+}
+
 export interface AssessorHost {
   readonly client: SuperagentClient;
   readonly complete: Complete;
   /** Whether the Sources' CLIs can be used for thread context, which needs a resolved deployment. */
   configured(): boolean;
+  /** The bot commands the router may run; without them it runs none. */
+  readonly commands?: AgentCommands;
 }
 
 const AcknowledgementSchema = z.string().trim().min(1)
@@ -32,7 +42,7 @@ const AcknowledgementSchema = z.string().trim().min(1)
 const RoutingNoteSchema = z.string().trim()
   .refine((text) => wordCount(text) <= NOTE_WORDS, `A routing note has at most ${NOTE_WORDS} words.`);
 const RouteSchema = z.object({
-  kind: z.enum(["accept", "attach", "ignore", "stop", "chat"]),
+  kind: z.enum(["accept", "attach", "ignore", "stop", "chat", "command"]),
   title: z.string().nullish(),
   worktree_name: z.string().nullish(),
   acknowledgement: z.string().nullish(),
@@ -42,10 +52,15 @@ const RouteSchema = z.object({
   /** A chat's answer: what the agent says back to a message that asks it for no work. */
   reply: z.string().nullish(),
   /** What accepted work needs of the machine its worker runs on, such as gpu: it places the worker on a paired node fit for it. */
-  needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish()
+  needs: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "an ability such as gpu or macos")).max(8).nullish(),
+  /** Accepted work whose requester wants a pull request but has not linked GitHub: they get the code to link, and the ticket a take-over once they did. */
+  link: z.boolean().nullish(),
+  /** The bot command the router runs for the person, with its arguments. */
+  command: z.string().nullish(),
+  args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
 });
 type Route = z.infer<typeof RouteSchema>;
-type Field = Exclude<keyof Route, "kind" | "needs">;
+type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args">;
 /** Each field's check, the kinds that read it and those that need it, as upstream's orchestrator_route checked them. */
 const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][]; needs: readonly Route["kind"][] }> = {
   ticket_id: { check: z.string(), reads: ["attach", "stop"], needs: ["attach", "stop"] },
@@ -54,7 +69,8 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   acknowledgement: { check: AcknowledgementSchema, reads: ["accept"], needs: ["accept"] },
   note: { check: RoutingNoteSchema, reads: ["accept", "attach"], needs: [] },
   reason: { check: z.string().max(500), reads: ["ignore", "stop"], needs: ["ignore"] },
-  reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] }
+  reply: { check: AcknowledgementSchema, reads: ["chat"], needs: ["chat"] },
+  command: { check: z.enum(AGENT_COMMANDS), reads: ["command"], needs: ["command"] }
 };
 /** Why a routing answer cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
 export function routeProblem(route: Route): string | undefined {
@@ -151,8 +167,30 @@ export class ModelAssessor {
       ...relatedTickets(candidate.tickets),
       ...(disposition?.fanout.length ? { delivered_to: disposition.fanout } : {}),
       ...(referenced.length ? { referenced_tickets: referenced.map(ticketCard) } : {}),
-      ...(recent.length ? { recent_tickets: recent } : {})
+      ...(recent.length ? { recent_tickets: recent } : {}),
+      ...this.requester(candidate)
     };
+  }
+  /**
+   * Who sent the candidate, while the access model is on: their role, how far work asked for here may write, what a ticket
+   * accepted now would do, and, where people link GitHub accounts, theirs.
+   */
+  private requester(candidate: Candidate): { requester?: Record<string, unknown> } {
+    const settings = this.host.client.settings();
+    const evaluation = candidate.thread.evaluating;
+    const primary = candidate.triggers.find((trigger) => trigger.id === evaluation?.primary) ?? candidate.triggers.at(-1)!;
+    if (!settings.access || !evaluation) return {};
+    const link = linkOf(this.host.client.store, evaluation.actor);
+    const capability = capabilityOf(settings, evaluation, link, { repository: this.requestedRepository(candidate) });
+    const app = githubApp(settings);
+    const github = !app ? undefined : !link ? "not linked" : link.broken ? `@${link.login}, but the link stopped working`
+      : { account: `@${link.login}`, repositories: link.repos.slice(0, 8), ...(link.repos.length > 8 ? { more_repositories: link.repos.length - 8 } : {}),
+        ...(link.defaultRepo ? { default: link.defaultRepo } : {}), install_the_app_on_more: installUrl(app) };
+    return { requester: {
+      role: roleOf(settings, evaluation.actor), direct_message: primary.meta.direct === true, may_write: allowedWrite(settings, evaluation),
+      this_request: capability?.credential ? `github, as @${capability.credential.login} on ${capability.repository}` : capability?.write,
+      ...(github ? { github } : {})
+    } };
   }
 
   /** Routes an explicit candidate: one model answer, checked once and asked again with the problem when it does not hold. */
@@ -198,7 +236,10 @@ export class ModelAssessor {
             if (decided.ticketId && route.needs?.length) updatePlacement(client, decided.ticketId, { needs: [...new Set(route.needs)] });
             return decided;
           });
-          return decision.kind === "accept" && decision.ticketId ? undefined : `Ticket was not created: ${reasonText(decision.reason)}`;
+          if (decision.kind !== "accept" || !decision.ticketId) return `Ticket was not created: ${reasonText(decision.reason)}`;
+          const trigger = client.store.triggers.get(triggerId);
+          if (route.link && trigger) this.host.commands?.wantPullRequest(trigger, decision.ticketId);
+          return undefined;
         }
         case "attach":
           engine.attach(route.ticket_id!, triggerId, route.note ?? undefined);
@@ -209,6 +250,17 @@ export class ModelAssessor {
         case "ignore":
           engine.decide(triggerId, { kind: "ignore", reason: route.reason!, evalId: candidate.evalId });
           return undefined;
+        case "command": {
+          // The command answers the person itself; one that decided nothing, unlike a take-over, leaves the message ignored.
+          const { client } = this.host;
+          const trigger = client.store.triggers.get(triggerId);
+          if (!this.host.commands || !trigger) return "No bot commands run here; answer with chat instead";
+          this.host.commands.perform(trigger, route.command as AgentCommand, route.args ?? []);
+          if (engine.candidate(triggerId)?.evalId === candidate.evalId) {
+            engine.decide(triggerId, { kind: "ignore", reason: { code: "commanded", values: { command: route.command! } }, evalId: candidate.evalId });
+          }
+          return undefined;
+        }
         case "chat": {
           // A message that asks for no work is answered where it was written, and starts no ticket.
           const { client } = this.host;

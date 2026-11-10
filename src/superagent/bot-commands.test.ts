@@ -10,7 +10,7 @@ import { KV } from "./kv.js";
 import { SuperagentClient } from "./client.js";
 import { readSettings, settingsPath, writeSettings } from "./settings.js";
 import { feishuTrigger } from "./sources/feishu.js";
-import { patchPath } from "./ticket-tools.js";
+import { fileReport, patchPath } from "./ticket-tools.js";
 import type { Deployment } from "./setup.js";
 
 const BOT = "ou_bot", CHAT = "oc_team", DM = "oc_dm";
@@ -170,54 +170,107 @@ function accept(trigger: Trigger): Ticket {
   return client.store.tickets.get(decision.ticketId!)!;
 }
 
+/** Has a local ticket report ready with its commits as a patch, as its worker would. */
+async function ready(ticket: Ticket): Promise<void> {
+  client.engine.assignmentStarted(ticket.id, ticket.assignments[0]!.id);
+  const patch = "From 0000 Mon Sep 17 00:00:00 2001\n";
+  await fileReport(client, ticket.id, { state: "ready", summary: "Done.", patch: { text: patch, bytes: patch.length, uncommitted: false } });
+}
+const takerOf = (ticket: Ticket) => client.store.tickets.list().find((item) => item.mandate.capability?.from === ticket.id);
+/** GitHub's answers for a device flow the person completes at once, linking `login` with push access to `repos`. */
+const deviceFlow = (login: string, repos: string[]) => ({
+  "/login/device/code": { device_code: "dc", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 },
+  "/login/oauth/access_token": { access_token: "ghu_1", expires_in: 28800, refresh_token: "ghr_1", refresh_token_expires_in: 15897600 },
+  "/user": { login, id: 7 }, "/user/installations": { installations: [{ id: 1 }] },
+  "/user/installations/1/repositories": { repositories: repos.map((full_name) => ({ full_name, permissions: { push: true } })) }
+});
+
 describe("take-over", () => {
   it("lets a maintainer take over a local ticket with a patch: a new ticket of theirs that writes to GitHub from it, and the old one ends", () => {
     writeSettings(settings({}), settingsPath(stateDir));
     const local = accept(message(READER, "fix the typo"));
     expect(local.mandate.capability).toEqual({ role: "everyone", write: "local" });
     const root = String(client.store.triggers.get(local.origin.triggerId)!.meta.messageId);
-    commands.receive(message(MAINTAINER, "/takeover", { root }));
-    expect(replies().at(-1)!.text).toContain("has no patch yet");
-    const path = patchPath(stateDir, local);
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, "From 0000 Mon Sep 17 00:00:00 2001\n");
-    commands.receive(message(MAINTAINER, "/takeover", { root }));
-    expect(replies().at(-1)!.text).toContain("Link your GitHub account first");
-    linkAs(READER, "reader-gh", [WATCHED]);
-    commands.receive(message(READER, "/takeover", { root }));
-    expect(replies().at(-1)!.text).toContain(`You cannot open pull requests on ${WATCHED} from here`);
     linkAs(MAINTAINER, "alice-gh", ["alice-gh/tool"]);
     commands.receive(message(MAINTAINER, "/takeover", { root }));
     expect(replies().at(-1)!.text).toContain(`You cannot open pull requests on ${WATCHED} from here`);
     linkAs(MAINTAINER, "alice-gh", ["alice-gh/tool", WATCHED]);
+    // Without a patch yet, the take-over waits for one.
     commands.receive(message(MAINTAINER, "/takeover", { root }));
-    const taken = client.store.tickets.list().find((ticket) => ticket.mandate.capability?.from === local.id)!;
+    expect(replies().at(-1)!.text).toContain("has no patch yet: I'll open the pull request as @alice-gh once it reports ready");
+    expect(client.store.get(KV.links.wanted(local.id))).toBeDefined();
+    const path = patchPath(stateDir, local);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "From 0000 Mon Sep 17 00:00:00 2001\n");
+    commands.receive(message(MAINTAINER, "/takeover", { root }));
+    const taken = takerOf(local)!;
     expect(taken.mandate).toMatchObject({ actor: { id: MAINTAINER }, capability: { role: "maintainer", write: "github", from: local.id,
       credential: { login: "alice-gh", id: 7 }, repository: WATCHED } });
     expect(taken.execution?.assignment).toContain("fix the typo");
     expect(liveTicket(client.store.tickets.get(local.id)!)).toBe(false);
     expect(replies().at(-1)!.text).toMatch(/^Ticket [0-9a-f]{8} takes over ticket [0-9a-f]{8}/);
     expect(readFileSync(path, "utf8")).toContain("From 0000");
+    expect(client.store.get(KV.links.wanted(local.id))).toBeUndefined();
+    // A ticket is taken over once.
+    commands.receive(message(MAINTAINER, "/takeover", { root }));
+    expect(replies().at(-1)!.text).toContain(`was taken over as ticket ${taken.id.slice(0, 8)} already`);
+  });
+  it("lets a requester of any role take over their own ticket once linked, beside the open ticket it replaces", async () => {
+    writeSettings(settings({}), settingsPath(stateDir));
+    const local = accept(message(READER, "fix the typo"));
+    await ready(local);
+    linkAs(READER, "reader-gh", [WATCHED]);
+    commands.receive(message(READER, "/takeover", { root: String(client.store.triggers.get(local.origin.triggerId)!.meta.messageId) }));
+    expect(takerOf(local)?.mandate.capability).toMatchObject({ role: "everyone", write: "github", credential: { login: "reader-gh" } });
+  });
+  it("has someone who wants a pull request but has not linked GitHub link it in a direct message, and opens it once linked and ready", async () => {
+    writeSettings(settings({}), settingsPath(stateDir));
+    answers = deviceFlow("reader-gh", [WATCHED]);
+    const local = accept(message(READER, "fix the typo and open a pull request"));
+    const origin = client.store.triggers.get(local.origin.triggerId)!;
+    commands.wantPullRequest(origin, local.id);
+    await until(() => replies().length === 2);
+    // The code goes to their direct messages, not the group, where anyone could enter it.
+    expect(replies().map((reply) => reply.text)).toEqual([
+      "Open https://github.com/login/device and enter ABCD-1234 within 15 minutes to link your GitHub account.",
+      `Linked as @reader-gh. You can work on ${WATCHED}. Install the app on more repositories at https://github.com/apps/swarm-oauth/installations/new.`
+    ]);
+    expect(replies()[0]!.channel.address).toEqual({ userId: READER, mode: "user", direct: "true" });
+    // Linked before the ticket is ready, it waits for its patch.
+    commands.takeOverWanted();
+    expect(takerOf(local)).toBeUndefined();
+    await ready(local);
+    commands.takeOverWanted();
+    expect(takerOf(local)?.mandate).toMatchObject({ actor: { id: READER }, capability: { write: "github", from: local.id, credential: { login: "reader-gh" }, repository: WATCHED } });
+    expect(replies().at(-1)).toMatchObject({ text: expect.stringMatching(/takes over ticket/), channel: { address: { messageId: origin.meta.messageId } } });
+    expect(client.store.get(KV.links.wanted(local.id))).toBeUndefined();
   });
 });
 
 describe("GitHub links", () => {
-  it("links an account in a direct message: the code first, then the account and its repositories", async () => {
-    answers = { "/login/device/code": { device_code: "dc", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 },
-      "/login/oauth/access_token": { access_token: "ghu_1", expires_in: 28800, refresh_token: "ghr_1", refresh_token_expires_in: 15897600 },
-      "/user": { login: "alice-gh", id: 7 }, "/user/installations": { installations: [{ id: 1 }] },
-      "/user/installations/1/repositories": { repositories: [{ full_name: WATCHED, permissions: { push: true } }] } };
+  it("links an account with a code that goes to a direct message, then names the account and its repositories", async () => {
+    answers = deviceFlow("alice-gh", [WATCHED]);
     commands.receive(message(MAINTAINER, "/link"));
-    expect(replies().at(-1)!.text).toBe("Send /link to me in a direct message.");
-    commands.receive(message(MAINTAINER, "/link", { direct: true }));
     await until(() => replies().length === 3);
-    expect(replies().slice(1).map((reply) => reply.text)).toEqual([
+    expect(replies().map((reply) => reply.text)).toEqual([
+      "I sent you a direct message with a code to link your GitHub account. If none arrives, send me a direct message saying /link.",
       "Open https://github.com/login/device and enter ABCD-1234 within 15 minutes to link your GitHub account.",
       `Linked as @alice-gh. You can work on ${WATCHED}. Install the app on more repositories at https://github.com/apps/swarm-oauth/installations/new.`
     ]);
-    expect(linkOf(client.store, { source: "feishu", id: MAINTAINER })).toMatchObject({ login: "alice-gh", repos: [WATCHED], channel: { address: { chatId: DM } } });
+    expect(replies()[1]!.channel.address).toEqual({ userId: MAINTAINER, mode: "user", direct: "true" });
+    expect(linkOf(client.store, { source: "feishu", id: MAINTAINER })).toMatchObject({ login: "alice-gh", repos: [WATCHED], channel: { address: { userId: MAINTAINER } } });
+    // In a direct message, the code comes there.
+    commands.receive(message(MAINTAINER, "/link", { direct: true }));
+    await until(() => replies().length === 5);
+    expect(replies()[3]!.channel.address).toMatchObject({ chatId: DM });
     commands.receive(message(MAINTAINER, "/me", { direct: true }));
     expect(replies().at(-1)!.text).toContain(`GitHub: @alice-gh, working on ${WATCHED}.`);
+  });
+  it("runs a command the router chose for a person's message as if they had typed it", () => {
+    const asked = message(MAINTAINER, "what can I do here?");
+    commands.receive(asked);
+    commands.perform(asked, "me", []);
+    expect(replies().at(-1)).toMatchObject({ text: expect.stringContaining("Your role: maintainer"), channel: { address: { messageId: asked.meta.messageId } } });
   });
   it("sets a default repository among the ones the app may push to, and unlinks", async () => {
     answers = { "/user": { login: "alice-gh", id: 7 }, "/user/installations": { installations: [{ id: 1 }] },

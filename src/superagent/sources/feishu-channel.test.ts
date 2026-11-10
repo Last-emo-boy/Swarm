@@ -5,6 +5,7 @@ import { describe, it } from 'node:test'
 import { expect } from '../testing/expect.js'
 import { CliError, type Commands } from '../commands.js'
 import { sendFeishu } from './feishu-channel.js'
+import { feishuUserChannel } from './feishu-trigger.js'
 import { sendGithub } from './github-channel.js'
 import type { OutboundMessage } from '../core/index.js'
 
@@ -44,6 +45,15 @@ describe('attachments', () => {
       ['im', '+messages-send', '--chat-id', 'oc_1', '--text', 'Tea time?', '--idempotency-key', 'c1'],
       ['im', '+messages-reply', '--message-id', 'om_9', '--text', 'Tea time?', '--idempotency-key', 'c1']
     ])
+  })
+  it('sends a direct message to a person by open_id, and drops one Feishu refuses for good, such as outside the app\'s availability', async () => {
+    const calls: string[][] = []
+    const send = (error?: Error) => ({ lark: async (args: string[]) => { calls.push(args); if (error) throw error; return {} } }) as unknown as Commands
+    const direct: OutboundMessage = { id: 'd1', kind: 'reply', text: 'Enter ABCD-1234.', channel: feishuUserChannel('ou_alice') }
+    expect(await sendFeishu({ commands: send() }, direct)).toBe('sent')
+    expect(calls).toEqual([['im', '+messages-send', '--user-id', 'ou_alice', '--text', 'Enter ABCD-1234.', '--idempotency-key', 'd1']])
+    expect(await sendFeishu({ commands: send(new CliError('Bot has NO availability to this user. (230013)', 230013)) }, direct)).toBe('gone')
+    await expect(sendFeishu({ commands: send(new CliError('lark-cli timed out')) }, direct)).rejects.toThrow('timed out')
   })
   it('folds an attachment into the end of a GitHub comment', () => withPatch(async (path) => {
     const posted: string[] = []

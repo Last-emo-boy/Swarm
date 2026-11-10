@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { liveTicket, type Trigger } from "./core/index.js";
-import { ModelAssessor, routeProblem, type Complete } from "./assessor.js";
+import { ModelAssessor, routeProblem, type AgentCommands, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
 import { placementOf } from "./placement.js";
 import { settingsPath, writeSettings } from "./settings.js";
@@ -32,11 +32,11 @@ afterEach(() => {
   opened = false;
   rmSync(stateDir, { recursive: true, force: true });
 });
-function start(settings: unknown = {}) {
+function start(settings: unknown = {}, commands?: AgentCommands) {
   writeSettings(settings, settingsPath(stateDir));
   client = new SuperagentClient({ stateDir });
   opened = true;
-  assessor = new ModelAssessor({ client, complete, configured: () => false });
+  assessor = new ModelAssessor({ client, complete, configured: () => false, ...(commands ? { commands } : {}) });
 }
 /** Runs the Eval the Trigger is in, as the host's assessment effect does. */
 async function judge(triggerId: string) {
@@ -216,4 +216,73 @@ test("answers chit-chat on Feishu in the chat itself, quoting the message, and r
   const [reply] = client.store.db.prepare("SELECT value FROM outbox").all().map((row) => JSON.parse(String(row.value)) as { channel: { address: Record<string, string> } });
   assert.deepEqual(reply!.channel.address, { chatId: "oc_team", messageId: "om_1", mode: "chat" });
   assert.deepEqual(client.store.get(KV.chatter.chat("oc_team"))?.said.map((item) => item.text), ["Morning, Alice!"]);
+});
+
+/** Feishu settings with the access model on and a GitHub App people link their accounts with. */
+const ACCESS = { sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: "oc_team", listen: "mentions" }] } },
+  github: { enabled: false, config: { repository: "owner/watched", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } },
+  policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } }, access: {} };
+/** Alice's message to the agent in the team chat, taken in. */
+async function fromAlice(text: string, id: string): Promise<Trigger> {
+  const { feishuTrigger } = await import("./sources/feishu.js");
+  const trigger = feishuTrigger({ message_id: id, chat_id: "oc_team", chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+    content: `@_user_1 ${text}`, create_time: String(Date.now()), mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] }, "ou_bot", "cli_app")!;
+  client.engine.receive(trigger);
+  return trigger;
+}
+/** Bot commands that record what the router has them do. */
+function recorded() {
+  const done: unknown[][] = [];
+  const commands: AgentCommands = {
+    perform: (trigger, name, args) => { done.push(["perform", trigger.id, name, args]); },
+    wantPullRequest: (trigger, ticketId) => { done.push(["want", trigger.id, ticketId]); }
+  };
+  return { done, commands };
+}
+
+test("tells the router who sent a message: their role, how far their work may write, and their GitHub account", async () => {
+  start(ACCESS);
+  const trigger = await fromAlice("fix the README and open a pull request", "om_1");
+  answers.push(accept());
+  await judge(trigger.id);
+  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.requester,
+    { role: "maintainer", direct_message: false, may_write: "github", this_request: "local", github: "not linked" });
+  assert.match(calls[0]!.system, /## Requester/);
+  // Without the access model, the card has no requester.
+  client.close();
+  start();
+  const { triggerId } = client.request("fix the typo");
+  answers.push(accept());
+  await judge(triggerId);
+  assert.equal(JSON.parse(calls[1]!.user).candidate.requester, undefined);
+});
+
+test("runs the bot command the router chose for the person, which answers them, and leaves the message ignored", async () => {
+  const { done, commands } = recorded();
+  start(ACCESS, commands);
+  const trigger = await fromAlice("link my GitHub please", "om_1");
+  // Only the commands people may have run for them count; the router is asked again.
+  answers.push(JSON.stringify({ kind: "command", command: "role", args: ["owner"] }), JSON.stringify({ kind: "command", command: "link" }));
+  await judge(trigger.id);
+  assert.match(JSON.parse(calls[1]!.user).problem, /command/);
+  assert.deepEqual(done, [["perform", trigger.id, "link", []]]);
+  const decision = client.store.decisions.get(client.store.triggers.disposition(trigger.id)!.decisionId!)!;
+  assert.equal(decision.kind, "ignore");
+  assert.deepEqual(decision.reason, [{ code: "commanded", values: { command: "link" } }]);
+  assert.equal(routeProblem({ kind: "command" } as never), "command needs command");
+});
+
+test("has the requester of accepted work link GitHub when the router says they want a pull request", async () => {
+  const { done, commands } = recorded();
+  start(ACCESS, commands);
+  const wanting = await fromAlice("fix the README and open a pull request", "om_1");
+  answers.push(accept({ link: true, acknowledgement: "On it: a patch first, and a pull request once you link GitHub." }));
+  await judge(wanting.id);
+  const ticketId = client.store.decisions.get(client.store.triggers.disposition(wanting.id)!.decisionId!)!.ticketId!;
+  assert.deepEqual(client.store.tickets.get(ticketId)!.mandate.capability, { role: "maintainer", write: "local" });
+  assert.deepEqual(done, [["want", wanting.id, ticketId]]);
+  const plain = await fromAlice("fix the CHANGELOG", "om_2");
+  answers.push(accept({ title: "Fix the CHANGELOG", worktree_name: "fix-changelog" }));
+  await judge(plain.id);
+  assert.equal(done.length, 1);
 });

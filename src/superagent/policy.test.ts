@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import { each, expect } from './testing/expect.js'
-import { addressable, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, repositoryFor, roleOf, settingsPolicy, allowedSender,
+import { addressable, allowedWrite, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, repositoryFor, roleOf, settingsPolicy, allowedSender,
   anyoneAllowed } from './policy.js'
 import { SettingsSchema, policyVersion, type Settings } from './settings.js'
 import type { MandateBasis } from './core/index.js'
@@ -468,11 +468,15 @@ describe('access model', () => {
   const linked = { login: 'alice-gh', id: 7, repos: [WATCHED, 'alice-gh/tool'], reposAt: '', linkedAt: '' }
   const links = (link: typeof linked | undefined = linked) => ({ of: (actor: { id: string }) => actor.id === MEMBER || actor.id === BOSS ? link : undefined })
   const watching = (settings: Settings) => SettingsSchema.parse({ ...settings, sources: { ...settings.sources, github: { enabled: false, config: { repository: WATCHED } } } })
-  it('lets explicit work of maintainers write to GitHub as their linked account, keeps the rest local, and lowers either to the ceiling', () => {
+  it('lets a person\'s explicit work write to GitHub as their linked account, whatever their role, keeps the rest local, and lowers either to the ceiling', () => {
     const gated = settingsPolicy(watching(roles), sources, links())
     expect(gated.capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'github', credential: { login: 'alice-gh', id: 7 }, repository: WATCHED })
     expect(gated.capability?.(explicit(READER) as never)).toEqual({ role: 'everyone', write: 'local' })
+    expect(capabilityOf(watching(roles), explicit(READER), linked)).toEqual({ role: 'everyone', write: 'github', credential: { login: 'alice-gh', id: 7 }, repository: WATCHED })
     expect(gated.capability?.({ ...explicit(BOSS), strength: 'inferred' } as never)).toEqual({ role: 'owner', write: 'local' })
+    // How far work may write before a link counts, which tells whether linking would let it write to GitHub.
+    expect([allowedWrite(roles, explicit(READER)), allowedWrite(roles, { ...explicit(BOSS), strength: 'inferred' }), allowedWrite(roles, explicit(BOSS, 'other'))])
+      .toEqual(['github', 'local', 'local'])
     // Without a working link, work that could write to GitHub stays local.
     expect(settingsPolicy(watching(roles), sources).capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'local' })
     expect(capabilityOf(watching(roles), explicit(MEMBER), { ...linked, broken: 'refused' })).toEqual({ role: 'maintainer', write: 'local' })

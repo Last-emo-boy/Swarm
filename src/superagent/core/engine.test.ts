@@ -1671,6 +1671,17 @@ describe('steering and capabilities', () => {
     const plain = harness()
     expect(plain.repo.tickets.get(accepted(plain).ticketId!)!.mandate).not.toHaveProperty('capability')
   })
+  it('lets the message that started a ticket start its take-over too, once, beside the ticket it replaces', () => {
+    const h = harness({ capability: () => ({ role: 'everyone', write: 'local' }), openLimit: () => 1 })
+    const first = accepted(h)
+    const takeover = { kind: 'accept' as const, title: 'Fix', scope: 'small', reason: 'takeover', from: first.ticketId! }
+    const taken = h.engine.decide('1', takeover)
+    expect(taken.ticketId).not.toBe(first.ticketId)
+    expect(h.repo.tickets.get(taken.ticketId!)!.mandate.capability).toMatchObject({ from: first.ticketId })
+    // Decided again, as a replay would, it is the same take-over, and an accept the same first ticket.
+    expect(h.engine.decide('1', takeover).ticketId).toBe(taken.ticketId)
+    expect(h.engine.decide('1', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested' }).ticketId).toBe(first.ticketId)
+  })
   it('refuses an accept for a sender with as many live tickets as the Policy allows', () => {
     const h = harness({ openLimit: () => 1 })
     accepted(h)

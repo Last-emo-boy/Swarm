@@ -119,17 +119,23 @@ export function repositoryFor(link: Pick<LinkView, 'repos' | 'defaultRepo'>, wat
   return usable(requested) ?? usable(link.defaultRepo) ?? usable(watched) ?? (link.repos.length === 1 ? link.repos[0] : undefined)
 }
 /**
- * The capability of work about to be accepted, while the access model is on: work nobody asked for (inferred, or a bot's) and
- * work for `everyone` stays local, the rest may write to GitHub, and the receiving scope's ceiling lowers either. Work that
- * may write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one.
+ * How far work about to be accepted may write before its requester's GitHub link counts: work nobody asked for (inferred, or a
+ * bot's) stays local, a person's request may write to GitHub, and the receiving scope's ceiling lowers either.
+ */
+export function allowedWrite(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>): WriteLevel {
+  const wanted: WriteLevel = mandate.strength === 'inferred' || mandate.basis.via === 'bot' ? 'local' : 'github'
+  const ceiling = ceilingOf(settings, mandate.basis.source ?? mandate.actor.source, mandate.basis.row)
+  return WRITE[wanted] <= WRITE[ceiling] ? wanted : ceiling
+}
+/**
+ * The capability of work about to be accepted, while the access model is on: what `allowedWrite` allows, where work that may
+ * write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one.
  */
 export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>, link?: LinkView,
   requested: { repository?: string } = {}): Capability | undefined {
   if (!settings.access) return undefined
   const role = roleOf(settings, mandate.actor)
-  const wanted: WriteLevel = mandate.strength === 'inferred' || mandate.basis.via === 'bot' || role === 'everyone' ? 'local' : 'github'
-  const ceiling = ceilingOf(settings, mandate.basis.source ?? mandate.actor.source, mandate.basis.row)
-  const write = WRITE[wanted] <= WRITE[ceiling] ? wanted : ceiling
+  const write = allowedWrite(settings, mandate)
   if (write !== 'github') return { role, write }
   const watched = watchedRepository(settings)
   const repository = link && !link.broken
