@@ -205,7 +205,12 @@ adds the providers' keys, records usage under the ticket's worker session and re
 guest gets the agent's or its requester's GitHub token only when its ticket works on GitHub as them; a ticket that keeps
 its work local gets none. A VM powers off when its worker's turn ends, and the slot that ran a ticket boots it again on a
 follow-up, with its disk; the deployment deletes the disk once the ticket ends (`<state>/vm/ended`). Isolation applies
-from the host's start; harness tickets need `process`. `executor.vm.slots` (default 4) VMs run at once, and a slot
+from the host's start. A VM runs Swarm's coding loop, or OpenCode for a ticket on an OpenCode profile: the image has
+OpenCode, and the guest points it at the gateway too, with Swarm's chat-completions providers as its providers, the slot's
+token as their key and the worker's model as its model (bring your own key: the host's key, which never enters the VM).
+The model proxy relays OpenCode's streamed chat completions and counts the usage of their last event. Under ticket VMs a
+mesh node lists `harness:<id>` for its OpenCode profiles, not for the harnesses installed on it; other harnesses run on
+paired nodes that have them, or with `process`. `executor.vm.slots` (default 4) VMs run at once, and a slot
 whose guest stops renewing its lease is treated as work a restart interrupted.
 
 ## Safety

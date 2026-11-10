@@ -16,6 +16,7 @@ import { usageRecorder } from "../provider.js";
 import { PatchSchema, patchPath, ticketTools, type TicketTool } from "../ticket-tools.js";
 import { ReportSchema, workDelivered, workStart, workView } from "../work-link.js";
 import { workerAccounts, type WorkerAccounts } from "../environment.js";
+import { harnessProfiles, type HarnessProfile } from "../harness.js";
 import { workerExited } from "../executor.js";
 import type { Ticket } from "../core/index.js";
 import type { Deployment } from "../setup.js";
@@ -45,6 +46,10 @@ export interface GuestSpec {
   /** Swarm's models, and the providers they use, whose base URLs the guest points at its gateway. */
   models: SwarmSettings["models"];
   providers: Record<string, ProviderDefinition>;
+  /** The model reference the worker works with: the executor's, or Swarm's worker model. */
+  model: string;
+  /** The OpenCode profile the ticket runs on, without its command and keys, which stay on this host. */
+  harness?: { id: string; profile: HarnessProfile };
 }
 
 const exec = promisify(execFile);
@@ -68,6 +73,9 @@ function accountsOf(ticket: Ticket, deployment: Deployment): WorkerAccounts {
   const accounts = workerAccounts(capability, !!capability?.credential && !!capability.repository);
   return accounts === "agent" && !deployment.github ? "none" : accounts;
 }
+
+/** A harness profile as a guest gets it: its harness's command is the VM image's, and its keys stay on this host. */
+const guestProfile = ({ command: _command, keys: _keys, ...rest }: HarnessProfile): HarnessProfile => ({ ...rest, keys: {} });
 
 /** The providers Swarm's models use, whose definitions a guest needs. */
 function usedProviders(settings: SwarmSettings, extra: (string | null | undefined)[]): Record<string, ProviderDefinition> {
@@ -240,6 +248,8 @@ export class VmGateway {
     const { capability } = ticket.mandate;
     const directory = ticket.execution!.directory;
     const repository = capability?.repository;
+    const harness = ticket.execution?.harness;
+    const profile = harness ? harnessProfiles(settings.executor.harnesses)[harness] : undefined;
     return {
       ticketId: ticket.id, assignmentId: request.record.assignmentId, name: ticket.execution!.name, directory,
       variables: { ...this.work.host.environment(ticket), SWARM_TICKET_DIR: directory },
@@ -247,7 +257,8 @@ export class VmGateway {
       ...(repository && !sameName(repository, watchedRepository(settings)) ? { clone: repository } : {}),
       ...(capability?.from ? { from: capability.from } : {}),
       accounts: accountsOf(ticket, this.work.host.deployment()), blockedCommands: settings.executor.blockedCommands, permissionMode: settings.executor.permissionMode,
-      models: swarm.models, providers: usedProviders(swarm, [settings.executor.model])
+      models: swarm.models, providers: usedProviders(swarm, [settings.executor.model]), model: settings.executor.model ?? swarm.models.worker,
+      ...(harness && profile ? { harness: { id: harness, profile: guestProfile(profile) } } : {})
     };
   }
 }

@@ -4,6 +4,9 @@
  * systemd units `swarm-ticket@<slot>`, each booting a fresh root disk with the ticket's own data disk, and reaching only
  * its slot's gateway on this host (gateway.ts), which serves the worker's ticket, its model calls and its requester's token.
  *
+ * Its worker runs Swarm's coding loop, or OpenCode for a ticket on an OpenCode profile: the VM image has OpenCode, which
+ * calls Swarm's worker model through the gateway too (guest.ts). Other harnesses run on paired nodes that have them.
+ *
  * Like a paired node, a slot holds a lease on the Assignment while its guest renews it; a lease that lapses, as when the
  * host was down, is treated as work a restart interrupted. A VM powers off once its worker's turn ends, and boots again
  * on a follow-up; its data disk is deleted when the ticket ends.
@@ -19,6 +22,7 @@ import { Later } from "../effects.js";
 import type { HealthEntry } from "../health.js";
 import type { RemoteWork } from "../executor.js";
 import type { Credential } from "../github-link.js";
+import { harnessProfiles, type HarnessProfile } from "../harness.js";
 import { KV } from "../kv.js";
 import type { Deployment } from "../setup.js";
 import { VmGateway } from "./gateway.js";
@@ -69,6 +73,10 @@ export interface VmHost {
   credential(ticket: Ticket): Promise<Credential | undefined>;
   log(message: string): void;
 }
+
+/** The harness profiles a ticket VM runs: OpenCode's, which its image has. */
+export const vmHarnessIds = (configured: Readonly<Record<string, HarnessProfile>>): string[] =>
+  Object.entries(harnessProfiles(configured)).filter(([, profile]) => profile.kind === "opencode").map(([id]) => id);
 
 export const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");
 const sameHash = (a: string, b: string): boolean => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -126,7 +134,10 @@ export class VmWork implements RemoteWork {
     if (this.closing) throw new Later("The host is stopping");
     if (await this.inner?.run(ticket, assignmentId)) return true;
     if (this.unavailable) throw new Later(`Ticket VMs are unavailable: ${this.unavailable}`);
-    if (ticket.execution?.harness) throw new Error("Ticket VMs run Swarm's own coding loop, not agent harnesses: set executor.isolation to process to run harness work");
+    const harness = ticket.execution?.harness;
+    if (harness && !vmHarnessIds(this.client.settings().executor.harnesses).includes(harness)) {
+      throw new Error(`Ticket VMs run Swarm's own coding loop and OpenCode, not ${harness}: run it on a paired node that has it, or set executor.isolation to process`);
+    }
     // A requester whose link stopped working gets the executor's question to link again; nothing boots.
     if (ticket.mandate.capability?.credential && !await this.host.credential(ticket)) return false;
     // A guest that runs the Assignment takes new Inputs by itself.
