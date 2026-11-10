@@ -749,6 +749,7 @@ JSON 行日志按聊天会话写入 `~/.swarm/logs/<session-id>.log`。日志超
 | `SWARM_LSP_PYTHON_COMMAND` / `SWARM_LSP_RUST_COMMAND` / `SWARM_LSP_GO_COMMAND` | 为非 TypeScript 工作区启用范围较窄的 stdio LSP 提供方。 |
 | `SWARM_TASK_TIMEOUT_MS` | 每个任务的超时时间，单位为毫秒。 |
 | `SWARM_SHELL_AUTO_BACKGROUND_MS` | 前台 shell 命令运行超过这么多毫秒后转为后台进程（也可以用 `runtime.shellAutoBackgroundMs`；不设置则保持前台命令）。 |
+| `SWARM_CODING_LOOP_THINKING` | 设为 `on` 时，编码循环每次回复前允许模型先推理（仅对能关闭推理的服务商生效，如 DeepSeek 的思考模式；也可以用 `runtime.codingLoopThinking`）。不设置则不推理：DeepSeek 的 JSON 回复更稳定，费用不到一半。 |
 | `SWARM_SUPERAGENT_HOME` | 覆盖工单宿主的状态目录（`~/.swarm/superagent`）。 |
 | `OPENAI_API_KEY` | OpenAI 服务商的环境变量 key 来源。 |
 
