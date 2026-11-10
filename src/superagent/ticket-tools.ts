@@ -12,7 +12,9 @@ import { key, latestReport, liveTicket, reached, threadKey, ticketStage, type Ti
 import type { SuperagentClient } from "./client.js";
 import { textPage, ticketCard } from "./cards.js";
 import { watchedRepository } from "./policy.js";
-import { inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
+import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
+import { KV } from "./kv.js";
+import { chatLog, chatName, chatsOf, findPeople, peopleIn } from "./people.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
@@ -74,15 +76,23 @@ const readable = (client: SuperagentClient, ticket: Ticket, trigger: Trigger): b
   || ticket.origin.triggerIds.includes(trigger.id)
   || trigger.threads.some((ref) => ticket.follows?.some((follow) => follow.thread === threadKey(ref)));
 
+/** How far back, and how many messages, a worker's chat/<chat-id> read goes. */
+const CHAT_DAYS = 7, CHAT_MESSAGES = 50;
+
 /** The ticket tools as a worker's model sees them; `ticketTools` runs them on the ticket's store. */
 const TOOLS = {
   read: {
-    description: "Read one page of a resource of this ticket: ticket/<id> (its card, inputs and latest report), ticket/<id>/assignment, ticket/<id>/input/<id>, trigger/<id>, thread/<key>, github/... as the GitHub section says, or feishu/<trigger-id>/... as the Feishu section says. Follow next_offset.",
+    description: "Read one page of a resource of this ticket: ticket/<id> (its card, inputs and latest report), ticket/<id>/assignment, ticket/<id>/input/<id>, trigger/<id>, thread/<key>, github/... as the GitHub section says, or feishu/<trigger-id>/... and chat/<chat-id> as the Feishu section says. Follow next_offset.",
     input: {
       resource: z.string().min(1),
       offset: z.number().int().min(0).default(0).describe("Copy next_offset from the previous page."),
       limit: z.number().int().min(1).max(8000).optional().describe("Characters of the page, 4000 by default.")
     },
+    readOnly: true
+  },
+  people: {
+    description: "Who is who on Feishu, from the bot's records: with no arguments, the chats the bot is in; with chat, that chat's people and bots; with name, the people whose name contains it and the chats they are in.",
+    input: { chat: z.string().trim().min(1).optional().describe("A chat id from the chat list, such as oc_..."), name: z.string().trim().min(1).max(100).optional() },
     readOnly: true
   },
   ack: {
@@ -180,8 +190,17 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
         throw new Error("Unknown thread, or one this ticket does not follow");
       }
       return { thread: threadId, label: thread.meta.label ?? null, url: thread.meta.url ?? null,
-        triggers: client.store.read.threadTriggers(threadId, 50).reverse().map((item) => ({ trigger_id: item.id, from: item.actor.id, at: item.at,
+        triggers: client.store.read.threadTriggers(threadId, 50).reverse().map((item) => ({ trigger_id: item.id, from: item.actor.id, ...fromName(item), at: item.at,
           human: item.human, preview: item.text.replace(/\s+/g, " ").slice(0, 160), read: `trigger/${item.id}` })) };
+    }
+    if (resource.startsWith("chat/")) {
+      // Any group the bot is in, and this ticket's own chats; never someone else's direct messages.
+      const chatId = resource.slice("chat/".length);
+      const direct = client.store.get(KV.feishu.chats)?.[chatId];
+      const own = ticket().channels.some((channel) => channel.source === "feishu" && channel.address.chatId === chatId);
+      if (!own && direct !== false && chatName(client.store, chatId) === undefined) throw new Error("Unknown chat, or another person's direct messages");
+      return { chat: chatId, name: chatName(client.store, chatId) ?? null, messages: chatLog(client.store, chatId,
+        { since: new Date(Date.now() - CHAT_DAYS * 86_400_000).toISOString(), limit: CHAT_MESSAGES, chars: 600, self: client.resolvedDeployment()?.feishu?.name ?? "" }) };
     }
     return undefined;
   };
@@ -200,6 +219,11 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const found = read(resource);
       if (found === undefined) throw new Error("Unknown resource");
       return page(resource, offset, limit, () => found);
+    },
+    people: async (args) => {
+      if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };
+      if (typeof args.chat === "string") return { chat: args.chat, name: chatName(client.store, args.chat) ?? null, people: peopleIn(client.store, args.chat, 500) };
+      return { chats: chatsOf(client.store) };
     },
     ack: async (args) => {
       const reply = client.engine.reply({ purpose: "acknowledgement", ticketId, triggerId: String(args.trigger_id), text: String(args.text) });

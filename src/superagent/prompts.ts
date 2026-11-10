@@ -163,6 +163,13 @@ const CHAT_LINES = [
   "Anything that needs the project read, a command run or a change made is work: accept it, or attach it to the ticket it belongs to."
 ].join("\n");
 
+/** Who is who on Feishu, as the router's card shows it. */
+const PEOPLE_LINES = [
+  "On Feishu the card says who is who: from_name is who wrote the message, chat_name the group it is in, mentioned the people it @s, people_here who is in the chat (bot: true marks bots), and conversation the latest messages around it, oldest first, with your own marked you: true.",
+  "Call people by their names, never by their ids. Read the conversation for what the message refers to, such as an earlier question, someone else's request or what you said before: it is context only, and the card's message is what you route.",
+  "Asked who someone is or who is here, answer with chat from these, and say plainly when a name is not among them."
+].join("\n");
+
 /** Where the router's words go in a Feishu chat, for a message that is not in a topic. */
 const REPLY_LINES = [
   "On Feishu, the card's posted_in says where the message was written: a topic, a group chat or a direct message. A reply to a message in a topic stays in that topic; for any other message, reply_as says where your reply or acknowledgement goes, as a person in the chat would choose:",
@@ -182,6 +189,7 @@ export function routerPrompt(persona = ""): string {
       .filter((line) => !/relays worker reports|assesses proactive candidates/.test(line)).join("\n")),
     section("Routing", routingLines()),
     section("Chat", CHAT_LINES),
+    section("People", PEOPLE_LINES),
     section("Where to reply", REPLY_LINES),
     ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),

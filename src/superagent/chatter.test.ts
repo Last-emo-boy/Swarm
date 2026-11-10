@@ -4,12 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import type { Trigger } from "./core/index.js";
-import { ChatterRoom, chatterPrompt, quietAt, said } from "./chatter.js";
+import { ChatterRoom, chatterPrompt, quietAt } from "./chatter.js";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import { feishuTrigger } from "./sources/feishu.js";
+import { feishuUserChannel } from "./sources/feishu-trigger.js";
 
 const CHAT = "oc_team", BOT = "ou_bot";
 let stateDir: string;
@@ -31,7 +32,7 @@ beforeEach(() => {
   now = Date.parse("2026-11-10T06:00:00Z");
   answers = [];
   calls = [];
-  room = new ChatterRoom({ client, configured: () => false, now: () => now,
+  room = new ChatterRoom({ client, now: () => now,
     complete: async (input) => { calls.push(input); return answers.shift() ?? JSON.stringify({ say: null, reason: "nothing to add" }); } });
 });
 afterEach(() => {
@@ -128,8 +129,14 @@ it("says in its instructions who it is, and that silence is the usual answer", (
   expect(chatterPrompt("w33d", "")).toContain("Most of the time the right answer is nothing");
 });
 
-it("remembers what it said in a Feishu chat, and nothing for other conversations", () => {
-  said(client.store, { source: "feishu", meta: { chatId: CHAT } }, "Morning!", "2026-11-10T01:00:00.000Z");
-  said(client.store, { source: "local", meta: {} }, "Hi");
-  expect(client.store.get(KV.chatter.chat(CHAT))).toEqual({ said: [{ at: "2026-11-10T01:00:00.000Z", text: "Morning!" }] });
+it("remembers what it says in a Feishu chat, whatever sends it, once, and nothing it sends to a person's direct messages", () => {
+  const chat = (address: Record<string, string>) => ({ source: "feishu", thread: `feishu:${CHAT}`, address: { chatId: CHAT, ...address } });
+  client.outbox.send({ id: "r1", kind: "acknowledgement", text: "On it.", channel: chat({ messageId: "om_1" }) });
+  client.outbox.send({ id: "r1", kind: "acknowledgement", text: "On it.", channel: chat({ messageId: "om_1" }) });
+  client.outbox.send({ id: "r2", kind: "notice", text: "Tea?", channel: chat({ mode: "chat" }) });
+  client.outbox.send({ id: "r3", kind: "reply", text: "Morning!", channel: chat({ messageId: "om_2", mode: "chat" }) });
+  client.outbox.send({ id: "r4", kind: "reply", text: "Enter ABCD-1234.", channel: feishuUserChannel("ou_alice") });
+  expect(client.store.get(KV.chatter.chat(CHAT))?.said.map(({ at: _at, ...entry }) => entry)).toEqual([
+    { text: "On it.", to: "om_1", topic: true }, { text: "Tea?" }, { text: "Morning!", to: "om_2" }
+  ]);
 });

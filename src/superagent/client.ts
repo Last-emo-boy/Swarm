@@ -98,8 +98,10 @@ export class SuperagentClient {
     this.settings();
     return this.read.error;
   }
+  /** The deployment, once the host resolved it. */
+  resolvedDeployment(): Deployment | undefined { return this.options.deployment?.(); }
   deployment(): Deployment {
-    const resolved = this.options.deployment?.();
+    const resolved = this.resolvedDeployment();
     if (!resolved) throw new Error("The superagent host has not resolved its deployment; run `swarm superagent run`");
     return resolved;
   }

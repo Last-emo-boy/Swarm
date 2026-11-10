@@ -203,6 +203,14 @@ Source's settings: `"app": { "clientId": "Iv23...", "slug": "your-app" }` under 
 A message addressed to the agent that asks for no work, such as a greeting, thanks or a question it can answer from the
 message alone, gets a short answer in its conversation and starts no ticket.
 
+The agent knows who is who on Feishu. The Feishu Source reads the member lists of the chats it is in, a few each minute
+and each again every six hours (sooner when a stranger writes there), and every message takes in the names it mentions.
+The router's card then names the sender, the chat, the people the message mentions and who is in the chat. It also shows
+the conversation the message is part of: the topic's latest messages for a message in a topic, else the chat's, with other
+bots and the agent's own words, which the outbox records from everything it posts. A worker reads the same records with
+the `people` tool and `chat/<chat-id>`: the latest messages of a group the agent is in, or of its ticket's own chat, but
+never someone else's direct messages. None of these ask Feishu at the time, so naming someone never waits on it.
+
 In a group an owner listed with `/listen all`, `/chatter on` lets the agent join the conversation on its own, reading the
 room (読空気): once the chat has been quiet for `lullSeconds`, one model call reads its latest messages, with what the
 agent said there, and decides whether a member would say something now. Saying nothing is the usual answer. It posts as

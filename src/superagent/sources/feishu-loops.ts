@@ -12,18 +12,21 @@ import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyE
   from './feishu-trigger.js'
 import { health, type SourceContext } from './host.js'
 import { KV } from '../kv.js'
+import { chatsToRead, noticed, readMembers } from '../people.js'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.js'
 import type { FeishuConfig } from './feishu.js'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
-  Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
+  Promise.allSettled([watch, backfillLoop, chatNamesLoop, membersLoop].map(loop => loop(ctx, signal)))
 const enabled = (ctx: SourceContext): FeishuConfig | undefined => ctx.config<FeishuConfig>(SOURCE)
 const bot = (ctx: SourceContext): FeishuBot => {
   const resolved = ctx.deployment.feishu
   if (!resolved) throw new Error('The Feishu Source has no working bot CLI')
   return resolved
 }
-async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
+async function receive(ctx: SourceContext, message: Trigger): Promise<void> {
+  // The message carries its sender's name, as the directory knows it, and teaches it the names it mentions (people.ts).
+  const trigger = noticed(ctx.state, message)
   await ctx.receive(trigger)
   const chatId = String(trigger.meta.chatId ?? '')
   if (!chatId) return
@@ -121,6 +124,24 @@ async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<v
     if (enabled(ctx)) {
       try { await refreshChatNames(ctx, signal) }
       catch { /* Names are a display aid; the stored list stays until a later read succeeds. */ }
+    }
+    await delay(60_000, undefined, { signal }).catch(() => {})
+  }
+}
+/**
+ * Reads the member lists of the chats the agent is in, a few each minute, so the router, chatter and workers know who is
+ * who without asking Feishu themselves (people.ts).
+ */
+async function membersLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+  await ctx.ready
+  if (!available(ctx)) return
+  const commands = ctx.commands.withSignal(signal)
+  while (!signal.aborted) {
+    if (enabled(ctx)) {
+      for (const chatId of chatsToRead(ctx.state, Date.now())) {
+        if (signal.aborted) break
+        await readMembers((args) => commands.lark(args), ctx.state, chatId)
+      }
     }
     await delay(60_000, undefined, { signal }).catch(() => {})
   }

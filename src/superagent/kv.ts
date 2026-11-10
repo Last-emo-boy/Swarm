@@ -5,6 +5,7 @@
 import type { GithubLink } from './github-link.js'
 import type { Health } from './health.js'
 import type { Lease, Placement } from './placement.js'
+import type { Members, Said } from './people.js'
 import type { Retry } from './sources/github.js'
 import type { VmSlot } from './vm/vm-work.js'
 
@@ -43,11 +44,16 @@ export const KV = {
   links: { github: family<GithubLink, [source: string, actor: string]>('github-link:'),
     wanted: family<{ triggerId: string; at: string }, [ticket: string]>('github-link-wanted:') },
   /**
-   * The agent in group chats (chatter.ts): by chat, when it last considered speaking, what it said there lately, and the
-   * names of the chat's members as Feishu last listed them.
+   * The agent in group chats (chatter.ts): by chat, when it last considered speaking, and what it said there lately, from
+   * any of its messages to the chat (outbox.ts), with the message it answered and whether that went in its topic.
    */
-  chatter: { chat: family<{ consideredAt?: string; said: { at: string; text: string }[] }, [chat: string]>('chatter:'),
-    members: family<{ at: string; names: Record<string, string> }, [chat: string]>('chatter-members:') },
+  chatter: { chat: family<{ consideredAt?: string; said: Said[] }, [chat: string]>('chatter:') },
+  /**
+   * Who is who on Feishu (people.ts): each person's or bot's name by Source and id, and each chat's members as Feishu last
+   * listed them, by chat id, which the Feishu Source keeps current.
+   */
+  people: { person: family<{ name: string; at: string }, [source: string, id: string]>('person:'),
+    members: family<Members, [chat: string]>('chatter-members:') },
   /**
    * Ticket VMs (vm/vm-work.ts): the ticket each slot runs, under a lease its guest renews, by slot number; the tickets that
    * have a data disk, by ticket id, since their first boot; and of those, the ones whose disk is a volume of the cluster.

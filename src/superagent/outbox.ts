@@ -2,12 +2,13 @@
 import type { OutboundMessage, Outbox as OutboxPort, ReplyStatus } from './core/index.js'
 import type { Commands } from './commands.js'
 import { checkedImText } from './text.js'
+import { said } from './people.js'
 import type { SourceRegistry } from './sources/registry.js'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.js'
 import type { Store } from './store.js'
 
 export interface OutboxHost {
-  readonly store: Pick<Store, 'atomic' | 'receipts'>
+  readonly store: Pick<Store, 'atomic' | 'receipts' | 'get' | 'set'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
   readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
   readonly commands: Commands
@@ -28,7 +29,15 @@ export class Outbox implements OutboxPort {
     // Validate IM reply length here; acknowledgements are already validated when decided.
     if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
     const { store, effects } = this.host
-    store.atomic(() => { if (store.receipts.add(message)) effects.enqueue('reply', message.id, {}) })
+    store.atomic(() => {
+      if (!store.receipts.add(message)) return
+      effects.enqueue('reply', message.id, {})
+      // Whatever sent it, a message to a Feishu chat is what the agent said there (people.ts).
+      const { chatId, messageId, mode } = message.channel.address
+      if (message.channel.source === 'feishu' && chatId && mode !== 'user') {
+        said(store, chatId, { at: new Date().toISOString(), text: message.text, ...(messageId ? { to: messageId } : {}), ...(mode !== 'chat' ? { topic: true } : {}) })
+      }
+    })
   }
   status(id: string): ReplyStatus | undefined { return this.host.store.receipts.get(id)?.status }
   withdraw(id: string): void {
