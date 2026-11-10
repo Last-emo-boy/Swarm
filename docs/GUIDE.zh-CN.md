@@ -508,12 +508,13 @@ swarm superagent retry <id>
 | `/repo [owner/name]` | 任何人，私聊 | 列出或设置你的默认仓库。 |
 | `/unlink` | 任何人 | 解除 GitHub 绑定。 |
 | `/takeover [工单]` | 提需求的人或 maintainer | 把本地工单的补丁做成拉取请求，作为你的一张新工单。它会等到你绑定好账号、工单也有了补丁；一张工单只会被接手一次。 |
+| `/devices` | 任何人；maintainer 和 owner 能看到节点名 | 显示 agent 现在能用什么干活：本机和配对节点（是否在线、有哪些 harness），以及还有几个空闲的工单 worker。 |
 | `/role @某人 owner\|maintainer\|everyone\|none` | owner | 设置被 @ 的人的角色。 |
 | `/listen all\|mentions\|off` | owner，在群里 | 把这个群列入，或移出列表。 |
 | `/ceiling read-only\|local\|github` | owner | 设置在这个群里提出的工作最多能写到哪一步。 |
 | `/chatter [on\|off]` | owner，在用 `/listen all` 列入的群里；任何人都能查询 | agent 是否在这里主动加入对话。 |
 
-也可以直接用自己的话说：agent 会替你执行 `/help`、`/me`、`/link`、`/repo` 和 `/takeover`，就像你自己输入了一样。`/role`、`/listen`、`/ceiling`、`/chatter` 和 `/unlink` 会改设置或解除绑定，必须自己输入。
+也可以直接用自己的话说：agent 会替你执行 `/help`、`/me`、`/link`、`/repo`、`/takeover` 和 `/devices`，就像你自己输入了一样。`/role`、`/listen`、`/ceiling`、`/chatter` 和 `/unlink` 会改设置或解除绑定，必须自己输入。
 
 不需要干活的消息，比如道谢，或者 agent 当场就能回答的问题，会得到一句简短的回复，不开工单。打开 `/chatter on` 后，群里安静下来、agent 又有话可说时，它也会主动发言：每小时最多几次，安静时段不说话。
 
