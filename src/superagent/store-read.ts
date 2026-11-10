@@ -85,6 +85,9 @@ export function storeReads(db: DatabaseSync) {
   chatMessages: (chatId: string, since: string, limit: number, bots = false): Trigger[] => values<Trigger>(`SELECT value FROM trigger WHERE at >= ?
     AND value ->> '$.source' = 'feishu' AND value ->> '$.meta.chatId' = ? AND (? OR value ->> '$.human' = 1) ORDER BY at DESC, rowid DESC LIMIT ?`,
     since, chatId, bots ? 1 : 0, limit),
+  /** The chat of a person's latest direct message to the agent on Feishu, if they ever wrote one. */
+  directChat: (person: string): string | undefined => (db.prepare(`SELECT value ->> '$.meta.chatId' AS chat FROM trigger WHERE value ->> '$.source' = 'feishu'
+    AND value ->> '$.actor.id' = ? AND value ->> '$.meta.direct' = 1 ORDER BY at DESC LIMIT 1`).get(person) as { chat?: string } | undefined)?.chat ?? undefined,
   subscribedThreads: (source?: string): Thread[] => source
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.

@@ -142,6 +142,7 @@ export const ROUTE_CONTRACT = [
   ' "to": "message: who it goes to: a person, by the id or the name the card gives, who gets it as a direct message, or a chat from your_chats, by id or name",',
   ' "text": "message: what you send, at most 100 words, in the language its reader uses",',
   ' "remember": "any kind: optional list of at most 3 notes worth keeping from this message, as the Memory section says: [{\"about\": \"<id>|chat|self\", \"kind\": \"fact|preference|event|promise\", \"text\": \"...\", \"due\": \"promises only\"}]",',
+  ' "await_answer": "message: true when you ask something on the person\'s behalf and bring them the answer",',
   ' "mentions": "chat and message: optional ids of the people to @, from the card, each written as @name in the text where you would say it; all for everyone in the chat, only when asked",',
   ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted where reply_as says. message: optional, what you tell the person who asked"}'
 ].join("\n");
@@ -194,7 +195,8 @@ const MESSAGING_LINES = [
   "Use message when the person asks you to tell, ask or remind someone else, or to say something in another chat, such as \"帮我私聊小王说…\" or \"去群里@一下大家\". Anyone may ask this of you.",
   "to is that person or chat: an id from the card, or the name the person used, which the host looks up; when it cannot tell who is meant, it says so, and you answer with chat, asking which one.",
   "Write text as yourself, saying who asked when it is on someone's behalf. Add a reply for the person who asked, such as \"好，已经私聊他了\", unless the message goes into the chat you are answering in.",
-  "Use mentions to @ people in what you post, in a chat answer or a message: someone you answer in a busy chat, or the people you were asked to call. Use all only when asked to @ everyone."
+  "Use mentions to @ people in what you post, in a chat answer or a message: someone you answer in a busy chat, or the people you were asked to call. Use all only when asked to @ everyone.",
+  "Set await_answer when you ask something on the person's behalf and they want to hear back, such as \"去问问他们进度\" or \"问问小王明天来不来\": when the answer comes, from a person or another bot, you tell the person who asked. Leave it out for a message that only tells."
 ].join("\n");
 
 /** Where the router's words go in a Feishu chat, for a message that is not in a topic. */

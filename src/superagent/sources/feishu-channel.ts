@@ -4,8 +4,7 @@ import { basename, dirname } from 'node:path'
 import type { OutboundMessage } from '../core/index.js'
 import { CliError } from '../commands.js'
 import { checkedImText } from '../text.js'
-import type { SourceContext } from './host.js'
-import type { ChannelLink, ChannelLinks } from './kind.js'
+import type { ChannelLink, ChannelLinks, SendHost } from './kind.js'
 import { feishuTriggerId } from './feishu-trigger.js'
 
 /** Feishu or Lark AppLink that opens a chat; used when the message's own link was not delivered with the event. */
@@ -46,7 +45,13 @@ export function withMentions(text: string, mentions: readonly { id: string; name
  * An attachment Feishu refuses for good, such as without the permission to upload files, is replaced by a line that says it
  * could not be attached, and why.
  */
-export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
+/** Tells the host the id Feishu gave a message the agent posted, from lark-cli's answer, when it has one. */
+function tellPosted(host: SendHost, answer: unknown, chatId?: string): void {
+  const data = answer && typeof answer === 'object' ? answer as { message_id?: unknown; chat_id?: unknown } : {}
+  const chat = typeof data.chat_id === 'string' ? data.chat_id : chatId
+  if (typeof data.message_id === 'string') host.posted?.({ messageId: data.message_id, ...chat ? { chatId: chat } : {} })
+}
+export async function sendFeishu(host: SendHost, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { messageId, chatId, mode, userId } = message.channel.address
   if (mode === 'user') return sendToUser(host, message, userId)
   const inChat = mode === 'chat'
@@ -57,7 +62,7 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
   const post = (content: string[], key: string, cwd?: string) => host.commands.lark([...target, ...content,
     ...inChat ? [] : ['--reply-in-thread'], '--idempotency-key', key], cwd)
   try {
-    if (text.trim()) await post(['--markdown', cliText(text)], message.id)
+    if (text.trim()) tellPosted(host, await post(['--markdown', cliText(text)], message.id), chatId)
     if (message.attachment && existsSync(message.attachment)) {
       await post(['--file', basename(message.attachment)], `${message.id}-file`, dirname(message.attachment)).catch(async (error: unknown) => {
         if (!(error instanceof CliError) || error.code === undefined || gone(error)) throw error
@@ -77,10 +82,10 @@ const NO_AVAILABILITY = 230013
  * such as the code that links their GitHub account. One Feishu refuses for good, such as to someone outside the app's
  * availability, settles as gone.
  */
-async function sendToUser(host: Pick<SourceContext, 'commands'>, message: OutboundMessage, userId?: string): Promise<'sent' | 'gone'> {
+async function sendToUser(host: SendHost, message: OutboundMessage, userId?: string): Promise<'sent' | 'gone'> {
   if (!userId) throw new Error('Missing Feishu user')
   try {
-    await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', cliText(withMentions(checkedImText(message.text), message.mentions)), '--idempotency-key', message.id])
+    tellPosted(host, await host.commands.lark(['im', '+messages-send', '--user-id', userId, '--text', cliText(withMentions(checkedImText(message.text), message.mentions)), '--idempotency-key', message.id]))
   } catch (error) {
     if (gone(error) || (error instanceof CliError && error.code === NO_AVAILABILITY)) return 'gone'
     throw error

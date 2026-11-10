@@ -2,6 +2,7 @@
  * Typed key-value store keys grouped by the component that owns and writes each family (from dsh-superagent's kv.ts).
  * Readers and writers refer to a record by its entry here so each key is spelled once with its value type.
  */
+import type { Ask } from './asks.js'
 import type { Devices } from './devices.js'
 import type { GithubLink } from './github-link.js'
 import type { Health } from './health.js'
@@ -51,7 +52,7 @@ export const KV = {
    * of its messages to the chat (outbox.ts), with the message it answered and whether that went in its topic, and when it
    * spoke there on its own.
    */
-  chatter: { chat: family<{ consideredAt?: string; said: Said[]; spoke?: string[] }, [chat: string]>('chatter:') },
+  chatter: { chat: family<{ consideredAt?: string; said: Said[]; spoke?: string[]; attendedAt?: string; answered?: { at: string; bot?: true }[] }, [chat: string]>('chatter:') },
   /**
    * Who is who on Feishu (people.ts): each person's or bot's name by Source and id, and each chat's members as Feishu last
    * listed them, by chat id, which the Feishu Source keeps current.
@@ -61,7 +62,11 @@ export const KV = {
     /** When a ticket's worker sent its messages to people in the last hour, by ticket id (ticket-tools.ts). */
     sent: family<string[]>('messages-sent:'),
     /** What the agent said in a person's direct messages by their open_id, where it wrote to them rather than replied (outbox.ts). */
-    dm: family<Said[], [person: string]>('dm-said:') },
+    dm: family<Said[], [person: string]>('dm-said:'),
+    /** The ids of the messages the agent posted in each chat lately, as Feishu gave them back (outbox.ts), so a reply to one is a reply to it. */
+    own: family<string[], [chat: string]>('own-messages:') },
+  /** What the agent asked people on someone else's behalf and waits to hear back on, oldest first (asks.ts). */
+  asks: { open: record<Ask[]>('asks-open') },
   /**
    * The agent's memory (memories.ts): when it last reflected on each chat and on which of its messages, by chat id, and
    * the direct messages it started on its own lately, to whom and when.

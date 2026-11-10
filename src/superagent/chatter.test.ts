@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import type { Trigger } from "./core/index.js";
-import { ChatterRoom, chatterPrompt, quietAt } from "./chatter.js";
+import { ChatterRoom, chatterPrompt, namesAgent, quietAt } from "./chatter.js";
+import { ask, openAsks } from "./asks.js";
+import { posted } from "./people.js";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { settingsPath, writeSettings } from "./settings.js";
@@ -160,4 +162,83 @@ it("remembers what it says in a Feishu chat, whatever sends it, once, and nothin
   expect(client.store.get(KV.chatter.chat(CHAT))?.said.map(({ at: _at, ...entry }) => entry)).toEqual([
     { text: "On it.", to: "om_1", topic: true }, { text: "Tea?" }, { text: "Morning!", to: "om_2" }
   ]);
+});
+
+describe("when messages call for the agent that its router does not answer", () => {
+  /** A message in the chat from another bot, `ago` seconds before now, @-mentioning the agent or quoting `parent`. */
+  function botMessage(sender: string, text: string, ago: number, options: { mention?: boolean; parent?: string } = {}): Trigger {
+    n += 1;
+    const trigger = feishuTrigger({ message_id: `om_${n}`, chat_id: CHAT, chat_type: "group", sender_id: sender, sender_type: "bot",
+      content: options.mention ? `@_user_1 ${text}` : text, create_time: String(now - ago * 1000), ...(options.parent ? { parent_id: options.parent } : {}),
+      mentions: options.mention ? [{ id: BOT, key: "@_user_1", name: "w33d" }] : [] }, BOT, "cli_app")!;
+    client.engine.receive(trigger);
+    return trigger;
+  }
+  const attending = () => client.store.db.prepare("SELECT value FROM effect WHERE kind = 'attend'").all()
+    .map((row) => JSON.parse(String(row.value)) as { chatId: string; ids: string[] });
+  const home = { source: "feishu", thread: "feishu:oc_home", address: { chatId: "oc_home", messageId: "om_q", mode: "chat" } };
+
+  it("passes on another bot's answer to what it asked for someone, with an @, answers the bot once, and stops waiting", async () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 Alice 让我问问 loader 的进度", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    const reply = botMessage("ou_feifei", "规范基本定了，还差谁能合 main、怎么发版", 0, { mention: true });
+    room.pass();
+    expect(attending()).toEqual([]);
+    now += 16_000;
+    room.pass();
+    const [queuedAttend] = attending();
+    expect(queuedAttend).toEqual({ chatId: CHAT, ids: [reply.id] });
+    answers.push(JSON.stringify({ reply: { text: "收到，我转告 Alice", reply_to: reply.meta.messageId }, relay: [{ question: "ask-1", text: "飞飞说规范基本定了，还差合 main 和发版" }] }));
+    await room.attend(CHAT, queuedAttend!.ids);
+    const card = JSON.parse(calls[0]!.user) as { your_questions: { id: string; asked_for: string }[]; messages: { for_you?: string; bot?: true }[] };
+    expect(card.your_questions).toEqual([{ id: "ask-1", asked_for: "Alice", asked: "@飞飞 Alice 让我问问 loader 的进度", at: new Date(now - 17_000).toISOString() }]);
+    expect(card.messages.find((line) => line.for_you)).toMatchObject({ for_you: "answers_your_question", bot: true });
+    const sent = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as
+      { text: string; channel: { address: Record<string, string> }; mentions?: { id: string }[] });
+    expect(sent.map((post) => [post.channel.address.chatId, post.text, post.mentions?.map((mention) => mention.id) ?? []])).toEqual([
+      ["oc_home", "飞飞说规范基本定了，还差合 main 和发版", ["ou_alice"]],
+      [CHAT, "收到，我转告 Alice", []]
+    ]);
+    expect(sent[1]!.channel.address.messageId).toBe(reply.meta.messageId);
+    expect(openAsks(client.store, now)).toEqual([]);
+    // With nothing left to wait for, the bot's next @ is an ordinary one, which it answers within its budget for bots.
+    expect(client.store.get(KV.chatter.chat(CHAT))?.answered).toEqual([{ at: new Date(now).toISOString(), bot: true }]);
+  });
+
+  it("answers someone who names it or replies to its message and a bot that @-mentions it, leaves a person's @ to its router, and holds bots to a few an hour", async () => {
+    room.pass();
+    now += 1000;
+    posted(client.store, CHAT, "om_mine");
+    const named = message("ou_bob", "w33d 你觉得这个方案行吗", 0);
+    message("ou_bob", "文档在 w33d.xyz/docs", 0);
+    message("ou_alice", "@w33d 帮我看看", 0, true);
+    const quoted = feishuTrigger({ message_id: "om_quote", chat_id: CHAT, chat_type: "group", sender_id: "ou_carol", sender_type: "user", content: "真的吗？",
+      create_time: String(now), parent_id: "om_mine", mentions: [] }, BOT, "cli_app")!;
+    client.engine.receive(quoted);
+    const pinged = botMessage("ou_tickey", "你那边有 fixtures 的结果吗", 0, { mention: true });
+    botMessage("ou_tickey", "我先去忙了", 0);
+    now += 16_000;
+    room.pass();
+    expect(attending()[0]?.ids).toEqual([named.id, quoted.id, pinged.id]);
+    // Past its budget for bots, the bot's message is not answered; people's still are.
+    const hour = Array.from({ length: 4 }, () => ({ at: new Date(now - 60_000).toISOString(), bot: true as const }));
+    client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: hour });
+    answers.push(JSON.stringify({ reply: { text: "Tickey 的我也回一下", reply_to: pinged.meta.messageId }, relay: [] }));
+    await room.attend(CHAT, [pinged.id]);
+    expect(calls).toEqual([]);
+    answers.length = 0;
+    answers.push(JSON.stringify({ reply: { text: "行，我觉得可以先上", reply_to: named.meta.messageId, mention: "ou_bob" }, relay: [] }));
+    await room.attend(CHAT, [named.id, quoted.id, pinged.id]);
+    const card = JSON.parse(calls[0]!.user) as { messages: { id?: string; for_you?: string }[] };
+    expect(card.messages.filter((line) => line.for_you).map((line) => line.for_you)).toEqual(["names_you", "replies_to_you", "mentions_you"]);
+    expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([["行，我觉得可以先上", named.meta.messageId]]);
+  });
+
+  it("knows its name as a word, not inside a link", () => {
+    expect(["w33d 你看看", "问问W33D", "@w33d 在吗", "ok w33d."].map((text) => namesAgent(text, "w33d"))).toEqual([true, true, true, true]);
+    expect(["see w33d.xyz", "x@w33d.xyz", "aw33d", "w33d_bot"].map((text) => namesAgent(text, "w33d"))).toEqual([false, false, false, false]);
+    expect(namesAgent("奶蛋你来", "奶蛋")).toBe(true);
+  });
 });

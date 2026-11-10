@@ -58,6 +58,15 @@ describe('attachments', () => {
     await sendFeishu({ commands }, { ...at({}), channel: feishuUserChannel('ou_alice') })
     expect(calls.map((args) => args[args.indexOf(args.includes('--text') ? '--text' : '--markdown') + 1])).toEqual(['@@小王 你好', '@@小王 你好', '@@小王 你好'])
   })
+  it('tells the host the id Feishu gave each message it posted, so a reply to that message is a reply to the agent', async () => {
+    const posted: unknown[] = []
+    const commands = { lark: async (args: string[]) => args.includes('--user-id') ? { message_id: 'om_dm', chat_id: 'oc_dm' } : { message_id: 'om_new' } } as unknown as Commands
+    const send = (address: Record<string, string>) => sendFeishu({ commands, posted: (remote) => posted.push(remote) },
+      { id: 'p1', kind: 'notice', text: 'hi', channel: { source: 'feishu', thread: 'feishu:oc_1', address } })
+    await send({ chatId: 'oc_1', mode: 'chat' })
+    await send({ userId: 'ou_bob', mode: 'user', direct: 'true' })
+    expect(posted).toEqual([{ messageId: 'om_new', chatId: 'oc_1' }, { messageId: 'om_dm', chatId: 'oc_dm' }])
+  })
   it('turns the people a message @s into real Feishu mentions in every send, after its words were counted', async () => {
     const calls: string[][] = []
     const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands

@@ -102,6 +102,16 @@ export function said(state: State, chatId: string, entry: Said): void {
   state.set(KV.chatter.chat(chatId), { ...current, said: [...current.said, entry].slice(-SAID_KEPT) });
 }
 
+/** How many of its own message ids the agent keeps per chat. */
+const OWN_KEPT = 200;
+/** Remembers the id Feishu gave a message the agent posted in a chat, so a reply to it is a reply to the agent. */
+export function posted(state: State, chatId: string, messageId: string): void {
+  const own = state.get(KV.people.own(chatId)) ?? [];
+  if (!own.includes(messageId)) state.set(KV.people.own(chatId), [...own, messageId].slice(-OWN_KEPT));
+}
+/** Whether a message of a chat is one the agent posted. */
+export const isOwn = (state: Pick<State, "get">, chatId: string, messageId: string): boolean => !!state.get(KV.people.own(chatId))?.includes(messageId);
+
 /** Remembers a message the agent sent to a person's direct messages by their open_id, where no chat id names the conversation. */
 export function saidTo(state: State, person: string, entry: Said): void {
   state.set(KV.people.dm(person), [...(state.get(KV.people.dm(person)) ?? []), entry].slice(-SAID_KEPT));

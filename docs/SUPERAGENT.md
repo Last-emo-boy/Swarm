@@ -233,6 +233,17 @@ missed. `otherChats: "none"` limits it to the groups in `chats`.
   "perHour": 2, "lullSeconds": 90, "considerMinutes": 10, "quiet": { "from": 23, "to": 8, "timeZone": "Asia/Shanghai" } } }
 ```
 
+In those groups it also attends, within about 15 seconds, to what calls for it there but its router does not answer:
+another bot that @s it, someone who replies to one of its messages, or who names it without an @ (as a word, so a link
+such as `w33d.xyz` does not). One model call reads the chat and answers when a member would. It answers at most 12 such
+messages a chat an hour, of which at most 4 are other bots', none of those in quiet hours. A bot's message never starts
+work: it is answered, not acted on.
+
+When the router messages someone on a person's behalf and they want to hear back (`await_answer`, such as "去问问他们进度"),
+the agent waits up to 12 hours for the answer, in the group from the people it @-ed or in the person's direct messages,
+whoever writes it, a person or another bot. It then tells the person who asked, quoting their message and @-ing them,
+and stops waiting.
+
 The persona also shapes its answers to messages addressed to it. Reading every message of a group needs the Feishu app's
 `im:message.group_msg` permission.
 
