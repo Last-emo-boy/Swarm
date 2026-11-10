@@ -22,6 +22,8 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
 }
 export interface ChannelLink { url: string; label: string; triggerId?: string }
 export type ChannelLinks = Partial<Pick<Deployment, 'repository' | 'feishu'>>
+/** What a channel sends with: the CLIs, and where it tells the id the conversation gave the message it posted, when it gave one. */
+export type SendHost = Pick<SourceContext, 'commands'> & { posted?(remote: { messageId: string; chatId?: string }): void }
 /** Outbound messaging adapter for a source kind's threads. */
 export interface SourceChannel<C> {
   /** Whether a reply may still go to `address`; without it, every address may receive replies. */
@@ -30,7 +32,7 @@ export interface SourceChannel<C> {
    * Sends a message idempotently by ID; returns `'gone'` when the target conversation no longer accepts replies.
    * @throws when delivery failed but may succeed on a later retry.
    */
-  send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
+  send(host: SendHost, message: OutboundMessage): Promise<'sent' | 'gone'>
   link(address: Record<string, string>, links: ChannelLinks): ChannelLink
 }
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message never authorizes work on its own. */

@@ -2,7 +2,7 @@
 import type { OutboundMessage, Outbox as OutboxPort, ReplyStatus } from './core/index.js'
 import type { Commands } from './commands.js'
 import { checkedImText } from './text.js'
-import { said, saidTo } from './people.js'
+import { posted, said, saidTo } from './people.js'
 import type { SourceRegistry } from './sources/registry.js'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.js'
 import type { Store } from './store.js'
@@ -55,7 +55,11 @@ export class Outbox implements OutboxPort {
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')
     if (!sources.channelAllowed(receipt.channel)) { store.receipts.settle(receipt, 'channelIgnored'); return }
     // A permanently unreachable target (such as a recalled message or deleted Issue) settles as `channelGone` so its receipt prevents retries.
-    const result = await sources.send(receipt, commands)
+    // What it posted in a Feishu chat is its own message there, which a reply to it answers (people.ts).
+    const result = await sources.send(receipt, commands, ({ messageId, chatId }) => {
+      const chat = chatId ?? receipt.channel.address.chatId
+      if (receipt.channel.source === 'feishu' && chat) posted(store, chat, messageId)
+    })
     if (result === 'waiting') throw new Later('The Source is not installed')
     store.receipts.settle(receipt, result === 'gone' ? 'channelGone' : 'sent')
   }

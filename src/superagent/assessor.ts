@@ -18,6 +18,7 @@ import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmen
   seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { addressee, channelTo, chatName, chatsOf, conversation, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
+import { ask } from "./asks.js";
 import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, personSubject, planOps, subjectsOf } from "./memories.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
@@ -69,6 +70,8 @@ const RouteSchema = z.object({
   /** A message's addressee, a person or a chat the agent is in, and what it says to them. */
   to: z.string().nullish(),
   text: z.string().nullish(),
+  /** A message that asks something on the person's behalf, whose answer goes back to them when it comes (asks.ts). */
+  await_answer: z.boolean().nullish(),
   /** The people a chat answer or a message @s, by id, or all for everyone in the chat. */
   mentions: z.array(z.string().trim().min(1).max(64)).max(10).nullish(),
   /** What the message asks the agent to remember, such as a reminder: notes it keeps whatever the route's kind (memories.ts). */
@@ -86,7 +89,7 @@ const RouteSchema = z.object({
   args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
 });
 type Route = z.infer<typeof RouteSchema>;
-type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args" | "mentions" | "remember">;
+type Field = Exclude<keyof Route, "kind" | "needs" | "link" | "args" | "mentions" | "remember" | "await_answer">;
 /** Each field's check, the kinds that read it and those that need it, as upstream's orchestrator_route checked them. */
 const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][]; needs: readonly Route["kind"][] }> = {
   ticket_id: { check: z.string(), reads: ["attach", "stop"], needs: ["attach", "stop"] },
@@ -454,6 +457,14 @@ export class ModelAssessor {
           client.store.atomic(() => {
             engine.decide(triggerId, { kind: "ignore", reason: { code: "messaged", values: { to: name } }, evalId: candidate.evalId });
             client.outbox.send({ id: key("message", triggerId), channel, text, kind: "notice", ...(mentions.length ? { mentions } : {}) });
+            // Asked on the person's behalf, it waits to hear back and tells them the answer (chatter.ts).
+            const back = trigger && replyChannel(trigger, "quote");
+            if (route.await_answer && trigger && back) {
+              const now = Date.now();
+              ask(client.store, { id: key("ask", triggerId), ...("person" in target ? { person: target.person.id } : { chatId: target.chat.id }),
+                to: "person" in target ? [target.person.id] : mentions.flatMap((mention) => mention.id === "all" ? [] : [mention.id]), text, at: new Date(now).toISOString(),
+                for: { id: trigger.actor.id, name: senderOf(client.store, trigger), channel: back } }, now);
+            }
             if (reply && trigger?.channel) {
               client.outbox.send({ id: key("chat", triggerId), channel: replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote")!, text: reply, kind: "reply" });
             }

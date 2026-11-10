@@ -345,6 +345,15 @@ test("messages someone for the person who asked: by name in a direct message, wi
   await judge(third.id);
   assert.match(JSON.parse(calls.at(-1)!.user).problem, /ou_nobody is no one the agent knows/);
   assert.deepEqual(sent().at(-1)!.mentions, [{ id: "ou_bob", name: "Bob" }]);
+  // Asking on her behalf, it waits to hear back: Bob's answer goes to Alice, quoting her message (chatter.ts relays it).
+  const { openAsks } = await import("./asks.js");
+  assert.deepEqual(openAsks(client.store, Date.now()), []);
+  const fourth = ask("om_4", "去问问 Bob 明天来不来");
+  answers.push(JSON.stringify({ kind: "message", to: "Bob", text: "Alice 想知道你明天来不来？", await_answer: true, reply: "好，我去问 Bob，有回音告诉你。" }));
+  await judge(fourth.id);
+  assert.deepEqual(openAsks(client.store, Date.now()).map(({ person, to, text, for: asker }) => ({ person, to, text, for: asker })), [{ person: "ou_bob", to: ["ou_bob"],
+    text: "Alice 想知道你明天来不来？", for: { id: "ou_alice", name: "Alice", channel: { source: "feishu", thread: "feishu:oc_team", address: { chatId: "oc_team", messageId: "om_4", mode: "chat" } } } }]);
+  assert.match(calls.at(-1)!.system, /Set await_answer when you ask something on the person's behalf/);
 });
 
 test("shows the router what it remembers, and keeps what a message asks it to remember with the route it takes, such as a reminder", async () => {
