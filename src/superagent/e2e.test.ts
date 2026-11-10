@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import type { SuperagentHost as Host } from "./host.js";
+import { KV } from "./kv.js";
 import { startFakeModel, writeFakeModelHome, type ModelRequest } from "./testing/fake-model.js";
 
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
@@ -418,6 +419,8 @@ test("the host tells what it runs work on, asking its paired nodes again only af
     assert.deepEqual(first.here, { name: "here", machine: ["linux"], harnesses: [] });
     assert.deepEqual(first.peers, [{ name: "mac", online: false, machine: [], harnesses: [] }]);
     assert.deepEqual(first.workers, { isolation: "process", slots: { total: 3, busy: 0, free: 3 } });
+    // Its tickets' workers read the same view from its store, wherever they run.
+    assert.deepEqual(host.client.store.get(KV.host.devices)?.devices, first);
   } finally {
     host.meshView = undefined;
   }

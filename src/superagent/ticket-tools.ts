@@ -11,9 +11,10 @@ import { z } from "zod/v4";
 import { key, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { textPage, ticketCard } from "./cards.js";
-import { watchedRepository } from "./policy.js";
+import { seesNodes, watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
+import { devicesCard } from "./devices.js";
 import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
 import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
@@ -106,6 +107,11 @@ const TOOLS = {
   people: {
     description: "Who is who on Feishu, from the bot's records: with no arguments, the chats the bot is in; with chat, that chat's people and bots; with name, the people whose name contains it and the chats they are in.",
     input: { chat: z.string().trim().min(1).optional().describe("A chat id from the chat list, such as oc_..."), name: z.string().trim().min(1).max(100).optional() },
+    readOnly: true
+  },
+  devices: {
+    description: "What the agent runs tickets' work on now, from the host's records: its own node, its paired nodes with what each runs, and how many ticket workers are free. Answer questions about the agent's devices or mesh from it: where you run, such as a ticket VM, `swarm mesh` shows only that machine.",
+    input: {},
     readOnly: true
   },
   message: {
@@ -256,6 +262,13 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const found = read(resource);
       if (found === undefined) throw new Error("Unknown resource");
       return page(resource, offset, limit, () => found);
+    },
+    devices: async () => {
+      const snapshot = client.store.get(KV.host.devices);
+      if (!snapshot) throw new Error("The host has not read its devices yet: try again in a minute");
+      // Which nodes these are is for a requester who may see them, as /devices tells them.
+      const requester = sourceTrigger(client, ticket())?.actor;
+      return { as_of: snapshot.at, ...devicesCard(snapshot.devices, !!requester && seesNodes(client.settings(), requester)) };
     },
     people: async (args) => {
       if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };
