@@ -82,6 +82,7 @@ test("a cluster slot boots its ticket in a pod of its own with the ticket's volu
   assert.equal(container.resources.limits["swarm.w33d.xyz/kvm"], "1");
   assert.equal(container.securityContext.allowPrivilegeEscalation, false);
   assert.equal(pod.spec.automountServiceAccountToken, false);
+  assert.deepEqual(pod.spec.tolerations, [{ key: "swarm.w33d.xyz/tickets", operator: "Exists", effect: "NoSchedule" }], "it may run on the nodes kept for tickets");
   assert.equal(pod.spec.volumes.find((item: { name: string }) => item.name === "disk").persistentVolumeClaim.claimName, `swarm-ticket-${"a".repeat(32)}`);
   // A boot's pod and Secret go on stop, by name, and the ticket's volume on discard.
   await kube.stop(name);
