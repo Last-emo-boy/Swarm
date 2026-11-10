@@ -23,6 +23,7 @@ import { sourceTrigger } from "./messages.js";
 import { prunePatches } from "./ticket-tools.js";
 import { sameName } from "./text.js";
 import { ticketVariables, variableValues } from "./variables.js";
+import type { VmControl } from "./vm/vm-work.js";
 
 const PASS_MS = 2000;
 /** How often the host deletes the patches it kept too long. */
@@ -35,6 +36,8 @@ export interface HostOptions {
   /** The model call behind routing and assessments. */
   complete: Complete;
   log?: (message: string) => void;
+  /** How ticket VMs start and stop, with `executor.isolation` set to vm: the deployment's systemd units by default. */
+  vmControl?: VmControl;
 }
 
 /** Who holds a state directory's lock, when a live process does. */
@@ -180,6 +183,14 @@ export class SuperagentHost {
     if (!store.get(KV.host.applied)) {
       const settings = this.client.settings();
       store.set(KV.host.applied, { policyVersion: policyVersion(settings), settings });
+    }
+    // Ticket VMs take the work this node keeps; isolation applies from the host's start.
+    if (this.client.settings().executor.isolation === "vm") {
+      const { VmWork } = await import("./vm/vm-work.js");
+      const vm = new VmWork({ client: this.client, stateDir: this.stateDir, deployment: () => this.requireDeployment(),
+        environment: (ticket) => this.variables(ticket), credential: (ticket) => this.credential(ticket), log: this.log }, this.remote, this.options.vmControl);
+      await vm.start();
+      this.remote = vm;
     }
     this.executor.resume();
     this.client.effects.start();

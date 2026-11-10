@@ -609,7 +609,7 @@ const PROMPT_CACHE_SECTIONS: PromptCacheSection[] = [
   "volatile_footer"
 ];
 
-type ProviderUsage = {
+export type ProviderUsage = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
@@ -1136,7 +1136,7 @@ function trimPromptCacheDiagnostics(): void {
   }
 }
 
-function usageFromOpenAIResponse(response: unknown): ProviderUsage {
+export function usageFromOpenAIResponse(response: unknown): ProviderUsage {
   const usage = isRecord(response) && isRecord(response.usage) ? response.usage : {};
   const promptTokens = numberField(usage, "prompt_tokens") ?? numberField(usage, "input_tokens");
   const completionTokens = numberField(usage, "completion_tokens") ?? numberField(usage, "output_tokens");
@@ -1154,7 +1154,7 @@ function usageFromOpenAIResponse(response: unknown): ProviderUsage {
   };
 }
 
-function usageFromAnthropic(response: { usage?: unknown }): ProviderUsage {
+export function usageFromAnthropic(response: { usage?: unknown }): ProviderUsage {
   const usage = isRecord(response.usage) ? response.usage : {};
   return {
     inputTokens: numberField(usage, "input_tokens"),
@@ -1165,7 +1165,7 @@ function usageFromAnthropic(response: { usage?: unknown }): ProviderUsage {
   };
 }
 
-function usageFromGemini(response: { usageMetadata?: unknown }): ProviderUsage {
+export function usageFromGemini(response: { usageMetadata?: unknown }): ProviderUsage {
   const usage = isRecord(response.usageMetadata) ? response.usageMetadata : {};
   return {
     inputTokens: numberField(usage, "promptTokenCount"),

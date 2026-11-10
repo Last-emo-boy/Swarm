@@ -29,6 +29,8 @@ The domain is upstream's, ported unchanged in `src/superagent/core/` with its en
 | Harness turns: Claude Code, Codex, Kimi Code or OpenCode in place of the coding loop | `harness.ts`, `harness-turns.ts` | One child of the worker per turn |
 | `swarm harness list\|check`: the harness profiles of this machine | `harness-cli.ts` | CLI |
 | Ticket tools (`mcp__ticket__*`) | `ticket-tools.ts` | MCP stdio child of the worker |
+| Ticket VMs: slots, leases, the gateway and its model proxy | `vm/vm-work.ts`, `vm/gateway.ts`, `vm/model-proxy.ts` | Host, with `executor.isolation` set to `vm` |
+| Guest supervisor: prepares the ticket's directory, starts the worker, renews the lease | `vm/guest.ts`, `vm/gateway-link.ts` | `swarm superagent guest` in a ticket VM |
 | Sources | `sources/local.ts`, `sources/github*.ts`, `sources/feishu*.ts` | Host polls; the TUI and CLI write local Triggers |
 
 Engine commands only queue effects, so the TUI and CLI call the Engine directly to file requests, answer, stop and
@@ -174,9 +176,23 @@ a plain message in the chat, or a reply that quotes the one message it answers, 
 The persona also shapes its answers to messages addressed to it. Reading every message of a group needs the Feishu app's
 `im:message.group_msg` permission.
 
+## Ticket VMs
+
+With `"isolation": "vm"` in `executor`, each ticket's worker runs in a VM of its own instead of as a process of the host's
+account. The deployment provides the VMs as systemd units `swarm-ticket@<slot>` that the host's account may start and stop:
+each boots a fresh root disk with the ticket's own data disk, and reaches nothing on the host but its slot's gateway on
+127.0.0.1 (`executor.vm.port` plus the slot). The host writes the slot's ticket and a new token into `<state>/vm/<slot>`;
+the gateway takes that token alone and serves what the mesh's work routes serve a paired node, plus a model proxy that
+adds the providers' keys, records usage under the ticket's worker session and refuses calls past a budget with 402. A
+guest gets the agent's or its requester's GitHub token only when its ticket works on GitHub as them; a ticket that keeps
+its work local gets none. A VM powers off when its worker's turn ends, and the slot that ran a ticket boots it again on a
+follow-up, with its disk; the deployment deletes the disk once the ticket ends (`<state>/vm/ended`). Isolation applies
+from the host's start; harness tickets need `process`. `executor.vm.slots` (default 4) VMs run at once, and a slot
+whose guest stops renewing its lease is treated as work a restart interrupted.
+
 ## Safety
 
-Workers run as the operator's OS user in `full-auto` mode; an action that still needs approval is refused and the worker
+Workers run as the operator's OS user in `full-auto` mode, unless they run in ticket VMs; an action that still needs approval is refused and the worker
 reports what it needs. A worker on an agent harness runs under the harness's own permission mode or sandbox instead of
 Swarm's permission rules ([GUIDE.md, "Harness workers"](GUIDE.md#harness-workers)). The wrappers, blocked commands
 and a local ticket's missing accounts are defaults, not a sandbox: a worker can run programs by path and read the

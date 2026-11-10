@@ -365,9 +365,11 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     }
   } catch (error) {
     const ticket = stopping ? undefined : await current().catch(() => undefined);
-    // A reached budget stops the worker until a person raises it and retries the ticket.
-    const capped = error instanceof BudgetReached;
-    const summary = (capped ? `${error.message} Retry the ticket once it is raised.` : `The worker failed: ${error instanceof Error ? error.message : String(error)}`).slice(0, 4000);
+    // A reached budget stops the worker until a person raises it and retries the ticket; in a ticket VM, the host's model
+    // proxy refuses its calls with 402.
+    const capped = error instanceof BudgetReached || (error as { status?: unknown } | undefined)?.status === 402 || /\bHTTP 402\b/.test(String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    const summary = (capped ? `${message} Retry the ticket once it is raised.` : `The worker failed: ${message}`).slice(0, 4000);
     // A report that cannot be filed, such as while the owner node does not answer, leaves the failure to the exit code.
     const filed = !!ticket && await link.report({ state: capped ? "blocked" : "failed", summary }).then(() => true, () => false);
     if (!filed) exitCode = stopping ? 0 : 1;

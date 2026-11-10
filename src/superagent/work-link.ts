@@ -3,6 +3,7 @@
  * reads that node's store directly; on a paired node it reaches the owner over the mesh (src/mesh/work-link.ts), whose
  * routes answer with these same functions, so the owner stays the only process that writes its store.
  */
+import { z } from "zod/v4";
 import { liveTicket, runningAssignment, type Ticket, type Trigger, type WorkerReport, type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { mandateInstructions, sourceTrigger } from "./messages.js";
@@ -11,6 +12,9 @@ import { workerPrompt } from "./prompts.js";
 import type { Deployment } from "./setup.js";
 import { fileReport, type ReportArgs } from "./ticket-tools.js";
 import { ticketVariables, variableLines } from "./variables.js";
+
+/** A report a worker on another machine files itself, as its owner's routes take it. */
+export const ReportSchema = z.object({ state: z.enum(["progress", "waiting", "ready", "blocked", "failed", "dropped"]), summary: z.string().min(1).max(8000) });
 
 /** A ticket as its worker reads it at one moment: the ticket and the Triggers the worker reads with it. */
 export interface WorkView { ticket: Ticket; triggers: Record<string, Trigger> }

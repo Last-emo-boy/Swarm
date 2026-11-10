@@ -3,7 +3,8 @@
  * launch and delivery effects (from dsh-superagent's executor/dsh.ts). A worker process runs Swarm's coding loop on the
  * ticket's Work Kernel session and exits when its turn ends, so an idle ticket holds no process; a person's message wakes it
  * with a new process. A ticket holds a slot while its worker starts or runs, and one extra slot is kept for a person's message.
- * A ticket placed on a paired mesh node runs its worker there instead (`RemoteWork`), while this host keeps its record.
+ * A ticket placed on a paired mesh node, or in a ticket VM, runs its worker there instead (`RemoteWork`), while this host
+ * keeps its record.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, rmdirSync, rmSync } from "node:fs";
@@ -184,8 +185,7 @@ export class SwarmExecutor {
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== "pending") return;
     if (this.host.closing()) throw new Later("The host is stopping");
     try {
-      // A ticket that acts as its requester runs here, where the host keeps their token.
-      if (!ticket.mandate.capability?.credential && await this.host.remote()?.run(ticket, assignmentId)) return;
+      if (await this.host.remote()?.run(ticket, assignmentId)) return;
     } catch (error) {
       if (error instanceof Later) throw error;
       this.failed(ticketId, assignmentId, error instanceof Error ? error.message : String(error));
@@ -262,7 +262,7 @@ export class SwarmExecutor {
     if (waitsForPerson(ticket) && !fromPerson(ticket)) return;
     if (this.host.closing()) throw new Later("The host is stopping");
     try {
-      if (!ticket.mandate.capability?.credential && await this.host.remote()?.run(ticket, assignment.id)) return;
+      if (await this.host.remote()?.run(ticket, assignment.id)) return;
     } catch (error) {
       if (error instanceof Later) throw error;
       // The ticket shows the Inputs that did not reach its worker, until a delivery succeeds or a person retries it.

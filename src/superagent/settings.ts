@@ -79,10 +79,16 @@ export const EvalConfigSchema = z.object({
 export const WORKER_COMMANDS: readonly string[] = ["gh", "lark-cli", "git"];
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine((name) => name !== "." && name !== "..", "Not a command name")
   .refine((name) => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(", ")} cannot be blocked`);
+/** Ticket VMs (vm/vm-work.ts): how many run at once, and the first of their gateways' ports on 127.0.0.1, one per slot upward. */
+const VmSchema = z.object({
+  slots: z.number().int().min(1).max(32).default(4),
+  port: z.number().int().min(1024).max(65_000).default(47_100)
+}).strict();
 /**
  * Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare`
  * command run once per new ticket directory, blocked commands, the permission mode workers run under, the agent harness
- * new tickets run on (null for Swarm's own coding loop), and the harness profiles of this machine (see harness.ts).
+ * new tickets run on (null for Swarm's own coding loop), the harness profiles of this machine (see harness.ts), and where
+ * workers run: as processes of the host's account, or each ticket in a VM of its own, which the deployment provides.
  */
 export const ExecutorConfigSchema = z.object({
   model: ModelRefSchema,
@@ -92,7 +98,9 @@ export const ExecutorConfigSchema = z.object({
   blockedCommands: z.array(CommandNameSchema).default([]),
   permissionMode: z.enum(["full-auto", "yolo"]).default("full-auto"),
   harness: HarnessIdSchema.nullable().default(null),
-  harnesses: z.record(HarnessIdSchema, HarnessProfileSchema).default({})
+  harnesses: z.record(HarnessIdSchema, HarnessProfileSchema).default({}),
+  isolation: z.enum(["process", "vm"]).default("process"),
+  vm: VmSchema.default(VmSchema.parse({}))
 }).strict().superRefine((executor, context) => {
   const problem = harnessSettingsProblem(executor.harness, executor.harnesses);
   if (problem) context.addIssue({ code: "custom", message: problem, path: ["harness"] });

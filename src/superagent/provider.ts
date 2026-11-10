@@ -15,7 +15,7 @@ export async function providerComplete(options: { onUsage?: ProviderUsageHandler
 }
 
 /** Records a call as Swarm's runtime records its own: one `llm_call` count row whose metadata is the whole usage report. */
-async function usageRecorder(): Promise<ProviderUsageHandler> {
+export async function usageRecorder(): Promise<ProviderUsageHandler> {
   const [{ loadSwarmSettings }, { SwarmDatabase }, { UsageStore }] = await Promise.all([
     import("../config/settings.js"), import("../storage/database.js"), import("../storage/usage-store.js")
   ]);
