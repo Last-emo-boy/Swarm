@@ -86,6 +86,12 @@ export type SwarmSettings = {
      * process instead of blocking the turn until its timeout; unset keeps the foreground behaviour.
      */
     shellAutoBackgroundMs?: number;
+    /**
+     * When true, the coding loop lets the model reason before each reply where its provider can turn reasoning off
+     * (DeepSeek's thinking). Unset, it asks for no reasoning: on deepseek-flash, thinking in the loop's JSON mode left a
+     * third of replies empty, as its own tool-call markup or cut off, and the same ticket cost more than twice as much.
+     */
+    codingLoopThinking?: boolean;
   };
   tools: {
     webSearch: boolean;
@@ -1625,6 +1631,12 @@ export function defaultProviderRegistry(): Record<string, ProviderDefinition> {
 function positiveIntegerOrUndefined(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+/** Whether coding-loop turns may reason first: `SWARM_CODING_LOOP_THINKING` (1, true or on) when set, else the runtime setting. */
+export function codingLoopThinking(settings: Pick<SwarmSettings, "runtime">): boolean {
+  const env = process.env.SWARM_CODING_LOOP_THINKING?.trim().toLowerCase();
+  return env ? env === "1" || env === "true" || env === "on" : settings.runtime.codingLoopThinking === true;
 }
 
 /** The shell auto-background threshold: `SWARM_SHELL_AUTO_BACKGROUND_MS` when set, else the runtime setting. */

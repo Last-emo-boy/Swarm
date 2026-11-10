@@ -1341,6 +1341,7 @@ Key environment variables:
 | `SWARM_LSP_PYTHON_COMMAND` / `SWARM_LSP_RUST_COMMAND` / `SWARM_LSP_GO_COMMAND` | Enable narrow stdio LSP providers for non-TypeScript workspaces. |
 | `SWARM_TASK_TIMEOUT_MS` | Per-task timeout in ms. |
 | `SWARM_SHELL_AUTO_BACKGROUND_MS` | Move a foreground shell command that is still running after this many ms to a background process (also `runtime.shellAutoBackgroundMs`; unset keeps foreground commands). |
+| `SWARM_CODING_LOOP_THINKING` | `on` lets the model reason before each coding-loop reply where its provider can turn reasoning off, as DeepSeek's thinking (also `runtime.codingLoopThinking`; unset asks for none, which keeps DeepSeek's JSON replies usable and costs less than half). |
 | `SWARM_SUPERAGENT_HOME` | Override the ticket host's state directory (`~/.swarm/superagent`). |
 | `OPENAI_API_KEY` | Environment key source for the OpenAI provider. |
 

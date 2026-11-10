@@ -8,7 +8,7 @@ import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, 
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
 import { OpenAIProvider, type PromptBlock } from "../providers/openai-provider.js";
-import type { SwarmSettings } from "../config/settings.js";
+import { codingLoopThinking, type SwarmSettings } from "../config/settings.js";
 import { RuntimeEvents, type RuntimeAgentIdentity, type SessionOutcome } from "./events.js";
 import type { CheckpointSummary } from "./checkpoints.js";
 import type { ExecutionResult, ToolApprovalHandler } from "./orchestrator.js";
@@ -568,7 +568,8 @@ export class CodingAgentLoop {
             purpose: `${role}_coding_loop`
           },
           responseFormat: "json_object",
-          maxOutputTokens: role === "worker" ? MODEL_OUTPUT_TOKENS_WORKER_LOOP : MODEL_OUTPUT_TOKENS_MAIN_LOOP
+          maxOutputTokens: role === "worker" ? MODEL_OUTPUT_TOKENS_WORKER_LOOP : MODEL_OUTPUT_TOKENS_MAIN_LOOP,
+          ...(codingLoopThinking(this.options.settings) ? {} : { reasoning: "off" as const })
         };
         const modelText = await this.options.provider.generateText(turnRequest);
         const reply = await parseCodingLoopModelResultWithRepair(modelText, turnRequest, this.options.provider);

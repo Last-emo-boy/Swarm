@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { defaultSwarmSettings } from "../config/settings.js";
+import { defaultSwarmSettings, type SwarmSettings } from "../config/settings.js";
 import type { CapabilityDescriptor } from "../extensions/types.js";
 import type { OpenAIProvider } from "../providers/openai-provider.js";
 import { CodingAgentLoop, collectCodingLoopOutcomeSignals, evaluateCodingLoopCacheLab } from "./coding-agent-loop.js";
@@ -154,8 +154,30 @@ test("coding loop asks again for a reply it cannot use with the turn's own promp
   assert.match(note, /DSML/);
   assert.equal(repair.maxOutputTokens, turn.maxOutputTokens, "with the turn's output budget");
   assert.equal(repair.reasoning, "off", "and without reasoning first");
-  assert.equal(turn.reasoning, undefined);
   assert.equal(repair.usage?.sessionId, turn.usage?.sessionId);
+});
+
+test("coding loop turns ask for no reasoning first unless thinking is turned on", async () => {
+  const reasoningOf = async (options: { setting?: boolean; env?: string }) => {
+    const requests: GenerateTextRequest[] = [];
+    const previous = process.env.SWARM_CODING_LOOP_THINKING;
+    if (options.env === undefined) delete process.env.SWARM_CODING_LOOP_THINKING;
+    else process.env.SWARM_CODING_LOOP_THINKING = options.env;
+    try {
+      await runCodingLoopWithFakeProvider((request) => {
+        requests.push(request);
+        return Promise.resolve(loopReply({ status: "completed", summary: "Done", message: "Nothing to do." }));
+      }, { configureSettings: (settings) => { settings.runtime.codingLoopThinking = options.setting; } });
+    } finally {
+      if (previous === undefined) delete process.env.SWARM_CODING_LOOP_THINKING;
+      else process.env.SWARM_CODING_LOOP_THINKING = previous;
+    }
+    return requests[0]?.reasoning;
+  };
+  assert.equal(await reasoningOf({}), "off", "DeepSeek's thinking broke the loop's JSON replies and doubled their cost");
+  assert.equal(await reasoningOf({ setting: true }), undefined, "runtime.codingLoopThinking turns it back on");
+  assert.equal(await reasoningOf({ env: "on" }), undefined, "and so does SWARM_CODING_LOOP_THINKING");
+  assert.equal(await reasoningOf({ setting: true, env: "off" }), "off", "which wins over the setting");
 });
 
 test("coding loop gives a reply it cannot use back to the model instead of failing the turn", async () => {
@@ -889,6 +911,7 @@ async function runCodingLoopWithFakeProvider(
     allowedTools?: string[];
     workspace?: string;
     setupWorkspace?: (workspace: string) => void;
+    configureSettings?: (settings: SwarmSettings) => void;
     workspaceIndex?: {
       recentFileName?: string;
       recentFiles?: Array<{ path: string; size?: number; mtimeMs?: number }>;
@@ -902,6 +925,7 @@ async function runCodingLoopWithFakeProvider(
   options.setupWorkspace?.(workspace);
   const settings = defaultSwarmSettings();
   settings.permissions.defaultMode = "yolo";
+  options.configureSettings?.(settings);
   const provider = {
     workerModel: "test-model",
     generateText
