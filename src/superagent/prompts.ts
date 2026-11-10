@@ -114,7 +114,7 @@ function routingLines(): string {
 }
 
 /** The bot commands the router may run for a person whose message asks for what one does; the others only people type. */
-export const AGENT_COMMANDS = ["help", "me", "link", "repo", "takeover"] as const;
+export const AGENT_COMMANDS = ["help", "me", "link", "repo", "takeover", "devices"] as const;
 export type AgentCommand = typeof AGENT_COMMANDS[number];
 export const ROUTE_CONTRACT = [
   "Return exactly one JSON object for the candidate, with these fields:",
@@ -140,7 +140,7 @@ const REQUESTER_LINES = [
   "An acknowledgement promises only what this_request allows: when it is local, the change comes back as a patch, never a pull request; when it is read-only, an answer.",
   "When accepted work is about one of the requester's GitHub repositories, set repository to its owner/name exactly as the card lists it, however the person called it (\"2048 DQN\" for owner/2048-DQN, a translated or shortened name). Without it, the work happens on when_none_is_named.",
   "Set link: true on an accept when the person wants a pull request, a push or another change on GitHub, may_write is github, and their GitHub is not linked or its link stopped working. The host then sends them a code to link their account in a direct message, and once they linked it turns the finished patch into a pull request as them; the acknowledgement says both.",
-  "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them.",
+  "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them. devices: the list of what the agent runs work on now, for someone who asks for that list.",
   "Changing roles, the chats the agent reads, ceilings or whether it joins conversations on its own, and unlinking, are only for people to type themselves (/role, /listen, /ceiling, /chatter, /unlink): asked for one, answer with chat and name the command to send."
 ].join("\n");
 /** What the card's harnesses mean, and when the router sets one on accepted work. */
@@ -149,6 +149,12 @@ const HARNESS_LINES = [
   "Set harness on an accept only when the person asks for the work to run on one, such as codex for \"用 codex 做\" or claude for \"run this on Claude Code\". The acknowledgement then names the harness and where it runs: this node, or the paired node choices names.",
   "When the harness they ask for runs on no node, for this request or at all, or is not among the choices, start no ticket: answer with chat, saying plainly that no node can run it now and why, and naming the choices that can run, if any.",
   "When choices says the requester may not choose one, accept without harness and say in the acknowledgement that the work runs on the default, since only maintainers and owners choose a harness. When harnesses has filed_with, the request already runs on that harness: set none."
+].join("\n");
+/** What the card's devices mean, for answers about the agent's machines and for acknowledgements. */
+const DEVICES_LINES = [
+  "The card's devices says what you run work on now. this_node is the machine you run on. paired_nodes are the other machines of your swarm: whether each answered just now, what kind of machine it is (its OS, gpu, docker) and the agent harnesses signed in there. ticket_workers says how many tickets' workers run at once, how many are busy and how many are free: as processes on this node, or each in a VM of its own on this node and, once those are busy, in the cluster.",
+  "When a person asks what devices, machines or nodes you have, which of them are online, or how busy you are, answer with chat from devices, in your own words: say only what it shows, and with only counts, give counts and never guess names. Use the devices command only when they ask for the list itself.",
+  "When every worker is busy, an acknowledgement says the work starts once one is free, rather than promising it now."
 ].join("\n");
 /** When the router answers a message itself instead of routing it. */
 const CHAT_LINES = [
@@ -180,6 +186,7 @@ export function routerPrompt(persona = ""): string {
     ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),
     section("Harness", HARNESS_LINES),
+    section("Devices", DEVICES_LINES),
     section("Output", ROUTE_CONTRACT)
   ].join("\n\n");
 }

@@ -24,7 +24,7 @@ import { promisify } from "node:util";
 import { latestAssignment, liveTicket, waitsForPerson, type Ticket } from "../core/index.js";
 import type { SuperagentClient } from "../client.js";
 import { Later } from "../effects.js";
-import type { KubeVm } from "../settings.js";
+import type { KubeVm, Settings } from "../settings.js";
 import type { HealthEntry } from "../health.js";
 import type { RemoteWork } from "../executor.js";
 import type { Credential } from "../github-link.js";
@@ -96,6 +96,24 @@ export const vmHarnessIds = (configured: Readonly<Record<string, HarnessProfile>
 
 /** Where a slot's VM runs: on this host, or as the cluster's slot `index`; the port of its gateway; and its key in the store. */
 interface Place { cluster: boolean; index: number; port: number; key: string }
+/** A slot's key in the store: this host's by number, the cluster's as `c<index>`. */
+const slotKey = (cluster: boolean, index: number): string => cluster ? `c${index}` : String(index);
+/** Whether a slot's lease holds: a guest runs, or a VM boots, for the ticket it names. */
+const leaseLive = (record: VmSlot | undefined): boolean => !!record?.tokenHash && Date.parse(record.expiresAt) > Date.now();
+
+/** How many of a kind of ticket VM slots there are, how many a ticket's VM holds now, and how many take a new one. */
+export interface SlotCount { total: number; busy: number; free: number }
+/**
+ * The ticket VM slots of a host with `executor.vm` settings `vm`, from the leases in its store: this host's, and the
+ * cluster's when `kube` is set. Any process that opens the host's state reads them, not only the host's own.
+ */
+export function vmSlotCounts(store: Pick<SuperagentClient["store"], "get">, vm: Settings["executor"]["vm"]): { local: SlotCount; cluster?: SlotCount } {
+  const count = (cluster: boolean, total: number): SlotCount => {
+    const busy = Array.from({ length: total }, (_, index) => store.get(KV.vm.slot(slotKey(cluster, index)))).filter(leaseLive).length;
+    return { total, busy, free: total - busy };
+  };
+  return { local: count(false, vm.slots), ...(vm.kube ? { cluster: count(true, vm.kube.slots) } : {}) };
+}
 
 export const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");
 const sameHash = (a: string, b: string): boolean => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -131,9 +149,9 @@ export class VmWork implements RemoteWork {
   /** This host's slots come first, then the cluster's. */
   private place(slot: number): Place {
     const { slots, port, kube } = this.settings();
-    if (slot < slots) return { cluster: false, index: slot, port: port + slot, key: String(slot) };
+    if (slot < slots) return { cluster: false, index: slot, port: port + slot, key: slotKey(false, slot) };
     const index = slot - slots;
-    return { cluster: true, index, port: (kube?.port ?? 0) + index, key: `c${index}` };
+    return { cluster: true, index, port: (kube?.port ?? 0) + index, key: slotKey(true, index) };
   }
   private count(): number { return this.settings().slots + (this.settings().kube?.slots ?? 0); }
 
@@ -155,7 +173,7 @@ export class VmWork implements RemoteWork {
 
   slot(slot: number): VmSlot | undefined { return this.client.store.get(KV.vm.slot(this.place(slot).key)); }
   private setSlot(slot: number, record: VmSlot): void { this.client.store.set(KV.vm.slot(this.place(slot).key), record); }
-  private live(record: VmSlot | undefined): boolean { return !!record?.tokenHash && Date.parse(record.expiresAt) > Date.now(); }
+  private live(record: VmSlot | undefined): boolean { return leaseLive(record); }
   /** The slot whose token this is: the one presented to that slot's gateway. */
   authorized(slot: number, token: string): VmSlot | undefined {
     const record = this.slot(slot);
