@@ -98,13 +98,13 @@ const KubeSchema = z.object({
 export type KubeVm = z.infer<typeof KubeSchema>;
 /**
  * Ticket VMs (vm/vm-work.ts): how many run at once on this host, the first of their gateways' ports on 127.0.0.1, one per
- * slot upward, and the cluster whose VMs take tickets once those are full.
+ * slot upward, and the cluster whose VMs take tickets once those are full (with no slots here, every ticket's).
  */
 const VmSchema = z.object({
-  slots: z.number().int().min(1).max(32).default(4),
+  slots: z.number().int().min(0).max(32).default(4),
   port: z.number().int().min(1024).max(65_000).default(47_100),
   kube: KubeSchema.optional()
-}).strict();
+}).strict().refine((vm) => vm.slots > 0 || !!vm.kube, { message: "No ticket VMs: slots is 0 and kube is not set", path: ["slots"] });
 /**
  * Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare`
  * command run once per new ticket directory, blocked commands, the permission mode workers run under, the agent harness

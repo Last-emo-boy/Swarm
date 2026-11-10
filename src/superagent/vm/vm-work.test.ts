@@ -323,3 +323,12 @@ test("a full house spills over to the cluster, where a ticket stays for good, an
   assert.equal(client.store.get(KV.vm.disk(b.ticket.id)), undefined);
   assert.ok(!existsSync(join(stateDir, "vm", "ended", b.ticket.id)));
 });
+
+test("a host with no slots of its own runs every ticket in the cluster", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 0, port, kube: { slots: 1, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const vm = await start();
+  const a = ticket("add a NOTICE file", "add-notice");
+  await vm.run(a.ticket, a.assignmentId);
+  assert.deepEqual(calls, [`cluster start 0 ${a.ticket.id}`]);
+  assert.throws(() => writeSettings({ executor: { isolation: "vm", vm: { slots: 0 } } }, settingsPath(stateDir)), /slots is 0 and kube is not set/);
+});
