@@ -15,6 +15,7 @@ import { seesNodes, watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
 import { devicesCard } from "./devices.js";
+import { callLent, lentByPeers } from "../mesh/borrow.js";
 import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
 import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
@@ -90,6 +91,10 @@ const subjectFor = (origin: Trigger | undefined) => (name: string): string | und
   if (name === "requester") return origin?.source === "feishu" ? personSubject(origin.actor.id) : undefined;
   return name.startsWith("ou_") ? personSubject(name) : name.startsWith("oc_") ? chatSubject(name) : undefined;
 };
+/** The longest a command a ticket's worker runs on a paired node may take: within the 110 seconds a ticket tool may. */
+const MESH_SHELL_MS = 100_000;
+/** How much of each call's arguments, and how many calls, a ticket keeps for the record. */
+const MESH_ARGS_CHARS = 500, MESH_CALLS_KEPT = 100;
 /** How many messages to people a ticket's worker may send in an hour. */
 const MESSAGES_PER_HOUR = 10;
 
@@ -113,6 +118,15 @@ const TOOLS = {
     description: "What the agent runs tickets' work on now, from the host's records: its own node, its paired nodes with what each runs, and how many ticket workers are free. Answer questions about the agent's devices or mesh from it: where you run, such as a ticket VM, `swarm mesh` shows only that machine.",
     input: {},
     readOnly: true
+  },
+  mesh: {
+    description: "Use what the agent's paired devices lend, through the host's mesh, wherever you run: without node, each paired node, whether it answers, and what it lends (a shell and file access in some folders); with node and tool, call that tool there with args: shell {command, cwd?, timeout_ms?}, list_files {path?}, read_file {path, offset?} or write_file {path, content}. A shell command stops after at most 100 seconds. What you run acts on that machine for real, as the user it lends as, and every call is recorded on this ticket.",
+    input: {
+      node: z.string().trim().min(1).max(64).optional().describe("A paired node's name, as the list gives it"),
+      tool: z.string().trim().min(1).max(64).optional().describe("A tool that node lends: shell, list_files, read_file or write_file"),
+      args: z.record(z.string(), z.unknown()).optional().describe("The tool's arguments")
+    },
+    readOnly: false
   },
   message: {
     description: "Send a message on Feishu to someone other than this ticket's requester, as a direct message, or into a chat the bot is in: to tell or ask them something for this ticket. The requester's own updates and answers go with report.",
@@ -269,6 +283,15 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       // Which nodes these are is for a requester who may see them, as /devices tells them.
       const requester = sourceTrigger(client, ticket())?.actor;
       return { as_of: snapshot.at, ...devicesCard(snapshot.devices, !!requester && seesNodes(client.settings(), requester)) };
+    },
+    mesh: async (args) => {
+      if (typeof args.node !== "string" || typeof args.tool !== "string") return { nodes: await lentByPeers() };
+      const call = { ...(args.args && typeof args.args === "object" ? args.args as Record<string, unknown> : {}) };
+      // A command runs within the time a ticket tool may take.
+      if (args.tool === "shell") call.timeout_ms = Math.min(Number(call.timeout_ms) || MESH_SHELL_MS, MESH_SHELL_MS);
+      const calls = client.store.get(KV.mesh.calls(ticketId)) ?? [];
+      client.store.set(KV.mesh.calls(ticketId), [...calls, { at: new Date().toISOString(), node: args.node, tool: args.tool, args: JSON.stringify(call).slice(0, MESH_ARGS_CHARS) }].slice(-MESH_CALLS_KEPT));
+      return { node: args.node, tool: args.tool, result: await callLent(args.node, args.tool, call, MESH_SHELL_MS + 5000) };
     },
     people: async (args) => {
       if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };

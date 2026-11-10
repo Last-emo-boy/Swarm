@@ -39,7 +39,9 @@ export const KV = {
    * Mesh: where a ticket's worker runs, by ticket id or by the id of the request it was filed with, and the lease of the
    * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.
    */
-  mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:') },
+  mesh: { placement: family<Placement>('mesh-placement:'), lease: family<Lease>('mesh-lease:'),
+    /** What a ticket's worker ran on paired nodes through its host's mesh (ticket-tools.ts), latest last, by ticket id. */
+    calls: family<{ at: string; node: string; tool: string; args: string }[]>('mesh-calls:') },
   /**
    * People's linked GitHub accounts, by the Source and id they write from (see github-link.ts), and the local tickets someone
    * wants a pull request from before they linked or before the ticket's patch is ready, by ticket id, with the message whose

@@ -174,7 +174,14 @@ The host reads the paired nodes at most every 30 seconds for the router, the har
 and again after a read that failed. For a requester who may not see nodes (`seesNodes`: without the access model anyone,
 with it maintainers and owners), the card holds counts alone: paired nodes, online ones and the workers. A host that is
 no mesh node counts every harness profile it would run as its own, as the harness choices do. `/devices` prints the same
-view. Workers in ticket VMs and on paired nodes see none of it.
+view. A ticket's worker reads the same view with its `devices` tool, wherever it runs, from what the host last read.
+
+A ticket VM is no mesh node: its own `swarm mesh` shows only itself. A worker uses what paired nodes lend (`swarm mesh
+lend`) with its `mesh` tool, which its host runs over the host's own links: without arguments it lists each paired node
+and what it lends, and with a node, a tool (`shell`, `list_files`, `read_file`, `write_file`) and its arguments it calls
+it there. A command stops after at most 100 seconds, within the time a ticket tool may take. Every ticket's worker has it,
+whoever asked for the work, and every call is kept with its ticket (`mesh-calls:<ticket>`). A shell runs as the user its
+node lends as, with that user's credentials, such as a kubeconfig.
 
 ### GitHub accounts
 

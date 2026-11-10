@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { meshMcpUrl } from "./borrow.js";
+import { callLent, lentByPeers, meshMcpUrl } from "./borrow.js";
 import { peerFetch } from "./link.js";
 import type { SwarmRuntime } from "../runtime/runtime.js";
 import type { ToolApprovalRequest } from "../tools/types.js";
@@ -171,4 +171,18 @@ test("a node stops lending from its next request, and lends nothing it was not t
 
   const ovh = await callPeer<NodeCard>(findPeer(readMesh(process.env.SWARM_MESH_HOME), "ovh"), "GET", "/mesh/v1/node");
   assert.equal(ovh.lend, undefined);
+});
+
+test("a ticket's worker borrows through its host: what each paired node lends, and a call to one of its tools", async () => {
+  // The test before stopped the shell.
+  lendFolders("shell", [gpu.work], gpu.home);
+  const lenders = await lentByPeers(process.env.SWARM_MESH_HOME, 3000);
+  const gpuLends = lenders.find((lender) => lender.node === "gpu");
+  assert.deepEqual([gpuLends?.online, gpuLends?.shell, gpuLends?.files, gpuLends?.tools], [true, [gpu.work], [gpu.files], ["shell", "list_files", "read_file", "write_file"]]);
+  assert.deepEqual(lenders.find((lender) => lender.node === "ovh")?.tools, []);
+  assert.equal(lenders.find((lender) => lender.node === "box")?.online, false);
+  const ran = await callLent("gpu", "shell", { command: "pwd" }, 10_000, process.env.SWARM_MESH_HOME) as { exit_code: number; stdout: string };
+  assert.deepEqual([ran.exit_code, ran.stdout.trim()], [0, gpu.work]);
+  await assert.rejects(callLent("gpu", "shell", { command: "pwd", cwd: root }, 10_000, process.env.SWARM_MESH_HOME), /gpu refused shell/);
+  await assert.rejects(callLent("nowhere", "shell", { command: "pwd" }, 10_000, process.env.SWARM_MESH_HOME), /No paired node is called nowhere: the paired nodes are gpu, ovh, box/);
 });
