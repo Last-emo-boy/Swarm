@@ -134,9 +134,8 @@ People run these bot commands in Feishu, after mentioning the bot or in a direct
 | `/takeover [ticket]` | the requester or a maintainer (anyone who may write to GitHub, for inferred work) | A new ticket of yours applies a local ticket's patch and opens a pull request; the old ticket ends. It waits until you linked and the ticket has its patch |
 | `/devices` | anyone (node names: maintainers and owners) | Shows what the agent runs work on now: this node, its paired nodes and the free workers (below) |
 | `/role @name owner\|maintainer\|everyone\|none` | owner | Sets the roles of the people mentioned |
-| `/listen all\|mentions\|off` | owner, in a group | Lists the chat, or takes it off the list |
 | `/ceiling read-only\|local\|github` | owner | Sets how far work asked for in this conversation may write |
-| `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own, whatever `/listen` says |
+| `/chatter [on\|off]` | owner, in a group (anyone, to ask) | Whether the agent joins the conversation here on its own |
 | `/memory [@name] [page]` | anyone (an owner, about someone else) | What the agent remembers about you, numbered, in a direct message |
 | `/forget <number>\|all [@name]` | anyone (an owner, about someone else) | Forgets one note about you, by its number in `/memory`, or all of them |
 
@@ -225,7 +224,9 @@ been quiet for `lullSeconds`, one model call reads its latest messages, with wha
 whether a member would say something now. Saying nothing is the usual answer. It posts as a plain message in the chat, or
 a reply that quotes the one message it answers and may @ its writer. It speaks on its own at most `perHour` times an hour
 (answers it was asked for do not count), never in `quiet` hours, and considers a chat at most every `considerMinutes`.
-It reads the chat from the messages it keeps, so this works whatever `/listen` says there.
+It reads the chat from the messages it keeps. The Feishu Source hears every group the bot is in (`otherChats` is `mentions` by
+default): it keeps every message, answers when someone @s it, and fills in from each group's history what the live stream
+missed. `otherChats: "none"` limits it to the groups in `chats`.
 
 ```json
 { "chatter": { "everywhere": true, "off": ["oc_..."], "chats": ["oc_..."], "persona": "Who the agent is in conversation",
