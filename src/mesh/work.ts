@@ -224,7 +224,10 @@ export class MeshWork implements RemoteWork {
     return peer;
   }
 
-  /** The paired node a placement names, or the one fit for what the work needs; undefined to run it here. */
+  /**
+   * The paired node a placement names, or the one fit for what the work needs; undefined to run it here.
+   * @throws Later while every reachable paired node fit for the work has no free slot.
+   */
   private async choose(placement: Placement | undefined, needs: string[]): Promise<Peer | undefined> {
     if (placement?.on === "here") return undefined;
     if (placement?.on) return this.peer(placement.on);
@@ -237,6 +240,9 @@ export class MeshWork implements RemoteWork {
     const repository = this.client.deployment().repository;
     const puller = cards.find((item) => item.pull && !unfit({ needs, repository }, item.abilities, item.pull.repositories));
     if (puller && this.pulls().offer) throw new Later(`The work waits for ${puller.name}, which has ${needs.join(", ")}, to pull it`);
+    // A busy ticket host fit for it gets it once a slot frees there; only work no reachable node is fit for runs here.
+    const busy = cards.find((item) => item.load && needs.every((need) => item.abilities.includes(need)));
+    if (busy) throw new Later(`The work waits for a free slot on ${busy.name}, which has ${needs.join(", ")}`);
     return undefined;
   }
 
