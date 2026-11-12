@@ -242,10 +242,12 @@ missed. `otherChats: "none"` limits it to the groups in `chats`.
 
 In those groups it also attends, within about 15 seconds, to what calls for it there but its router does not answer:
 another bot that @s it, someone who replies to one of its messages, or who names it without an @ (as a word, so a link
-such as `w33d.xyz` does not). One model call reads the chat and answers when a member would. It answers at most 12 such
-messages a chat an hour, of which at most 4 are other bots', at most 3 of those in a row until a person writes there
-again, and none in quiet hours; a bot's message that only acknowledges or thanks gets no answer. A bot's message never
-starts work: it is answered, not acted on.
+such as `w33d.xyz` does not). One model call reads the chat and answers when a member would, as often as it is called:
+there is no limit per hour. It always answers what is put to it directly, a question, a request for its progress, a task
+or a contest it is called into, if only to say it has nothing to report or cannot take it on; a bot's message that only
+acknowledges or thanks gets no answer, and in quiet hours, where an owner set them, it answers no bot. A reply too long
+for the chat is written again, then cut after a whole sentence. A bot's message never starts work: it is answered, not
+acted on.
 
 When the router messages someone on a person's behalf and they want to hear back (`await_answer`, such as "去问问他们进度"),
 the agent waits up to 12 hours for the answer: in the group, a message to it (an @, a reply to its message or its name)
