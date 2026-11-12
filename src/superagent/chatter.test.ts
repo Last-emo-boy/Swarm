@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import type { Trigger } from "./core/index.js";
-import { ChatterRoom, chatterPrompt, cutToFit, namesAgent, quietAt } from "./chatter.js";
+import { ChatterRoom, attendPrompt, chatterPrompt, cutToFit, namesAgent, quietAt } from "./chatter.js";
 import { wordCount } from "./text.js";
 import { ask, closeAsks, openAsks } from "./asks.js";
 import { posted } from "./people.js";
@@ -204,11 +204,11 @@ describe("when messages call for the agent that its router does not answer", () 
     ]);
     expect(sent[1]!.channel.address.messageId).toBe(reply.meta.messageId);
     expect(openAsks(client.store, now)).toEqual([]);
-    // With nothing left to wait for, the bot's next @ is an ordinary one, which it answers within its budget for bots.
+    // With nothing left to wait for, the bot's next @ is an ordinary one; what it answered is kept for the record.
     expect(client.store.get(KV.chatter.chat(CHAT))?.answered).toEqual([{ at: new Date(now).toISOString(), bot: true }]);
   });
 
-  it("answers someone who names it or replies to its message and a bot that @-mentions it, leaves a person's @ to its router, and holds bots to a few an hour", async () => {
+  it("answers someone who names it or replies to its message and a bot that @-mentions it, leaves a person's @ to its router, and answers bots however often it is called", async () => {
     room.pass();
     now += 1000;
     posted(client.store, CHAT, "om_mine");
@@ -223,18 +223,19 @@ describe("when messages call for the agent that its router does not answer", () 
     now += 16_000;
     room.pass();
     expect(attending()[0]?.ids).toEqual([named.id, quoted.id, pinged.id]);
-    // Past its budget for bots, the bot's message is not answered; people's still are.
-    const hour = Array.from({ length: 4 }, () => ({ at: new Date(now - 60_000).toISOString(), bot: true as const }));
+    // However often it answered bots lately, it answers this one too.
+    const hour = Array.from({ length: 30 }, (_, index) => ({ at: new Date(now - 60_000 + index).toISOString(), bot: true as const }));
     client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: hour });
-    answers.push(JSON.stringify({ reply: { text: "Tickey 的我也回一下", reply_to: pinged.meta.messageId }, relay: [] }));
+    answers.push(JSON.stringify({ reply: { text: "fixtures 我这边还没跑", reply_to: pinged.meta.messageId }, relay: [] }));
     await room.attend(CHAT, [pinged.id]);
-    expect(calls).toEqual([]);
-    answers.length = 0;
+    expect(calls.length).toBe(1);
     answers.push(JSON.stringify({ reply: { text: "行，我觉得可以先上", reply_to: named.meta.messageId, mention: "ou_bob" }, relay: [] }));
     await room.attend(CHAT, [named.id, quoted.id, pinged.id]);
-    const card = JSON.parse(calls[0]!.user) as { messages: { id?: string; for_you?: string }[] };
+    const card = JSON.parse(calls[1]!.user) as { messages: { id?: string; for_you?: string }[] };
     expect(card.messages.filter((line) => line.for_you).map((line) => line.for_you)).toEqual(["names_you", "replies_to_you", "mentions_you"]);
-    expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([["行，我觉得可以先上", named.meta.messageId]]);
+    expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([
+      ["fixtures 我这边还没跑", pinged.meta.messageId], ["行，我觉得可以先上", named.meta.messageId]
+    ]);
   });
 
   it("asks again when a relay is longer than Feishu takes, then cuts it after a whole sentence rather than drop it", async () => {
@@ -305,24 +306,34 @@ describe("when messages call for the agent that its router does not answer", () 
     expect(openAsks(client.store, now)).toEqual([]);
   });
 
-  it("answers other bots at most three times in a row, until a person writes again", async () => {
+  it("answers other bots in a chat where only bots have spoken lately, however often it already answered them", async () => {
+    // 奶机乐园 on 11-11: bots wrote nearly everything, and the agent had answered bots many times since a person last wrote.
     room.pass();
-    message("ou_bob", "大家好", 0);
     now += 1000;
-    const pinged = botMessage("ou_tickey", "你那边有 fixtures 的结果吗？", 0, { mention: true });
-    const turns = Array.from({ length: 3 }, (_, index) => ({ at: new Date(now - 500 + index).toISOString(), bot: true as const }));
-    client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: turns });
-    await room.attend(CHAT, [pinged.id]);
-    expect(calls).toEqual([]);
-    // Once a person writes, it may answer a bot again, and the card says how often it already did.
-    now += 1000;
-    message("ou_bob", "Tickey 问你呢", 0);
-    now += 1000;
-    const again = botMessage("ou_tickey", "@w33d fixtures 结果呢？", 0, { mention: true });
-    client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: turns.slice(0, 1) });
-    await room.attend(CHAT, [again.id]);
+    for (let index = 0; index < 35; index++) botMessage(index % 2 ? "ou_feifei" : "ou_tickey", `进度第 ${index} 条`, 0);
+    const many = Array.from({ length: 22 }, (_, index) => ({ at: new Date(now - 600_000 + index).toISOString(), bot: true as const }));
+    client.store.set(KV.chatter.chat(CHAT), { ...client.store.get(KV.chatter.chat(CHAT))!, answered: many });
+    const asked = botMessage("ou_naidan", "报进度 一句就行 昨天认领的活做完没", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: "我昨天没认领活，这边没进度可报", reply_to: asked.meta.messageId }, relay: [] }));
+    await room.attend(CHAT, [asked.id]);
     expect(calls.length).toBe(1);
     expect(JSON.parse(calls[0]!.user).replies_to_bots_in_a_row).toBeUndefined();
+    expect(posts().map((post) => post.text)).toEqual(["我昨天没认领活，这边没进度可报"]);
+    // Its instructions say to answer what is put to it directly, even when it has nothing to report.
+    expect(attendPrompt("w33d", "")).toMatch(/Always answer what is put to you directly, by a person or a bot: a question, a request for your progress/);
+  });
+
+  it("asks again when a reply is longer than Feishu takes, then cuts it after a whole sentence rather than drop it", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "改一下分工，你那边怎么看", 0, { mention: true });
+    const long = "我这边还没认领活，所以没有进度可报，等正明分配后再说。".repeat(6);
+    answers.push(JSON.stringify({ reply: { text: long, reply_to: asked.meta.messageId } }), JSON.stringify({ reply: { text: long, reply_to: asked.meta.messageId } }));
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.length).toBe(2);
+    expect(JSON.parse(calls[1]!.user).problem).toMatch(/^the reply is \d+ words: Feishu takes a relay of at most 100 words and a reply of at most 60/);
+    const [post] = posts();
+    expect(wordCount(post!.text) <= 60 && post!.text.endsWith("。…") && post!.text.startsWith("我这边还没认领活")).toBe(true);
   });
 
   it("cuts a sentence too long alone where it fits", () => {
