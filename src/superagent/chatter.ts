@@ -129,7 +129,7 @@ const CHATTER_CONTRACT = 'Return exactly one JSON object: {"say": "what you post
 export function chatterPrompt(name: string, persona: string): string {
   return [
     `You are ${name || "the bot"}, a member of a group chat on Feishu: not an assistant on duty. ${persona.trim()}`.trim(),
-    "The card holds the chat's latest messages, oldest first, with what you said there among them, marked you: true, and memory, what you remember of the chat and the people in it.",
+    "The card holds the chat's latest messages, oldest first: people's, other bots' (bot: true) and yours (you: true), and memory, what you remember of the chat and the people in it. A bot's reply counts as an answer: a question a bot already answered is not unanswered.",
     "Decide whether you say something now. Most of the time the right answer is nothing (say: null). Speak only when a member would: you can add something useful, kind or funny to what people are talking about, answer a question nobody answered, or join a light moment.",
     "Do not repeat yourself, summarize the chat, offer help nobody asked for, describe what you can do, bring up tickets or work unless they do, answer what you already answered or what was asked of someone else, step into a private or tense exchange, or speak when the last message is yours.",
     `Write as a person in the chat: one or two short sentences in the language they use, at most ${SAY_WORDS} words, no headings or lists. Set reply_to only when you answer one message in particular.`,
@@ -181,7 +181,8 @@ export class ChatterRoom {
     const now = this.now();
     this.attention(chatter, now);
     for (const chatId of this.chats(chatter)) {
-      const latest = client.store.read.chatMessages(chatId, new Date(now - WINDOW_MS).toISOString(), 1)[0];
+      // Other bots' messages count: one answering a person restarts the lull, as anyone's would.
+      const latest = client.store.read.chatMessages(chatId, new Date(now - WINDOW_MS).toISOString(), 1, true)[0];
       const state = client.store.get(KV.chatter.chat(chatId)) ?? { said: [] };
       if (!latest || (state.consideredAt && state.consideredAt >= latest.at)) continue;
       if (now - Date.parse(latest.at) < chatter.lullSeconds * 1000) continue;
@@ -322,14 +323,14 @@ export class ChatterRoom {
     const settings = client.settings();
     const chatter = chatterOf(settings);
     if (!this.chats(chatter).includes(chatId) || this.silent(chatter, chatId)) return;
-    const messages = client.store.read.chatMessages(chatId, new Date(this.now() - WINDOW_MS).toISOString(), WINDOW_MESSAGES).reverse();
+    const messages = client.store.read.chatMessages(chatId, new Date(this.now() - WINDOW_MS).toISOString(), WINDOW_MESSAGES, true).reverse();
     const latest = messages.at(-1);
     if (!latest) return;
     const own = (client.store.get(KV.chatter.chat(chatId))?.said ?? []).filter((item) => Date.parse(item.at) >= this.now() - WINDOW_MS);
     const bot = client.deployment().feishu?.name ?? "";
     const timeline = [
       ...messages.map((message) => ({ at: message.at, id: String(message.meta.messageId ?? message.id), from: senderOf(client.store, message), from_id: message.actor.id,
-        text: message.text.length > MESSAGE_CHARS ? `${message.text.slice(0, MESSAGE_CHARS)}…` : message.text,
+        ...(message.human ? {} : { bot: true }), text: message.text.length > MESSAGE_CHARS ? `${message.text.slice(0, MESSAGE_CHARS)}…` : message.text,
         ...(typeof message.meta.parentId === "string" ? { reply_to: message.meta.parentId } : {}) })),
       ...own.map((item) => ({ at: item.at, from: bot || "you", you: true, text: item.text }))
     ].sort((a, b) => a.at.localeCompare(b.at));

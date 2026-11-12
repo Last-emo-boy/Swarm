@@ -128,6 +128,23 @@ describe("a consideration", () => {
       channel: { source: "feishu", thread: `feishu:${CHAT}`, address: { chatId: CHAT, mode: "chat", messageId: asked.meta.messageId } } })]);
     expect(client.store.get(KV.chatter.chat(CHAT))?.said.map((item) => item.text)).toEqual(["Tea is always the answer.", "The oolong there is worth the queue."]);
   });
+  it("sees other bots' replies: one answering a person restarts the lull and is on the card, marked bot", async () => {
+    message("ou_alice", "@yyu 在吗？", 120);
+    n += 1;
+    const reply = feishuTrigger({ message_id: `om_${n}`, chat_id: CHAT, chat_type: "group", sender_id: "ou_yyu", sender_type: "bot",
+      content: "在的，什么事？", create_time: String(now - 30_000), mentions: [] }, BOT, "cli_app")!;
+    client.engine.receive(reply);
+    // The person wrote two minutes ago, but the bot answered 30 s ago: the chat is not quiet yet.
+    room.pass();
+    expect(queued()).toEqual([]);
+    now += 61_000;
+    room.pass();
+    expect(queued()).toEqual([CHAT]);
+    await room.consider(CHAT);
+    const card = JSON.parse(calls[0]!.user) as { messages: { from_id?: string; text: string; bot?: true }[] };
+    expect(card.messages.map((line) => [line.from_id, line.text, line.bot ?? false])).toEqual([["ou_alice", "@yyu 在吗？", false], ["ou_yyu", "在的，什么事？", true]]);
+    expect(calls[0]!.system).toMatch(/A bot's reply counts as an answer/);
+  });
   it("posts nothing when it decides to say nothing, repeats itself, or would say too much", async () => {
     message("ou_alice", "lunch?", 300);
     await room.consider(CHAT);
