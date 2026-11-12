@@ -12,6 +12,7 @@ import { lockHolder } from "./host.js";
 import { requestOn, updatePlacement, type NodeRef } from "./placement.js";
 import { readSettings, settingsPath, superagentStateDir, updateSettings, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
+import type { TicketTool } from "./ticket-tools.js";
 import { findTicket, hostStatus, localReplies, ticketRow, ticketRows, type TicketRow } from "./views.js";
 import type { WorkLink } from "./work-link.js";
 
@@ -288,25 +289,27 @@ async function runMcpCommand(args: string[]): Promise<void> {
   const assignmentId = value(args, "assignment");
   const gateway = flag(args, "gateway");
   if (!ticketId || (owner && !assignmentId)) throw new Error("Usage: swarm superagent mcp --ticket <id> [--remote <node> --assignment <id> | --gateway]");
-  const { serveTicketTools, ticketTools, withPatch } = await import("./ticket-tools.js");
+  const { serveTicketTools, ticketTools, withAttachments, withPatch } = await import("./ticket-tools.js");
   // The tools act as the agent's accounts; a worker that acts as its requester holds their token, which they never use.
   delete process.env.GH_TOKEN;
   delete process.env.GH_REPO;
   // The worker starts its tools in its ticket's directory, whose commits a local ticket's ready report sends as a patch.
   const directory = process.env.SWARM_TICKET_DIR || process.cwd();
+  // An attachment the worker reads is saved there too, wherever the tools run.
+  const serve = (tools: TicketTool[]) => serveTicketTools(withAttachments(withPatch(tools, directory), directory));
   if (gateway) {
     const { gatewayFromEnv, gatewayTicketTools } = await import("./vm/gateway-link.js");
-    await serveTicketTools(withPatch(gatewayTicketTools(gatewayFromEnv()), directory));
+    await serve(gatewayTicketTools(gatewayFromEnv()));
     return;
   }
   if (owner) {
     const { remoteTicketTools } = await import("../mesh/work-link.js");
-    await serveTicketTools(withPatch(remoteTicketTools(await ownerNode(owner), ticketId, assignmentId!), directory));
+    await serve(remoteTicketTools(await ownerNode(owner), ticketId, assignmentId!));
     return;
   }
   const deployment = deploymentFromEnv();
   const client = new SuperagentClient({ deployment: () => deployment });
-  await serveTicketTools(withPatch(ticketTools(client, ticketId), directory));
+  await serve(ticketTools(client, ticketId));
 }
 
 function runConfig(args: string[]): void {

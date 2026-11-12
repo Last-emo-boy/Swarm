@@ -5,7 +5,7 @@
  */
 import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod/v4";
 import { key, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
@@ -21,6 +21,7 @@ import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
 import { feishuRead } from "./sources/feishu-read.js";
+import { TEXT_CHARS, feishuAttachments, readAttachment } from "./sources/feishu-attachment.js";
 import { feishuSettings } from "./sources/feishu.js";
 import { readGithub } from "./sources/github-read.js";
 import { claimPull, readPull } from "./sources/github-pull.js";
@@ -70,6 +71,34 @@ export const withPatch = (tools: readonly TicketTool[], directory: string): Tick
   }
 });
 
+/** Where a worker's ticket tools save the attachments it reads: in its directory, out of git's way. */
+export const ATTACHMENTS_DIR = ".swarm-attachments";
+/**
+ * The ticket tools with an attachment read that saves the file into the worker's directory, where its own tools reach it,
+ * rather than handing its model the bytes: the host runs the read and passes the bytes on wherever the worker runs.
+ */
+export const withAttachments = (tools: readonly TicketTool[], directory: string): TicketTool[] => tools.map((tool) => tool.name !== "attachment" ? tool : {
+  ...tool,
+  run: async (args) => {
+    const result = await tool.run(args) as { base64?: unknown; file_key?: unknown; name?: unknown };
+    if (typeof result?.base64 !== "string") return result;
+    const { base64, ...read } = result;
+    return { ...read, saved_to: saveAttachment(directory, String(read.file_key), String(read.name), Buffer.from(base64, "base64")) };
+  }
+});
+/** Writes an attachment as `<directory>/.swarm-attachments/<file key>/<its name>`, and returns its path. */
+function saveAttachment(directory: string, fileKey: string, name: string, data: Buffer): string {
+  const root = join(directory, ATTACHMENTS_DIR);
+  const safeKey = fileKey.replace(/[^A-Za-z0-9_-]/g, "_");
+  mkdirSync(join(root, safeKey), { recursive: true });
+  // It keeps everything in it, itself too, out of the ticket's commits.
+  writeFileSync(join(root, ".gitignore"), "*\n");
+  const file = basename(name).replace(/[\u0000-\u001f\\/]/g, "_");
+  const path = join(root, safeKey, file === "" || file === "." || file === ".." ? safeKey : file);
+  writeFileSync(path, data);
+  return path;
+}
+
 const AcknowledgementSchema = z.string().trim().min(1)
   .refine((text) => wordCount(text) <= IM_WORDS, `At most ${IM_WORDS} words; write one short sentence.`);
 
@@ -108,6 +137,14 @@ const TOOLS = {
       limit: z.number().int().min(1).max(8000).optional().describe("Characters of the page, 4000 by default.")
     },
     readOnly: true
+  },
+  attachment: {
+    description: `Read a file or image someone attached to a Feishu message this ticket can read: without file_key, the message's attachments; with one, that file, downloaded by the host and saved into your directory (saved_to), with its text where the host can extract it (plain text, Markdown, JSON, CSV, HTML, .docx, PDF), cut to its first ${TEXT_CHARS} characters. You see an image only if your model takes images.`,
+    input: {
+      trigger_id: z.string().min(1).describe("The message's trigger_id, as your messages and trigger/<id> reads give it"),
+      file_key: z.string().trim().min(1).max(200).optional().describe("A key from the message's attachments, such as file_v3_... or img_v3_...")
+    },
+    readOnly: false
   },
   people: {
     description: "Who is who on Feishu, from the bot's records: with no arguments, the chats the bot is in; with chat, that chat's people and bots; with name, the people whose name contains it and the chats they are in.",
@@ -276,6 +313,16 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const found = read(resource);
       if (found === undefined) throw new Error("Unknown resource");
       return page(resource, offset, limit, () => found);
+    },
+    attachment: async (args) => {
+      const source = trigger(String(args.trigger_id));
+      const ref = feishuRef(source);
+      if (!ref) throw new Error("Attachments are read from Feishu messages only");
+      const attachments = feishuAttachments(source.text);
+      if (typeof args.file_key !== "string") return { trigger_id: source.id, attachments, ...(attachments.length ? {} : { note: "This message has no file or image" }) };
+      const attachment = attachments.find((item) => item.file_key === args.file_key);
+      if (!attachment) throw new Error(`${args.file_key} is not attached to this message: list its attachments without file_key`);
+      return { trigger_id: source.id, ...await readAttachment(client.commands, ref.messageId, attachment) };
     },
     devices: async () => {
       const snapshot = client.store.get(KV.host.devices);
