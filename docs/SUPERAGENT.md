@@ -219,6 +219,12 @@ bots and the agent's own words, which the outbox records from everything it post
 the `people` tool and `chat/<chat-id>`: the latest messages of a group the agent is in, or of its ticket's own chat, but
 never someone else's direct messages. None of these ask Feishu at the time, so naming someone never waits on it.
 
+A worker reads the files and images people attach on Feishu with the `attachment` tool, for a message its ticket can read:
+the message's attachments, or one of them, which the host downloads with the bot's CLI (at most 20 MB) and reads. The
+worker gets its text where the host can extract it (plain text, Markdown, JSON, CSV, HTML, .docx, and PDF where
+`pdftotext` is installed), and its tools save the file into its directory under `.swarm-attachments/`, which git ignores,
+wherever the worker runs. The download needs the Feishu app's permission to read message resources (`im:message:readonly`).
+
 Anyone may have the agent message someone else: "帮我私聊小王说…" or "去群里@一下大家". The router's `message` kind
 sends a direct message to a person, by id or by the name the requester used, or posts into a group it is in, and can tell
 the requester it did. A name that fits several people is asked about. A worker's `message` tool does the same for its
