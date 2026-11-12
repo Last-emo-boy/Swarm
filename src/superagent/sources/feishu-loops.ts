@@ -13,11 +13,39 @@ import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyE
 import { health, type SourceContext } from './host.js'
 import { KV } from '../kv.js'
 import { chatsToRead, noticed, readMembers } from '../people.js'
-import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.js'
+import { cursorAt, polled, pollThreads as pollEach } from './poll.js'
 import type { FeishuConfig } from './feishu.js'
 
-export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
-  Promise.allSettled([watch, backfillLoop, chatNamesLoop, membersLoop].map(loop => loop(ctx, signal)))
+export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> => {
+  // The live stream wakes the history sweep each time it becomes ready: at start and after every reconnect.
+  const streamReady = wakeup()
+  return Promise.allSettled([watch(ctx, signal, streamReady), backfillLoop(ctx, signal, streamReady), chatNamesLoop(ctx, signal),
+    membersLoop(ctx, signal)])
+}
+/** A wake-up call for one waiter. One that comes while nobody waits is kept for the next wait, and several merge into one. */
+export interface Wakeup {
+  wake(): void
+  /** True at once when a wake came since the last true, else true at the next wake; false after `ms` or on abort. */
+  wait(signal: AbortSignal, ms: number): Promise<boolean>
+}
+export function wakeup(): Wakeup {
+  let pending = false
+  let waiter: (() => void) | undefined
+  return {
+    wake() { pending = true; waiter?.() },
+    async wait(signal, ms) {
+      if (!pending && !signal.aborted) await new Promise<void>(resolve => {
+        const done = (): void => { waiter = undefined; clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
+        const timer = setTimeout(done, ms)
+        signal.addEventListener('abort', done, { once: true })
+        waiter = done
+      })
+      const woken = pending && !signal.aborted
+      if (woken) pending = false
+      return woken
+    },
+  }
+}
 const enabled = (ctx: SourceContext): FeishuConfig | undefined => ctx.config<FeishuConfig>(SOURCE)
 const bot = (ctx: SourceContext): FeishuBot => {
   const resolved = ctx.deployment.feishu
@@ -43,7 +71,7 @@ function available(ctx: SourceContext): boolean {
 }
 
 /** Runs the live event consumer only while the Source is enabled; disabling it stops the consumer within five seconds. */
-async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+async function watch(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup): Promise<void> {
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the bot; until then nothing runs.
   if (!available(ctx)) return
@@ -59,7 +87,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()
-    try { await consume(ctx, running.signal) }
+    try { await consume(ctx, running.signal, streamReady) }
     catch (error) { if (!running.signal.aborted) ctx.report('feishu', { state: 'error', detail: String(error) }) }
     finally { clearInterval(check); signal.removeEventListener('abort', stop) }
     if (running.signal.aborted) continue
@@ -70,7 +98,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 /** Wait before restarting the event consumer: 1s after a run that stayed up for a minute, otherwise exponential backoff up to 60s. */
 export const consumerRetry = (previous: number | undefined, ranMs: number): number =>
   previous === undefined || ranMs >= 60_000 ? 1000 : Math.min(previous * 2, 60_000)
-async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+async function consume(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup): Promise<void> {
   const child = spawn(bot(ctx).cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
     { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
@@ -84,6 +112,7 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
       ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
+      streamReady.wake()
     } else if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
   })
   stdout.on('line', (line: string) => {
@@ -92,9 +121,12 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
       // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
       if (!trigger || !enabled(ctx)) return
+      const chatId = String(trigger.meta.chatId)
       const chats = ctx.state.get(KV.feishu.chats) ?? {}
-      chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
+      chats[chatId] = trigger.meta.direct === true
       ctx.state.set(KV.feishu.chats, chats)
+      // History is read only after a reconnect, so a topic that talks live must count as active for that sweep to read it.
+      if (typeof trigger.meta.threadId === 'string') sawTopic(ctx.state, chatId, trigger.meta.threadId, trigger.at)
       await receive(ctx, trigger)
     }).catch(error => { ctx.report('feishu', { state: 'error', detail: String(error) }) })
   })
@@ -146,16 +178,28 @@ async function membersLoop(ctx: SourceContext, signal: AbortSignal): Promise<voi
     await delay(60_000, undefined, { signal }).catch(() => {})
   }
 }
-async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+/**
+ * Reads chat and topic history and polls subscribed threads once each time the event stream becomes ready (`streamReady`):
+ * at start and after every reconnect. While the stream stays up it delivers messages as they come, so history only fills in
+ * what it missed while down (restarts, deploys); each chat's cursor makes a sweep cover everything since the last one.
+ * A sweep that fails for a chat is repeated after `sweepRetry`. Every `tickMs` it looks again without calling Feishu: to
+ * report the Source being turned off and to start the cursor of a chat seen for the first time.
+ */
+export async function backfillLoop(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup, tickMs = 60_000): Promise<void> {
   await ctx.ready
   if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing')); return }
+  let retry: number | undefined
+  let retryAt = Infinity
   while (!signal.aborted) {
-    const config = enabled(ctx)
-    if (!config) {
+    if (!enabled(ctx)) {
       ctx.report('history', health('paused', 'sourceOff'))
-      await delay(60_000, undefined, { signal }).catch(() => {})
+      await delay(tickMs, undefined, { signal }).catch(() => {})
       continue
     }
+    const woken = await streamReady.wait(signal, tickMs)
+    const config = enabled(ctx)
+    if (signal.aborted || !config) continue
+    const sweep = woken || Date.now() >= retryAt
     const seen = ctx.state.get(KV.feishu.chats) ?? {}
     const known = Object.entries(seen).filter(([, direct]) => direct ? config.directMessages : config.otherChats === 'mentions')
     // Every group it is in is heard, unless other chats are off: its messages fill in what the live stream missed.
@@ -168,29 +212,53 @@ async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<vo
       const started = new Date().toISOString()
       const cursorKey = KV.feishu.history(chatId)
       const since = ctx.state.get(cursorKey)
+      // A chat seen for the first time is read from now on, so the next sweep covers what the stream misses in it.
       if (since === undefined) { ctx.state.set(cursorKey, started); continue }
+      if (!sweep) continue
       try {
         await backfillChat(ctx, chatId, direct, since, started, signal, tally)
         if (!signal.aborted) ctx.state.set(cursorKey, cursorAt(started))
       } catch (error) { if (!signal.aborted) errors.push(`${chatId}: ${String(error)}`) }
     }
+    if (!sweep || signal.aborted) continue
     await pollThreads(ctx, signal, tally)
+    if (signal.aborted) continue
+    retry = errors.length ? sweepRetry(retry) : undefined
+    retryAt = retry === undefined ? Infinity : Date.now() + retry
     const skipped = tally.skipped ? `; ${tally.skipped} unreadable messages skipped` : ''
-    if (!signal.aborted) ctx.report('history', errors.length
+    ctx.report('history', errors.length
       ? { state: 'error', detail: errors.join('\n') }
       : { state: 'ready', detail: `Configured groups and known direct chats recovered${skipped}`, at: new Date().toISOString() })
-    await delay(60_000, undefined, { signal }).catch(() => {})
   }
 }
 /**
+ * Wait before repeating a sweep that failed for a chat: a minute, doubling up to an hour. What the stream missed then does
+ * not wait for the next reconnect, and a chat that keeps failing costs one sweep an hour, not one a minute.
+ */
+export const sweepRetry = (previous: number | undefined): number =>
+  previous === undefined ? 60_000 : Math.min(previous * 2, 3_600_000)
+/** How long after its last message a topic is still read for replies, unless a subscribed, still-polled Thread follows it. */
+export const TOPIC_HORIZON_MS = 24 * 3600_000
+/** True when a sweep stops reading topic `id`, last seen at `seen`: quiet for a day by `until`, and no polled Thread follows it. */
+export const quietTopic = (id: string, seen: string, followed: ReadonlySet<string>, until: string): boolean =>
+  !followed.has(id) && Date.parse(until) - Date.parse(seen) >= TOPIC_HORIZON_MS
+/**
+ * Records that topic `id` of a chat had a message at `at`, keeping the later time. The live stream and history both write
+ * the map, so each write rereads it with no await in between.
+ */
+export function sawTopic(state: SourceContext['state'], chatId: string, id: string, at: string): void {
+  const topics = state.get(KV.feishu.topics(chatId)) ?? {}
+  if (Date.parse(topics[id] ?? '') >= Date.parse(at)) return
+  state.set(KV.feishu.topics(chatId), { ...topics, [id]: at })
+}
+/**
  * Backfills chat messages and active topic replies between `since` and `until` before the caller advances the chat cursor.
- * Topics are stored as `{ id: lastSeenAt }`, and unsubscribed topics older than the polling horizon are pruned.
+ * Topics are stored as `{ id: lastSeenAt }`; ones quiet for `TOPIC_HORIZON_MS` that no polled Thread follows are pruned.
  */
 export async function backfillChat(ctx: SourceContext, chatId: string, direct: boolean, since: string, until: string,
   signal: AbortSignal, tally: Tally = { skipped: 0 }): Promise<void> {
   const commands = ctx.commands.withSignal(signal)
   const topicsKey = KV.feishu.topics(chatId)
-  const topics = { ...ctx.state.get(topicsKey) }
   const scan = async (kind: 'chat' | 'thread', id: string): Promise<void> => {
     let page: string | undefined
     const pages = new Set<string>()
@@ -206,7 +274,7 @@ export async function backfillChat(ctx: SourceContext, chatId: string, direct: b
         if (outside) throw new Error('Feishu history returned a message outside the requested chat or thread')
         if (message.deleted) continue
         const at = feishuTime(message.create_time)
-        if (message.thread_id && !(Date.parse(topics[message.thread_id] ?? '') >= Date.parse(at))) topics[message.thread_id] = at
+        if (message.thread_id) sawTopic(ctx.state, chatId, message.thread_id, at)
         const trigger = feishuTrigger(historyEvent(message, chatId, direct), bot(ctx).botId, bot(ctx).appId)
         if (trigger) await receive(ctx, trigger)
       }
@@ -220,12 +288,10 @@ export async function backfillChat(ctx: SourceContext, chatId: string, direct: b
   // A quiet topic is forgotten unless a subscribed Thread that is still polled follows it.
   const followed = new Set(ctx.threads.subscribed(SOURCE).filter(thread => polled(ctx, thread))
     .map(thread => String(thread.meta.threadId ?? ctx.triggers.latest(thread.key)?.meta.threadId ?? '')))
-  for (const [id, seen] of Object.entries(topics)) {
-    if (!followed.has(id) && Date.parse(until) - Date.parse(seen) >= POLL_HORIZON_MS) delete topics[id]
-  }
+  const topics = Object.fromEntries(Object.entries(ctx.state.get(topicsKey) ?? {})
+    .filter(([id, seen]) => !quietTopic(id, seen, followed, until)))
   ctx.state.set(topicsKey, topics)
   for (const id of Object.keys(topics)) await scan('thread', id)
-  ctx.state.set(topicsKey, topics)
 }
 
 /** Resolves the retained source message reference for polling a subscribed thread. */
