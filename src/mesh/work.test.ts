@@ -2,7 +2,7 @@
  * Placing a ticket's worker on another node, end to end with no paid model: an owner node and a runner node on localhost,
  * each a real superagent host and mesh server, a worker process on the runner with its ticket tools' proxy, and a scripted
  * OpenAI-compatible model. A third node takes work and then goes silent, so its lease lapses. The runner also lists Claude
- * Code (a fake one on PATH) among its abilities, so work on that harness goes to it.
+ * Code (a fake one on PATH) among its abilities, so work on that harness goes to it, and waits for it while its slots are full.
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -14,6 +14,7 @@ import type { Ticket } from "../superagent/core/index.js";
 import type { SuperagentHost } from "../superagent/host.js";
 import { KV } from "../superagent/kv.js";
 import { requestOn } from "../superagent/placement.js";
+import { settingsPath, updateSettings } from "../superagent/settings.js";
 import { writeFakeHarnesses } from "../superagent/testing/fake-harness.js";
 import { startFakeModel, writeFakeModelHome, type ModelRequest } from "../superagent/testing/fake-model.js";
 import { ticketRow } from "../superagent/views.js";
@@ -40,6 +41,9 @@ let ovh: TestNode;
 let gpu: TestNode;
 let ghost: { server: MeshServer; mesh: string; offers: Record<string, unknown>[] };
 
+let releaseGpuSlot = (): void => {};
+const gpuSlotReleased = new Promise<void>((resolve) => { releaseGpuSlot = resolve; });
+
 const loop = (result: Record<string, unknown>) => JSON.stringify({ files_touched: [], next_actions: [], tool_calls: [], ...result });
 const reported = (request: ModelRequest) => request.user.includes("\"reported\":true") || request.user.includes("\\\"reported\\\":true");
 
@@ -47,18 +51,30 @@ const reported = (request: ModelRequest) => request.user.includes("\"reported\":
 let configAnswered = false;
 
 /**
- * The router accepts every request, saying all but the training and harness note ones need a GPU. The hello.txt worker writes the file, checks
- * it and reports; the config worker reports progress and goes idle, then answers a person's question with its result.
+ * The router accepts every request, saying all but the training and note ones need a GPU. The hello.txt worker writes the file, checks
+ * it and reports; the config worker reports progress and goes idle, then answers a person's question with its result. The worker
+ * that holds the GPU node's slot waits until the test releases it.
  */
-function answer(request: ModelRequest): string {
+async function answer(request: ModelRequest): Promise<string> {
   if (request.system.includes("You route requests for Swarm's ticket host")) {
     if (request.user.includes("train")) return JSON.stringify({ kind: "accept", title: "Train the model", worktree_name: "train-model", acknowledgement: "On it: training the model." });
     if (request.user.includes("config file")) {
       return JSON.stringify({ kind: "accept", title: "Rename the config file", worktree_name: "rename-config", acknowledgement: "On it: renaming the config file.", needs: ["gpu"] });
     }
+    if (request.user.includes("waiting note")) return JSON.stringify({ kind: "accept", title: "Write the waiting note", worktree_name: "waiting-note", acknowledgement: "On it: writing the waiting note." });
+    if (request.user.includes("hold the gpu slot")) {
+      return JSON.stringify({ kind: "accept", title: "Hold the GPU slot", worktree_name: "hold-gpu-slot", acknowledgement: "On it: holding the GPU slot.", needs: ["gpu"] });
+    }
     // Last: the router sees open tickets' titles, so every later request mentions the harness note.
     if (request.user.includes("harness note")) return JSON.stringify({ kind: "accept", title: "Write the harness note", worktree_name: "harness-note", acknowledgement: "On it: writing the harness note." });
     return JSON.stringify({ kind: "accept", title: "Create hello.txt", worktree_name: "create-hello", acknowledgement: "On it: creating hello.txt.", needs: ["GPU"] });
+  }
+  if (request.system.includes("hold-gpu-slot-")) {
+    if (reported(request)) return loop({ status: "completed", summary: "Done", message: "Released the slot." });
+    await gpuSlotReleased;
+    return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
+      { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Held the GPU slot.", message_for_person: "Done holding the GPU slot." } }
+    ] });
   }
   if (request.system.includes("rename-config-")) {
     if (!request.user.includes("ready for review")) {
@@ -110,6 +126,8 @@ async function startNode(name: string, abilities: string[]): Promise<TestNode> {
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   return { host, server, url, mesh, state };
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function until<T>(read: () => T | undefined, ms = 100_000): Promise<T> {
   const deadline = Date.now() + ms;
@@ -211,6 +229,43 @@ test("a ticket on a harness runs on the paired node that lists that harness, tho
   assert.deepEqual(turns.map((call) => [call.kind, call.cwd]), [["claude", realpathSync(directory)]], "Claude Code ran there, in the runner's directory");
   assert.ok(existsSync(join(directory, "harness.txt")));
   await until(() => client.store.get(KV.mesh.lease(ticket.id)) ? undefined : true, 10_000);
+});
+
+test("a ticket on a harness that only a busy paired node has waits for a free slot there instead of running here", { timeout: 120_000 }, async () => {
+  const { client } = ovh.host;
+  const settings = settingsPath(gpu.state);
+  const slots = gpu.host.client.settings().executor.maxWorkers;
+  // The GPU node, the only one with Claude Code, gets one worker slot, which a ticket that needs a GPU keeps busy.
+  updateSettings((current) => ({ ...current, executor: { ...current.executor, maxWorkers: 1 } }), settings);
+  try {
+    client.request("hold the gpu slot");
+    const hold = () => client.store.tickets.list().find((ticket) => ticket.title === "Hold the GPU slot");
+    await until(() => hold()?.assignments.at(-1)?.startedAt ? true : undefined);
+
+    client.request("write the waiting note", undefined, { harness: "claude" });
+    const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Write the waiting note");
+    const waiting = await until(() => find()?.assignments.at(-1) ? find() : undefined);
+    await sleep(6000);
+    const assignment = find()!.assignments.at(-1)!;
+    assert.equal(assignment.state, "pending", "this node, which lacks Claude Code, does not run it");
+    assert.equal(assignment.startedAt, undefined);
+    assert.ok(!existsSync(waiting.execution!.directory), "nothing ran in this node's directory");
+    assert.equal(client.store.get(KV.mesh.lease(waiting.id)), undefined, "the busy node was not offered it");
+
+    releaseGpuSlot();
+    const ticket = await until(() => find()?.ended ? find() : undefined);
+    assert.equal(ticket.ended?.outcome, "completed", `ticket ended: ${JSON.stringify(ticket.ended)} report: ${JSON.stringify(ticket.assignments.at(-1)?.report)}`);
+    assert.equal(ticket.assignments.length, 1, "it waited in its first Assignment");
+    assert.equal(ticketRow(client, ticket).runsOn, "gpu");
+    const directory = realpathSync(join(gpu.state, "remote", readMesh(ovh.mesh).node.id, "work", ticket.execution!.name));
+    assert.ok(fakes.calls().some((call) => call.kind === "claude" && call.tools && call.cwd === directory), "Claude Code ran on the GPU node once its slot freed");
+    assert.ok(!existsSync(ticket.execution!.directory), "nothing ran here");
+    await until(() => hold()?.ended ? true : undefined);
+    await until(() => client.store.get(KV.mesh.lease(ticket.id)) ? undefined : true, 10_000);
+  } finally {
+    releaseGpuSlot();
+    updateSettings((current) => ({ ...current, executor: { ...current.executor, maxWorkers: slots } }), settings);
+  }
 });
 
 test("a person's message wakes the idle worker on the node that holds the ticket's lease, which answers through the owner", { timeout: 120_000 }, async () => {

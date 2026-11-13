@@ -1143,20 +1143,22 @@ A ticket can also stay on this node while its worker runs on a paired one. `swar
 and when the router says the work needs `gpu` or `macos`, the worker goes to a paired node that has that ability and a
 free slot. Work on a harness (`--harness claude`, one a person named to the bot, or `executor.harness`) needs it the same way: a node lists
 `harness:<id>` among its abilities for each harness profile that is installed and signed in there, with its keys set,
-and checks again every 10 minutes, so a ticket on Claude Code runs on a device where Claude Code is signed in. The
-node that accepted the ticket remains its record and the only writer of its store. The other node prepares its own
-ticket directory with its own prepare command and credentials (a node that runs GitHub tickets needs the agent
-account's CLI signed in there) and holds a lease it renews; if the lease lapses, the owner treats the worker as lost
-and places the work again. `swarm superagent ticket` shows where a worker runs. Placement takes effect on a node run
-as `swarm node run`.
+and checks again every 10 minutes, so a ticket on Claude Code runs on a device where Claude Code is signed in. While
+every reachable paired node that has what the work needs is busy, the work waits for a free slot on one of them
+instead of running on this node; only work that no reachable paired node has the abilities for runs here, where its
+worker says what is missing. The node that accepted the ticket remains its record and the only writer of its store.
+The other node prepares its own ticket directory with its own prepare command and credentials (a node that runs
+GitHub tickets needs the agent account's CLI signed in there) and holds a lease it renews; if the lease lapses, the
+owner treats the worker as lost and places the work again. `swarm superagent ticket` shows where a worker runs.
+Placement takes effect on a node run as `swarm node run`.
 
 A node with free worker slots can also pull work instead of waiting to be handed it. Pulling is off until
 `swarm mesh pull on` (add `--repo owner/name`, repeatable, to take only those repositories' work); the node then asks
 its paired nodes, every 15 seconds and less often while nothing is open, for work that waits there for a worker:
-queued behind `executor.maxWorkers`, or needing an ability the owner lacks while the paired nodes that have it and
-pull are busy (such work waits for them instead of running on the owner). It claims what its abilities and
-repositories fit, oldest first. The owner decides: the first claim that is still valid gets the work through the
-same offer and lease as placement, later ones are refused, and the owner never starts a claimed Assignment itself.
+queued behind `executor.maxWorkers`, or needing an ability the owner lacks while the paired nodes that have it are
+busy. It claims what its abilities and repositories fit, oldest first. The owner decides: the first claim that is
+still valid gets the work through the same offer and lease as placement, later ones are refused, and the owner never
+starts a claimed Assignment itself.
 Work placed with `--on` or `place`, held under a lease, or waiting for a person is never open. Owners hand their
 waiting work to paired nodes that pull by default, because pairing already lets a peer run this node's work when it
 is placed there and a puller only takes work that would otherwise wait; `swarm mesh offer off` keeps it.
