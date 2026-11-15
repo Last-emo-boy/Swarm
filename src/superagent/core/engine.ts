@@ -89,6 +89,19 @@ export class Engine {
     }
   }
 
+  /**
+   * The host's clock ran out on an open ticket, for `reason`, such as nobody answering it for too long: it ends as one with
+   * nothing left to do, so a person's later message on one of its Threads resumes it under its Mandate, as it resumes a
+   * completed ticket (see `Tickets.wake`). A ticket that ended already is returned unchanged.
+   * @throws UserError when the ticket is unknown.
+   */
+  expireTicket(ticketId: string, reason: string): Ticket {
+    return this.repo.atomic(() => {
+      this.tickets.end(ticketId, 'executor', 'dropped', undefined, reason)
+      return this.repo.tickets.get(ticketId)!
+    })
+  }
+
   // The main Session
 
   /** The candidate of the Eval that holds a Trigger, as its assessor sees it; undefined while no Eval holds it. */

@@ -80,7 +80,9 @@ export const KV = {
    */
   vm: { slot: family<VmSlot, [slot: string]>('vm-slot:'), disk: family<string>('vm-disk:'), cluster: family<string>('vm-cluster-disk:') },
   /** When a ticket's last update went to its person (notices.ts), by ticket id. */
-  notices: { progress: family<string>('progress-sent:') },
+  notices: { progress: family<string>('progress-sent:'),
+    /** The reminder a ticket that waits on its person sent them, by ticket id: since when it waits, and when the reminder went. */
+    nudged: family<{ since: string; at: string }>('nudge-sent:') },
   /** The harness profile a request was filed to run on, by the request's id, until it becomes a ticket's execution. */
   harness: { chosen: family<string>('harness-chosen:') },
   /**

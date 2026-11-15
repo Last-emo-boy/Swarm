@@ -11,6 +11,7 @@ import { ModelAssessor, type Complete } from "./assessor.js";
 import { BotCommands } from "./bot-commands.js";
 import { ChatterRoom } from "./chatter.js";
 import { Memories } from "./memories.js";
+import { sweepStale } from "./notices.js";
 import { GithubLinks, githubApp, linkKey, type Credential, type LinkView } from "./github-link.js";
 import { SuperagentClient } from "./client.js";
 import { devicesOf, type Devices } from "./devices.js";
@@ -31,6 +32,8 @@ import type { VmControl } from "./vm/vm-work.js";
 const PASS_MS = 2000;
 /** How often the host deletes the patches it kept too long. */
 const PRUNE_MS = 3_600_000;
+/** How often the host looks for tickets that waited on a person too long (notices.ts). */
+const SWEEP_MS = 60_000;
 /** How long the router and `/devices` reuse what the paired nodes answered, rather than asking each of them again. */
 const MESH_VIEW_MS = 30_000;
 /** How old the devices snapshot its tickets' workers read may grow while any of them works. */
@@ -92,6 +95,7 @@ export class SuperagentHost {
   private readonly links: GithubLinks;
   private release?: () => void;
   private prunedAt = 0;
+  private sweptAt = 0;
   private deployment?: Deployment;
   problem?: SetupProblem;
   /** Where tickets placed on paired nodes run; a mesh node sets it before it starts the host (src/mesh/work.ts). */
@@ -111,7 +115,8 @@ export class SuperagentHost {
     this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.release = acquireLock(this.stateDir);
     try {
-      this.client = new SuperagentClient({ stateDir: this.stateDir, deployment: () => this.deployment });
+      this.client = new SuperagentClient({ stateDir: this.stateDir, deployment: () => this.deployment,
+        onError: (error) => this.log(`superagent: a follow-up after a commit failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`) });
       this.links = new GithubLinks({ store: this.client.store, key: () => linkKey(this.stateDir), broken: (actor, link) => this.linkBroken(link) });
       this.executor = new SwarmExecutor({
         client: this.client,
@@ -230,6 +235,7 @@ export class SuperagentHost {
       if (!settings.paused) {
         this.chatter.pass();
         this.memories.pass();
+        if (Date.now() - this.sweptAt > SWEEP_MS) { this.sweptAt = Date.now(); sweepStale(this.client); }
         this.botCommands.takeOverWanted();
       }
       this.client.effects.kick();
