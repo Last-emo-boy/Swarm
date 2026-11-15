@@ -144,7 +144,8 @@ export const ROUTE_CONTRACT = [
   ' "remember": "any kind: optional list of at most 3 notes worth keeping from this message, as the Memory section says: [{\"about\": \"<id>|chat|self\", \"kind\": \"fact|preference|event|promise\", \"text\": \"...\", \"due\": \"promises only\"}]",',
   ' "await_answer": "message: true when you ask something on the person\'s behalf and bring them the answer",',
   ' "mentions": "chat and message: optional ids of the people to @, from the card, each written as @name in the text where you would say it; all for everyone in the chat, only when asked",',
-  ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted where reply_as says. message: optional, what you tell the person who asked"}'
+  ' "reply": "chat: what you say back, at most 100 words in the person\'s language; it is posted where reply_as says. message: optional, what you tell the person who asked"}',
+  "When a call carries previous_answer and problem beside the candidate, your last answer (previous_answer) could not be used, for the reason problem gives: answer again with that fixed."
 ].join("\n");
 /** What the card's requester means for routing, and the commands the router runs for a person. */
 const REQUESTER_LINES = [

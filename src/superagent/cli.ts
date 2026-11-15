@@ -1,6 +1,6 @@
 /**
  * `swarm superagent`: run the ticket host, inspect tickets, file requests and answer, stop or retry tickets from the
- * terminal, and place a ticket's worker on a paired mesh node. `worker` and `mcp` are the host's own entry points for a
+ * terminal, send a request that could not be routed again, and place a ticket's worker on a paired mesh node. `worker` and `mcp` are the host's own entry points for a
  * ticket's worker process and its tools; with `--remote` they serve a ticket that a paired node owns, and with `--gateway`
  * one in a ticket VM, whose supervisor `guest` starts them (vm/guest.ts).
  */
@@ -13,7 +13,7 @@ import { requestOn, updatePlacement, type NodeRef } from "./placement.js";
 import { readSettings, settingsPath, superagentStateDir, updateSettings, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import type { TicketTool } from "./ticket-tools.js";
-import { findTicket, hostStatus, localReplies, ticketRow, ticketRows, type TicketRow } from "./views.js";
+import { dismissUnrouted, findTicket, hostStatus, localReplies, routeAgain, ticketRow, ticketRows, type TicketRow } from "./views.js";
 import type { WorkLink } from "./work-link.js";
 
 const USAGE = `Usage: swarm superagent <command>
@@ -31,6 +31,8 @@ Commands:
   say <id> <text...>          Send a message to a ticket, such as an answer to its question
   stop <id>                   Stop a ticket's work
   retry <id>                  Start a ticket again after it failed or blocked
+  again <message id>          Send a request that could not be routed to the router again; status lists them
+  dismiss <message id>        Drop one from status without sending it again; its Decision's id names it too
   place <id> <node>|here      Run a ticket's next worker on a paired node, or here
   pause | resume              Pause or resume processing: new Evals, launches, deliveries and replies
   config [path|show|init]     The settings file: its path, its content, or a starting file
@@ -100,6 +102,11 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
       console.log(status.running ? `Host running (pid ${status.pid})` : `No host running. Start one with: swarm superagent run`);
       const { person, working, queued, idle } = status.counts;
       console.log(`Tickets: ${person} need you, ${working} working, ${queued} queued, ${idle} idle`);
+      if (status.unrouted.length) {
+        console.log(`${status.unrouted.length} request${status.unrouted.length > 1 ? "s" : ""} could not be routed:`);
+        for (const request of status.unrouted) console.log(`  ${request.triggerId.slice(0, 8)}  ${new Date(request.at).toLocaleString()}  ${request.text}`);
+        console.log("  Send one again with `swarm superagent again <id>`, or drop it from this list with `swarm superagent dismiss <id>`.");
+      }
       // A stopped host's last snapshot says nothing about now.
       for (const [name, health] of Object.entries(status.running ? status.health : {})) {
         if (health.state === "error" || health.state === "starting") console.log(`  ${name}: ${health.state} ${health.detail}`.trimEnd());
@@ -129,6 +136,24 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
       }
       const { triggerId } = client.request(text, undefined, harness ? { harness } : {});
       console.log(`Filed request ${triggerId.slice(0, 8)}${harness ? `; its worker runs on ${harness}` : ""}.${lockHolder(client.stateDir) ? "" : " No host runs yet: start one with `swarm superagent run`."}`);
+      return;
+    }
+    // These two name a message, as status lists it, not a ticket.
+    if (command === "again" || command === "dismiss") {
+      const id = args.shift();
+      if (!id) throw new Error(`Usage: swarm superagent ${command} <message id>`);
+      if (command === "dismiss") {
+        dismissUnrouted(client, id);
+        console.log(`Dismissed ${id}: the request leaves the status and is not sent again.`);
+        return;
+      }
+      const { trigger, queued, dismissed } = routeAgain(client, id);
+      const short = trigger.id.slice(0, 8);
+      const host = lockHolder(client.stateDir) ? "" : " No host runs yet: start one with `swarm superagent run`.";
+      // A message the status did not list may be decided already, as one that became a ticket is: its fresh Eval then ignores it.
+      console.log(`${!queued ? `Request ${short} is with the router already: an Eval holds it, so nothing changed.`
+        : dismissed ? `Sent request ${short} to the router again, and took it off the list in status.`
+        : `Queued message ${short} for the router again; it was not on the list in status.`}${host}`);
       return;
     }
     const handle = args.shift();

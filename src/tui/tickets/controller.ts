@@ -32,7 +32,7 @@ const REMOTE_EVERY_MS = 4000;
 function mergedStatus(local: HostStatus | undefined, remote: readonly HostStatus[]): HostStatus {
   const counts = { person: 0, working: 0, queued: 0, idle: 0, ended: 0, ...local?.counts };
   for (const status of remote) for (const [group, count] of Object.entries(status.counts)) counts[group as keyof typeof counts] += count;
-  return { ...(local ?? { health: {} }), running: !!local?.running || remote.some((status) => status.running), counts };
+  return { ...(local ?? { health: {}, unrouted: [] }), running: !!local?.running || remote.some((status) => status.running), counts };
 }
 
 export class TuiTickets {

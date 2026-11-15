@@ -9,6 +9,7 @@ import { SuperagentClient } from "./client.js";
 import { devicesOf } from "./devices.js";
 import { KV } from "./kv.js";
 import { placementOf, workNeeds, type MeshView } from "./placement.js";
+import { routerPrompt } from "./prompts.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import { commentTrigger } from "./sources/github-trigger.js";
 
@@ -105,6 +106,32 @@ test("asks again with the problem when an answer breaks a limit, and leaves the 
   assert.equal(client.store.triggers.disposition(second.triggerId)?.decisionId, undefined);
 });
 
+test("shows the router its own answer that could not be used, beside the problem with it, when it asks again", async () => {
+  start();
+  const untitled = JSON.stringify({ kind: "accept", worktree_name: "rename-script", acknowledgement: "On it: renaming the script." });
+  const { triggerId } = client.request("rename the script");
+  answers.push(untitled, accept({ title: "Rename the script", worktree_name: "rename-script" }));
+  await judge(triggerId);
+  const again = JSON.parse(calls[1]!.user) as { candidate: unknown; previous_answer: string; problem: string };
+  assert.equal(again.previous_answer, untitled, "the answer as the model gave it");
+  assert.equal(again.problem, "accept needs title");
+  assert.deepEqual(again.candidate, JSON.parse(calls[0]!.user).candidate);
+  assert.equal(JSON.parse(calls[0]!.user).previous_answer, undefined, "a first call has no answer before it");
+  assert.equal(client.store.decisions.get(client.store.triggers.disposition(triggerId)!.decisionId!)?.kind, "accept");
+
+  // An answer with no JSON in it comes back too, and a long one only as far as its first 4000 characters.
+  const broken = `Sure, I will route it. ${"x".repeat(5000)}`;
+  const second = client.request("another request");
+  answers.push(broken, accept({ title: "Another request", worktree_name: "another-request" }));
+  await judge(second.triggerId);
+  const retried = JSON.parse(calls[3]!.user) as { previous_answer: string; problem: string };
+  assert.equal(retried.previous_answer, broken.slice(0, 4000));
+  assert.match(retried.problem, /no JSON object/);
+  assert.notEqual(retried.problem, retried.previous_answer);
+
+  assert.match(routerPrompt(), /carries previous_answer and problem beside the candidate, your last answer \(previous_answer\) could not be used, for the reason problem gives/);
+});
+
 test("routeProblem names the field a kind needs", () => {
   assert.equal(routeProblem({ kind: "attach" }), "attach needs ticket_id");
   assert.equal(routeProblem({ kind: "ignore", reason: "chat" }), undefined);
@@ -173,6 +200,29 @@ test("stops the tickets a person's follow-up asks to stop, and nothing on a mess
   await assessor.followup(stop.id);
   const ended = client.store.tickets.get(ticketId)!;
   assert.equal(ended.ended?.by, "human");
+});
+
+test("gives up a stop check after two answers that cannot be used, stopping nothing, and still fails when the call fails", async () => {
+  start(githubSettings("observe"));
+  const request = comment(1, "@agent-bot please fix the label typo");
+  client.engine.receive(request);
+  answers.push(accept());
+  await judge(request.id);
+  const ticketId = client.store.decisions.get(client.store.triggers.disposition(request.id)!.decisionId!)!.ticketId!;
+
+  const unclear = comment(2, "hmm, is this still what we want?");
+  client.engine.receive(unclear);
+  const before = calls.length;
+  // One with no JSON object in it, then one the schema refuses.
+  answers.push("I think they want it stopped.", JSON.stringify({ stop: "all of them" }));
+  await assessor.followup(unclear.id);
+  assert.deepEqual(calls.slice(before).map((call) => call.purpose), ["superagent_followup", "superagent_followup"], "asked once more, then no more");
+  assert.ok(liveTicket(client.store.tickets.get(ticketId)!), "nothing was stopped");
+
+  // A call that fails is not an answer: it rejects, so its effect is tried again.
+  await assert.rejects(assessor.followup(unclear.id), /no scripted answer/);
+  assert.equal(calls.length - before, 3);
+  assert.ok(liveTicket(client.store.tickets.get(ticketId)!));
 });
 
 test("routes a request again when the Engine refuses to attach it to a ticket its sender may not steer", async () => {

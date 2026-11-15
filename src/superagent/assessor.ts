@@ -22,7 +22,7 @@ import { ask } from "./asks.js";
 import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, personSubject, planOps, subjectsOf } from "./memories.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
-import { IM_WORDS, NOTE_WORDS, checkedImText, parseJsonObject, sameName, wordCount } from "./text.js";
+import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, parseJsonObject, sameName, wordCount } from "./text.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
 export type Complete = (input: { purpose: string; system: string; user: string; model?: string }) => Promise<string>;
@@ -171,6 +171,8 @@ const LISTED_REPOS = 300;
 const CONVERSATION_MS = 6 * 3_600_000, CONVERSATION_LINES = 12, LINE_CHARS = 300, PEOPLE_HERE = 40;
 /** Character limits in the thread window of an assessment, as upstream's orchestrator_eval served it. */
 const TRIGGER_CHARS = 4000, NEAR_CHARS = 1200, WINDOW_CHARS = 400, STUB_CHARS = 50;
+/** How much of a routing answer that could not be used the router reads again when it is asked once more. */
+const ANSWER_CHARS = 4000;
 const cut = (text: string, limit: number) => text.length <= limit ? { text } : { text: `${text.slice(0, limit)}…`, chars: text.length };
 
 export class ModelAssessor {
@@ -324,17 +326,21 @@ export class ModelAssessor {
     }
   }
 
-  /** Routes an explicit candidate: one model answer, checked once and asked again with the problem when it does not hold. */
+  /**
+   * Routes an explicit candidate: one model answer, checked once and asked again, with that answer and the problem with
+   * it, when it does not hold.
+   */
   private async route(candidate: Candidate): Promise<void> {
     const { client, complete } = this.host;
     const harnesses = await this.harnesses(candidate);
     const card = { ...this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...await this.devices(candidate) };
     const triggerId = candidate.triggers.at(-1)!.id;
-    let last = "";
+    let last = "", previous = "";
     for (let attempt = 0; attempt < 2; attempt++) {
-      const user = JSON.stringify(attempt ? { candidate: card, previous_answer: last, problem: last } : { candidate: card }, null, 2);
+      const user = JSON.stringify(attempt ? { candidate: card, previous_answer: previous, problem: last } : { candidate: card }, null, 2);
       const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? "", !!memoryOf(client.settings())), user,
         model: client.settings().eval.model ?? undefined });
+      previous = answer.slice(0, ANSWER_CHARS);
       let route: Route;
       try {
         route = RouteSchema.parse(parseJsonObject(answer));
@@ -560,7 +566,10 @@ export class ModelAssessor {
     throw new Error(`The assessment could not be used: ${last}`);
   }
 
-  /** Asks whether a person's follow-up that tickets' workers decide asks to stop their work, and stops the tickets it names. */
+  /**
+   * Asks whether a person's follow-up that tickets' workers decide asks to stop their work, and stops the tickets it names.
+   * An answer that cannot be used is asked for once more; after that it stops nothing, rather than ask again without end.
+   */
   async followup(triggerId: string): Promise<void> {
     const { client, complete } = this.host;
     const trigger = client.store.triggers.get(triggerId);
@@ -570,8 +579,9 @@ export class ModelAssessor {
     if (!tickets.length) return;
     const card = { message: { ...triggerMessage(trigger, {}), text: cut(trigger.text, TRIGGER_CHARS).text },
       delivered_to: tickets.map((ticket) => ({ ticket_id: ticket.id, title: ticket.title, state: ticketCard(ticket).state })) };
-    const answer = FollowupSchema.parse(parseJsonObject(await complete({ purpose: "superagent_followup", system: followupPrompt(),
-      user: JSON.stringify(card, null, 2), model: client.settings().eval.model ?? undefined })));
+    const answer = await answerOf(FollowupSchema, () => complete({ purpose: "superagent_followup", system: followupPrompt(),
+      user: JSON.stringify(card, null, 2), model: client.settings().eval.model ?? undefined }));
+    if (!answer) return;
     for (const ticketId of answer.stop.filter((id) => owners.includes(id))) {
       try {
         client.engine.decide(triggerId, { kind: "stop", ticketId, reason: answer.reason || { code: "humanStop" } });
