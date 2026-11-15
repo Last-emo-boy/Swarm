@@ -73,19 +73,33 @@ const expiredNotice = (request: string): string => wording(request)(
   "There was no reply in two days, so I closed this ticket. Reply here and I'll pick it up again.", "两天没有收到回复，我把这张工单关闭了。回复这条消息，我会接着做。");
 
 /**
- * Since when an open ticket waits on a person who has said nothing: the time of its latest report, while the ticket waits
- * for an answer or stands blocked or failed (see `ticketStage`), no person's message reached it since, and its worker is
- * not at work on it: after a progress report, which may ask its question, and before the first report of a new
- * Assignment, as after a retry, it is until its turn ends. Undefined for any other ticket.
+ * An open ticket's wait on a person who has said nothing: the ticket waits for an answer or stands blocked or failed (see
+ * `ticketStage`), and no person's message reached it since its latest report. It waits since that report, or since a
+ * person's later retry, which starts the wait over as their message would. `working` says its worker is at work
+ * meanwhile, which a turn's end ends: after a progress report, which may ask its question, on what reached it after the
+ * report (the busy test of `Assignments.interrupted`), and in a new Assignment that has reported nothing yet, as after a
+ * retry or a host restart.
  */
-export function waitingSince(ticket: Ticket): string | undefined {
+function personWait(ticket: Ticket): { since: string; working: boolean } | undefined {
   const stage = ticketStage(ticket);
   const report = latestReport(ticket);
-  if (!report || stage.stage !== "person" || !["answer", "blocked", "failed"].includes(stage.action)) return undefined;
   const latest = latestAssignment(ticket);
-  const working = (report.state === "progress" || !latest?.report) && !(latest?.idleAt && latest.idleAt >= report.at);
-  const heard = ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context && input.at >= report.at);
-  return working || heard ? undefined : report.at;
+  if (!report || !latest || stage.stage !== "person" || !["answer", "blocked", "failed"].includes(stage.action)) return undefined;
+  if (ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context && input.at >= report.at)) return undefined;
+  // Since when its worker has had something to work on, if it has: no turn of it ended since.
+  const begun = !latest.report ? latest.deliveredAt ?? latest.createdAt
+    : latest.deliveredAt && latest.deliveredAt >= report.at ? latest.deliveredAt : report.state === "progress" ? report.at : undefined;
+  const retried = ticket.assignments.filter((assignment) => assignment.endedReason === "retried").at(-1)?.endedAt;
+  return { since: retried && retried > report.at ? retried : report.at, working: !!begun && !(latest.idleAt && latest.idleAt >= begun) };
+}
+
+/**
+ * Since when an open ticket waits on a person who has said nothing, while its worker is not at work on it (see
+ * `personWait`): the time of its latest report, or of a later retry. Undefined for any other ticket.
+ */
+export function waitingSince(ticket: Ticket): string | undefined {
+  const wait = personWait(ticket);
+  return wait && !wait.working ? wait.since : undefined;
 }
 
 /**
@@ -99,10 +113,11 @@ export function waitingSince(ticket: Ticket): string | undefined {
 export function sweepStale(client: SuperagentClient, now = Date.now()): void {
   const { store, sources, outbox, engine } = client;
   store.atomic(() => {
-    // A reminder counts for the wait it was sent in: a ticket that waits no more, or waits anew, starts over.
+    // A reminder counts for the wait it was sent in: a ticket that waits no more, or waits anew, starts over. One whose
+    // worker is at work meanwhile, as after a host restart, keeps it: its clock would otherwise start again, unsaid.
     for (const name of store.keys(KV.notices.nudged)) {
       const ticket = store.tickets.get(name.slice(KV.notices.nudged.prefix.length));
-      if (!ticket || waitingSince(ticket) !== store.get(name)?.since) store.delete(name);
+      if (!ticket || personWait(ticket)?.since !== store.get(name)?.since) store.delete(name);
     }
     for (const ticket of store.tickets.open()) {
       const since = waitingSince(ticket);

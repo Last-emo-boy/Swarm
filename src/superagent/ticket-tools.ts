@@ -62,15 +62,20 @@ export async function directoryPatch(directory: string): Promise<Patch | undefin
     return undefined;
   }
 }
+/** The largest report of stopped work that carries its patch: a ticket VM's gateway and a paired node's owner read a request of 1,000,000 bytes at most. */
+const STOPPED_REPORT_BYTES = 950_000;
 /**
  * The ticket tools with a report that also carries the patch of the worker's directory when it is ready, blocked or failed:
- * the host keeps a local ticket's as its result, and that of work that stopped so its commits outlast its directory.
+ * the host keeps a local ticket's as its result, and that of work that stopped so its commits outlast its directory. Work
+ * that stopped must still be reported, so a patch that would make its report too large to send goes without its text, as
+ * one over `PATCH_BYTES` does.
  */
 export const withPatch = (tools: readonly TicketTool[], directory: string): TicketTool[] => tools.map((tool) => tool.name !== "report" ? tool : {
   ...tool,
   run: async (args) => {
     const patch = ["ready", "blocked", "failed"].includes(String(args.state)) ? await directoryPatch(directory) : undefined;
-    return tool.run({ ...args, ...(patch ? { patch } : {}) });
+    const fits = args.state === "ready" || !patch || Buffer.byteLength(JSON.stringify({ ...args, patch })) <= STOPPED_REPORT_BYTES;
+    return tool.run({ ...args, ...(patch ? { patch: fits ? patch : { ...patch, text: "" } } : {}) });
   }
 });
 
