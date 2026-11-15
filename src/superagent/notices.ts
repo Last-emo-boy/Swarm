@@ -42,3 +42,9 @@ export function stoppedNotice(state: "failed" | "blocked", summary: string, requ
     ? say(`This ticket stopped before it was done: ${reason} Reply here and I'll pick it up again.`, `这张工单没做完就停下了：${reason} 回复这条消息，我会接着做。`)
     : say(`This ticket is stuck: ${reason} Reply here to tell me how to go on.`, `这张工单卡住了：${reason} 回复这条消息，告诉我怎么继续。`);
 }
+
+/** The host's notice that a request was not taken in because the model did not answer in time, in the language of that request. */
+export function unroutedNotice(request: string): string {
+  return wording(request)("I couldn't take this request in: the model didn't answer in time. Please send it again in a few minutes.",
+    "这条请求没能受理：模型没有及时回答。请过几分钟再发一次。");
+}

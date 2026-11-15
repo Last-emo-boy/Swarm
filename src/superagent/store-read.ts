@@ -55,6 +55,10 @@ export function storeReads(db: DatabaseSync) {
     const pattern = `%${query.replace(/[\\%_]/g, match => `\\${match}`)}%`
     return db.prepare("SELECT value FROM trigger WHERE id = ? OR json_extract(value, '$.url') LIKE ? ESCAPE '\\' OR json_extract(value, '$.meta.messageId') = ? OR json_extract(value, '$.text') LIKE ? ESCAPE '\\' ORDER BY at DESC LIMIT ?").all(query, `${query.replace(/[\\%_]/g, match => `\\${match}`)}%`, query, pattern, limit).map(row => JSON.parse(String(row.value)) as Trigger)
   },
+  /** The Triggers whose id starts with `prefix`, up to `limit`: two are enough to tell a short id that names one message from one that names several. */
+  triggersByPrefix: (prefix: string, limit = 2): Trigger[] => values('SELECT value FROM trigger WHERE substr(id, 1, length(?)) = ? LIMIT ?', prefix, prefix, limit),
+  /** The unavailable Decisions whose id starts with `prefix`, up to `limit`. */
+  unavailableByPrefix: (prefix: string, limit = 2): Decision[] => values("SELECT value FROM decision WHERE substr(id, 1, length(?)) = ? AND json_extract(value, '$.kind') = 'unavailable' LIMIT ?", prefix, prefix, limit),
   recentDecisions: (offset = 0, limit = 50): Decision[] => db.prepare('SELECT value FROM decision ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Decision),
   /** Decisions matching `kinds` whose triggers arrived at or after `since`, aligned with `flow` window counts. */
   decisions: (options: { kinds: string[]; since: string }, offset: number, limit: number): { items: Decision[]; more: boolean } => {

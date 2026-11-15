@@ -2,8 +2,8 @@
  * Ticket and host views shared by the CLI and the TUI: one row per ticket with the stage it waits in (docs/003 of
  * dsh-superagent: whom the ticket waits for and what it needs), and the list of what needs a person, first.
  */
-import { latestReport, ticketOutcome, ticketStage, type Ticket } from "./core/index.js";
-import type { SuperagentClient } from "./client.js";
+import { latestReport, ticketOutcome, ticketStage, type Decision, type Ticket, type Trigger } from "./core/index.js";
+import { unroutedRequest, type SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import type { Health } from "./health.js";
 import { pulledBy, workerNode } from "./placement.js";
@@ -107,21 +107,86 @@ export function findTicket(client: SuperagentClient, handle: string): Ticket | u
   return matches[0];
 }
 
+/** Finds a stored message by its id or the start of it. */
+export function findTrigger(client: SuperagentClient, handle: string): Trigger {
+  const exact = client.store.triggers.get(handle);
+  if (exact) return exact;
+  const matches = client.store.read.triggersByPrefix(handle);
+  if (matches.length > 1) throw new Error(`${handle} names several messages; give more of the id`);
+  if (!matches[0]) throw new Error(`No message ${handle}`);
+  return matches[0];
+}
+
+/** How many of the newest unavailable Decisions the status reads for requests left unrouted, and how much of each request it shows. */
+const UNROUTED = 50, UNROUTED_CHARS = 80;
+
+/** The unavailable Decision a message's request ended with, until someone dismisses it. */
+function unavailableOf(client: SuperagentClient, triggerId: string): Decision | undefined {
+  const id = client.store.triggers.disposition(triggerId)?.decisionId;
+  const decision = id ? client.store.decisions.get(id) : undefined;
+  return decision?.kind === "unavailable" && !decision.dismissed ? decision : undefined;
+}
+
+/**
+ * Sends a stored message to the router again, as `swarm superagent again` does: it is queued for a fresh Eval, and the
+ * unavailable Decision its request ended with is dismissed, so it leaves the status. The messages that waited in that
+ * request with it go again too, in their order, or dismissing the Decision would drop them unseen. `queued` is false
+ * while an Eval holds the message, which then changes nothing.
+ */
+export function routeAgain(client: SuperagentClient, handle: string): { trigger: Trigger; queued: boolean; dismissed?: Decision } {
+  const trigger = findTrigger(client, handle);
+  return client.store.atomic(() => {
+    const decision = unavailableOf(client, trigger.id);
+    const batch = decision?.triggerIds.filter((id) => unavailableOf(client, id)?.id === decision.id) ?? [trigger.id];
+    const queued = batch.filter((id) => client.engine.reevaluate(id)).includes(trigger.id);
+    return { trigger, queued, ...(queued && decision ? { dismissed: client.engine.dismiss(decision.id) } : {}) };
+  });
+}
+
+/**
+ * Dismisses a request that could not be routed, as `swarm superagent dismiss` does, without sending it again: the
+ * unavailable Decision `handle` names by its id or the start of it, else the one the message `handle` names ended with.
+ * Dismissing a Decision again changes nothing.
+ */
+export function dismissUnrouted(client: SuperagentClient, handle: string): Decision {
+  const decisions = client.store.read.unavailableByPrefix(handle);
+  if (decisions.length > 1) throw new Error(`${handle} names several Decisions; give more of the id`);
+  const decision = decisions[0] ?? unavailableOf(client, findTrigger(client, handle).id);
+  if (!decision) throw new Error(`Message ${handle} has no request that could not be routed`);
+  return client.engine.dismiss(decision.id);
+}
+
 export interface HostStatus {
   running: boolean;
   pid?: number;
   heartbeatAt?: string;
   health: Record<string, Health>;
   counts: Record<TicketGroup, number>;
+  /**
+   * The newest requests that were not routed because the model did not answer in time, until each is sent again or
+   * dismissed: the message to send again, the Decision that gave up on it and when, and how the message starts. A paired
+   * node on an older version sends a status without it.
+   */
+  unrouted: { triggerId: string; decisionId: string; at: string; text: string }[];
 }
-/** Whether a host runs, as its heartbeat says, the health it last reported, and how many tickets wait in each group. */
+/** The requests the status lists as unrouted, newest first. */
+function unrouted(client: SuperagentClient): HostStatus["unrouted"] {
+  return client.store.read.decisionsOfKinds(["unavailable"], UNROUTED).flatMap((decision) => {
+    const request = decision.dismissed ? undefined : unroutedRequest(client.store, decision);
+    return request ? [{ triggerId: request.id, decisionId: decision.id, at: decision.at, text: [...request.text.replace(/\s+/g, " ").trim()].slice(0, UNROUTED_CHARS).join("") }] : [];
+  });
+}
+/**
+ * Whether a host runs, as its heartbeat says, the health it last reported, how many tickets wait in each group, and the
+ * requests that could not be routed.
+ */
 export function hostStatus(client: SuperagentClient, now = Date.now()): HostStatus {
   const owner = client.store.get(KV.host.owner);
   const health = client.store.get(KV.host.health);
   const running = !!owner && now - Date.parse(owner.heartbeatAt) < 15_000;
   const counts: Record<TicketGroup, number> = { person: 0, working: 0, queued: 0, idle: 0, ended: 0 };
   for (const ticket of client.store.tickets.open()) counts[ticketRow(client, ticket).group] += 1;
-  return { running, ...(owner ? { pid: owner.pid, heartbeatAt: owner.heartbeatAt } : {}), health: health?.entries ?? {}, counts };
+  return { running, ...(owner ? { pid: owner.pid, heartbeatAt: owner.heartbeatAt } : {}), health: health?.entries ?? {}, counts, unrouted: unrouted(client) };
 }
 
 /** Replies the host posted to a local Thread, oldest first, which the TUI shows as the ticket's messages. */
