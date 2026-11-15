@@ -211,8 +211,8 @@ export class ChatterRoom {
 
   /**
    * Answers what called for the agent in a chat, when one needs it and its budget allows, and passes on the answers to what
-   * it asked for someone, which closes those asks. With no answer from the model that it can use, it does neither and the
-   * asks stay open.
+   * it asked for someone, which closes those asks. With no answer from the model that it can use, it does neither: the asks
+   * stay open, and these messages are not read again, so an ask waits for the next message that answers it.
    */
   async attend(chatId: string, ids: readonly string[]): Promise<void> {
     const { client, complete } = this.host;
@@ -251,12 +251,12 @@ export class ChatterRoom {
       ...(replyable.length && acting.length ? { acting_for: acting.map((item) => ({ id: item.for.id, name: item.for.name, you_asked_here: item.text })) } : {}),
       ...(replyable.length ? {} : { reply: "not now: leave reply null and only relay" }), ...(memory.length ? { memory } : {}) };
     const think = (problem?: string) => answerOf(AttendSchema, () => complete({ purpose: "superagent_attend", system: attendPrompt(name, chatter.persona),
-      user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }));
+      user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), problem ? 1 : 2);
     // Asked twice with no answer it can use, it gives up: the effect ends rather than ask again every minute.
     const first = await think();
     if (!first) return;
     // An answer longer than Feishu takes gets one more try; a relay still too long is cut to fit, never dropped.
-    // When that try gives no answer it can use, the first one stays.
+    // That try is one call: when it gives no answer it can use, the first one stays.
     const problem = tooLong(first, answering);
     const answer = problem ? await think(problem) ?? first : first;
     const relays = answer.relay.flatMap((item) => {

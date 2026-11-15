@@ -404,22 +404,38 @@ describe("when messages call for the agent that its router does not answer", () 
   });
 
   it("asks once more for an answer it cannot use, then neither replies nor relays, and keeps waiting for what it asked", async () => {
-    room.pass();
+    const live = new ChatterRoom({ client, now: () => now, complete: async (input) => { calls.push(input); return answers.shift()!; } });
+    live.install();
+    client.effects.start();
+    live.pass();
     now += 2000;
     ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 进度如何？", at: new Date(now - 1000).toISOString(),
       for: { id: "ou_alice", name: "Alice", channel: home } }, now);
     const reply = botMessage("ou_feifei", "规范基本定了，还差发版", 0, { mention: true });
+    now += 16_000;
     answers.push("not json", '{"reply": 5}');
-    await room.attend(CHAT, [reply.id]);
-    expect(calls.length).toBe(2);
-    expect(posts()).toEqual([]);
+    live.pass();
+    expect(attending()).toEqual([{ chatId: CHAT, ids: [reply.id] }]);
+    await client.effects.idle("attend");
+    expect([calls.length, attending(), posts()]).toEqual([2, [], []]);
     expect(openAsks(client.store, now).map((item) => item.id)).toEqual(["ask-1"]);
     expect(client.store.get(KV.chatter.chat(CHAT))?.answered).toBeUndefined();
-    // The ask is still open, so an answer it can use the next time is passed on.
-    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: "飞飞说规范基本定了，还差发版" }] }));
-    await room.attend(CHAT, [reply.id]);
+    // Its effect ended, and the message it could not answer is not read again: a later pass asks the model nothing.
+    now += 30_000;
+    live.pass();
+    await client.effects.idle("attend");
+    expect([calls.length, attending()]).toEqual([2, []]);
+    // The queue stops here, before anything is posted: a running one would hand the relay below to the Source's CLI.
+    await client.effects.drain();
+    // The ask is still open, so the next message that answers it is passed on.
+    const more = botMessage("ou_feifei", "发版也定了", 0, { mention: true });
+    now += 16_000;
+    live.pass();
+    expect(attending()).toEqual([{ chatId: CHAT, ids: [more.id] }]);
+    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: "飞飞说规范和发版都定了" }] }));
+    await live.attend(CHAT, [more.id]);
     expect(calls.length).toBe(3);
-    expect(posts().map((post) => post.text)).toEqual(["飞飞说规范基本定了，还差发版"]);
+    expect(posts().map((post) => post.text)).toEqual(["飞飞说规范和发版都定了"]);
     expect(openAsks(client.store, now)).toEqual([]);
   });
 
@@ -430,13 +446,35 @@ describe("when messages call for the agent that its router does not answer", () 
       for: { id: "ou_alice", name: "Alice", channel: home } }, now);
     const reply = botMessage("ou_feifei", "很长的一段进度说明", 0, { mention: true });
     const long = "规范基本定完了，热更新由上层每次进选关时调一次。".repeat(12);
-    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: long }] }), "not json", '{"relay": "none"}');
+    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: long }] }), "not json");
     await room.attend(CHAT, [reply.id]);
-    expect(calls.length).toBe(3);
-    expect(calls.map((call) => "problem" in JSON.parse(call.user))).toEqual([false, true, true]);
+    // The shorter one is asked for once: a second call for it would be a third here.
+    expect(calls.map((call) => "problem" in JSON.parse(call.user))).toEqual([false, true]);
     const [relay] = posts();
     expect(wordCount(relay!.text) <= 100 && relay!.text.endsWith("。…") && relay!.text.startsWith("规范基本定完了")).toBe(true);
     expect(openAsks(client.store, now)).toEqual([]);
+  });
+
+  it("asks the model three times at most: twice for an answer it can use, once for a shorter one", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "改一下分工，你那边怎么看", 0, { mention: true });
+    const long = "我这边还没认领活，所以没有进度可报，等正明分配后再说。".repeat(6);
+    answers.push("not json", JSON.stringify({ reply: { text: long, reply_to: asked.meta.messageId } }), '{"reply": 5}');
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.map((call) => "problem" in JSON.parse(call.user))).toEqual([false, false, true]);
+    const [post] = posts();
+    expect(wordCount(post!.text) <= 60 && post!.text.endsWith("。…") && post!.text.startsWith("我这边还没认领活")).toBe(true);
+  });
+
+  it("takes an answer whose reason runs far past what it asked for: it never reads the reason", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "你那边有 fixtures 的结果吗", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: "fixtures 我这边还没跑", reply_to: asked.meta.messageId }, relay: [], reason: "because ".repeat(75) }));
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => post.text)).toEqual(["fixtures 我这边还没跑"]);
   });
 
   it("asks only the first person an answer names to ask back, though it names more", async () => {
