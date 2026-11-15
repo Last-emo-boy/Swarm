@@ -218,13 +218,16 @@ export class SuperagentClient {
 }
 
 /**
- * The request an unavailable Decision left unrouted because the model did not answer in time: the last of its Triggers that
- * a person wrote in a conversation that takes an answer. Undefined for any other Decision: an Eval that ended unavailable
- * because the Policy changed or its Triggers were routed starts again, and an assessment's own verdict is a judgement.
+ * The request an unavailable Decision left unrouted because the model did not answer in time: the last of its Triggers in
+ * which a person addressed the agent in a conversation that takes an answer, else the last a person wrote in one. An Eval
+ * holds every message that waited on its Thread, so the last of them may be a bystander's comment that asked for nothing.
+ * Undefined for any other Decision: an Eval that ended unavailable because the Policy changed or its Triggers were routed
+ * starts again, and an assessment's own verdict is a judgement.
  */
 export function unroutedRequest(store: Pick<Store, "triggers">, decision: Decision): Trigger | undefined {
   if (decision.kind !== "unavailable" || decision.strength !== "explicit" || decision.reason[0]?.code !== "timeout") return undefined;
-  return decision.triggerIds.flatMap((id) => store.triggers.get(id) ?? []).filter((trigger) => trigger.human && trigger.channel).at(-1);
+  const written = decision.triggerIds.flatMap((id) => store.triggers.get(id) ?? []).filter((trigger) => trigger.human && trigger.channel);
+  return written.filter((trigger) => trigger.addressed).at(-1) ?? written.at(-1);
 }
 
 /** Whether a ticket's latest Assignment still runs or waits to run. */

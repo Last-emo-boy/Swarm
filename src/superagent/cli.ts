@@ -150,8 +150,10 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
       const { trigger, queued, dismissed } = routeAgain(client, id);
       const short = trigger.id.slice(0, 8);
       const host = lockHolder(client.stateDir) ? "" : " No host runs yet: start one with `swarm superagent run`.";
-      console.log(`${queued ? `Sent request ${short} to the router again${dismissed ? ", and took it off the list in status" : ""}.`
-        : `Request ${short} is with the router already: an Eval holds it, so nothing changed.`}${host}`);
+      // A message the status did not list may be decided already, as one that became a ticket is: its fresh Eval then ignores it.
+      console.log(`${!queued ? `Request ${short} is with the router already: an Eval holds it, so nothing changed.`
+        : dismissed ? `Sent request ${short} to the router again, and took it off the list in status.`
+        : `Queued message ${short} for the router again; it was not on the list in status.`}${host}`);
       return;
     }
     const handle = args.shift();

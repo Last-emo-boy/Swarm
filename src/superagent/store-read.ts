@@ -5,6 +5,8 @@ import type { Dropped, Receipt, TimelinePlace } from './store.js'
 
 export function storeReads(db: DatabaseSync) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
+  /** In SQL, a Decision that gave up on an explicit request because the model did not answer in time, as `unroutedRequest` tells one (client.ts). */
+  const unrouted = "value ->> '$.kind' = 'unavailable' AND value ->> '$.reason[0].code' = 'timeout' AND value ->> '$.strength' = 'explicit'"
   return {
   /** Newest first by arrival (`rowid`) order rather than trigger timestamp. */
   recentTriggers: (offset = 0, limit = 50): Trigger[] => db.prepare('SELECT value FROM trigger ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Trigger),
@@ -57,8 +59,14 @@ export function storeReads(db: DatabaseSync) {
   },
   /** The Triggers whose id starts with `prefix`, up to `limit`: two are enough to tell a short id that names one message from one that names several. */
   triggersByPrefix: (prefix: string, limit = 2): Trigger[] => values('SELECT value FROM trigger WHERE substr(id, 1, length(?)) = ? LIMIT ?', prefix, prefix, limit),
-  /** The unavailable Decisions whose id starts with `prefix`, up to `limit`. */
-  unavailableByPrefix: (prefix: string, limit = 2): Decision[] => values("SELECT value FROM decision WHERE substr(id, 1, length(?)) = ? AND json_extract(value, '$.kind') = 'unavailable' LIMIT ?", prefix, prefix, limit),
+  /** The Decisions that gave up on an explicit request because the model did not answer in time, dismissed or not, whose id starts with `prefix`, up to `limit`. */
+  unroutedByPrefix: (prefix: string, limit = 2): Decision[] => values(`SELECT value FROM decision WHERE substr(id, 1, length(?)) = ? AND ${unrouted} LIMIT ?`, prefix, prefix, limit),
+  /**
+   * The newest of those Decisions that nobody dismissed. They are chosen here, before `limit` cuts the list: an Eval that
+   * only starts again records an unavailable Decision too, and a dismissed one stays stored, so neither may take the place
+   * of a request nobody has seen to yet.
+   */
+  unroutedDecisions: (limit = 50): Decision[] => values(`SELECT value FROM decision WHERE ${unrouted} AND value -> '$.dismissed' IS NULL ORDER BY rowid DESC LIMIT ?`, limit),
   recentDecisions: (offset = 0, limit = 50): Decision[] => db.prepare('SELECT value FROM decision ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Decision),
   /** Decisions matching `kinds` whose triggers arrived at or after `since`, aligned with `flow` window counts. */
   decisions: (options: { kinds: string[]; since: string }, offset: number, limit: number): { items: Decision[]; more: boolean } => {

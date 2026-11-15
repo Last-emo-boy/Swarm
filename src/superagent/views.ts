@@ -117,41 +117,47 @@ export function findTrigger(client: SuperagentClient, handle: string): Trigger {
   return matches[0];
 }
 
-/** How many of the newest unavailable Decisions the status reads for requests left unrouted, and how much of each request it shows. */
+/** How many requests left unrouted the status lists, newest first, and how much of each request it shows. */
 const UNROUTED = 50, UNROUTED_CHARS = 80;
 
-/** The unavailable Decision a message's request ended with, until someone dismisses it. */
-function unavailableOf(client: SuperagentClient, triggerId: string): Decision | undefined {
+/**
+ * The Decision that left a message's request unrouted, until someone dismisses it. None for an Eval that only started
+ * again, as after a Policy change: its request is with the router, and the status never listed it.
+ */
+function unroutedOf(client: SuperagentClient, triggerId: string): Decision | undefined {
   const id = client.store.triggers.disposition(triggerId)?.decisionId;
   const decision = id ? client.store.decisions.get(id) : undefined;
-  return decision?.kind === "unavailable" && !decision.dismissed ? decision : undefined;
+  return decision && !decision.dismissed && unroutedRequest(client.store, decision) ? decision : undefined;
 }
 
 /**
  * Sends a stored message to the router again, as `swarm superagent again` does: it is queued for a fresh Eval, and the
  * unavailable Decision its request ended with is dismissed, so it leaves the status. The messages that waited in that
- * request with it go again too, in their order, or dismissing the Decision would drop them unseen. `queued` is false
- * while an Eval holds the message, which then changes nothing.
+ * request with it go again too, in their order, or dismissing the Decision would drop them unseen; one of them that was
+ * decided again since stays as decided. `queued` is false while an Eval holds the message, which then changes nothing.
+ * A message that left no such request is queued alone, as a person's replay of it, with nothing to dismiss.
  */
 export function routeAgain(client: SuperagentClient, handle: string): { trigger: Trigger; queued: boolean; dismissed?: Decision } {
   const trigger = findTrigger(client, handle);
   return client.store.atomic(() => {
-    const decision = unavailableOf(client, trigger.id);
-    const batch = decision?.triggerIds.filter((id) => unavailableOf(client, id)?.id === decision.id) ?? [trigger.id];
-    const queued = batch.filter((id) => client.engine.reevaluate(id)).includes(trigger.id);
-    return { trigger, queued, ...(queued && decision ? { dismissed: client.engine.dismiss(decision.id) } : {}) };
+    if (client.engine.candidate(trigger.id)) return { trigger, queued: false };
+    const decision = unroutedOf(client, trigger.id);
+    const batch = decision?.triggerIds.filter((id) => unroutedOf(client, id)?.id === decision.id) ?? [trigger.id];
+    for (const id of batch) client.engine.reevaluate(id);
+    return { trigger, queued: true, ...(decision ? { dismissed: client.engine.dismiss(decision.id) } : {}) };
   });
 }
 
 /**
- * Dismisses a request that could not be routed, as `swarm superagent dismiss` does, without sending it again: the
- * unavailable Decision `handle` names by its id or the start of it, else the one the message `handle` names ended with.
- * Dismissing a Decision again changes nothing.
+ * Dismisses a request that could not be routed, as `swarm superagent dismiss` does, without sending it again: the one the
+ * message `handle` names ended with, else the Decision `handle` names by its id or the start of it. A message goes first,
+ * since the status prints messages' ids. Dismissing a Decision again changes nothing. An unavailable Decision of another
+ * reason is none of these: its Eval started again, so dismissing it would not keep its request from the router.
  */
 export function dismissUnrouted(client: SuperagentClient, handle: string): Decision {
-  const decisions = client.store.read.unavailableByPrefix(handle);
+  const decisions = client.store.read.triggersByPrefix(handle, 1).length ? [] : client.store.read.unroutedByPrefix(handle);
   if (decisions.length > 1) throw new Error(`${handle} names several Decisions; give more of the id`);
-  const decision = decisions[0] ?? unavailableOf(client, findTrigger(client, handle).id);
+  const decision = decisions[0] ?? unroutedOf(client, findTrigger(client, handle).id);
   if (!decision) throw new Error(`Message ${handle} has no request that could not be routed`);
   return client.engine.dismiss(decision.id);
 }
@@ -171,8 +177,8 @@ export interface HostStatus {
 }
 /** The requests the status lists as unrouted, newest first. */
 function unrouted(client: SuperagentClient): HostStatus["unrouted"] {
-  return client.store.read.decisionsOfKinds(["unavailable"], UNROUTED).flatMap((decision) => {
-    const request = decision.dismissed ? undefined : unroutedRequest(client.store, decision);
+  return client.store.read.unroutedDecisions(UNROUTED).flatMap((decision) => {
+    const request = unroutedRequest(client.store, decision);
     return request ? [{ triggerId: request.id, decisionId: decision.id, at: decision.at, text: [...request.text.replace(/\s+/g, " ").trim()].slice(0, UNROUTED_CHARS).join("") }] : [];
   });
 }
