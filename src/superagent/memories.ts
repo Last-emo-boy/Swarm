@@ -44,11 +44,11 @@ const DAY_MS = 86_400_000, PASS_MS = 60_000;
 /** How far back a chat's first reflection reads, and how many of its new messages one reflection reads. */
 const FIRST_WINDOW_MS = DAY_MS, REFLECT_MESSAGES = 60;
 
-/** A note as a card shows it: its subject by id, when a promise falls due and when it was kept, and where the agent learned it. */
+/** A note as a card shows it: its subject by id, when a promise falls due and when it was kept (to the minute, in UTC as due is), and where the agent learned it. */
 export function noteLine(store: Pick<Store, "get">, note: Note) {
   const where = note.origin.direct ? "a direct message" : note.origin.chatId ? chatName(store, note.origin.chatId) ?? note.origin.chatId : note.origin.ticketId ? "a ticket" : undefined;
   return { id: note.id, about: shortSubject(note.about), kind: note.kind, text: note.text, ...(note.due ? { due: note.due } : {}),
-    ...(note.done ? { kept: note.done.slice(0, 16) } : {}), ...(where ? { learned_in: where } : {}), updated: note.updated.slice(0, 10) };
+    ...(note.done ? { kept: `${note.done.slice(0, 16)}Z` } : {}), ...(where ? { learned_in: where } : {}), updated: note.updated.slice(0, 10) };
 }
 /** The notes about `subjects` a card shows: a few each and a few dozen in all, promises yet to keep first, then the latest. */
 export function notesCard(store: Pick<Store, "get" | "memory">, subjects: readonly string[], per = PER_SUBJECT, total = NOTES_SHOWN): ReturnType<typeof noteLine>[] {
@@ -120,9 +120,9 @@ export function planOps(store: Pick<Store, "memory">, ops: readonly NoteOp[], sc
     if (op.op === "delete") { changes.push(() => store.memory.delete(note.id)); continue; }
     if (op.text && op.text.length > NOTE_CHARS) return `A note has at most ${NOTE_CHARS} characters`;
     const due = op.due ? dueOf(op.due, now) : undefined;
-    // A new time makes a promise already kept due again, so it is saved without done; a new text alone leaves it kept.
+    // A new time makes a promise already kept due again, so it is saved without done; a new text alone, or the time it has, leaves it kept.
     const { done: _kept, ...open } = note;
-    changes.push(() => store.memory.save({ ...(due ? open : note), ...(op.text ? { text: op.text } : {}), ...(due ? { due } : {}), updated: at }));
+    changes.push(() => store.memory.save({ ...(due && due !== note.due ? open : note), ...(op.text ? { text: op.text } : {}), ...(due ? { due } : {}), updated: at }));
   }
   return () => { for (const change of changes) change(); };
 }
@@ -209,7 +209,8 @@ export class Memories {
 
   /**
    * One pass, at most once a minute: queues a reflection on each chat with enough new messages that went quiet, and the
-   * promises that fell due whose message can go out now; one whose Source is off or no longer listens there stays due.
+   * promises that fell due whose message can go out now; one whose Source is off or no longer listens there stays due,
+   * and one with nowhere to go is queued to be marked kept.
    */
   pass(): void {
     const { client } = this.host;
@@ -233,11 +234,11 @@ export class Memories {
     }
     for (const note of client.store.memory.due(new Date(now).toISOString())) {
       const { channel } = this.recipient(note);
-      if (channel && client.sources.channelAllowed(channel)) client.effects.enqueue("promise", note.id, { noteId: note.id });
+      if (!channel || client.sources.channelAllowed(channel)) client.effects.enqueue("promise", note.id, { noteId: note.id });
     }
   }
 
-  /** Where a promise's message goes: the chat it was made in, else its person's direct messages; and that person, by name. */
+  /** Where a promise's message goes: the chat it was made in, else its person's direct messages, else nowhere, as for one about itself made outside a chat; and that person, by name. */
   private recipient(note: Note): { channel?: ChannelRef; person?: { id: string; name: string } } {
     const id = note.about.startsWith("person:") ? shortSubject(note.about) : undefined;
     const chatId = note.origin.direct ? undefined : note.origin.chatId ?? (note.about.startsWith("chat:") ? shortSubject(note.about) : undefined);
@@ -339,28 +340,34 @@ export class Memories {
 
   /**
    * Keeps a promise that fell due: writes its message and posts it where it was made, @ its person, or in their direct
-   * messages. One whose message cannot go out now stays due.
+   * messages. One whose message cannot go out now stays due, and so does one given a later time since it was queued.
    */
   async keep(noteId: string): Promise<void> {
     const { client } = this.host;
     const settings = client.settings();
     const note = client.store.memory.get(noteId);
-    if (!memoryOf(settings) || !note || note.done || note.kind !== "promise") return;
+    const at = new Date(this.now()).toISOString();
+    if (!memoryOf(settings) || !note || note.done || note.kind !== "promise" || (note.due ?? "") > at) return;
     const { channel, person } = this.recipient(note);
-    if (!channel || !client.sources.channelAllowed(channel)) return;
+    // One with nowhere to go, such as one about itself made on a ticket, is kept without a message, so no model is asked for one.
+    if (!channel) { client.store.memory.save({ ...note, done: at, updated: at }); return; }
+    if (!client.sources.channelAllowed(channel)) return;
     const chatId: string | undefined = channel.address.chatId;
     const card = { ...localNow(settings, this.now()), promise: noteLine(client.store, note), for: person ?? null,
       goes_to: chatId ? chatName(client.store, chatId) ?? chatId : "their direct messages",
       memory: notesCard(client.store, person ? [note.about] : [], 6, 6) };
     const answer = await answerOf(PromiseSchema, () => this.complete("superagent_promise", promisePrompt(this.name(), chatterOf(settings).persona), card));
-    const done = { ...note, done: new Date(this.now()).toISOString(), updated: new Date(this.now()).toISOString() };
     // A message too long for a chat is cut to fit; with no usable answer the promise is kept without one, rather than asked about again every minute.
     const say = answer?.say || undefined;
     const text = say && wordCount(say) > IM_WORDS ? cutToFit(say, IM_WORDS) : say;
     client.store.atomic(() => {
+      // Given a new time or forgotten while its message was written, it is left as it is now.
+      const latest = client.store.memory.get(note.id);
+      if (!latest || latest.due !== note.due) return;
+      const kept = new Date(this.now()).toISOString();
       // Named after its due time too, so a promise made again posts again.
       if (text) client.outbox.send({ id: key("promise", note.id, note.due ?? ""), channel, text, kind: "notice", ...(chatId && person ? { mentions: [person] } : {}) });
-      client.store.memory.save(done);
+      client.store.memory.save({ ...latest, done: kept, updated: kept });
     });
   }
 

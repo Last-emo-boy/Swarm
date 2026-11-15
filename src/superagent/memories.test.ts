@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
-import { Memories, SELF, chatSubject, localNow, noteLine, notesCard, personSubject, planOps, reflectionPrompt, ticketReflectionPrompt, type Note } from "./memories.js";
+import { Memories, SELF, applyOps, chatSubject, localNow, noteLine, notesCard, personSubject, planOps, reflectionPrompt, ticketReflectionPrompt, type Note } from "./memories.js";
 import { noticed, readMembers } from "./people.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
@@ -18,7 +18,8 @@ let stateDir: string;
 let client: SuperagentClient;
 let memories: Memories;
 let now: number;
-let answers: string[];
+/** What the model answers next, in order; an Error is a call that fails. */
+let answers: (string | Error)[];
 let calls: { purpose: string; system: string; user: string }[];
 let written = Date.now();
 /** Writes the settings: the memory's and the chatter's, and the chat Source's when it is to be off or to listen elsewhere. */
@@ -41,12 +42,19 @@ beforeEach(async () => {
   answers = [];
   calls = [];
   memories = new Memories({ client, now: () => now,
-    complete: async (input) => { calls.push(input); return answers.shift() ?? JSON.stringify({ notes: [] }); } });
+    complete: async (input) => {
+      calls.push(input);
+      const next = answers.shift();
+      if (next instanceof Error) throw next;
+      return next ?? JSON.stringify({ notes: [] });
+    } });
   memories.install();
   client.store.set(KV.sources.labels("feishu"), { [CHAT]: "Team" });
   await readMembers(async () => ({ users: [{ member_id: "ou_alice", name: "Alice" }, { member_id: "ou_bob", name: "Bob" }] }), client.store, CHAT);
 });
-afterEach(() => {
+afterEach(async () => {
+  // Stops the effects of a test that started them, before their store closes.
+  await client.effects.drain();
   client.close();
   rmSync(stateDir, { recursive: true, force: true });
 });
@@ -214,11 +222,21 @@ test("a card shows when a promise falls due, and when a kept one was kept", asyn
   assert.equal(JSON.parse(calls[0]!.user).promise.due, due, "the promise it keeps shows its time");
   const at = new Date(now).toISOString();
   const card = notesCard(client.store, [personSubject("ou_alice")]);
-  assert.deepEqual(card.map((line) => [line.id, line.due, line.kept]), [[open.id, due, undefined], [kept.id, due, at.slice(0, 16)]]);
+  assert.deepEqual(card.map((line) => [line.id, line.due, line.kept]), [[open.id, due, undefined], [kept.id, due, `${at.slice(0, 16)}Z`]]);
   assert.ok(!("kept" in card[0]!), "a promise yet to keep shows no kept");
   assert.deepEqual(noteLine(client.store, client.store.memory.get(kept.id)!),
-    { id: kept.id, about: "ou_alice", kind: "promise", text: "Remind Alice to send the release notes", due, kept: at.slice(0, 16), learned_in: "Team", updated: at.slice(0, 10) });
+    { id: kept.id, about: "ou_alice", kind: "promise", text: "Remind Alice to send the release notes", due, kept: `${at.slice(0, 16)}Z`, learned_in: "Team", updated: at.slice(0, 10) });
   for (const prompt of [reflectionPrompt("w33d", ""), ticketReflectionPrompt("w33d", "")]) assert.match(prompt, /A promise shown with kept was kept then/);
+  // Reworded days later it still shows when it was kept, also on the card tidying reads.
+  now += 3 * 86_400_000;
+  assert.equal(applyOps(client.store, [{ op: "update", id: kept.id, text: "Remind Alice to send the notes" }], { subjects: () => undefined, shown: new Set([kept.id]) }, {}, new Date(now)), undefined);
+  assert.equal(noteLine(client.store, client.store.memory.get(kept.id)!).kept, `${at.slice(0, 16)}Z`);
+  write({ perSubject: 5 });
+  for (let index = 0; index < 4; index++) client.store.memory.save(note({ about: personSubject("ou_alice"), text: `Alice note ${index}` }));
+  await memories.tidy(personSubject("ou_alice"));
+  const tidied = calls.at(-1)!;
+  assert.match(tidied.system, /A promise shown with kept was kept then/);
+  assert.deepEqual((JSON.parse(tidied.user) as { notes: { id: string; kept?: string }[] }).notes.filter((line) => line.kept).map((line) => line.id), [kept.id]);
 });
 
 test("a promise whose message cannot go out stays due, with no model call, until its Source listens there again", async () => {
@@ -260,17 +278,82 @@ test("writes to nobody on its own, and spends none of the day's messages, while 
   now += 600_000;
   memories.pass();
   const answer = JSON.stringify({ notes: [], reach_out: { to: "ou_bob", text: "Bob, try a larger batch size with mixed precision." } });
-  write({}, {}, { enabled: false });
-  answers.push(answer);
-  await memories.reflect(CHAT);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(posts(), []);
-  assert.deepEqual(client.store.get(KV.memory.reached) ?? [], [], "a message not sent is not counted");
+  // The Source off, then on but receiving no direct messages.
+  for (const off of [{ enabled: false }, { config: { cli: "lark-cli", chats: [{ chatId: CHAT, listen: "mentions" }], directMessages: false } }]) {
+    write({}, {}, off);
+    answers.push(answer);
+    await memories.reflect(CHAT);
+    assert.deepEqual(posts(), []);
+    assert.deepEqual(client.store.get(KV.memory.reached) ?? [], [], "a message not sent is not counted");
+  }
+  assert.equal(calls.length, 2);
   write();
   answers.push(answer);
   await memories.reflect(CHAT);
   assert.deepEqual(posts().map((post) => post.channel.address.userId), ["ou_bob"]);
   assert.deepEqual(client.store.get(KV.memory.reached)!.map((item) => item.person), ["ou_bob"]);
+});
+
+test("a promise with nowhere to go, such as one about itself made on a ticket, is kept without a message or a model call", async () => {
+  const due = new Date(now + 60_000).toISOString();
+  const onTicket = note({ about: SELF, kind: "promise", text: "Check that the release went out", due, origin: { ticketId: "t1" } });
+  const inDirect = note({ about: SELF, kind: "promise", text: "Look at the build again", due, origin: { chatId: "oc_dm_bob", direct: true } });
+  for (const item of [onTicket, inDirect]) client.store.memory.save(item);
+  now += 120_000;
+  // Whatever Sources are on: there is no chat or person to wait for.
+  write({}, {}, { enabled: false });
+  memories.pass();
+  assert.deepEqual(queued("promise").sort(), [onTicket.id, inDirect.id].sort());
+  for (const item of [onTicket, inDirect]) await memories.keep(item.id);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(posts(), []);
+  assert.deepEqual(client.store.memory.due(new Date(now).toISOString()), [], "neither stays due for good");
+  assert.deepEqual(notesCard(client.store, [SELF]).map((line) => line.kept), Array(2).fill(`${new Date(now).toISOString().slice(0, 16)}Z`));
+});
+
+test("a kept promise stays kept when an update repeats the time it has, or gives one that is no time or long past", async () => {
+  const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to drink water", due: new Date(now + 10_000).toISOString() });
+  client.store.memory.save(promise);
+  now += 20_000;
+  answers.push(JSON.stringify({ say: "Alice, water." }));
+  await memories.keep(promise.id);
+  now += 20_000;
+  for (const due of [promise.due!, "tomorrow morning", new Date(now - 3_600_000).toISOString()]) {
+    assert.equal(applyOps(client.store, [{ op: "update", id: promise.id, text: `Remind Alice to drink water, ${due}`, due }], { subjects: () => undefined, shown: new Set([promise.id]) }, {}, new Date(now)), undefined);
+    const kept = client.store.memory.get(promise.id)!;
+    assert.deepEqual([kept.text, kept.due, typeof kept.done], [`Remind Alice to drink water, ${due}`, promise.due, "string"]);
+  }
+  assert.deepEqual(client.store.memory.due(new Date(now + 86_400_000).toISOString()), []);
+});
+
+test("a promise changed or forgotten while its message is written is not overwritten, and one queued and then given a later time waits for it", async () => {
+  const due = new Date(now + 60_000).toISOString();
+  const moved = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes", due });
+  const gone = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to stretch", due });
+  const reworded = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to drink water", due });
+  for (const item of [moved, gone, reworded]) client.store.memory.save(item);
+  now += 120_000;
+  const later = new Date(now + 3_600_000).toISOString();
+  /** A memory whose model answers after `change` was made, as another effect makes one while it writes. */
+  const during = (change: () => void) => new Memories({ client, now: () => now, complete: async () => { change(); return JSON.stringify({ say: "Alice, it is time." }); } });
+  await during(() => { applyOps(client.store, [{ op: "update", id: moved.id, due: later }], { subjects: () => undefined, shown: new Set([moved.id]) }, {}, new Date(now)); }).keep(moved.id);
+  await during(() => { client.store.memory.delete(gone.id); }).keep(gone.id);
+  assert.deepEqual(posts(), [], "neither message is sent");
+  assert.deepEqual([client.store.memory.get(moved.id)!.due, client.store.memory.get(moved.id)!.done], [later, undefined], "the new time stands");
+  assert.equal(client.store.memory.get(gone.id), undefined, "a note forgotten is not written back");
+  // One only reworded meanwhile is kept, and keeps its new words.
+  await during(() => { applyOps(client.store, [{ op: "update", id: reworded.id, text: "Remind Alice to drink more water" }], { subjects: () => undefined, shown: new Set([reworded.id]) }, {}, new Date(now)); }).keep(reworded.id);
+  assert.deepEqual(posts().map((post) => post.text), ["Alice, it is time."]);
+  assert.deepEqual([client.store.memory.get(reworded.id)!.text, typeof client.store.memory.get(reworded.id)!.done], ["Remind Alice to drink more water", "string"]);
+  // Its effect, queued when it first fell due, runs after the new time was given: nothing is asked or sent until then.
+  await memories.keep(moved.id);
+  assert.equal(calls.length, 0);
+  assert.equal(client.store.memory.get(moved.id)!.done, undefined);
+  now += 2 * 3_600_000;
+  answers.push(JSON.stringify({ say: "Alice, the release notes." }));
+  await memories.keep(moved.id);
+  assert.deepEqual(posts().map((post) => post.text), ["Alice, it is time.", "Alice, the release notes."]);
+  assert.equal(typeof client.store.memory.get(moved.id)!.done, "string");
 });
 
 test("a promise's message too long for a chat is cut to fit and sent", async () => {
@@ -329,5 +412,41 @@ test("gives up on an answer it cannot use after asking twice, and still fails wh
   for (const run of [() => failing.reflect(CHAT), () => failing.reflectTicket(ticketId!), () => failing.tidy(personSubject("ou_alice")), () => failing.keep(second.id)]) {
     await assert.rejects(run, /the model is unreachable/);
   }
+  assert.equal(client.store.memory.get(second.id)!.done, undefined);
+});
+
+test("the effects that reflect, keep a promise and tidy are over after two answers they cannot use, and one whose call fails waits to be tried again", async () => {
+  for (const [sender, text, ago] of [["ou_alice", "I lead the 2048 project", 900], ["ou_bob", "anyone know how to train it faster?", 800],
+    ["ou_alice", "not me", 700], ["ou_alice", "call me Ali", 600]] as const) say(sender, text, ago);
+  write({ perSubject: 5 });
+  for (let index = 0; index < 7; index++) client.store.memory.save(note({ about: personSubject("ou_alice"), text: `Alice note ${index}` }));
+  const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice", due: new Date(now + 60_000).toISOString() });
+  client.store.memory.save(promise);
+  now += 600_000;
+  answers.push(...Array<string>(6).fill("I would rather not say."));
+  memories.pass();
+  (memories as unknown as { crowded(subjects: string[]): void }).crowded([personSubject("ou_alice")]);
+  const waiting = () => [queued("reflect"), queued("promise"), queued("consolidate")];
+  assert.deepEqual(waiting(), [[`chat:${CHAT}`], [promise.id], [personSubject("ou_alice")]]);
+  // Nothing waits to be sent, so running the effects reaches no chat.
+  assert.deepEqual(posts(), []);
+  client.effects.start();
+  await client.effects.idle();
+  assert.equal(calls.length, 6, "each asked twice");
+  assert.deepEqual(waiting(), [[], [], []], "none is left to try again");
+  assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
+  now += 120_000;
+  memories.pass();
+  await client.effects.idle();
+  assert.deepEqual([calls.length, waiting(), posts()], [6, [[], [], []], []], "and the next pass queues none of them again");
+  // A call that fails is another matter: its effect stays, with the failure counted, and the promise stays due.
+  const second = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice again", due: new Date(now).toISOString() });
+  client.store.memory.save(second);
+  answers.push(new Error("the model is unreachable"));
+  now += 120_000;
+  memories.pass();
+  await client.effects.idle();
+  assert.deepEqual(client.store.db.prepare("SELECT key, attempts, error FROM effect WHERE kind = 'promise'").all().map((row) => ({ ...row })),
+    [{ key: second.id, attempts: 1, error: "Error: the model is unreachable" }]);
   assert.equal(client.store.memory.get(second.id)!.done, undefined);
 });
