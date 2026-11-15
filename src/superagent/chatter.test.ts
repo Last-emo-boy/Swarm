@@ -163,6 +163,56 @@ describe("a consideration", () => {
     await room.consider(CHAT);
     expect(calls[0]!.model).toBe("deepseek/deepseek-chat");
   });
+  it("asks once more for an answer it cannot use, then says nothing rather than ask forever, and considers the chat as usual the next time", async () => {
+    const asked = message("ou_alice", "anyone tried the new tea place?", 300);
+    answers.push("not json", '{"say": 5}');
+    await room.consider(CHAT);
+    expect(calls.length).toBe(2);
+    expect(posts()).toEqual([]);
+    expect(client.store.get(KV.chatter.chat(CHAT))?.spoke).toBeUndefined();
+    answers.push(JSON.stringify({ say: "The oolong there is worth the queue.", reply_to: asked.meta.messageId, reason: "a tea question" }));
+    await room.consider(CHAT);
+    expect(calls.length).toBe(3);
+    expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([["The oolong there is worth the queue.", asked.meta.messageId]]);
+  });
+  it("posts what the second answer says when only the first cannot be used", async () => {
+    message("ou_alice", "anyone tried the new tea place?", 300);
+    answers.push("I would rather not answer in JSON.", JSON.stringify({ say: "The oolong there is worth the queue.", reason: "a tea question" }));
+    await room.consider(CHAT);
+    expect(calls.length).toBe(2);
+    expect(posts().map((post) => post.text)).toEqual(["The oolong there is worth the queue."]);
+    expect(client.store.get(KV.chatter.chat(CHAT))?.spoke?.length).toBe(1);
+  });
+  it("takes an answer whose reason runs far past what it asked for: it never reads the reason", async () => {
+    message("ou_alice", "anyone tried the new tea place?", 300);
+    const reason = "because ".repeat(75);
+    expect(reason.length).toBe(600);
+    answers.push(JSON.stringify({ say: "The oolong there is worth the queue.", reason }));
+    await room.consider(CHAT);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => post.text)).toEqual(["The oolong there is worth the queue."]);
+  });
+  it("ends its effect when no answer can be used, and keeps it for another try when the call itself fails", async () => {
+    let down = false;
+    const live = new ChatterRoom({ client, now: () => now,
+      complete: async (input) => { calls.push(input); if (down) throw new Error("network down"); return answers.shift()!; } });
+    live.install();
+    client.effects.start();
+    const waiting = () => client.store.db.prepare("SELECT key, attempts, error FROM effect WHERE kind = 'chatter'").all().map((row) => [row.key, row.attempts, row.error]);
+    message("ou_alice", "anyone tried the new tea place?", 200);
+    answers.push("not json", '{"say": 5}');
+    live.pass();
+    expect(queued()).toEqual([CHAT]);
+    await client.effects.idle("chatter");
+    expect([calls.length, waiting(), posts()]).toEqual([2, [], []]);
+    // A call that fails is another matter: it rejects, and its effect stays to be tried again.
+    down = true;
+    await expect(live.consider(CHAT)).rejects.toThrow(/network down/);
+    client.store.atomic(() => { client.effects.enqueue("chatter", CHAT, { chatId: CHAT }); });
+    await client.effects.idle("chatter");
+    expect([calls.length, waiting()]).toEqual([4, [[CHAT, 1, "Error: network down"]]]);
+    await client.effects.drain();
+  });
 });
 
 it("says in its instructions who it is, and that silence is the usual answer", () => {
@@ -351,6 +401,113 @@ describe("when messages call for the agent that its router does not answer", () 
     expect(JSON.parse(calls[1]!.user).problem).toMatch(/^the reply is \d+ words: Feishu takes a relay of at most 100 words and a reply of at most 60/);
     const [post] = posts();
     expect(wordCount(post!.text) <= 60 && post!.text.endsWith("。…") && post!.text.startsWith("我这边还没认领活")).toBe(true);
+  });
+
+  it("asks once more for an answer it cannot use, then neither replies nor relays, and keeps waiting for what it asked", async () => {
+    const live = new ChatterRoom({ client, now: () => now, complete: async (input) => { calls.push(input); return answers.shift()!; } });
+    live.install();
+    client.effects.start();
+    live.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 进度如何？", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    const reply = botMessage("ou_feifei", "规范基本定了，还差发版", 0, { mention: true });
+    now += 16_000;
+    answers.push("not json", '{"reply": 5}');
+    live.pass();
+    expect(attending()).toEqual([{ chatId: CHAT, ids: [reply.id] }]);
+    await client.effects.idle("attend");
+    expect([calls.length, attending(), posts()]).toEqual([2, [], []]);
+    expect(openAsks(client.store, now).map((item) => item.id)).toEqual(["ask-1"]);
+    expect(client.store.get(KV.chatter.chat(CHAT))?.answered).toBeUndefined();
+    // Its effect ended, and the message it could not answer is not read again: a later pass asks the model nothing.
+    now += 30_000;
+    live.pass();
+    await client.effects.idle("attend");
+    expect([calls.length, attending()]).toEqual([2, []]);
+    // The queue stops here, before anything is posted: a running one would hand the relay below to the Source's CLI.
+    await client.effects.drain();
+    // The ask is still open, so the next message that answers it is passed on.
+    const more = botMessage("ou_feifei", "发版也定了", 0, { mention: true });
+    now += 16_000;
+    live.pass();
+    expect(attending()).toEqual([{ chatId: CHAT, ids: [more.id] }]);
+    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: "飞飞说规范和发版都定了" }] }));
+    await live.attend(CHAT, [more.id]);
+    expect(calls.length).toBe(3);
+    expect(posts().map((post) => post.text)).toEqual(["飞飞说规范和发版都定了"]);
+    expect(openAsks(client.store, now)).toEqual([]);
+  });
+
+  it("keeps a first answer that is too long when asking for a shorter one gives none it can use, cut to fit", async () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 进度如何？", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    const reply = botMessage("ou_feifei", "很长的一段进度说明", 0, { mention: true });
+    const long = "规范基本定完了，热更新由上层每次进选关时调一次。".repeat(12);
+    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: long }] }), "not json");
+    await room.attend(CHAT, [reply.id]);
+    // The shorter one is asked for once: a second call for it would be a third here.
+    expect(calls.map((call) => "problem" in JSON.parse(call.user))).toEqual([false, true]);
+    const [relay] = posts();
+    expect(wordCount(relay!.text) <= 100 && relay!.text.endsWith("。…") && relay!.text.startsWith("规范基本定完了")).toBe(true);
+    expect(openAsks(client.store, now)).toEqual([]);
+  });
+
+  it("asks the model three times at most: twice for an answer it can use, once for a shorter one", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "改一下分工，你那边怎么看", 0, { mention: true });
+    const long = "我这边还没认领活，所以没有进度可报，等正明分配后再说。".repeat(6);
+    answers.push("not json", JSON.stringify({ reply: { text: long, reply_to: asked.meta.messageId } }), '{"reply": 5}');
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.map((call) => "problem" in JSON.parse(call.user))).toEqual([false, false, true]);
+    const [post] = posts();
+    expect(wordCount(post!.text) <= 60 && post!.text.endsWith("。…") && post!.text.startsWith("我这边还没认领活")).toBe(true);
+  });
+
+  it("takes an answer whose reason runs far past what it asked for: it never reads the reason", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "你那边有 fixtures 的结果吗", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: "fixtures 我这边还没跑", reply_to: asked.meta.messageId }, relay: [], reason: "because ".repeat(75) }));
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => post.text)).toEqual(["fixtures 我这边还没跑"]);
+  });
+
+  it("asks only the first person an answer names to ask back, though it names more", async () => {
+    room.pass();
+    now += 2000;
+    for (const [id, person, name] of [["ask-1", "ou_alice", "Alice"], ["ask-2", "ou_carol", "Carol"]] as const) {
+      ask(client.store, { id, chatId: CHAT, to: ["ou_feifei"], text: `@飞飞 ${name} 想要 repo 的地址`, at: new Date(now - 1000).toISOString(),
+        for: { id: person, name, channel: home } }, now);
+    }
+    closeAsks(client.store, ["ask-1", "ask-2"], now);
+    const wants = botMessage("ou_feifei", "要加 collaborator 的话，请告诉我你们的 GitHub 账号名", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: "我去问一下他们", reply_to: wants.meta.messageId }, relay: [],
+      ask_back: [{ for: "ou_alice", text: "飞飞要 Alice 的 GitHub 账号名，是哪个？" }, { for: "ou_carol", text: "飞飞要 Carol 的 GitHub 账号名，是哪个？" }] }));
+    await room.attend(CHAT, [wants.id]);
+    expect(calls.length).toBe(1);
+    expect(JSON.parse(calls[0]!.user).acting_for.map((item: { id: string }) => item.id)).toEqual(["ou_alice", "ou_carol"]);
+    const sent = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as
+      { text: string; mentions?: { id: string }[] });
+    expect(sent.map((post) => [post.text, post.mentions?.map((mention) => mention.id) ?? []])).toEqual([
+      ["飞飞要 Alice 的 GitHub 账号名，是哪个？", ["ou_alice"]], ["我去问一下他们", []]
+    ]);
+    // What it waits for is what it asked: the first person, with the question it sent them.
+    expect(openAsks(client.store, now).map((item) => [item.to, item.text, item.for.id])).toEqual([[["ou_alice"], "飞飞要 Alice 的 GitHub 账号名，是哪个？", "ou_feifei"]]);
+  });
+
+  it("lets a call that fails reject, so its effect tries again", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "你那边有 fixtures 的结果吗", 0, { mention: true });
+    const down = new ChatterRoom({ client, now: () => now, complete: async (input) => { calls.push(input); throw new Error("network down"); } });
+    await expect(down.attend(CHAT, [asked.id])).rejects.toThrow(/network down/);
+    expect(calls.length).toBe(1);
+    expect(posts()).toEqual([]);
   });
 
   it("cuts a sentence too long alone where it fits", () => {
