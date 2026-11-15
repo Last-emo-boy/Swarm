@@ -58,6 +58,8 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
   const action = "action" in stage ? stage.action : undefined;
   const key = stage.stage === "ended" ? "" : action ? `${stage.stage}/${action}` : stage.stage;
   const outcome = ticket.ended ? ticketOutcome(ticket) ?? ticket.ended.outcome : undefined;
+  // A ticket the host closed with nothing done, such as one nobody answered, says why; a worker's dropped report has no reason.
+  const why = outcome === "dropped" ? ticket.ended?.reason : undefined;
   const group: TicketGroup = stage.stage === "ended" ? "ended" : stage.stage === "person" ? "person"
     : stage.stage === "idle" ? "idle" : action === "queued" ? "queued" : "working";
   const pr = pullOf(ticket);
@@ -79,7 +81,7 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
     short: ticket.id.slice(0, 8),
     title: ticket.title,
     group,
-    label: outcome ? OUTCOME_LABELS[outcome] ?? outcome : STAGE_LABELS[key] ?? key,
+    label: why ?? (outcome ? OUTCOME_LABELS[outcome] ?? outcome : STAGE_LABELS[key] ?? key),
     source: origin?.source ?? "unknown",
     ...(origin?.url ? { url: origin.url } : {}),
     ...(pr ? { pr } : {}),

@@ -44,6 +44,8 @@ export interface ClientOptions {
   now?: () => string;
   /** Domain events after their transaction commits, in this process. */
   onEvent?: (event: DomainEvent) => void;
+  /** What a follow-up after a commit threw, such as a notice that could not be queued; unreported, it would vanish. */
+  onError?: (error: unknown) => void;
 }
 
 export class SuperagentClient {
@@ -61,7 +63,7 @@ export class SuperagentClient {
   constructor(private readonly options: ClientOptions = {}) {
     this.stateDir = options.stateDir ?? superagentStateDir();
     this.read = readSettings(settingsPath(this.stateDir));
-    this.store = new Store(databasePath(this.stateDir));
+    this.store = new Store(databasePath(this.stateDir), options.onError);
     this.sources = new SourceRegistry(() => this.settings(), this.health);
     for (const kind of [localKind, githubKind, feishuKind]) this.sources.register(kind as never);
     this.effects = new Effects(this.store, this.health);
