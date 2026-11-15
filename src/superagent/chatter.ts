@@ -16,7 +16,7 @@ import { chatsOf, isOwn, senderOf } from "./people.js";
 import { ask as openAsk, closeAsks, openAsks, recentAsks, type Ask } from "./asks.js";
 import { chatSubject, memoryOf, notesCard, personSubject } from "./memories.js";
 import type { Chatter, Settings } from "./settings.js";
-import { checkedImText, parseJsonObject, wordCount } from "./text.js";
+import { checkedImText, cutToFit, parseJsonObject, wordCount } from "./text.js";
 
 const HOUR_MS = 3_600_000;
 /** How far back, and how many, of a chat's messages a consideration reads. */
@@ -74,23 +74,6 @@ function tooLong(answer: z.infer<typeof AttendSchema>, answering: readonly Ask[]
   if (answer.reply?.text && wordCount(answer.reply.text) > SAY_WORDS) long.push(`the reply is ${wordCount(answer.reply.text)} words`);
   return long.length ? `${long.join("; ")}: Feishu takes a relay of at most ${RELAY_WORDS} words and a reply of at most ${SAY_WORDS}. Write them again shorter, keeping what the person needs most.` : undefined;
 }
-/**
- * A relay or reply still too long after a second try, cut after its last whole sentence that fits, so it still reaches the
- * person; a first sentence too long alone is cut where it fits.
- */
-export function cutToFit(text: string, words: number): string {
-  let kept = "";
-  for (const sentence of text.split(/(?<=[。！？!?；;\n]|\.\s)/)) {
-    if (wordCount(kept + sentence) > words - 1) break;
-    kept += sentence;
-  }
-  if (!kept) {
-    kept = text;
-    while (kept && wordCount(kept) > words - 1) kept = kept.slice(0, Math.floor(kept.length * 0.9));
-  }
-  return `${kept.trim()}…`;
-}
-
 /** The instructions for attending to messages that call for the agent. */
 export function attendPrompt(name: string, persona: string): string {
   return [
