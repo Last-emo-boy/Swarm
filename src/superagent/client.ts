@@ -5,7 +5,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { Engine, UserError, followupOwners, key, latestAssignment, latestReport, liveTicket, threadKey, type DomainEvent, type Executor, type Ticket } from "./core/index.js";
+import { Engine, UserError, followupOwners, key, latestAssignment, latestReport, liveTicket, threadKey, type Decision, type DomainEvent, type Executor, type Ticket,
+  type Trigger } from "./core/index.js";
 import { Commands } from "./commands.js";
 import { Effects } from "./effects.js";
 import { linkOf } from "./github-link.js";
@@ -13,7 +14,7 @@ import { harnessIds } from "./harness.js";
 import { HealthBoard } from "./health.js";
 import { KV } from "./kv.js";
 import { ticketExecution } from "./messages.js";
-import { noticeChannel, stoppedId, stoppedNotice } from "./notices.js";
+import { noticeChannel, stoppedId, stoppedNotice, unroutedNotice } from "./notices.js";
 import { Outbox } from "./outbox.js";
 import { settingsPolicy } from "./policy.js";
 import { readSettings, settingsPath, superagentStateDir, type Settings, type SettingsRead } from "./settings.js";
@@ -43,6 +44,8 @@ export interface ClientOptions {
   now?: () => string;
   /** Domain events after their transaction commits, in this process. */
   onEvent?: (event: DomainEvent) => void;
+  /** What a follow-up after a commit threw, such as a notice that could not be queued; unreported, it would vanish. */
+  onError?: (error: unknown) => void;
 }
 
 export class SuperagentClient {
@@ -60,7 +63,7 @@ export class SuperagentClient {
   constructor(private readonly options: ClientOptions = {}) {
     this.stateDir = options.stateDir ?? superagentStateDir();
     this.read = readSettings(settingsPath(this.stateDir));
-    this.store = new Store(databasePath(this.stateDir));
+    this.store = new Store(databasePath(this.stateDir), options.onError);
     this.sources = new SourceRegistry(() => this.settings(), this.health);
     for (const kind of [localKind, githubKind, feishuKind]) this.sources.register(kind as never);
     this.effects = new Effects(this.store, this.health);
@@ -160,6 +163,7 @@ export class SuperagentClient {
       if (event.type === "trigger.received" || event.type === "ticket.resumed" || event.type === "trigger.followup") this.followup(event.data.triggerId);
       if (event.type === "ticket.ended") this.pullEnded(event.data.ticketId);
       if (event.type === "assignment.reported" && (event.data.state === "failed" || event.data.state === "blocked")) this.stopped(event.data.ticketId);
+      if (event.type === "decision.recorded" && event.data.kind === "unavailable") this.unrouted(event.data.decisionId);
     } finally {
       for (const listener of this.listeners) listener(event);
     }
@@ -196,6 +200,16 @@ export class SuperagentClient {
     const request = this.store.triggers.get(ticket.origin.triggerId)?.text ?? "";
     if (channel) this.outbox.send({ id: stoppedId(ticketId, report.at, report.state), channel, text: stoppedNotice(report.state, report.summary, request), kind: "reply", ticketId });
   }
+  /**
+   * A request the router did not decide in time tells its person once, where they wrote it, that it was not taken in and
+   * that they can send it again: no ticket came of it, so nothing else would tell them.
+   */
+  private unrouted(decisionId: string): void {
+    const decision = this.store.decisions.get(decisionId);
+    const request = decision && unroutedRequest(this.store, decision);
+    // A source that is off can deliver nothing now: the notice waits rather than filling the outbox with a dead row.
+    if (request?.channel && this.sources.channelAllowed(request.channel)) this.outbox.send({ id: key("unavailable", decisionId), channel: request.channel, text: unroutedNotice(request.text), kind: "reply" });
+  }
   /** A ticket that ended with its pull request tells its chat conversations once; GitHub shows the outcome itself. */
   private pullEnded(ticketId: string): void {
     const ticket = this.store.tickets.get(ticketId);
@@ -204,6 +218,19 @@ export class SuperagentClient {
     const repository = String(this.settings().sources.github?.config.repository ?? "");
     for (const message of pullEndNotices(ticket, request, repository)) this.outbox.send(message);
   }
+}
+
+/**
+ * The request an unavailable Decision left unrouted because the model did not answer in time: the last of its Triggers in
+ * which a person addressed the agent in a conversation that takes an answer, else the last a person wrote in one. An Eval
+ * holds every message that waited on its Thread, so the last of them may be a bystander's comment that asked for nothing.
+ * Undefined for any other Decision: an Eval that ended unavailable because the Policy changed or its Triggers were routed
+ * starts again, and an assessment's own verdict is a judgement.
+ */
+export function unroutedRequest(store: Pick<Store, "triggers">, decision: Decision): Trigger | undefined {
+  if (decision.kind !== "unavailable" || decision.strength !== "explicit" || decision.reason[0]?.code !== "timeout") return undefined;
+  const written = decision.triggerIds.flatMap((id) => store.triggers.get(id) ?? []).filter((trigger) => trigger.human && trigger.channel);
+  return written.filter((trigger) => trigger.addressed).at(-1) ?? written.at(-1);
 }
 
 /** Whether a ticket's latest Assignment still runs or waits to run. */

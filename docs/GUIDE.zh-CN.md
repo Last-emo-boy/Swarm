@@ -475,7 +475,11 @@ swarm superagent tickets          # 等待人处理的工单排在最前
 swarm superagent say <id> "use build.sh"
 swarm superagent stop <id>
 swarm superagent retry <id>
+swarm superagent again <消息 id>   # 把没能受理的请求重新提交路由
+swarm superagent dismiss <id>     # 或者忽略它和它的提醒
 ```
+
+等着某人的工单（等回答，或报告卡住、失败之后），在对方一天没有回应后提醒一次，再一天后关闭，并在提问的地方说明；在那里回复会像回复已结束的工单一样把它重新打开。所在对话已经发不出去消息的工单同样关闭，但不另行通知。模型超时导致路由没能受理的请求，会在提出请求的地方收到一次说明，`swarm superagent status` 也会列出它：`again` 保留消息重新走一次评估，`dismiss` 放弃这条提醒。
 
 在 TUI 中，`/ticket <request>` 提交工作，`/ticket <id>` 显示一个工单，`/ticket say|stop|retry <id>` 对某个工单执行操作，`/tickets` 打开工单面板（方向键选择，Enter 打开，`s` 停止，`r` 重试，Esc 返回）。没有宿主在运行时，TUI 会启动一个，并在 TUI 退出时停止它。
 

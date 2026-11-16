@@ -16,7 +16,7 @@ import { chatsOf, isOwn, senderOf } from "./people.js";
 import { ask as openAsk, closeAsks, openAsks, recentAsks, type Ask } from "./asks.js";
 import { chatSubject, memoryOf, notesCard, personSubject } from "./memories.js";
 import type { Chatter, Settings } from "./settings.js";
-import { checkedImText, parseJsonObject, wordCount } from "./text.js";
+import { answerOf, checkedImText, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
 
 const HOUR_MS = 3_600_000;
 /** How far back, and how many, of a chat's messages a consideration reads. */
@@ -63,9 +63,9 @@ export function callOf(store: Pick<SuperagentClient["store"], "get">, message: T
 
 const AttendSchema = z.object({
   reply: z.object({ text: z.string().trim(), reply_to: z.string().nullish(), mention: z.string().nullish() }).nullish(),
-  relay: z.array(z.object({ question: z.string(), text: z.string().trim() })).default([]),
-  ask_back: z.array(z.object({ for: z.string(), text: z.string().trim() })).max(1).default([]),
-  reason: z.string().max(400).default("")
+  relay: orNull(z.array(z.object({ question: z.string(), text: z.string().trim() })), []),
+  ask_back: orNull(z.array(z.object({ for: z.string(), text: z.string().trim() })), []),
+  reason: orNull(z.string(), "")
 });
 /** What in an attend answer is longer than Feishu takes, for one more try; nothing when it fits. */
 function tooLong(answer: z.infer<typeof AttendSchema>, answering: readonly Ask[]): string | undefined {
@@ -74,23 +74,6 @@ function tooLong(answer: z.infer<typeof AttendSchema>, answering: readonly Ask[]
   if (answer.reply?.text && wordCount(answer.reply.text) > SAY_WORDS) long.push(`the reply is ${wordCount(answer.reply.text)} words`);
   return long.length ? `${long.join("; ")}: Feishu takes a relay of at most ${RELAY_WORDS} words and a reply of at most ${SAY_WORDS}. Write them again shorter, keeping what the person needs most.` : undefined;
 }
-/**
- * A relay or reply still too long after a second try, cut after its last whole sentence that fits, so it still reaches the
- * person; a first sentence too long alone is cut where it fits.
- */
-export function cutToFit(text: string, words: number): string {
-  let kept = "";
-  for (const sentence of text.split(/(?<=[。！？!?；;\n]|\.\s)/)) {
-    if (wordCount(kept + sentence) > words - 1) break;
-    kept += sentence;
-  }
-  if (!kept) {
-    kept = text;
-    while (kept && wordCount(kept) > words - 1) kept = kept.slice(0, Math.floor(kept.length * 0.9));
-  }
-  return `${kept.trim()}…`;
-}
-
 /** The instructions for attending to messages that call for the agent. */
 export function attendPrompt(name: string, persona: string): string {
   return [
@@ -122,7 +105,7 @@ export function quietAt(chatter: Pick<Chatter, "quiet">, at: number): boolean {
   return quiet.from < quiet.to ? hour >= quiet.from && hour < quiet.to : hour >= quiet.from || hour < quiet.to;
 }
 
-const SaySchema = z.object({ say: z.string().trim().nullish(), reply_to: z.string().nullish(), mention: z.string().nullish(), reason: z.string().max(400).default("") });
+const SaySchema = z.object({ say: z.string().trim().nullish(), reply_to: z.string().nullish(), mention: z.string().nullish(), reason: orNull(z.string(), "") });
 const CHATTER_CONTRACT = 'Return exactly one JSON object: {"say": "what you post" | null, "reply_to": "the id of the one message you answer" | null, "mention": "the from_id of the one person you answer, to @ them, only when the chat is busy enough that they might miss it" | null, "reason": "why, at most 200 characters"}';
 
 /** The instructions for a consideration: who the agent is in the chat, and when a member would speak. */
@@ -142,6 +125,8 @@ export interface ChatterHost {
   readonly client: SuperagentClient;
   readonly complete: Complete;
   now?(): number;
+  /** Where to note a model answer it could not use, which leaves the agent silent. */
+  log?(message: string): void;
 }
 
 export class ChatterRoom {
@@ -228,7 +213,8 @@ export class ChatterRoom {
 
   /**
    * Answers what called for the agent in a chat, when one needs it and its budget allows, and passes on the answers to what
-   * it asked for someone, which closes those asks.
+   * it asked for someone, which closes those asks. With no answer from the model that it can use, it does neither: the asks
+   * stay open, and these messages are not read again, so an ask waits for the next message that answers it.
    */
   async attend(chatId: string, ids: readonly string[]): Promise<void> {
     const { client, complete } = this.host;
@@ -266,12 +252,20 @@ export class ChatterRoom {
       ...(answering.length ? { your_questions: answering.map((ask) => ({ id: ask.id, asked_for: ask.for.name, asked: ask.text, at: ask.at })) } : {}),
       ...(replyable.length && acting.length ? { acting_for: acting.map((item) => ({ id: item.for.id, name: item.for.name, you_asked_here: item.text })) } : {}),
       ...(replyable.length ? {} : { reply: "not now: leave reply null and only relay" }), ...(memory.length ? { memory } : {}) };
-    const think = async (problem?: string) => AttendSchema.parse(parseJsonObject(await complete({ purpose: "superagent_attend", system: attendPrompt(name, chatter.persona),
-      user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) })));
-    // An answer longer than Feishu takes gets one more try; a relay still too long is cut to fit, never dropped.
+    const purpose = (problem?: string) => problem ? "superagent_attend again" : "superagent_attend";
+    const think = (problem?: string) => {
+      const tries = problem ? 1 : 2;
+      return answerOf(AttendSchema, () => complete({ purpose: "superagent_attend", system: attendPrompt(name, chatter.persona),
+        user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), tries,
+        (answer) => this.host.log?.(noAnswer(purpose(problem), tries, answer)));
+    };
+    // Asked twice with no answer it can use, it gives up: the effect ends rather than ask again every minute.
     const first = await think();
+    if (!first) return;
+    // An answer longer than Feishu takes gets one more try; a relay still too long is cut to fit, never dropped.
+    // That try is one call: when it gives no answer it can use, the first one stays.
     const problem = tooLong(first, answering);
-    const answer = problem ? await think(problem) : first;
+    const answer = problem ? await think(problem) ?? first : first;
     const relays = answer.relay.flatMap((item) => {
       const ask = answering.find((candidate) => candidate.id === item.question);
       return ask && item.text ? [{ ask, text: wordCount(item.text) <= RELAY_WORDS ? item.text : cutToFit(item.text, RELAY_WORDS) }] : [];
@@ -281,9 +275,10 @@ export class ChatterRoom {
     const text = said && (wordCount(said) <= SAY_WORDS ? said : cutToFit(said, SAY_WORDS));
     const target = replyable.find((call) => call.message.meta.messageId === answer.reply?.reply_to) ?? replyable.at(-1);
     const reply = text && target && !own.some((item) => item.text === text) ? { text, target: target.message } : undefined;
-    // What the message asks of someone it acts for, it asks them, and their answer goes back to whoever asked.
+    // What the message asks of someone it acts for, it asks them, and their answer goes back to whoever asked: one person
+    // for a message, the first the answer lists.
     const asker = reply?.target ?? target?.message;
-    const backs = asker ? answer.ask_back.flatMap((item) => {
+    const backs = asker ? answer.ask_back.slice(0, 1).flatMap((item) => {
       const acted = acting.find((candidate) => candidate.for.id === item.for);
       return acted && item.text ? [{ acted, text: wordCount(item.text) <= RELAY_WORDS ? item.text : cutToFit(item.text, RELAY_WORDS) }] : [];
     }) : [];
@@ -317,7 +312,7 @@ export class ChatterRoom {
     });
   }
 
-  /** Asks the model whether the agent says something in a chat now, and posts it when it does. */
+  /** Asks the model whether the agent says something in a chat now, and posts it when it does; no answer it can use is nothing said. */
   async consider(chatId: string): Promise<void> {
     const { client, complete } = this.host;
     const settings = client.settings();
@@ -338,8 +333,11 @@ export class ChatterRoom {
     const memory = memoryOf(settings) ? notesCard(client.store, [chatSubject(chatId), ...new Set(messages.map((message) => personSubject(message.actor.id)))], 4, 16) : [];
     const card = { chat: client.store.get(KV.sources.labels("feishu"))?.[chatId] ?? chatId, now: new Date(this.now()).toISOString(), messages: timeline,
       ...(memory.length ? { memory } : {}) };
-    const answer = SaySchema.parse(parseJsonObject(await complete({ purpose: "superagent_chatter", system: chatterPrompt(bot, chatter.persona),
-      user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) })));
+    const answer = await answerOf(SaySchema, () => complete({ purpose: "superagent_chatter", system: chatterPrompt(bot, chatter.persona),
+      user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), 2,
+      (answer) => this.host.log?.(noAnswer("superagent_chatter", 2, answer)));
+    // Asked twice with no answer it can use, it says nothing: the effect ends rather than ask again every minute.
+    if (!answer) return;
     const text = answer.say?.trim();
     if (!text || wordCount(text) > SAY_WORDS || own.some((item) => item.text === text)) return;
     const replyTo = messages.find((message) => message.meta.messageId === answer.reply_to)?.meta.messageId;

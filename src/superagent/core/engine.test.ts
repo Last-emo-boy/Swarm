@@ -793,6 +793,15 @@ describe('worker reports', () => {
     expect(cleared).not.toHaveProperty('attention')
     expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id), key('attention-reply', replaced.attention!.id)])
   })
+  it('withdraws a question still queued when the ticket ends, so nobody is asked it after it ended', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const asked = h.engine.report(ticketId, { state: 'blocked', summary: 'need a call', question: 'Which color?' })
+    expect(h.withdrawn).toEqual([])
+    h.engine.stopTicket(ticketId, 'not needed')
+    expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id)])
+    expect(h.repo.tickets.get(ticketId)).not.toHaveProperty('attention')
+  })
   it('ends the ticket on a final report: dropped drops it, ready completes it unless it follows a Source\'s Thread that is open', () => {
     const outcome = (state: 'ready' | 'dropped' | 'failed', follows: boolean, closed = false) => {
       const h = harness()

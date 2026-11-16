@@ -50,6 +50,13 @@ const repoList = (link: LinkView, say: Say): string => {
     : names.join(say(", ", "、"));
 };
 const notLinked = (say: Say): string => say("Link your GitHub account first: send /link.", "先绑定你的 GitHub 账号：发 /link。");
+/**
+ * Whether a ticket has the patch of its finished work: its latest report is ready, which is when a local ticket's result
+ * keeps its patch, and the host holds that patch's file. One that reported blocked or failed has a patch file too, of
+ * unfinished work, which no take-over runs.
+ */
+const patchReady = (client: SuperagentClient, ticket: Ticket): boolean =>
+  latestReport(ticket)?.state === "ready" && existsSync(patchPath(client.stateDir, ticket));
 /** How long a wanted pull request waits for its person to link and for its ticket's patch. */
 const WANTED_MS = 7 * 24 * HOUR_MS;
 
@@ -467,7 +474,7 @@ export class BotCommands {
       basis: { via: "addressed" as const, addressed, source: trigger.source, ...(row === undefined ? {} : { row }) } };
     // A local ticket's patch is on the watched repository, where the taker opens the pull request as themselves.
     const watched = watchedRepository(settings);
-    const patched = existsSync(patchPath(client.stateDir, ticket));
+    const patched = patchReady(client, ticket);
     const link = linkOf(client.store, trigger.actor);
     if (!link || link.broken) {
       if (!githubApp(settings) || !this.options.links || allowedWrite(settings, mandate) !== "github") return notLinked(say);
@@ -537,7 +544,7 @@ export class BotCommands {
       const wanted = store.get(name);
       const ticket = store.tickets.get(name.slice(KV.links.wanted.prefix.length));
       const trigger = wanted && store.triggers.get(wanted.triggerId);
-      const patched = !!ticket && latestReport(ticket)?.state === "ready" && existsSync(patchPath(this.client.stateDir, ticket));
+      const patched = !!ticket && patchReady(this.client, ticket);
       if (!wanted || !ticket || !trigger || (!liveTicket(ticket) && !patched) || Date.now() - Date.parse(wanted.at) > WANTED_MS) {
         store.delete(name);
         continue;

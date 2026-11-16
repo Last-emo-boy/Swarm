@@ -41,12 +41,12 @@ const exec = promisify(execFile);
 /** The largest patch a local ticket's ready report sends; a larger change is beyond a ticket kept local. */
 export const PATCH_BYTES = 1024 * 1024;
 /**
- * A ready report's patch, as the worker's directory gives it: its commits that no remote branch has, their size in bytes (the
+ * A report's patch, as the worker's directory gives it: its commits that no remote branch has, their size in bytes (the
  * text is empty beyond `PATCH_BYTES`), and whether tracked files have uncommitted changes.
  */
 export const PatchSchema = z.object({ text: z.string().max(PATCH_BYTES), bytes: z.number().int().min(0), uncommitted: z.boolean() }).strict();
 export type Patch = z.infer<typeof PatchSchema>;
-/** Where the host keeps a local ticket's patch, named after the ticket, which its result carries and a take-over applies. */
+/** Where the host keeps a ticket's patch, named after the ticket: a local ticket's result carries it and a take-over applies it. */
 export const patchPath = (stateDir: string, ticket: Pick<Ticket, "id" | "execution">): string =>
   join(stateDir, "patches", `${(ticket.execution?.name ?? ticket.id).replace(/[^A-Za-z0-9_-]/g, "_")}.patch`);
 
@@ -62,12 +62,20 @@ export async function directoryPatch(directory: string): Promise<Patch | undefin
     return undefined;
   }
 }
-/** The ticket tools with a ready report that also carries the patch of the worker's directory, which the host keeps for a local ticket. */
+/** The largest report of stopped work that carries its patch: a ticket VM's gateway and a paired node's owner read a request of 1,000,000 bytes at most. */
+export const STOPPED_REPORT_BYTES = 950_000;
+/**
+ * The ticket tools with a report that also carries the patch of the worker's directory when it is ready, blocked or failed:
+ * the host keeps a local ticket's as its result, and that of work that stopped so its commits outlast its directory. Work
+ * that stopped must still be reported, so a patch that would make its report too large to send goes without its text, as
+ * one over `PATCH_BYTES` does.
+ */
 export const withPatch = (tools: readonly TicketTool[], directory: string): TicketTool[] => tools.map((tool) => tool.name !== "report" ? tool : {
   ...tool,
   run: async (args) => {
-    const patch = args.state === "ready" ? await directoryPatch(directory) : undefined;
-    return tool.run({ ...args, ...(patch ? { patch } : {}) });
+    const patch = ["ready", "blocked", "failed"].includes(String(args.state)) ? await directoryPatch(directory) : undefined;
+    const fits = args.state === "ready" || !patch || Buffer.byteLength(JSON.stringify({ ...args, patch })) <= STOPPED_REPORT_BYTES;
+    return tool.run({ ...args, ...(patch ? { patch: fits ? patch : { ...patch, text: "" } } : {}) });
   }
 });
 
@@ -420,8 +428,21 @@ export interface ReportArgs {
   pr_number?: number;
   reply_to_trigger_id?: string;
   message_for_person?: string;
-  /** With a ready report, the patch of the worker's directory: see `withPatch`. */
+  /** With a ready, blocked or failed report, the patch of the worker's directory: see `withPatch`. */
   patch?: Patch;
+}
+
+/**
+ * The arguments of a report the worker files itself when its work stops, with the patch of its directory as `withPatch`
+ * gives the report tool's blocked and failed reports: the commits outlast the directory, as a ticket VM's disk does not.
+ * A directory whose patch cannot be read still reports, without it.
+ */
+export async function withStoppedPatch(directory: string, args: ReportArgs): Promise<ReportArgs> {
+  if (args.state !== "blocked" && args.state !== "failed") return args;
+  const patch = await directoryPatch(directory);
+  if (!patch) return args;
+  const fits = Buffer.byteLength(JSON.stringify({ ...args, patch })) <= STOPPED_REPORT_BYTES;
+  return { ...args, patch: fits ? patch : { ...patch, text: "" } };
 }
 
 /** What a local ticket's result says when its worker gave no message: the patch is the result. */
@@ -469,6 +490,9 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
     throw new Error(`The commits of this ticket make a patch of ${Math.ceil(local.bytes / 1024)} KB, more than ${PATCH_BYTES / 1024} KB: keep generated and large files out of them.`);
   }
   const attachment = local?.text ? keepPatch(client.stateDir, current, local.text) : undefined;
+  // Work that stops keeps its commits too, as they are: a ticket VM's data disk is deleted when its ticket ends, so commits
+  // never pushed would be lost when a stuck ticket is closed.
+  if ((args.state === "blocked" || args.state === "failed") && args.patch?.text) keepPatch(client.stateDir, current, args.patch.text);
   const given = args.message_for_person ? checkedImText(args.message_for_person) : undefined;
   const message = given ?? (attachment ? PATCH_RESULT : undefined);
   // The host follows pull requests on the repository the GitHub Source watches; a ticket on another one names its PR in its message.
@@ -525,7 +549,7 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
   });
 }
 
-/** How long the host keeps a local ticket's patch after it last changed. */
+/** How long the host keeps a ticket's patch after it last changed. */
 export const PATCH_DAYS = 30;
 /** Deletes the patches the host kept longer than `PATCH_DAYS`. */
 export function prunePatches(stateDir: string, now = Date.now()): void {
@@ -537,7 +561,11 @@ export function prunePatches(stateDir: string, now = Date.now()): void {
   }
 }
 
-/** Writes a local ticket's patch where the host keeps it (owner-only), and returns its path. */
+/** The note a ticket gets when its own kept patch, from work that stopped, could not be applied to its prepared directory. */
+export const keptPatchNote = (path: string, why: string): string =>
+  `The commits this ticket made before it stopped are kept as a patch at ${path}, which did not apply to its new directory, so the directory starts without them. Restore them by hand if the work needs them: ${why.slice(0, 500)}`;
+
+/** Writes a ticket's patch where the host keeps it (owner-only), and returns its path. */
 function keepPatch(stateDir: string, ticket: Ticket, text: string): string {
   const path = patchPath(stateDir, ticket);
   mkdirSync(join(stateDir, "patches"), { recursive: true, mode: 0o700 });

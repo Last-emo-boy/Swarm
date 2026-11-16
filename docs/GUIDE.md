@@ -813,7 +813,15 @@ swarm superagent tickets          # what waits for a person first
 swarm superagent say <id> "use build.sh"
 swarm superagent stop <id>
 swarm superagent retry <id>
+swarm superagent again <message id>   # send a request the router could not take in
+swarm superagent dismiss <id>         # or drop the notice and the request
 ```
+
+A ticket that waits on a person, for an answer or after a blocked or failed report, reminds them once after a day with
+nothing said and closes a day after that reminder, saying so where it asked; a reply there resumes it, as one to a
+finished ticket does. One whose conversation can no longer be posted to is closed the same way, unannounced. A request the
+router could not take in because the model timed out is answered once where it was asked, and `swarm superagent status`
+lists it: `again` keeps the messages for a new Eval, and `dismiss` drops the notice.
 
 In the TUI, `/ticket <request>` files work, `/ticket <id>` shows a ticket,
 `/ticket say|stop|retry <id>` acts on one, and `/tickets` opens the tickets pane

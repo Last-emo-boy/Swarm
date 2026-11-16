@@ -355,6 +355,8 @@ export class Tickets extends EnginePart {
       && (!readBefore(input, until) || ticket.undelivered.includes(input.id)) ? [input.id] : []))
     // An end dated earlier, such as a PR's merge, does not move the ticket's last change back.
     ticket.ended = { at, by, outcome, ...why }; ticket.undelivered = []; ticket.updatedAt = this.now()
+    // A question still queued goes with the ticket it belonged to, so nobody is asked it after it ended.
+    if (ticket.attention) this.replies.withdrawAttention(ticket.attention.id)
     delete ticket.attention; delete ticket.delivery
     // The Assignments the end stops end with it; the ticket's end says why.
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }

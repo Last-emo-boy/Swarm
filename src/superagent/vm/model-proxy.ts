@@ -3,7 +3,8 @@
  * the host adds the provider's real key, so no key ever enters a VM. It forwards only the requests Swarm's provider and
  * OpenCode make: one JSON answer per call, or a chat-completions answer streamed as OpenCode asks for it, whose last event
  * then reports its usage; no background work, whose usage it could not count. It refuses a call whose provider budget is
- * reached, and records each call's usage in this device's ledger under the ticket's worker session.
+ * reached, and records each call's usage, and how long the provider took over it, in this device's ledger under the
+ * ticket's worker session.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getProviderApiKey, loadSwarmConfig, loadSwarmSettings, type ProviderDefinition } from "../../config/settings.js";
@@ -81,18 +82,20 @@ export async function proxyModel(call: ProxyCall, request: IncomingMessage, resp
   if (query) url.searchParams.set(...query);
   // A streamed answer reports its usage in its last event only when the request asks for it.
   const sent = streamed ? Buffer.from(JSON.stringify({ ...body, stream_options: { ...isRecord(body.stream_options) ? body.stream_options : {}, include_usage: true } })) : raw;
+  // A call lasts from here until its answer was read: for a streamed one, until its stream ended.
+  const startedAt = Date.now();
   const forwarded = await (call.fetch ?? fetch)(url, { method: "POST", body: new Uint8Array(sent),
     headers: { "content-type": "application/json", ...provider.headers, ...headers,
       ...(typeof request.headers["anthropic-version"] === "string" ? { "anthropic-version": request.headers["anthropic-version"] } : {}) } });
   if (streamed && forwarded.ok && forwarded.body) {
     response.writeHead(forwarded.status, { "content-type": forwarded.headers.get("content-type") ?? "text/event-stream", "cache-control": "no-cache" });
     const usage = await relay(forwarded.body, response);
-    if (usage) record(call, provider, body, { usage });
+    if (usage) record(call, provider, body, { usage }, Date.now() - startedAt);
     return;
   }
   const text = await forwarded.text();
   if (forwarded.ok) {
-    try { record(call, provider, body, JSON.parse(text) as Record<string, unknown>); } catch { /* No JSON answer: no usage to count. */ }
+    try { record(call, provider, body, JSON.parse(text) as Record<string, unknown>, Date.now() - startedAt); } catch { /* No JSON answer: no usage to count. */ }
   }
   response.writeHead(forwarded.status, { "content-type": forwarded.headers.get("content-type") ?? "application/json" });
   response.end(text);
@@ -135,13 +138,16 @@ async function relay(stream: ReadableStream<Uint8Array>, response: ServerRespons
   return usage;
 }
 
-/** Records a call's usage as Swarm's provider does, under the ticket's worker session, so its ledger and budgets count it. */
-function record(call: ProxyCall, provider: ProviderDefinition, body: Record<string, unknown>, answer: Record<string, unknown>): void {
+/**
+ * Records a call's usage and how long it took (`durationMs`) as Swarm's provider does, under the ticket's worker session,
+ * so its ledger and budgets count it.
+ */
+function record(call: ProxyCall, provider: ProviderDefinition, body: Record<string, unknown>, answer: Record<string, unknown>, durationMs: number): void {
   const usage = provider.protocol === "anthropic-messages" ? usageFromAnthropic(answer)
     : provider.protocol === "google-gemini" ? usageFromGemini(answer) : usageFromOpenAIResponse(answer);
   const model = typeof body.model === "string" ? body.model : /\/models\/([\w.-]+):/.exec(call.rest)?.[1] ?? "unknown";
   call.onUsage({ providerId: call.providerId, protocol: provider.protocol, model, purpose: "worker_coding_loop", sessionId: `worker-${call.ticketId}`,
-    taskId: call.ticketId, cacheMode: "provider", promptCacheKey: "", promptCacheScope: "", cacheablePrefixTokensEstimate: 0, durationMs: 0, ...usage });
+    taskId: call.ticketId, cacheMode: "provider", promptCacheKey: "", promptCacheScope: "", cacheablePrefixTokensEstimate: 0, durationMs, ...usage });
 }
 
 /** Answers a proxy failure as the provider would, so the worker's SDK reads its message. */
