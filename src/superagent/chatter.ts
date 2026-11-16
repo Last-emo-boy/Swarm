@@ -42,11 +42,9 @@ const CARD_TICKETS_MAX = 8;
  * The tickets this chat's own messages started, open or ended recently, as a card lists them: what a from_ticket line's
  * id names, and what state that ticket is in. One from before the window that is still open stays listed.
  */
-export function chatTickets(store: Pick<SuperagentClient["store"], "tickets" | "triggers">, chatId: string, source: string, now: number): { ticket_id: string; title: string; state: string }[] {
+export function chatTickets(store: Pick<SuperagentClient["store"], "read">, chatId: string, source: string, now: number): { ticket_id: string; title: string; state: string }[] {
   const listed: { ticket_id: string; title: string; state: string }[] = [];
-  for (const ticket of store.tickets.list()) {
-    const origin = store.triggers.get(ticket.origin.triggerId);
-    if (!origin || origin.source !== source || metaOf(origin).chatId !== chatId) continue;
+  for (const ticket of store.read.chatTickets({ source, chatId })) {
     if (ticket.ended && now - Date.parse(ticket.ended.at) > WINDOW_MS) continue;
     const card = ticketCard(ticket);
     listed.push({ ticket_id: card.ticket_id, title: card.title, state: card.state });
