@@ -155,13 +155,13 @@ export function mediaCount(text: string): number {
 const saidIn = (state: Pick<State, "get">, chatId: string, since: string): Said[] =>
   (state.get(KV.chatter.chat(chatId))?.said ?? []).filter((entry) => entry.at >= since);
 const lines = (store: Pick<Store, "get">, messages: Trigger[], own: Said[], options: LineOptions): Line[] => {
-  const all = [
-    ...messages.map((message): Line => ({ at: message.at, from: senderOf(store, message), from_id: message.actor.id, trigger_id: message.id, ...(message.human ? {} : { bot: true as const }),
-      ...(mediaCount(message.text) ? { media: mediaCount(message.text) } : {}), text: cut(message.text, options.chars) })),
-    ...own.map((entry): Line => ({ at: entry.at, from: options.self || "you", you: true, ...(entry.ticket ? { from_ticket: entry.ticket } : {}), text: cut(entry.text, options.chars) }))
-  ].sort((a, b) => a.at.localeCompare(b.at));
-  // A reflection pages from the oldest end, so its page keeps the oldest lines; a card that answers recent traffic keeps the newest.
-  return options.oldest ? all.slice(0, options.limit) : all.slice(-options.limit);
+  const said = own.map((entry): Line => ({ at: entry.at, from: options.self || "you", you: true, ...(entry.ticket ? { from_ticket: entry.ticket } : {}), text: cut(entry.text, options.chars) }));
+  const wrote = messages.map((message): Line => ({ at: message.at, from: senderOf(store, message), from_id: message.actor.id, trigger_id: message.id, ...(message.human ? {} : { bot: true as const }),
+    ...(mediaCount(message.text) ? { media: mediaCount(message.text) } : {}), text: cut(message.text, options.chars) }));
+  // A reflection pages from the oldest end: its page is the earliest messages, and its own words all come along, so a mark
+  // that moved past a message's page still has that message on the card. A card that answers recent traffic keeps the newest lines.
+  if (options.oldest) return [...wrote.slice(0, options.limit), ...said].sort((a, b) => a.at.localeCompare(b.at));
+  return [...wrote, ...said].sort((a, b) => a.at.localeCompare(b.at)).slice(-options.limit);
 };
 
 /** The chats the agent is in, by id and Source: their names, whether each is a direct message, and how many people and bots it has. */

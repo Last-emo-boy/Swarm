@@ -107,7 +107,8 @@ test("a line counts the media it cannot show, marks the agent's own words a tick
     [true, "t-1", 0], [false, null, 0], [false, null, 1], [false, null, 0], [true, null, 0]]);
   // Read from the oldest end, the page keeps the oldest lines; the usual read keeps the newest.
   const earliest = chatLog(client.store, "oc_team", { since: new Date(now - 3_600_000).toISOString(), limit: 2, chars: 300, oldest: true });
-  assert.deepEqual(earliest.map((line) => line.text), ["ticket report", "m0"]);
+  // Its own words come along whole; the limit counts the page's messages, never its talk, so a mark cannot skip one.
+  assert.deepEqual(earliest.map((line) => line.text), ["ticket report", "m0", "[Image: img_v3_x] look", "my own talk"]);
   assert.deepEqual(chatLog(client.store, "oc_team", { since: new Date(now - 3_600_000).toISOString(), limit: 2, chars: 300 }).map((line) => line.text),
     ["m2", "my own talk"]);
 });

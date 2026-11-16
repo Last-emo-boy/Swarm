@@ -121,6 +121,16 @@ export function applyOps(store: Pick<Store, "memory">, ops: readonly NoteOp[], s
 /** The subjects a model may write about, by the names its card gives them, the notes it was shown, and the agent's own name, when a note names it. */
 export interface Scope { subjects: (name: string) => string | undefined; shown: ReadonlySet<string>; agent?: string }
 
+/**
+ * Whether a rule's sentence takes the agent as its subject: its name, then at most a few words, then a rule word. "记得" is
+ * left out here: in 中文 it as easily follows a name as an object ("w33d 记得周五发版" is someone's memory of it), so only
+ * the words that can only be a rule count.
+ */
+const RULE_SUBJECT = /从不|不要|必须|应该|always|never|must|should/i;
+const namesTheAgentAsSubject = (text: string, agent: string): boolean => {
+  const escaped = agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escaped}[^。！？.!?;；]{0,12}(?:${RULE_SUBJECT.source})`, "i").test(text);
+};
 /** The words that make a sentence a rule rather than a report. */
 const RULE = /从不|不要|必须|应该|记得|always|never|must|should/i;
 /** The shapes that cite a source: a note that cites one needs the URL, and the ones it names are not enough. */
@@ -134,8 +144,10 @@ export const VERDICT = /不靠谱|靠不住|很懒|太懒|爱装|装逼|水平�
  * about a person dressed as a fact is refused. Semantic judgement of what is a verdict stays in NOTE_RULES.
  */
 export function noteProblem(text: string, about: string, kind: NoteKind, agent: string): { about: string; problem?: string } {
-  // A rule about the bot filed under a person or a chat is a rule about itself: rewrite rather than drop it.
-  if (about !== SELF && agent && text.includes(agent) && RULE.test(text)) return { about: SELF };
+  // A rule about the bot filed under a person or a chat is a rule about itself: rewrite rather than drop it. It must be
+  // aimed at the bot, though: the rule word follows its name ("w33d should never…"), not a fact naming it in passing
+  // ("Alice always reviews w33d's PRs").
+  if (about !== SELF && agent && RULE.test(text) && namesTheAgentAsSubject(text, agent)) return { about: SELF };
   if (CITATION.test(text) && !/https?:\/\//i.test(text)) return { about, problem: "a note that cites a source needs its URL" };
   if (about.startsWith("person:") && kind === "fact" && VERDICT.test(text)) return { about, problem: "about a person keep what they did or said, or how they like things, never a judgement of them" };
   return { about };
@@ -339,8 +351,10 @@ export class Memories {
     const mark = client.store.get(KV.memory.reflected(chatId));
     if (!memoryOf(settings) || !mark) return;
     const direct = (client.sources.chatKind(source)?.directory.chat(client.store, chatId)?.direct ?? false) === true;
+    // The page is the marked range, and its size in messages is pass()'s page: own lines fill what is left over, so they
+    // never push a marked message past the card the mark has already moved past.
     const messages = chatLog(client.store, chatId, { since: mark.from, limit: REFLECT_MESSAGES, chars: 500, self: this.name(source), oldest: true }, source)
-      .filter((line) => line.at > mark.from && line.at <= mark.upTo || line.you);
+      .filter((line) => line.you || line.at > mark.from && line.at <= mark.upTo);
     const people = [...new Set(messages.flatMap((line) => line.from_id && !line.bot ? [line.from_id] : []))];
     // Only its own lines still reflect: the chat and itself are what it remembers then, and the scope keeps it to them.
     if (!messages.length) return;
