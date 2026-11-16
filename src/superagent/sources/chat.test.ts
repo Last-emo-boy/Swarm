@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test'
+import { Commands } from '../commands.js'
 import { expect, vi } from '../testing/expect.js'
 import { SettingsSchema } from '../settings.js'
 import { KV, type Key } from '../kv.js'
@@ -86,14 +87,22 @@ describe('a chat kind', () => {
   it('keeps an unnamed app\'s bot nameless instead of naming it by its id', () => {
     // Setup defaults an app without a name to ""; the chatter treats "" as no name, so the bot id must not take its place.
     const unnamed = { ...deployment, feishu: { ...deployment.feishu!, name: '' } }
-    expect(feishuChatKind.agent(unnamed)?.name).toBe('')
-    expect(feishuChatKind.agent(unnamed)?.id).toBe('ou_bot')
+    expect(feishuChatKind.agent(unnamed, {})?.name).toBe('')
+    expect(feishuChatKind.agent(unnamed, {})?.id).toBe('ou_bot')
     const { namesAgent } = chatterModule
-    expect(namesAgent('ou_bot hi there', feishuChatKind.agent(unnamed)!.name)).toBe(false)
+    expect(namesAgent('ou_bot hi there', feishuChatKind.agent(unnamed, {})!.name)).toBe(false)
+  })
+  it('says a deployment with no Feishu bot cannot sign in, with the reason a caller can act on', async () => {
+    // Setup never publishes such a deployment, so the only caller that can reach the guard is one that built it by hand.
+    vi.spyOn(Commands.prototype, 'lark').mockImplementation(async () => ({ status: 'ready' }))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: { enabled: true, config: {} } } }))
+    sources.register(feishuKind)
+    expect(await sources.check('feishu', new Commands(() => testDeployment(), {}, new AbortController().signal), testDeployment({ feishu: undefined })))
+      .toMatchObject({ state: 'error', detail: 'The deployment has no Feishu bot' })
   })
   it('is probed with one API call that throws the platform\'s own message', async () => {
     const lark = vi.fn(async () => { throw new Error('20009 The specified app is not installed') })
-    await expect(feishuChatKind.probe!({ lark } as never, deployment)).rejects.toThrow('20009')
+    await expect(feishuChatKind.probe!({ lark } as never, deployment, {})).rejects.toThrow('20009')
     expect(lark.mock.calls[0]).toEqual([['auth', 'status']])
   })
 })

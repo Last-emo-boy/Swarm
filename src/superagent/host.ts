@@ -24,6 +24,7 @@ import { policyEffects } from "./policy.js";
 import { policyVersion, superagentStateDir, type Settings } from "./settings.js";
 import { SETUP_FIELDS, SetupError, commandProbe, defaultMachine, resolveFeishuBot, resolveGithub, type Deployment, type SetupProblem } from "./setup.js";
 import { sourceContextOf, type SourceContextDeps } from "./sources/context.js";
+import type { SourceKind } from "./sources/kind.js";
 import { sourceTrigger } from "./messages.js";
 import { prunePatches } from "./ticket-tools.js";
 import { sameName } from "./text.js";
@@ -41,6 +42,8 @@ const JOURNAL_PRUNE_MS = 3_600_000;
 const MESH_VIEW_MS = 30_000;
 /** How old the devices snapshot its tickets' workers read may grow while any of them works. */
 const DEVICES_MS = 60_000;
+/** How often a Source's sign-in check runs; it is one cheap call, never on every pass. */
+const CHECK_MS = 5 * 60_000;
 
 export interface HostOptions {
   stateDir?: string;
@@ -51,6 +54,8 @@ export interface HostOptions {
   log?: (message: string) => void;
   /** How ticket VMs start and stop, with `executor.isolation` set to vm: the deployment's systemd units by default. */
   vmControl?: VmControl;
+  /** Extra Source kinds to register beside the built-in ones, as `SuperagentClient` takes them. */
+  kinds?: readonly SourceKind[];
 }
 
 /** Who holds a state directory's lock, when a live process does. */
@@ -113,6 +118,8 @@ export class SuperagentHost {
   private passing = false;
   private appliedSetup = "";
   private readonly watchers = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  /** When each Source's sign-in check last ran, so a pass only asks the ones whose turn it is. */
+  private readonly checkedAt = new Map<string, number>();
   private readonly log: (message: string) => void;
 
   constructor(private readonly options: HostOptions) {
@@ -120,7 +127,7 @@ export class SuperagentHost {
     this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.release = acquireLock(this.stateDir);
     try {
-      this.client = new SuperagentClient({ stateDir: this.stateDir, deployment: () => this.deployment,
+      this.client = new SuperagentClient({ stateDir: this.stateDir, deployment: () => this.deployment, ...options.kinds ? { kinds: options.kinds } : {},
         onError: (error) => this.log(`superagent: a follow-up after a commit failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`) });
       this.links = new GithubLinks({ store: this.client.store, key: () => linkKey(this.stateDir), broken: (actor, link) => this.linkBroken(link) });
       // The talking paths record what they asked the model and what became of it (journal.ts): one wrapper around the one model call.
@@ -200,8 +207,8 @@ export class SuperagentHost {
     }
     const deployment: Deployment = { ...machine, repository: github?.repository ?? "", ...(github ? { github: github.github } : {}), ...(feishu ? { feishu } : {}) };
     writeEnvironment(deployment, settings.executor.blockedCommands);
-    await verifyEnvironment(deployment);
     this.deployment = deployment;
+    await verifyEnvironment(deployment);
     this.appliedSetup = setupFields(settings);
   }
 
@@ -249,6 +256,7 @@ export class SuperagentHost {
         this.botCommands.takeOverWanted();
       }
       this.client.effects.kick();
+      await this.checks(settings);
       // Workers read what the host runs work on from its snapshot; while any works, it stays at most a minute old.
       if (Date.now() - this.devicesAt > DEVICES_MS && this.client.store.tickets.active().length) {
         this.devicesAt = Date.now();
@@ -323,6 +331,22 @@ export class SuperagentHost {
       }
     };
   }
+  /**
+   * Runs each enabled Source's sign-in check whose turn it is (`CHECK_MS`), before the health snapshot is written; the
+   * registry reports the outcome on the kind's own check entry. A failure is swallowed here — the entry carries its
+   * message — so one signed-out Source never stops a pass.
+   */
+  private async checks(settings: Settings): Promise<void> {
+    for (const instance of this.client.sources.instances(settings)) {
+      const kind = this.client.sources.kind(instance.id);
+      if (!kind?.check || !instance.enabled) continue;
+      if (Date.now() - (this.checkedAt.get(instance.id) ?? 0) < CHECK_MS) continue;
+      const health = await this.client.sources.check(instance.id, this.client.commands, this.deployment)
+        .catch((error: unknown) => { this.log(`superagent ${instance.id} check failed to run: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
+      // Stamped only when the check actually ran: no deployment yet means nothing was asked, so the next pass tries again.
+      if (health) this.checkedAt.set(instance.id, Date.now());
+    }
+  }
   /** Starts the polling loop of every Source that is on and has one, and stops the loops of Sources switched off. */
   private syncSources(settings: Settings): void {
     for (const instance of this.client.sources.instances(settings)) {
@@ -330,8 +354,9 @@ export class SuperagentHost {
       const running = this.watchers.get(instance.id);
       if (!kind?.watch || !instance.enabled) {
         if (running) { running.controller.abort(); this.watchers.delete(instance.id); }
-        // A Source that is off is healthy: it says so instead of staying "starting".
-        if (kind) for (const entry of this.client.sources.healthEntries(kind.health).values()) entry.set({ state: "paused", detail: "Off" });
+        // Only a Source that is off says "Off": a kind with no watch loop (one that receives messages another way) keeps
+        // the entry its own check writes, which syncSources used to overwrite with "Off" on every pass.
+        if (kind && !instance.enabled) for (const entry of this.client.sources.healthEntries(kind.health).values()) entry.set({ state: "paused", detail: "Off" });
         continue;
       }
       if (running) continue;

@@ -1,9 +1,9 @@
 /** Registry of installed Source kinds, their configured instances, and the Engine's SourceScope implementation (from dsh-superagent's sources/registry.ts). */
 import type { ChannelRef, OutboundMessage, ScopeResult, SourceScope, Trigger } from '../core/index.js'
 import type { Commands } from '../commands.js'
-import { HealthBoard, type HealthEntry } from '../health.js'
+import { HealthBoard, type Health, type HealthEntry } from '../health.js'
 import { AdmissionTableSchema, CeilingsSchema, RolesSchema, type Settings } from '../settings.js'
-import type { ChannelLink, ChannelLinks, SendHost, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.js'
+import type { BoundSourceFiles, ChannelLink, ChannelLinks, SendHost, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.js'
 import type { ChatAgent, ChatKind } from './chat.js'
 import type { Deployment } from '../setup.js'
 
@@ -24,6 +24,10 @@ export class SourceRegistry implements SourceScope {
     const refused = (name: string) => new Error(`Source kind ${kind.kind} declares the health entry ${name}, which another part reports`)
     const synced = kind.health.find(name => name.startsWith('sync:'))
     if (synced) throw refused(synced)
+    // Ticket `read` sends every `github/` resource to the repository API before asking a kind, so the prefix is taken.
+    if (kind.files?.prefix === 'github') throw new Error(`Source kind ${kind.kind} declares the files prefix github, which ticket reads already route`)
+    // A check reports on an entry of its own kind: one it did not declare would be claimed by someone else, if anyone.
+    if (kind.check && !kind.health.includes(kind.check.entry)) throw refused(kind.check.entry)
     const entries = new Map<string, HealthEntry>()
     const release = () => { for (const [name, entry] of entries) { entry.release(); this.health.delete(name) } }
     for (const name of kind.health) {
@@ -102,7 +106,40 @@ export class SourceRegistry implements SourceScope {
   async send(message: OutboundMessage, commands: Commands, posted?: SendHost['posted']): Promise<'sent' | 'gone' | 'waiting'> {
     const kind = this.kinds.get(message.channel.source)
     if (!kind) return 'waiting'
-    return kind.channel ? kind.channel.send({ commands, ...posted ? { posted } : {} }, message) : 'gone'
+    // The kind's validated configuration, resolved as late as the channel's `allowed` reads it, so a settings change
+    // between enqueue and delivery applies to both or neither.
+    const { config } = this.resolve(kind, this.settings().sources[kind.kind])
+    return kind.channel ? kind.channel.send({ commands, config, ...posted ? { posted } : {} }, message) : 'gone'
+  }
+  /**
+   * Runs `id`'s declared check once and writes its entry through the board the registry claimed: `ready` with the
+   * detail `verify` returned, or `error` with what it threw. Undefined when the kind declares no check, its instance is
+   * off, or no deployment has resolved yet (there is no account to ask about).
+   */
+  async check(id: string, commands: Commands, deployment: Deployment | undefined): Promise<Health | undefined> {
+    const kind = this.kinds.get(id)
+    const check = kind?.check
+    if (!kind || !check || !deployment) return undefined
+    const instance = this.resolve(kind, this.settings().sources[id])
+    if (!instance.enabled) return undefined
+    const entry = this.health.get(check.entry)
+    if (!entry) return undefined
+    const at = new Date().toISOString()
+    const health = await check.verify(commands, deployment, instance.config)
+      .then(detail => ({ state: 'ready' as const, detail, at }), (error: unknown) => ({ state: 'error' as const, detail: error instanceof Error ? error.message : String(error), at }))
+    entry.set(health)
+    return health
+  }
+  /** The attachments and chat reads of `source`, with its configuration bound now; a kind without them has none. */
+  files(source: string, settings = this.settings()): BoundSourceFiles | undefined {
+    const kind = this.kinds.get(source)
+    const files = kind?.files
+    if (!kind || !files) return undefined
+    const { config } = this.resolve(kind, settings.sources[kind.kind])
+    // Bound per call, never cached: a settings change makes the next call read the new configuration.
+    return { prefix: files.prefix, attachments: trigger => files.attachments(trigger),
+      read: (commands, trigger, ref) => files.read(commands, trigger, ref, config),
+      readResource: (commands, trigger, resource) => files.readResource(commands, trigger, resource, config) }
   }
   link(channel: ChannelRef, links: ChannelLinks): ChannelLink {
     const link = this.kinds.get(channel.source)?.channel?.link(channel.address, links)
@@ -131,9 +168,12 @@ export class SourceRegistry implements SourceScope {
   sourceOfChat(id: string): string | undefined {
     return [...this.kinds.values()].find(kind => kind.chat?.directory.chatKey(id) === true)?.kind
   }
-  /** The agent's own identity on `source`, once the deployment resolved it. */
+  /** The agent's own identity on `source`, once the deployment resolved it; its configuration is handed in as `send` gets it. */
   agent(source: string, deployment: Deployment | undefined): ChatAgent | undefined {
-    return deployment ? this.kinds.get(source)?.chat?.agent(deployment) : undefined
+    const kind = this.kinds.get(source)
+    if (!deployment || !kind) return undefined
+    const { config } = this.resolve(kind, this.settings().sources[source])
+    return kind.chat?.agent(deployment, config)
   }
   threadContext(trigger: Trigger, settings = this.settings()): TriggerContext | undefined {
     const kind = this.kinds.get(trigger.source)

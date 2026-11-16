@@ -11,7 +11,7 @@ import { settingsPath, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import { feishuTrigger } from "./sources/feishu.js";
 import { ATTACHMENT_BYTES, TEXT_CHARS, feishuAttachments } from "./sources/feishu-attachment.js";
-import { vi } from "./testing/expect.js";
+import { expect, vi } from "./testing/expect.js";
 import { ATTACHMENTS_DIR, proxiedTicketTools, ticketTools, withAttachments } from "./ticket-tools.js";
 
 const CHAT = "oc_team";
@@ -147,4 +147,37 @@ test("a worker reads only keys in a message its ticket can read, and nothing lar
   files.set("file_v3_doc", { name: "周报.docx", data: Buffer.alloc(ATTACHMENT_BYTES + 1024 * 1024) });
   await assert.rejects(run({ trigger_id: posted.id, file_key: "file_v3_doc" }), /is 21\.0 MB, more than the 20\.0 MB the host downloads/);
   assert.equal(existsSync(downloads[0]!.cwd!), false, "a refused download is deleted too");
+});
+
+test("a worker's read of a feishu/ resource goes through the kind's files, and one of another kind stays unknown", async () => {
+  const { asked, tools } = docxTicket();
+  const run = (args: Record<string, unknown>) => tools.find((tool) => tool.name === "read")!.run(args);
+  // The resource reaches feishuRead through the kind: its own grammar refuses a malformed path before any network read.
+  await expect(run({ resource: `feishu/${asked.id}/root/cursor` })).rejects.toThrow("Use feishu");
+  // A trigger this ticket may not read is refused before any prefix routing, and an id no trigger has is unknown.
+  await expect(run({ resource: "feishu/t_nowhere/thread" })).rejects.toThrow("Unknown resource");
+});
+
+test("a worker's read of a trigger's feishu/ thread reaches feishuRead with the channel's page size and returns its page", async () => {
+  // The client reads its settings per call, so this case's own page size applies to the read below it.
+  writeSettings({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", readPageSize: 7, chats: [{ chatId: CHAT, listen: "mentions" }], directMessages: true } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_owner" }] } } } }, settingsPath(stateDir));
+  const { asked, tools } = docxTicket();
+  const messageId = String(asked.meta.messageId);
+  const askedThread: string[][] = [];
+  vi.spyOn(Commands.prototype, "lark").mockImplementation(async (args: string[]) => {
+    if (args[0] === "api" && args[1] === "GET" && args[2] === "/open-apis/im/v1/messages/mget") {
+      return { items: [{ message_id: messageId, chat_id: CHAT, thread_id: "omt_1" }] };
+    }
+    askedThread.push(args);
+    assert.deepEqual(args.slice(0, 4), ["im", "+threads-messages-list", "--thread", "omt_1"]);
+    return { thread_id: "omt_1", has_more: false,
+      messages: [{ message_id: "om_50", chat_id: CHAT, content: "earlier", msg_type: "text", thread_id: "omt_1",
+        sender: { id: "ou_wang", name: "Wang", sender_type: "user" }, create_time: "1757376000000" }] };
+  });
+  const read = await tools.find((tool) => tool.name === "read")!.run({ resource: `feishu/${asked.id}/thread` }) as { text: string };
+  const body = JSON.parse(read.text) as { status: string; messages: { id: string; from: string; text: string }[] };
+  assert.deepEqual(body.messages.map((item) => [item.id, item.from, item.text]), [["om_50", "Wang", "earlier"]]);
+  // The page size is the kind's own configuration, not a constant: a refactor passing a literal would show up here.
+  assert.deepEqual(askedThread[0]!.slice(4), ["--order", "asc", "--page-size", "7", "--no-reactions"]);
 });

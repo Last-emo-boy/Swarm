@@ -24,10 +24,7 @@ import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
 import { metaOf } from "./sources/meta.js";
 import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
-import { feishuRef } from "./sources/feishu-trigger.js";
-import { feishuRead } from "./sources/feishu-read.js";
-import { TEXT_CHARS, feishuAttachments, readAttachment } from "./sources/feishu-attachment.js";
-import { feishuSettings } from "./sources/feishu.js";
+import { TEXT_CHARS } from "./sources/feishu-attachment.js";
 import { readGithub } from "./sources/github-read.js";
 import { claimPull, readPull } from "./sources/github-pull.js";
 import { githubKind } from "./sources/github.js";
@@ -158,7 +155,7 @@ const TOOLS = {
     readOnly: true
   },
   attachment: {
-    description: `Read a file or image someone attached to a Feishu message this ticket can read: without file_key, the message's attachments; with one, that file, downloaded by the host and saved into your directory (saved_to), with its text where the host can extract it (plain text, Markdown, JSON, CSV, HTML, .docx, PDF), cut to its first ${TEXT_CHARS} characters. You see an image only if your model takes images.`,
+    description: `Read a file or image someone attached to a message this ticket can read: without file_key, the message's attachments; with one, that file, downloaded by the host and saved into your directory (saved_to), with its text where the host can extract it (plain text, Markdown, JSON, CSV, HTML, .docx, PDF), cut to its first ${TEXT_CHARS} characters. You see an image only if your model takes images.`,
     input: {
       trigger_id: z.string().min(1).describe("The message's trigger_id, as your messages and trigger/<id> reads give it"),
       file_key: z.string().trim().min(1).max(200).optional().describe("A key from the message's attachments, such as file_v3_... or img_v3_...")
@@ -325,25 +322,25 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const offset = Number(args.offset ?? 0);
       const limit = args.limit === undefined ? undefined : Number(args.limit);
       if (resource.startsWith("github/")) return page(resource, offset, limit, () => readGithub(client.commands, resource));
-      if (resource.startsWith("feishu/")) {
-        const source = trigger(resource.slice("feishu/".length).split("/")[0]!);
-        const ref = feishuRef(source);
-        if (!ref) throw new Error("A Feishu source trigger is required");
-        return page(resource, offset, limit, () => feishuRead(client.commands, ref, resource, feishuSettings(client.sources).readPageSize));
-      }
+      // A kind's own resource reads (such as feishu/<trigger-id>/thread) route by the prefix it declares; the trigger the
+      // resource names must be one this ticket may read, and a prefix whose kind has no files falls through as unknown.
+      const [prefix, named] = resource.split("/", 2);
+      const source = named ? client.store.triggers.get(named) : undefined;
+      const files = source && prefix === client.sources.files(source.source)?.prefix ? client.sources.files(source.source) : undefined;
+      if (files) return page(resource, offset, limit, () => files.readResource(client.commands, trigger(named!), resource));
       const found = read(resource);
       if (found === undefined) throw new Error("Unknown resource");
       return page(resource, offset, limit, () => found);
     },
     attachment: async (args) => {
       const source = trigger(String(args.trigger_id));
-      const ref = feishuRef(source);
-      if (!ref) throw new Error("Attachments are read from Feishu messages only");
-      const attachments = feishuAttachments(source.text);
+      const files = client.sources.files(source.source);
+      if (!files) throw new Error(`${client.sources.chatKind(source.source)?.platform ?? source.source} messages have no attachments this worker can read`);
+      const attachments = files.attachments(source);
       if (typeof args.file_key !== "string") return { trigger_id: source.id, attachments, ...(attachments.length ? {} : { note: "This message has no file or image" }) };
       const attachment = attachments.find((item) => item.file_key === args.file_key);
       if (!attachment) throw new Error(`${args.file_key} is not attached to this message: list its attachments without file_key`);
-      return { trigger_id: source.id, ...await readAttachment(client.commands, ref.messageId, attachment) };
+      return { trigger_id: source.id, ...await files.read(client.commands, source, attachment) };
     },
     devices: async () => {
       const snapshot = client.store.get(KV.host.devices);
