@@ -417,7 +417,7 @@ export class ChatterRoom {
     const remembered = memoryOn && ops.length ? planOps(client.store, ops,
       { subjects: (about: string) => about === SELF ? SELF : (about === "chat" || about === chatId) ? chatSubject(chatId, source)
         : kind.directory.personKey(about) && messages.some((message) => message.actor.id === about) ? personSubject(about, source) : undefined,
-        shown: new Set(memory.map((note) => note.id)), agent: name },
+        shown: new Set(memory.map((note) => note.id)) },
       { chatId, ...(calls[0] ? { triggerId: calls[0].message.id } : {}), source }, new Date(now)) : undefined;
     if (typeof remembered === "string") refusedNotes = remembered;
     const backs = asker ? answer.ask_back.slice(0, 1).flatMap((item) => {

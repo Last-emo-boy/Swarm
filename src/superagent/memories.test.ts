@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
-import { Memories, SELF, applyOps, chatSubject, localNow, noteLine, notesCard, personSubject, planOps, reflectionPrompt, ticketReflectionPrompt, type Note } from "./memories.js";
+import { Memories, NOTE_CHARS, SELF, applyOps, chatSubject, localNow, noteLine, notesCard, personSubject, planOps, reflectionPrompt, ticketReflectionPrompt, type Note } from "./memories.js";
 import { CHAT_CREDENTIALS, NOTE_MEDIA, NOTE_OWN_WORDS, UNSEEN_MEDIA } from "./prompt-text.js";
 import { noticed, readMembers } from "./people.js";
 import { settingsPath, writeSettings } from "./settings.js";
@@ -681,47 +681,34 @@ test("the reflection and promise prompts carry the note rules on media and its o
   assert.ok(!calls[0]!.system.includes(NOTE_OWN_WORDS), "only the credentials sentence, not the whole safety block");
 });
 
-test("a note rule the code can check: a rule about the bot goes under self, a citation needs its URL, a verdict about a person is refused", async () => {
+test("a note keeps only subjects the card offers; the rules about what to keep stay in the prompt", async () => {
   const store = client.store;
   const scope = { subjects: (name: string) => name === SELF ? SELF : name === "chat" ? chatSubject(CHAT)
-    : name === "ou_alice" ? personSubject("ou_alice") : undefined, shown: new Set<string>(), agent: "w33d" };
-  // A rule naming the agent filed under a person, or under the chat, is a rule about the agent: rewritten, not dropped.
-  for (const about of ["ou_alice", "chat"]) {
-    const planned = planOps(store, [{ op: "add", about, kind: "fact", text: "w33d should never post before a release is green" }], scope, { chatId: CHAT }, new Date(now));
-    assert.ok(typeof planned === "function", `a rule under ${about} is kept: ${planned}`);
-    planned();
-    assert.equal(client.store.memory.about(SELF, 10).at(-1)?.text, "w33d should never post before a release is green");
-  }
-  // A rule that names no one stays where it was filed.
-  const plain = planOps(store, [{ op: "add", about: "ou_alice", kind: "fact", text: "prefers short PRs" }], scope, { chatId: CHAT }, new Date(now));
-  assert.ok(typeof plain === "function", `a plain note is kept: ${plain}`);
-  plain();
-  assert.equal(client.store.memory.about(personSubject("ou_alice"), 10).at(-1)?.text, "prefers short PRs");
-  // A note that cites a source without its URL is refused; one with the URL is kept.
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "来源：团队周会，发布定在周五" }], scope, { chatId: CHAT }, new Date(now)),
-    "a note that cites a source needs its URL");
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "发布定在周五，见 https://example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
-  // A citation word next to its URL is still a citation that has one: the URL exemption is what keeps it.
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "来源：https://example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "sources: https://example.com/a" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "周会笔记来源：wiki" }], scope, { chatId: CHAT }, new Date(now)),
-    "a note that cites a source needs its URL");
-  // A link is a URL whatever its scheme, and text about HTTP the protocol is not a citation.
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "周会笔记，见 http://wiki.example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "接口走 HTTP，不用 HTTPS" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
-  // A verdict about a person dressed as a fact is refused; the same words as an event or preference are not, and a fact about a thing is not.
-  assert.equal(planOps(store, [{ op: "add", about: "ou_alice", kind: "fact", text: "Alice 水平一般，不靠谱" }], scope, { chatId: CHAT }, new Date(now)),
-    "about a person keep what they did or said, or how they like things, never a judgement of them");
-  assert.equal(planOps(store, [{ op: "add", about: "ou_alice", kind: "preference", text: "不太喜欢在截止日当天改需求" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
-  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "这份配置不太靠谱，已经换掉了" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+    : name === "ou_alice" ? personSubject("ou_alice") : undefined, shown: new Set<string>() };
+  const add = (about: string, text: string, kind: "fact" | "preference" | "event" | "promise" = "fact") =>
+    planOps(store, [{ op: "add", about, kind, text }], scope, { chatId: CHAT }, new Date(now));
+  // The subject is structural: one the card offers is kept, anything else is refused with the reason.
+  const planned = add("ou_alice", "prefers short PRs");
+  assert.ok(typeof planned === "function", `a note about a person on the card is kept: ${planned}`);
+  planned();
+  assert.ok(client.store.memory.about(personSubject("ou_alice"), 10).some((note) => note.text === "prefers short PRs"));
+  assert.equal(add("ou_stranger", "works on the API"), "about: ou_stranger is not someone or something here; use an id from the card, chat or self");
+  // Length and a promise's due are structural too; the prompt asks for the rest (a rule about the bot under self, a cited
+  // source with its URL, no verdict about a person) and the model decides what one is.
+  assert.equal(add("chat", "x".repeat(NOTE_CHARS + 1)), `A note has at most ${NOTE_CHARS} characters`);
+  assert.equal(add("chat", "remind them", "promise"), "A promise needs due, a time from now with its offset, such as 2026-11-11T09:00:00+08:00");
+  assert.ok(typeof add("chat", "remind them", "promise") === "string");
+  const prompt = reflectionPrompt("w33d", "");
+  assert.match(prompt, /never a judgement of them/);
+  assert.match(prompt, /A rule for how you should work[^\n]*write it under self/);
+  assert.match(prompt, /give that source's URL/);
 });
-
 test("a note a reflection cannot keep is dropped, and the reflection keeps the notes it can", async () => {
   // Four messages, quiet long enough that the pass reflects on them.
   for (let index = 0; index < 4; index++) say("ou_alice", `message ${index}`, 900 - index);
   memories.pass();
   answers.push(JSON.stringify({ notes: [
-    { op: "add", about: "ou_alice", kind: "fact", text: "Alice 水平一般" },
+    { op: "add", about: "ou_stranger", kind: "fact", text: "works on the API" },
     { op: "add", about: "ou_alice", kind: "fact", text: "prefers short PRs" }], reach_out: null }));
   await memories.reflect(CHAT);
   assert.deepEqual(client.store.memory.about(personSubject("ou_alice"), 10).map((item) => item.text), ["prefers short PRs"]);
