@@ -14,11 +14,12 @@ import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { chatLog, chatName, personName, senderOf } from "./people.js";
 import type { Memory, Settings } from "./settings.js";
-import type { JournalTarget } from "./journal.js";
+import type { JournalKind, JournalTarget } from "./journal.js";
 import { feishuChatKind } from "./sources/feishu-chat.js";
 import { metaOf } from "./sources/meta.js";
 import type { Store } from "./store.js";
 import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount, wording } from "./text.js";
+import { GIVE_UP_ATTEMPTS, MODEL_CALL_RETRY, type EffectPayloads } from "./effects.js";
 
 export const NOTE_KINDS = ["fact", "preference", "event", "promise"] as const;
 export type NoteKind = typeof NOTE_KINDS[number];
@@ -219,9 +220,17 @@ export class Memories {
   install(): void {
     const { client } = this.host;
     const limit = () => client.settings().paused || !memoryOf(client.settings()) ? 0 : 1;
-    client.effects.handle("reflect", async (payload) => { await (payload.ticketId ? this.reflectTicket(payload.ticketId) : this.reflect(payload.chatId!, payload.source)); }, { limit });
-    client.effects.handle("promise", async ({ noteId }) => { await this.keep(noteId); }, { limit });
-    client.effects.handle("consolidate", async ({ about }) => { await this.tidy(about); }, { limit });
+    // A reflection, promise or tidy that keeps throwing is paid for every retry: give up after a handful, and journal why.
+    const giveUp = <K extends "reflect" | "promise" | "consolidate">(_kind: K, path: (key: string, payload: EffectPayloads[K]) => [JournalKind, string]) =>
+      ({ retry: MODEL_CALL_RETRY, giveUp: GIVE_UP_ATTEMPTS, limit,
+        onGiveUp: (key: string, payload: unknown, error: unknown) => {
+          const [journalKind, journalKey] = path(key, payload as EffectPayloads[K]);
+          client.journal?.outcome(journalKind, journalKey, "dropped", { reason: `gave up after ${GIVE_UP_ATTEMPTS} tries: ${String(error)}` });
+        } });
+    client.effects.handle("reflect", async (payload) => { await (payload.ticketId ? this.reflectTicket(payload.ticketId) : this.reflect(payload.chatId!, payload.source)); },
+      giveUp("reflect", (key, payload) => [payload.ticketId ? "ticket_reflect" : "reflect", payload.ticketId ? `ticket:${payload.ticketId}` : `chat:${payload.chatId}`]));
+    client.effects.handle("promise", async ({ noteId }) => { await this.keep(noteId); }, giveUp("promise", (key) => ["promise", `note:${key}`]));
+    client.effects.handle("consolidate", async ({ about }) => { await this.tidy(about); }, giveUp("consolidate", (key) => ["tidy", `subject:${shortSubject(key)}`]));
     client.subscribe((event) => {
       if (event.type === "ticket.ended" && memoryOf(client.settings())) client.effects.enqueue("reflect", `ticket:${event.data.ticketId}`, { ticketId: event.data.ticketId });
     });

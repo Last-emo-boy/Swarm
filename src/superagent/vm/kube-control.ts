@@ -47,7 +47,7 @@ const TUNNEL = "swarm-tunnel", EGRESS = "swarm-ticket-egress", NODES = "swarm.w3
 /** Memory QEMU takes beyond its guest's. */
 const QEMU_MIB = 512;
 /** How long a boot waits for its pod to get a node, which the cluster may add for it. */
-const SCHEDULE_MS = 20 * 60_000;
+export const SCHEDULE_MS = 20 * 60_000;
 
 export const volumeName = (ticketId: string): string => `swarm-ticket-${ticketId}`;
 /** A new name for a boot's pod, and its token Secret, in cluster slot `index`. */

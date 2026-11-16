@@ -32,16 +32,16 @@ import { harnessProfiles, type HarnessProfile } from "../harness.js";
 import { KV } from "../kv.js";
 import type { Deployment } from "../setup.js";
 import { VmGateway } from "./gateway.js";
-import { KubeControl, podName, type ClusterControl } from "./kube-control.js";
+import { KubeControl, SCHEDULE_MS, podName, type ClusterControl } from "./kube-control.js";
 
 const exec = promisify(execFile);
 
 /**
  * How long a lease holds without a heartbeat once the guest runs, and while its VM boots: on this host, or in the cluster,
- * which may first add a node and pull the runner image.
+ * which may first add a node and pull the runner image, so a cluster boot's lease outlives the longest wait for a node.
  */
-export const LEASE_MS = 60_000, BOOT_MS = 3 * 60_000, CLUSTER_BOOT_MS = 15 * 60_000;
-/** How many boots in a row may end before their guest started the worker, before the ticket fails. */
+export const LEASE_MS = 60_000, BOOT_MS = 3 * 60_000, CLUSTER_BOOT_MS = SCHEDULE_MS + 5 * 60_000;
+/** How many times in a row a boot may reach its guest or fail to start, before the ticket fails. */
 const MAX_BOOTS = 3;
 /** How long after a cluster VM's start failed, times the boots so far, its ticket launches again. */
 const BOOT_RETRY_MS = 30_000;
@@ -56,8 +56,12 @@ export interface VmSlot {
   expiresAt: string;
   /** The guest's ticket directory, once it started the worker. */
   directory?: string;
-  /** How many times in a row the slot booted this Assignment without its guest starting the worker. */
+  /** How many times in a row a boot of this Assignment reached its guest without the guest starting the worker. */
   boots?: number;
+  /** How many times in a row a boot of this Assignment failed to start. */
+  fails?: number;
+  /** Whether the slot's cluster pod still waits for a node: its boot may take the longest wait, and counts toward no cap yet. */
+  starting?: boolean;
   /** A cluster slot's pod for this boot. */
   pod?: string;
   /** Why the last start of a cluster VM failed. */
@@ -133,7 +137,7 @@ export class VmWork implements RemoteWork {
   constructor(readonly host: VmHost, private readonly inner?: RemoteWork, private readonly control: VmControl = systemdControl, cluster?: ClusterControl) {
     this.gateway = new VmGateway(this);
     this.cluster = cluster ?? new KubeControl(() => this.kube());
-    this.timer = setInterval(() => { this.lapse(); this.collect(); this.guard(); }, Math.max(250, Math.floor(LEASE_MS / 4)));
+    this.timer = setInterval(() => { this.renewScheduling(); this.lapse(); this.collect(); this.guard(); }, Math.max(250, Math.floor(LEASE_MS / 4)));
     this.timer.unref();
   }
 
@@ -207,8 +211,17 @@ export class VmWork implements RemoteWork {
     if (!free) throw new Later(`All ${disk ? `${cluster ? "cluster" : "local"} ` : ""}ticket VMs are busy`);
     const place = this.place(free.slot);
     const previous = free.record;
-    const boots = previous?.ticketId === ticket.id && previous.assignmentId === assignmentId && !previous.directory ? (previous.boots ?? 1) + 1 : 1;
-    if (boots > MAX_BOOTS) {
+    // A cluster boot counts only once its pod reached Running, and a start that keeps failing to get one has a count of
+    // its own: a cluster that cannot place a pod fails the ticket the same way instead of booting every few minutes without
+    // end. A local slot counts each boot when systemd starts it, which is the boot itself.
+    const same = previous?.ticketId === ticket.id && previous.assignmentId === assignmentId;
+    const fails = place.cluster && same ? previous.fails ?? 0 : 0;
+    if (fails >= MAX_BOOTS) {
+      throw new Error(`The ticket VM did not start ${MAX_BOOTS} times${previous?.error ? `: ${previous.error}` : "; see the host's log"}`);
+    }
+    const boots = place.cluster ? same ? previous.boots ?? 0 : 0 : same && !previous.directory ? (previous.boots ?? 1) + 1 : 1;
+    // A cluster's `boots` counts the boots that already reached their pod; a local slot's counts the one about to start.
+    if (place.cluster ? boots >= MAX_BOOTS : boots > MAX_BOOTS) {
       throw new Error(`The ticket VM stopped ${MAX_BOOTS} times before its worker started${previous?.error ? `: ${previous.error}` : "; see the host's log"}`);
     }
     const token = randomBytes(32).toString("base64url");
@@ -225,7 +238,8 @@ export class VmWork implements RemoteWork {
     }
     const pod = place.cluster ? podName(place.index) : undefined;
     this.setSlot(free.slot, { ticketId: ticket.id, assignmentId, tokenHash: hashToken(token), at,
-      expiresAt: new Date(Date.now() + (place.cluster ? CLUSTER_BOOT_MS : BOOT_MS)).toISOString(), boots, ...pod ? { pod } : {} });
+      expiresAt: new Date(Date.now() + (place.cluster ? CLUSTER_BOOT_MS : BOOT_MS)).toISOString(), ...(boots ? { boots } : {}), ...(fails ? { fails } : {}),
+      ...pod ? { pod, starting: true } : {} });
     if (pod) {
       void this.boot(free.slot, pod, ticket.id, token);
       this.host.log(`superagent: ticket ${ticket.id.slice(0, 8)} starts in cluster ticket VM ${place.index}`);
@@ -253,19 +267,27 @@ export class VmWork implements RemoteWork {
 
   /**
    * Starts a cluster slot's VM, in the background of the launch that took the slot. A start that fails ends this boot's
-   * lease after a while, so lapse() lets the slot go and launches the ticket again, until its boots run out.
+   * lease after a while, so lapse() lets the slot go and launches the ticket again, until its failed starts run out.
    */
   private async boot(slot: number, pod: string, ticketId: string, token: string): Promise<void> {
     const { index } = this.place(slot);
     try {
       await this.cluster.start(index, pod, ticketId, token);
+      // The pod reached Running: this boot now counts, and its lease no longer renews for the schedule wait.
+      const record = this.slot(slot);
+      if (record?.pod === pod && record.starting && this.live(record)) {
+        this.setSlot(slot, { ...record, starting: false, ...(record.directory ? {} : { boots: (record.boots ?? 0) + 1 }) });
+      }
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
       this.host.log(`superagent: cluster ticket VM ${index} did not start for ticket ${ticketId.slice(0, 8)}: ${message}`);
       const record = this.slot(slot);
       // The slot may have let this boot go, or taken another, meanwhile.
       if (!record || record.pod !== pod || !this.live(record)) return;
-      this.setSlot(slot, { ...record, error: message, expiresAt: new Date(Date.now() + BOOT_RETRY_MS * (record.boots ?? 1)).toISOString() });
+      // A start that failed takes the slot's failure count, not its boot count: its pod never reached a node, so none of
+      // its lease's boot wait is owed, and the lease runs out sooner so the ticket launches again.
+      this.setSlot(slot, { ...record, starting: false, fails: (record.fails ?? 0) + 1, error: message,
+        expiresAt: new Date(Date.now() + BOOT_RETRY_MS * ((record.fails ?? 0) + 1)).toISOString() });
     }
   }
 
@@ -305,9 +327,27 @@ export class VmWork implements RemoteWork {
   started(slot: number, directory: string): void {
     const record = this.slot(slot);
     if (!record) return;
-    this.setSlot(slot, { ...record, directory, boots: 0, error: undefined });
+    this.setSlot(slot, { ...record, directory, starting: false, boots: 0, fails: 0, error: undefined });
     const ticket = this.client.store.tickets.get(record.ticketId);
     if (ticket?.assignments.find((item) => item.id === record.assignmentId)?.state === "pending") this.client.engine.assignmentStarted(record.ticketId, record.assignmentId);
+  }
+
+  /**
+   * Renews the leases of cluster boots whose pod still waits for a node, every lease period: the wait may take the longest
+   * time a boot takes among SCHEDULE_MS, and a lease that ran out mid-wait would burn a boot and start the pod again.
+   * The renewal is bounded by the boot's own start: a record that survives a host restart with `starting` still set has no
+   * boot promise left to clear it, so an unbounded renewal would hold its slot forever and its ticket would never relaunch.
+   */
+  private renewScheduling(): void {
+    if (this.closing) return;
+    const now = Date.now();
+    for (const { slot, record } of this.slots()) {
+      if (!record?.starting || !record.pod || !record.tokenHash || this.place(slot).cluster === false) continue;
+      // The longest a boot may take: the schedule wait, and then its guest booting. Past that, the lease runs out and lapse()
+      // lets the slot go, so the ticket launches again instead of waiting on a pod nobody started.
+      if (now - Date.parse(record.at) >= CLUSTER_BOOT_MS) continue;
+      if (this.slot(slot)?.pod === record.pod && this.live(record)) this.setSlot(slot, { ...record, expiresAt: new Date(now + CLUSTER_BOOT_MS).toISOString() });
+    }
   }
 
   /** Leases whose guest stopped renewing them: their Assignment is treated as one a restart interrupted, and runs again. */

@@ -319,3 +319,196 @@ function closeServer(server: Server): Promise<void> {
     server.close((error) => error ? reject(error) : resolve());
   });
 }
+
+test("a provider-native web search records its usage, with the purpose and the tokens the provider reported", async () => {
+  const fixture = await createSearchFixture({
+    responses: { responses: { input_tokens: 1400, output_tokens: 120, total_tokens: 1520, input_tokens_details: { cached_tokens: 0 } } }
+  });
+  try {
+    const usageReports: ProviderUsageReport[] = [];
+    const provider = new OpenAIProvider({
+      workspace: fixture.workspace,
+      onUsage: (usage) => usageReports.push(usage)
+    });
+
+    const result = await provider.webSearch({ type: "web.search", query: "swarm release notes" });
+
+    assert.equal(result.status, "success");
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(usageReports.length, 1);
+    assert.equal(usageReports[0].purpose, "web_search");
+    assert.equal(usageReports[0].providerId, "openai");
+    assert.equal(usageReports[0].inputTokens, 1400);
+    assert.equal(usageReports[0].outputTokens, 120);
+    assert.equal(usageReports[0].totalTokens, 1520);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an Anthropic web search records its usage from the messages answer", async () => {
+  const fixture = await createSearchFixture({ responses: { responses: null } });
+  try {
+    const usageReports: ProviderUsageReport[] = [];
+    const provider = new OpenAIProvider({
+      workspace: fixture.workspace,
+      onUsage: (usage) => usageReports.push(usage)
+    });
+    provider.workerModel = "anthropic/search-test";
+
+    const result = await provider.webSearch({ type: "web.search", query: "swarm release notes" });
+
+    assert.equal(result.status, "success");
+    assert.equal(usageReports.length, 1);
+    assert.equal(usageReports[0].purpose, "web_search");
+    assert.equal(usageReports[0].protocol, "anthropic-messages");
+    assert.equal(usageReports[0].inputTokens, 500);
+    assert.equal(usageReports[0].outputTokens, 60);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a web search whose answer carries no usage object records no usage row", async () => {
+  const fixture = await createSearchFixture({ responses: { responses: null } });
+  try {
+    const usageReports: ProviderUsageReport[] = [];
+    const provider = new OpenAIProvider({
+      workspace: fixture.workspace,
+      onUsage: (usage) => usageReports.push(usage)
+    });
+
+    const result = await provider.webSearch({ type: "web.search", query: "swarm release notes" });
+
+    assert.equal(result.status, "success");
+    assert.equal(usageReports.length, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a web search whose usage object reports only zeros records no usage row", async () => {
+  const fixture = await createSearchFixture({ responses: { responses: null },
+    messages: { messages: { id: "msg-test", type: "message", role: "assistant", model: "search-test",
+      content: [{ type: "text", text: "Swarm ships weekly." }], usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 } } } });
+  try {
+    const usageReports: ProviderUsageReport[] = [];
+    const provider = new OpenAIProvider({
+      workspace: fixture.workspace,
+      onUsage: (usage) => usageReports.push(usage)
+    });
+    provider.workerModel = "anthropic/search-test";
+
+    const result = await provider.webSearch({ type: "web.search", query: "swarm release notes" });
+
+    assert.equal(result.status, "success");
+    assert.equal(usageReports.length, 0, "a zero-only usage row would hide the search from the token caps");
+  } finally {
+    await fixture.close();
+  }
+});
+
+/** A provider workspace whose OpenAI (responses) and Anthropic endpoints answer a web search from a fake server. */
+async function createSearchFixture(bodies: { responses: Record<string, unknown>; messages?: Record<string, unknown> }): Promise<{
+  workspace: string;
+  requests: unknown[];
+  close: () => Promise<void>;
+}> {
+  const home = mkdtempSync(join(tmpdir(), "swarm-provider-search-home-"));
+  const workspace = mkdtempSync(join(tmpdir(), "swarm-provider-search-workspace-"));
+  const previousHome = process.env.SWARM_HOME;
+  const requests: unknown[] = [];
+  const server = await startSearchServer(bodies, requests);
+  process.env.SWARM_HOME = home;
+
+  const settings = defaultSwarmSettings();
+  settings.models.defaultProvider = "openai";
+  settings.models.planner = "openai/search-test";
+  settings.models.worker = "openai/search-test";
+  settings.models.aggregator = "openai/search-test";
+  settings.providers.openai.baseURL = `${server.baseURL}/v1`;
+  settings.providers.openai.models = { "search-test": { name: "Search Test" } };
+  settings.providers.anthropic.baseURL = `${server.baseURL}/v1/messages`;
+  settings.providers.anthropic.models = { "search-test": { name: "Search Test" } };
+  writeFileSync(join(home, "settings.json"), JSON.stringify(settings, null, 2));
+  const config = defaultSwarmConfig();
+  config.providerApiKeys.openai = "test-key";
+  config.providerApiKeys.anthropic = "test-key";
+  writeFileSync(join(home, "config.json"), JSON.stringify(config, null, 2));
+
+  return {
+    workspace,
+    requests,
+    close: async () => {
+      await server.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+      if (previousHome === undefined) {
+        delete process.env.SWARM_HOME;
+      } else {
+        process.env.SWARM_HOME = previousHome;
+      }
+    }
+  };
+}
+
+function startSearchServer(
+  bodies: { responses: Record<string, unknown>; messages?: Record<string, unknown> },
+  requests: unknown[]
+): Promise<{ baseURL: string; close: () => Promise<void> }> {
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = Buffer.concat(chunks).toString("utf8");
+      try {
+        requests.push(JSON.parse(body) as unknown);
+      } catch {
+        requests.push(body);
+      }
+      const searchAnswer = {
+        output_text: "Swarm ships weekly [release notes](https://github.com/Last-emo-boy/Swarm/releases).",
+        output: [
+          {
+            type: "message",
+            content: [
+              { type: "output_text", text: "Swarm ships weekly." },
+              { type: "url_citation", url: "https://github.com/Last-emo-boy/Swarm/releases", title: "Releases" }
+            ]
+          }
+        ]
+      };
+      response.writeHead(200, { "content-type": "application/json" });
+      if (request.url === "/v1/responses") {
+        const usage = bodies.responses.responses as Record<string, unknown> | null;
+        response.end(JSON.stringify({ id: "resp-test", object: "response", model: "search-test", ...searchAnswer, ...(usage ? { usage } : {}) }));
+        return;
+      }
+      if (request.url === "/v1/messages") {
+        response.end(JSON.stringify(bodies.messages?.messages ?? {
+          id: "msg-test",
+          type: "message",
+          role: "assistant",
+          model: "search-test",
+          content: [{ type: "text", text: "Swarm ships weekly. Sources: https://github.com/Last-emo-boy/Swarm/releases" }],
+          usage: { input_tokens: 500, output_tokens: 60, server_tool_use: { web_search_requests: 1 } }
+        }));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      const address = server.address();
+      assert(address && typeof address === "object");
+      resolve({
+        baseURL: `http://127.0.0.1:${address.port}`,
+        close: () => closeServer(server)
+      });
+    });
+  });
+}

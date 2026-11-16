@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, it } from 'node:test'
 import { expect, vi } from './testing/expect.js'
-import { Effects, Later } from './effects.js'
+import { Effects, GIVE_UP_ATTEMPTS, Later } from './effects.js'
+import { ChatterRoom } from './chatter.js'
+import { ModelAssessor } from './assessor.js'
+import { key as keyOf } from './core/index.js'
+import type { SuperagentClient } from './client.js'
+import { Journal } from './journal.js'
 import { Store } from './store.js'
 import { HealthBoard } from './health.js'
 import { deferred } from './testing/fixtures.js'
@@ -206,4 +211,84 @@ it('reports a failure of the queue itself under its kind, until a dispatch of th
 it('refuses a second handler for a kind', () => {
   effects.handle('followup', async () => {})
   expect(() => effects.handle('followup', async () => {})).toThrow('The followup effects already have a handler')
+})
+
+it('gives up on an effect that keeps throwing after its cap, journals why, and leaves nothing waiting', async () => {
+  const journal = new Journal(store, () => new Date(clock))
+  let throws = true
+  const run = vi.fn(async () => { if (throws) throw new Error('the provider is down') })
+  // The talking paths' retry: the first wait, then doubling, with GIVE_UP_ATTEMPTS tries in all.
+  const waits = [240_000, 480_000, 960_000, 1_920_000]
+  effects.handle('chatter', run, { retry: [240_000, 3_600_000], giveUp: GIVE_UP_ATTEMPTS,
+    onGiveUp: (chatId, _payload, error) => journal.outcome('chatter', `chat:${chatId}`, 'dropped', { reason: `gave up: ${String(error)}` }) })
+  effects.enqueue('chatter', 'c1', { chatId: 'c1' })
+  await effects.idle()
+  for (const wait of waits) {
+    expect(run).not.toHaveBeenCalledTimes(GIVE_UP_ATTEMPTS)
+    clock += wait - 1; await effects.idle()
+    clock += 1; await effects.idle()
+  }
+  expect(run).toHaveBeenCalledTimes(GIVE_UP_ATTEMPTS)
+  expect(effects.pending('chatter')).toBe(false)
+  expect(health.chatter).toMatchObject({ state: 'ready', detail: 'Nothing waiting' })
+  expect(journal.byKey('chat:c1').at(-1)).toMatchObject({ outcome: 'dropped', reason: expect.stringContaining('gave up: Error: the provider is down') })
+  // Nothing is billed after the cap, even long after.
+  clock += 24 * 3_600_000; await effects.idle()
+  expect(run).toHaveBeenCalledTimes(GIVE_UP_ATTEMPTS)
+  // A later payload starts a fresh count.
+  throws = false
+  effects.enqueue('chatter', 'c1', { chatId: 'c1' })
+  await effects.idle()
+  expect(run).toHaveBeenCalledTimes(GIVE_UP_ATTEMPTS + 1)
+})
+
+/** Installs a handler and returns the options it registered for a kind, which the class keeps private. */
+function installedOptions(effects: Effects, kind: string, install: () => void): { onGiveUp?: (key: string, payload: unknown, error: unknown) => void } {
+  let found: { onGiveUp?: (key: string, payload: unknown, error: unknown) => void } = {}
+  const handle = effects.handle.bind(effects)
+  const capture = (name: string, run: unknown, options?: unknown) => {
+    if (name === kind) found = (options ?? {}) as typeof found
+    return handle(name as never, run as never, options as never)
+  }
+  effects.handle = capture as typeof effects.handle
+  install()
+  return found
+}
+
+it('journals a dropped attend under its chat id, not the composite key its row is queued under', () => {
+  const journal = new Journal(store, () => new Date(clock))
+  const settings = { paused: false, chatter: { chats: ['room1'] } }
+  const client = { journal, effects, settings: () => settings } as unknown as SuperagentClient
+  const options = installedOptions(effects, 'attend', () => new ChatterRoom({ client, now: () => clock, complete: async () => '{}' }).install())
+  // The production key attend is queued under: a hash of the chat and the time read, never the chat id itself.
+  const rowKey = keyOf('attend', 'room1', new Date(clock).toISOString())
+  options.onGiveUp?.(rowKey, { chatId: 'room1', ids: ['m1'] }, new Error('the provider is down'))
+  expect(journal.byKey('chat:room1').at(-1)).toMatchObject({ outcome: 'dropped', reason: expect.stringContaining('the provider is down') })
+  expect(journal.byKey(`chat:${rowKey}`)).toEqual([])
+})
+
+it('journals a dropped assessment under its trigger id, not the Eval id its row is queued under', () => {
+  const journal = new Journal(store, () => new Date(clock))
+  const settings = { paused: false }
+  const client = { journal, effects, settings: () => settings } as unknown as SuperagentClient
+  const options = installedOptions(effects, 'assessment', () =>
+    new ModelAssessor({ client, configured: () => false, complete: async () => '{}' }).install())
+  const evalId = 'e0a1'.repeat(8)
+  options.onGiveUp?.(evalId, { triggerId: 'om_1' }, new Error('the provider is down'))
+  expect(journal.byKey('trigger:om_1').at(-1)).toMatchObject({ outcome: 'dropped', reason: expect.stringContaining('the provider is down') })
+  expect(journal.byKey(`trigger:${evalId}`)).toEqual([])
+})
+
+it('does not count a deferral toward the cap: Later may repeat without end', async () => {
+  let later = true
+  const run = vi.fn(async () => { if (later) throw new Later('paused') })
+  effects.handle('chatter', run, { retry: [1000, 60_000], giveUp: 2 })
+  effects.enqueue('chatter', 'c1', { chatId: 'c1' })
+  for (let round = 0; round < 5; round++) { await effects.idle(); clock += 1000 }
+  await effects.idle()
+  expect(run).toHaveBeenCalledTimes(6)
+  expect(effects.pending('chatter')).toBe(true)
+  later = false
+  clock += 1000; await effects.idle()
+  expect(effects.pending('chatter')).toBe(false)
 })

@@ -18,8 +18,9 @@ import { startFakeModel, writeFakeModelHome } from "../testing/fake-model.js";
 import { testDeployment } from "../testing/fixtures.js";
 import type { GuestSpec } from "./gateway.js";
 import { guestSettings, opencodeConfig } from "./guest.js";
-import type { ClusterControl } from "./kube-control.js";
-import { VmWork, vmHarnessIds, vmSlotCounts, type VmControl } from "./vm-work.js";
+import { SCHEDULE_MS, type ClusterControl } from "./kube-control.js";
+import { CLUSTER_BOOT_MS, VmWork, vmHarnessIds, vmSlotCounts, type VmControl } from "./vm-work.js";
+import { deferred } from "../testing/fixtures.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -375,14 +376,15 @@ test("a cluster start runs in the background: the launch returns at once, and a 
     assert.equal(client.store.get(KV.vm.slot("c0"))?.tokenHash, "");
     assert.ok(client.store.db.prepare("SELECT 1 FROM effect WHERE kind = 'launch' AND key = ?").get(assignmentId));
   }
-  await assert.rejects(vm.run(first, assignmentId), /stopped 3 times before its worker started: kubectl apply: the server is unavailable/);
+  // A start that never reached a node is no boot: three failed starts fail the ticket instead.
+  await assert.rejects(vm.run(first, assignmentId), /did not start 3 times: kubectl apply: the server is unavailable/);
   // A start that fails after the slot let its boot go changes nothing.
   clusterFails = undefined;
   const other = ticket("add a VERSION file", "add-version");
   await vm.run(other.ticket, other.assignmentId);
   const held = client.store.get(KV.vm.slot("c0"))!;
   assert.equal(held.error, undefined);
-  assert.ok(Date.parse(held.expiresAt) - Date.now() > 14 * 60_000, "a cluster boot holds its lease for 15 minutes");
+  assert.ok(Date.parse(held.expiresAt) - Date.now() >= SCHEDULE_MS, "a cluster boot's lease outlives the longest wait for a node");
 });
 
 test("a slot's gateway serves the ticket's own kept patch, and nothing for a slot whose ticket has none", async () => {
@@ -404,4 +406,111 @@ test("a slot's gateway serves the ticket's own kept patch, and nothing for a slo
   assert.deepEqual((await call(0, "POST", "/v1/work/patch", secret, { applied: false, why: "The patch of ticket x does not apply: conflict" })).body, {});
   const note = client.store.tickets.get(first.id)!.inputs.find((input) => input.kind === "note");
   assert.match(note?.text ?? "", new RegExp(`kept as a patch at ${path}.*conflict`));
+});
+
+test("a cluster boot whose pod still waits for a node keeps its slot past the longest schedule wait", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 0, port, kube: { slots: 1, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const hold = deferred()
+  const waiting = cluster();
+  const start = waiting.start.bind(waiting);
+  waiting.start = async (index, pod, ticketId, secret) => { await hold.promise; await start(index, pod, ticketId, secret); };
+  work = new VmWork({ client, stateDir, deployment: () => testDeployment({ stateDir }), environment: (found) => ({ SWARM_TICKET_ID: found.id }),
+    credential: async () => undefined, log: () => {} }, undefined, control(), waiting);
+  await work.start();
+  const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
+  assert.equal(await work.run(first, assignmentId), true);
+  const record = () => client.store.get(KV.vm.slot("c0"))!;
+  assert.equal(record().starting, true, "its pod still waits for a node");
+  assert.ok(Date.parse(record().expiresAt) - Date.now() >= SCHEDULE_MS, "the lease covers the wait for a node from the start");
+  // Time passes the old 15 minute lease while the pod still schedules: the renewal keeps the slot, and the lapse check
+  // leaves it alone instead of stopping the pod and burning a boot.
+  client.store.set(KV.vm.slot("c0"), { ...record(), expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  (work as unknown as { renewScheduling(): void }).renewScheduling();
+  assert.ok(Date.parse(record().expiresAt) - Date.now() > SCHEDULE_MS);
+  client.store.db.prepare("DELETE FROM effect").run();
+  (work as unknown as { lapse(): void }).lapse();
+  assert.notEqual(record().tokenHash, "", "the slot is still held while its pod schedules");
+  assert.ok(!calls.includes("cluster stop swarm-ticket-0"), "the pod was not stopped");
+  // The pod reached its node and then its guest: that boot counts.
+  hold.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(record().starting, false);
+  assert.equal(record().boots, 1);
+  assert.equal(record().fails, undefined);
+  // A guest that starts the worker ends the boot's count, as for a local slot.
+  (work as unknown as { started(slot: number, directory: string): void }).started(0, "/home/swarm/work/add-notice");
+  assert.equal(record().boots, 0);
+});
+
+test("a starting record older than the longest boot stops renewing, so its slot lapses after a host restart", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 0, port, kube: { slots: 1, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const hold = deferred()
+  const waiting = cluster();
+  const start = waiting.start.bind(waiting);
+  waiting.start = async (index, pod, ticketId, secret) => { await hold.promise; await start(index, pod, ticketId, secret); };
+  work = new VmWork({ client, stateDir, deployment: () => testDeployment({ stateDir }), environment: (found) => ({ SWARM_TICKET_ID: found.id }),
+    credential: async () => undefined, log: () => {} }, undefined, control(), waiting);
+  await work.start();
+  const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
+  assert.equal(await work.run(first, assignmentId), true);
+  const record = () => client.store.get(KV.vm.slot("c0"))!;
+  // The host restarted mid-boot: the record survived with `starting` set, but its boot promise is gone, so nothing will
+  // ever clear it. The record's start is past the longest a boot may take, so the renewal must stop.
+  client.store.set(KV.vm.slot("c0"), { ...record(), at: new Date(Date.now() - CLUSTER_BOOT_MS - 1).toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  (work as unknown as { renewScheduling(): void }).renewScheduling();
+  const stale = record();
+  assert.equal(Date.parse(stale.expiresAt) - Date.now() <= 60_000, true, "an abandoned boot's lease is not pushed out again");
+  // Its lease runs out: lapse() lets it go and the pending Assignment launches again.
+  client.store.set(KV.vm.slot("c0"), { ...stale, expiresAt: new Date(Date.now() - 1).toISOString() });
+  client.store.db.prepare("DELETE FROM effect").run();
+  (work as unknown as { lapse(): void }).lapse();
+  assert.equal(record().tokenHash, "", "the abandoned boot's slot is free");
+  assert.ok(client.store.db.prepare("SELECT 1 FROM effect WHERE kind = 'launch' AND key = ?").get(assignmentId), "the ticket launches again");
+  hold.resolve();
+});
+
+test("a cluster boot counts toward the cap once its pod reached Running: three boots, and the fourth launch refuses", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 0, port, kube: { slots: 1, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const vm = await start();
+  const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
+  // A pod that reaches Running each time, whose guest never starts its worker: each boot counts, and its lease runs out.
+  for (let boot = 1; boot <= 3; boot++) {
+    assert.equal(await vm.run(first, assignmentId), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    const record = client.store.get(KV.vm.slot("c0"))!;
+    assert.equal(record.starting, false);
+    assert.equal(record.boots, boot);
+    client.store.set(KV.vm.slot("c0"), { ...record, expiresAt: new Date(Date.now() - 1).toISOString() });
+    client.store.db.prepare("DELETE FROM effect").run();
+    (vm as unknown as { lapse(): void }).lapse();
+  }
+  // The local path stopped after three boots; the cluster stops at the same count, not one boot later.
+  await assert.rejects(vm.run(first, assignmentId), /stopped 3 times before its worker started/);
+});
+
+test("an abandoned boot after the cap frees its slot for another ticket", async () => {
+  writeSettings({ executor: { isolation: "vm", vm: { slots: 0, port, kube: { slots: 1, port: port + 10 } }, prepare: "true" } }, settingsPath(stateDir));
+  const vm = await start();
+  const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
+  // Three starts that never reached a node: each expired, as lapse() leaves a boot that never came back.
+  clusterFails = "kubectl apply: the server is unavailable";
+  for (let boot = 1; boot <= 3; boot++) {
+    await vm.run(first, assignmentId);
+    await new Promise((resolve) => setImmediate(resolve));
+    const record = client.store.get(KV.vm.slot("c0"))!;
+    assert.equal(record.fails, boot);
+    assert.equal(record.boots, undefined, "a start that never reached a node counts toward no boot cap");
+    client.store.set(KV.vm.slot("c0"), { ...record, expiresAt: new Date(Date.now() - 1).toISOString() });
+    client.store.db.prepare("DELETE FROM effect").run();
+    (vm as unknown as { lapse(): void }).lapse();
+  }
+  // The cap refuses the ticket, and the slot it abandoned is free for another.
+  await assert.rejects(vm.run(first, assignmentId), /did not start 3 times/);
+  clusterFails = undefined;
+  assert.equal(client.store.get(KV.vm.slot("c0"))?.tokenHash ?? "", "", "the abandoned boot holds nothing");
+  const other = ticket("add a VERSION file", "add-version");
+  assert.equal(await vm.run(other.ticket, other.assignmentId), true);
+  assert.equal(client.store.get(KV.vm.slot("c0"))?.ticketId, other.ticket.id);
+  assert.equal(client.store.get(KV.vm.slot("c0"))?.fails, undefined, "a new ticket starts its own count");
 });
