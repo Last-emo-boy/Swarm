@@ -413,6 +413,9 @@ test("the host tells what it runs work on, asking its paired nodes again only af
   };
   try {
     await assert.rejects(host.devices(), /could not be read/);
+    // The tests before this one leave workers that exit on their own; a busy slot on a slow runner is not what this reads.
+    const exited = Date.now() + 30_000;
+    while (host.runningWorkers() && Date.now() < exited) await new Promise((resolve) => setTimeout(resolve, 100));
     const first = await host.devices();
     await host.devices();
     assert.equal(reads, 2);
