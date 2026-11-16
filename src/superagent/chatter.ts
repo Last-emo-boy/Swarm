@@ -16,7 +16,7 @@ import { chatsOf, isOwn, senderOf } from "./people.js";
 import { ask as openAsk, closeAsks, openAsks, recentAsks, type Ask } from "./asks.js";
 import { chatSubject, memoryOf, notesCard, personSubject } from "./memories.js";
 import type { Chatter, Settings } from "./settings.js";
-import { answerOf, checkedImText, cutToFit, wordCount } from "./text.js";
+import { answerOf, checkedImText, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
 
 const HOUR_MS = 3_600_000;
 /** How far back, and how many, of a chat's messages a consideration reads. */
@@ -63,9 +63,9 @@ export function callOf(store: Pick<SuperagentClient["store"], "get">, message: T
 
 const AttendSchema = z.object({
   reply: z.object({ text: z.string().trim(), reply_to: z.string().nullish(), mention: z.string().nullish() }).nullish(),
-  relay: z.array(z.object({ question: z.string(), text: z.string().trim() })).default([]),
-  ask_back: z.array(z.object({ for: z.string(), text: z.string().trim() })).default([]),
-  reason: z.string().default("")
+  relay: orNull(z.array(z.object({ question: z.string(), text: z.string().trim() })), []),
+  ask_back: orNull(z.array(z.object({ for: z.string(), text: z.string().trim() })), []),
+  reason: orNull(z.string(), "")
 });
 /** What in an attend answer is longer than Feishu takes, for one more try; nothing when it fits. */
 function tooLong(answer: z.infer<typeof AttendSchema>, answering: readonly Ask[]): string | undefined {
@@ -105,7 +105,7 @@ export function quietAt(chatter: Pick<Chatter, "quiet">, at: number): boolean {
   return quiet.from < quiet.to ? hour >= quiet.from && hour < quiet.to : hour >= quiet.from || hour < quiet.to;
 }
 
-const SaySchema = z.object({ say: z.string().trim().nullish(), reply_to: z.string().nullish(), mention: z.string().nullish(), reason: z.string().default("") });
+const SaySchema = z.object({ say: z.string().trim().nullish(), reply_to: z.string().nullish(), mention: z.string().nullish(), reason: orNull(z.string(), "") });
 const CHATTER_CONTRACT = 'Return exactly one JSON object: {"say": "what you post" | null, "reply_to": "the id of the one message you answer" | null, "mention": "the from_id of the one person you answer, to @ them, only when the chat is busy enough that they might miss it" | null, "reason": "why, at most 200 characters"}';
 
 /** The instructions for a consideration: who the agent is in the chat, and when a member would speak. */
@@ -125,6 +125,8 @@ export interface ChatterHost {
   readonly client: SuperagentClient;
   readonly complete: Complete;
   now?(): number;
+  /** Where to note a model answer it could not use, which leaves the agent silent. */
+  log?(message: string): void;
 }
 
 export class ChatterRoom {
@@ -250,8 +252,13 @@ export class ChatterRoom {
       ...(answering.length ? { your_questions: answering.map((ask) => ({ id: ask.id, asked_for: ask.for.name, asked: ask.text, at: ask.at })) } : {}),
       ...(replyable.length && acting.length ? { acting_for: acting.map((item) => ({ id: item.for.id, name: item.for.name, you_asked_here: item.text })) } : {}),
       ...(replyable.length ? {} : { reply: "not now: leave reply null and only relay" }), ...(memory.length ? { memory } : {}) };
-    const think = (problem?: string) => answerOf(AttendSchema, () => complete({ purpose: "superagent_attend", system: attendPrompt(name, chatter.persona),
-      user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), problem ? 1 : 2);
+    const purpose = (problem?: string) => problem ? "superagent_attend again" : "superagent_attend";
+    const think = (problem?: string) => {
+      const tries = problem ? 1 : 2;
+      return answerOf(AttendSchema, () => complete({ purpose: "superagent_attend", system: attendPrompt(name, chatter.persona),
+        user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), tries,
+        (answer) => this.host.log?.(noAnswer(purpose(problem), tries, answer)));
+    };
     // Asked twice with no answer it can use, it gives up: the effect ends rather than ask again every minute.
     const first = await think();
     if (!first) return;
@@ -327,7 +334,8 @@ export class ChatterRoom {
     const card = { chat: client.store.get(KV.sources.labels("feishu"))?.[chatId] ?? chatId, now: new Date(this.now()).toISOString(), messages: timeline,
       ...(memory.length ? { memory } : {}) };
     const answer = await answerOf(SaySchema, () => complete({ purpose: "superagent_chatter", system: chatterPrompt(bot, chatter.persona),
-      user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }));
+      user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), 2,
+      (answer) => this.host.log?.(noAnswer("superagent_chatter", 2, answer)));
     // Asked twice with no answer it can use, it says nothing: the effect ends rather than ask again every minute.
     if (!answer) return;
     const text = answer.say?.trim();

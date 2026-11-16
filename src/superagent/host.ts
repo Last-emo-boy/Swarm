@@ -130,11 +130,11 @@ export class SuperagentHost {
       });
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log, devices: () => this.devices() });
       this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands,
-        mesh: () => this.mesh(), devices: () => this.devices() });
+        mesh: () => this.mesh(), devices: () => this.devices(), log: this.log });
       this.assessor.install();
-      this.chatter = new ChatterRoom({ client: this.client, complete: options.complete });
+      this.chatter = new ChatterRoom({ client: this.client, complete: options.complete, log: this.log });
       this.chatter.install();
-      this.memories = new Memories({ client: this.client, complete: options.complete });
+      this.memories = new Memories({ client: this.client, complete: options.complete, log: this.log });
       this.memories.install();
     } catch (error) {
       this.release();

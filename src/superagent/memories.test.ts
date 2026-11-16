@@ -22,6 +22,8 @@ let now: number;
 let answers: (string | Error)[];
 let calls: { purpose: string; system: string; user: string }[];
 let written = Date.now();
+/** What the memory noted through its host's log, such as a model answer it could not use. */
+let logs: string[];
 /** Writes the settings: the memory's and the chatter's, and the chat Source's when it is to be off or to listen elsewhere. */
 const write = (memory: Record<string, unknown> = {}, chatter: Record<string, unknown> = {}, source: Record<string, unknown> = {}) => {
   writeSettings({
@@ -41,7 +43,8 @@ beforeEach(async () => {
   now = Date.now();
   answers = [];
   calls = [];
-  memories = new Memories({ client, now: () => now,
+  logs = [];
+  memories = new Memories({ client, now: () => now, log: (message) => { logs.push(message); },
     complete: async (input) => {
       calls.push(input);
       const next = answers.shift();
@@ -232,7 +235,7 @@ test("a card shows when a promise falls due, and when a kept one was kept", asyn
   assert.equal(applyOps(client.store, [{ op: "update", id: kept.id, text: "Remind Alice to send the notes" }], { subjects: () => undefined, shown: new Set([kept.id]) }, {}, new Date(now)), undefined);
   assert.equal(noteLine(client.store, client.store.memory.get(kept.id)!).kept, `${at.slice(0, 16)}Z`);
   write({ perSubject: 5 });
-  for (let index = 0; index < 4; index++) client.store.memory.save(note({ about: personSubject("ou_alice"), text: `Alice note ${index}` }));
+  for (let index = 0; index < 6; index++) client.store.memory.save(note({ about: personSubject("ou_alice"), text: `Alice note ${index}` }));
   await memories.tidy(personSubject("ou_alice"));
   const tidied = calls.at(-1)!;
   assert.match(tidied.system, /A promise shown with kept was kept then/);
@@ -449,4 +452,71 @@ test("the effects that reflect, keep a promise and tidy are over after two answe
   assert.deepEqual(client.store.db.prepare("SELECT key, attempts, error FROM effect WHERE kind = 'promise'").all().map((row) => ({ ...row })),
     [{ key: second.id, attempts: 1, error: "Error: the model is unreachable" }]);
   assert.equal(client.store.memory.get(second.id)!.done, undefined);
+});
+
+test("takes an answer whose notes is null for the empty list it would rather write, in a single call", async () => {
+  for (const [sender, text, ago] of [["ou_alice", "I lead the 2048 project", 900], ["ou_bob", "anyone know how to train it faster?", 800],
+    ["ou_alice", "not me", 700], ["ou_bob", "me neither", 600]] as const) say(sender, text, ago);
+  now += 600_000;
+  memories.pass();
+  answers.push(JSON.stringify({ notes: null, reach_out: null }));
+  await memories.reflect(CHAT);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(client.store.memory.about(personSubject("ou_alice")), []);
+  assert.deepEqual(logs, []);
+
+  // A ticket that ended reads the same empty list the same way.
+  const asked = say("ou_alice", "@w33d fix the README typo", 60, { mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] });
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(asked.id)!;
+  const { ticketId } = client.engine.decide(asked.id, { kind: "accept", title: "Fix the README typo", scope: "x", reason: "asked", name: "fix-typo", evalId: candidate.evalId });
+  client.engine.stopTicket(ticketId!, "done");
+  answers.push(JSON.stringify({ notes: null }));
+  calls = [];
+  await memories.reflectTicket(ticketId!);
+  assert.equal(calls.length, 1);
+});
+
+test("takes a promise's null message as none, marking it kept in a single call", async () => {
+  const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes",
+    due: new Date(now).toISOString() });
+  client.store.memory.save(promise);
+  answers.push(JSON.stringify({ say: null }));
+  await memories.keep(promise.id);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(posts(), []);
+  assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
+});
+
+test("takes a tidy's null notes as no change, in a single call", async () => {
+  write({ perSubject: 5 });
+  for (let index = 0; index < 6; index++) client.store.memory.save(note({ about: personSubject("ou_alice"), text: `Alice note ${index}` }));
+  answers.push(JSON.stringify({ notes: null }));
+  await memories.tidy(personSubject("ou_alice"));
+  assert.equal(calls.length, 1);
+  assert.equal(client.store.memory.count(personSubject("ou_alice")), 6);
+});
+
+test("notes each answer it could not use with its purpose, and a usable one with nothing", async () => {
+  for (const [sender, text, ago] of [["ou_alice", "I lead the 2048 project", 900], ["ou_bob", "anyone know how to train it faster?", 800],
+    ["ou_alice", "not me", 700], ["ou_bob", "me neither", 600]] as const) say(sender, text, ago);
+  now += 600_000;
+  memories.pass();
+  answers.push("not json", "still not json");
+  await memories.reflect(CHAT);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(logs, ["superagent: no usable answer for superagent_memory after 2 tries: still not json"]);
+  logs = [];
+  answers.push(JSON.stringify({ notes: [] }));
+  await memories.reflect(CHAT);
+  assert.deepEqual(logs, []);
+
+  // A promise's message that cannot be used is noted too, and the promise is still kept.
+  const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes",
+    due: new Date(now).toISOString() });
+  client.store.memory.save(promise);
+  answers.push("not json", "still not json");
+  await memories.keep(promise.id);
+  assert.deepEqual(logs, ["superagent: no usable answer for superagent_promise after 2 tries: still not json"]);
+  assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
 });

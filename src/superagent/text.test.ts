@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod/v4";
-import { IM_WORDS, answerOf, cutToFit, wordCount } from "./text.js";
+import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
 
 const Schema = z.object({ say: z.string().nullish(), count: z.number().default(0) });
 
@@ -29,4 +29,24 @@ test("cuts a long message after its last whole sentence that fits", () => {
   const cut = cutToFit(long, IM_WORDS);
   assert.ok(wordCount(cut) <= IM_WORDS, `${wordCount(cut)} words`);
   assert.match(cut, /。…$/);
+});
+
+test("reads null as the default a model leaves out, and still fills an absent key", () => {
+  const Optional = z.object({ items: orNull(z.array(z.string()), []), text: orNull(z.string().max(5), "") });
+  assert.deepEqual(Optional.parse({ items: null, text: null }), { items: [], text: "" });
+  assert.deepEqual(Optional.parse({}), { items: [], text: "" });
+  assert.deepEqual(Optional.parse({ items: ["a"], text: "hi" }), { items: ["a"], text: "hi" });
+  assert.equal(Optional.safeParse({ text: "too long" }).success, false, "the schema's own checks still apply");
+});
+
+test("hears the last answer when it gives up, and nothing when an answer can be used", async () => {
+  const heard: string[] = [];
+  assert.equal(await answerOf(Schema, async () => "not json", 2, (answer) => heard.push(answer)), undefined);
+  assert.deepEqual(heard, ["not json"]);
+  assert.deepEqual(await answerOf(Schema, async () => '{"say": "hi"}', 2, (answer) => heard.push(answer)), { say: "hi", count: 0 });
+  assert.deepEqual(heard, ["not json"]);
+  // The trace names the purpose and the start of the last answer, and goes no further than 200 characters.
+  const long = noAnswer("superagent_purpose", 2, `{"say": "${"x".repeat(300)}"}`);
+  assert.match(long, /^superagent: no usable answer for superagent_purpose after 2 tries: \{"say": "xxx/);
+  assert.equal([...long].length, "superagent: no usable answer for superagent_purpose after 2 tries: ".length + 200);
 });

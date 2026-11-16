@@ -41,6 +41,9 @@ const SETS: Record<string, Record<string, string>> = {
     AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
   // The promises the agent has yet to keep, by when they fall due (memories.ts).
   memory: { due: "TEXT AS (CASE WHEN value ->> '$.kind' = 'promise' AND value -> '$.done' IS NULL THEN value ->> '$.due' END)" },
+  // A request the router gave up on because the model did not answer, which nobody dismissed yet (store-read.ts `unroutedDecisions`).
+  decision: { unrouted: `INTEGER AS (CASE WHEN value ->> '$.kind' = 'unavailable' AND value ->> '$.reason[0].code' = 'timeout'
+    AND value ->> '$.strength' = 'explicit' AND value -> '$.dismissed' IS NULL THEN 1 END)` },
 }
 export const SCHEMA_VERSION = 1
 /**

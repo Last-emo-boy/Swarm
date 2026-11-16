@@ -23,6 +23,8 @@ let view: MeshView | undefined;
 /** Why reading what the host runs work on fails, when it does. */
 let devicesFail: string | undefined;
 let opened = false;
+/** What the assessor noted through its host's log, such as a model answer it could not use. */
+let logs: string[];
 const complete: Complete = async (input) => {
   calls.push(input);
   const answer = answers.shift();
@@ -33,6 +35,7 @@ beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-assessor-"));
   answers = [];
   calls = [];
+  logs = [];
   view = undefined;
   devicesFail = undefined;
 });
@@ -46,6 +49,7 @@ function start(settings: unknown = {}, commands?: AgentCommands) {
   client = new SuperagentClient({ stateDir });
   opened = true;
   assessor = new ModelAssessor({ client, complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}),
+    log: (message) => { logs.push(message); },
     devices: async () => {
       if (devicesFail) throw new Error(devicesFail);
       return devicesOf({ settings: client.settings(), store: client.store, ...(view ? { view } : {}), running: 1 });
@@ -223,6 +227,29 @@ test("gives up a stop check after two answers that cannot be used, stopping noth
   await assert.rejects(assessor.followup(unclear.id), /no scripted answer/);
   assert.equal(calls.length - before, 3);
   assert.ok(liveTicket(client.store.tickets.get(ticketId)!));
+});
+
+test("takes a follow-up whose stop and reason are null, and notes a give-up with its purpose once", async () => {
+  start(githubSettings("observe"));
+  const request = comment(1, "@agent-bot please fix the label typo");
+  client.engine.receive(request);
+  answers.push(accept());
+  await judge(request.id);
+  const ticketId = client.store.decisions.get(client.store.triggers.disposition(request.id)!.decisionId!)!.ticketId!;
+
+  const nulled = comment(2, "hmm, is this still what we want?");
+  client.engine.receive(nulled);
+  answers.push(JSON.stringify({ stop: null, reason: null }));
+  await assessor.followup(nulled.id);
+  assert.equal(calls.slice(-1)[0]!.purpose, "superagent_followup");
+  assert.ok(liveTicket(client.store.tickets.get(ticketId)!));
+  assert.deepEqual(logs, []);
+
+  const unclear = comment(3, "actually, what about the other one?");
+  client.engine.receive(unclear);
+  answers.push("not json", "still not json");
+  await assessor.followup(unclear.id);
+  assert.deepEqual(logs, ["superagent: no usable answer for superagent_followup after 2 tries: still not json"]);
 });
 
 test("routes a request again when the Engine refuses to attach it to a ticket its sender may not steer", async () => {
