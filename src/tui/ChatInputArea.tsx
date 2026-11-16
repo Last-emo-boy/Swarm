@@ -43,7 +43,8 @@ export function ChatInputArea({
   completionPlacement = "inline",
   maxRows,
   maxInputRows,
-  maxCompletionRows
+  maxCompletionRows,
+  columns
 }: {
   onSubmit: (value: string) => void | Promise<void>;
   onCompletionRowsChange: (rows: number) => void;
@@ -64,6 +65,8 @@ export function ChatInputArea({
   maxRows?: number;
   maxInputRows?: number;
   maxCompletionRows?: number;
+  /** The terminal's width, so a line that wraps takes the rows it draws. */
+  columns?: number;
 }): React.ReactElement {
   const internalControllerState = useRef<ChatInputControllerState>(createChatInputControllerState());
   const controllerState = controllerStateRef ?? internalControllerState;
@@ -76,10 +79,13 @@ export function ChatInputArea({
   const inputRowLimit = maxRows === undefined
     ? maxInputRows
     : Math.max(1, Math.min(maxInputRows ?? INPUT_RENDER_ROWS, rowBudget + 1));
+  // The text area is the terminal less the row's padding and the "› " pointer.
+  const textColumns = columns === undefined ? undefined : Math.max(8, Math.floor(columns) - displayWidth(PROMPT_POINTER) - 2);
   const desiredInputRows = visibleInputRows(
     controllerState.current.input.value,
     controllerState.current.input.cursor,
-    maxInputRows ?? INPUT_RENDER_ROWS
+    maxInputRows ?? INPUT_RENDER_ROWS,
+    textColumns
   );
   const completionRowBudget = maxRows === undefined
     ? maxCompletionRows
@@ -193,6 +199,7 @@ export function ChatInputArea({
               cursor={controllerState.current.input.cursor}
               placeholder={placeholder}
               maxRows={inputRowLimit}
+              textColumns={textColumns}
               focused={promptFocused}
             />
           </Box>
@@ -203,11 +210,12 @@ export function ChatInputArea({
   );
 }
 
-function InputLine({ value, cursor, placeholder, maxRows, focused }: {
+function InputLine({ value, cursor, placeholder, maxRows, textColumns, focused }: {
   value: string;
   cursor: number;
   placeholder: string;
   maxRows?: number;
+  textColumns?: number;
   focused: boolean;
 }): React.ReactElement {
   if (!value) {
@@ -219,7 +227,7 @@ function InputLine({ value, cursor, placeholder, maxRows, focused }: {
       </Text>
     );
   }
-  const { before, current, after } = renderInputLineParts(value, cursor, maxRows);
+  const { before, current, after } = renderInputLineParts(value, cursor, maxRows, textColumns);
   return (
     <Text wrap="wrap">
       <Text>{before}</Text>
