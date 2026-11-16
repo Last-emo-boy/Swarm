@@ -1,6 +1,6 @@
 /** Read-only Store queries for views, tools, and Source polling (from dsh-superagent's app/store-read.ts). */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import type { Decision, Thread, Trigger } from './core/index.js'
+import type { Decision, Thread, Ticket, Trigger } from './core/index.js'
 import type { SourceRegistry } from './sources/registry.js'
 import type { Dropped, Receipt, TimelinePlace } from './store.js'
 
@@ -115,6 +115,12 @@ export function storeReads(db: DatabaseSync, sources: () => Pick<SourceRegistry,
   directChat: (person: string, source = sources()?.sourceOfPerson(person)): string | undefined => source === undefined ? undefined
     : (db.prepare(`SELECT value ->> '$.meta.chatId' AS chat FROM trigger WHERE value ->> '$.source' = ?
       AND value ->> '$.actor.id' = ? AND value ->> '$.meta.direct' = 1 ORDER BY at DESC LIMIT 1`).get(source, person) as { chat?: string } | undefined)?.chat ?? undefined,
+  /**
+   * The tickets a chat's own messages started, newest first, whose origin trigger is a message of that chat on that Source;
+   * read through the trigger ids, so a chat's few tickets are parsed rather than the whole ticket table.
+   */
+  chatTickets: (chat: ChatRef): Ticket[] => values<Ticket>(`SELECT t.value FROM ticket t JOIN trigger g ON g.id = t.value ->> '$.origin.triggerId'
+    WHERE g.value ->> '$.source' = ? AND g.value ->> '$.meta.chatId' = ? ORDER BY t.rowid DESC`, chat.source, chat.chatId),
   /** The Source whose chat kind's directory holds `chatId` as a chat, when one does; for a read given only an id. */
   sourceOfChat: (chatId: string): string | undefined => sources()?.sourceOfChat(chatId),
   subscribedThreads: (source?: string): Thread[] => source

@@ -93,8 +93,11 @@ test("a line counts the media it cannot show, marks the agent's own words a tick
   assert.equal(mediaCount("[Image: img_a] ![Image](img_b) [Sticker] <file key=\"file_v3_1\" name=\"a.txt\"/>"), 4);
   assert.equal(mediaCount('{"image_key":"img_a"} {"file_key":"file_b"}'), 2);
   assert.equal(mediaCount("no media here"), 0);
+  // The messages carry their clock from this `now`, not from the moment the helper runs, so the order below cannot depend
+  // on how long the loop took.
   const now = Date.now();
-  for (let index = 0; index < 3; index++) client.engine.receive(noticed(client.store, message("oc_team", "ou_alice", index === 1 ? "[Image: img_v3_x] look" : `m${index}`)));
+  for (let index = 0; index < 3; index++) client.engine.receive(noticed(client.store,
+    message("oc_team", "ou_alice", index === 1 ? "[Image: img_v3_x] look" : `m${index}`, { create_time: String(now - 50_000 + index) })));
   const said = (text: string, ago: number, ticket?: string) => client.store.set(KV.chatter.chat("oc_team"), { said: [
     ...(client.store.get(KV.chatter.chat("oc_team"))?.said ?? []), { at: new Date(now - ago).toISOString(), text, ...(ticket ? { ticket } : {}) }] });
   said("ticket report", 2 * 60_000, "t-1");

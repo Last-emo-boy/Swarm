@@ -701,6 +701,9 @@ test("a note rule the code can check: a rule about the bot goes under self, a ci
   assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "来源：团队周会，发布定在周五" }], scope, { chatId: CHAT }, new Date(now)),
     "a note that cites a source needs its URL");
   assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "发布定在周五，见 https://example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+  // A citation word next to its URL is still a citation that has one: the URL exemption is what keeps it.
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "来源：https://example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "sources: https://example.com/a" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
   assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "周会笔记来源：wiki" }], scope, { chatId: CHAT }, new Date(now)),
     "a note that cites a source needs its URL");
   // A link is a URL whatever its scheme, and text about HTTP the protocol is not a citation.
