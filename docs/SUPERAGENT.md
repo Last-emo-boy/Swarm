@@ -49,7 +49,11 @@ handlers.
   reads, which the Engine's reply rules post as the result, the question or the answer. At a milestone a progress
   report may carry one too; the host sends at most one such update every five minutes, none in a ticket's first two.
   When work fails or blocks without a question, the person hears that it stopped and why, in the worker's words or
-  the report's summary (`notices.ts`). None of these go to GitHub, whose timeline shows the work.
+  the report's summary (`notices.ts`). A ticket that then waits on that person, or on an answer, reminds them once a day
+  later and closes a day after the reminder, with a notice where it asked, which their reply reopens; one whose channel
+  can post nothing more is closed the same way without the notice. A request the router could not take in because the
+  model timed out is answered once where it was asked, and stays listed in `swarm superagent status` for `again` or
+  `dismiss`. None of these go to GitHub, whose timeline shows the work.
 - **Follow-up stops.** Upstream's main Session heard of each follow-up and could stop work on it. Swarm asks the model
   once per follow-up that reached a ticket whether the person asks to stop; local messages skip this, since the TUI
   and CLI have a stop command.
@@ -282,8 +286,9 @@ and promises, which have a due time.
   the people mentioned, the chat and the agent itself. Notes are used everywhere, like one person's memory; the prompts ask
   for tact about what was said in private, and never to keep secrets or keys.
 - **Acting on it.** When a promise falls due, the agent writes the message itself and posts it where it was made, with an @,
-  or in the person's direct messages. After a conversation it may also write to someone on its own, at most `dmPerDay`
-  times a day, once a day per person, and never in chatter's quiet hours.
+  or in the person's direct messages. A promise moved to a later time while kept falls due again then; one whose message
+  cannot be written or posted yet keeps its backoff and stays due. After a conversation it may also write to someone on
+  its own, at most `dmPerDay` times a day, once a day per person, and never in chatter's quiet hours.
 - **Upkeep.** A subject with more than `perSubject` notes is tidied by the model into about half.
 - **Control.** `/memory` shows anyone what it remembers about them, and `/forget` erases it; owners can name anyone.
 
@@ -346,4 +351,6 @@ open question; so does this port.
 
 `src/superagent/**/*.test.ts` holds the ported upstream specs (engine, stages, policy, store, effects, registry, GitHub and
 Feishu reads) and Swarm's own: the client, the assessor against a scripted model, and an end-to-end test that runs a
-real host, a worker process and Swarm's coding loop against a local scripted model with no paid calls.
+real host, a worker process and Swarm's coding loop against a local scripted model with no paid calls. Tests never reach
+the real `lark-cli` or `gh`: `src/testing/env.ts` puts stub `lark-cli`, `lark-bot` and `gh` first on `PATH`, which refuse
+with exit code 97, and points `LARKSUITE_CLI_CONFIG_DIR` at an empty temporary directory.
