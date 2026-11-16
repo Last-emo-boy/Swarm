@@ -14,6 +14,7 @@ export const feishuChatKind: ChatKind = {
   platform: 'Feishu',
   // The name as the deployment read it, empty when the app has none: a caller that treats an empty name as "no name" (as the
   // chatter's name matching always did) must not start matching the bot's id instead.
+  // Feishu keeps the bot in the deployment; the configuration adds nothing, so it is taken and unused.
   agent: deployment => deployment.feishu
     ? { id: deployment.feishu.botId, name: deployment.feishu.name, ownIds: [deployment.feishu.botId, deployment.feishu.appId] }
     : undefined,
@@ -35,6 +36,6 @@ export const feishuChatKind: ChatKind = {
       direct: direct === 'true', mode: mode === 'user' ? 'user' : mode === 'chat' ? 'chat' : 'reply' }
   },
   // One cheap authenticated call: an app that is not installed, a bot outside its availability or a signed-out CLI fails it.
-  probe: async (commands, deployment) => { await commands.lark(['auth', 'status']) },
+  probe: async (commands, deployment, _config) => { await commands.lark(['auth', 'status']) },
 }
 

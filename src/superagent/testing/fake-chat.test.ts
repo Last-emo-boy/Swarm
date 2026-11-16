@@ -18,7 +18,7 @@ import { Memories, chatSubject, notesCard, personSubject } from '../memories.js'
 import { KV } from '../kv.js'
 import { writeSettings, settingsPath } from '../settings.js'
 import { metaOf } from '../sources/meta.js'
-import { fakeChatSource, fakeSink, fakeTrigger, FAKE_SOURCE } from './fake-chat.js'
+import { fakeChatKind, fakeChatSource, fakeSink, fakeTrigger, FAKE_SOURCE } from './fake-chat.js'
 import { testDeployment } from './fixtures.js'
 import { expect } from './expect.js'
 
@@ -379,4 +379,27 @@ test("a room message naming the bot makes the attention pass attend to it, under
   const posted = sink.sent.at(-1)!
   expect(posted.channel.source).toBe(FAKE_SOURCE)
   expect(posted.text).toBe('Friday works.')
+})
+
+test('a fake-chat kind without files says so by its platform name instead of reading a Feishu path', async () => {
+  const trigger = fakeTrigger('room1', 'fk_ann', 'see the log I pasted', { mention: true })
+  client.engine.receive(trigger)
+  client.engine.evaluateDue()
+  const candidate = client.engine.candidate(trigger.id)!
+  const { ticketId } = client.engine.decide(trigger.id, { kind: 'accept', title: 'Read the log', scope: 'x', reason: 'asked', name: 'read-log', evalId: candidate.evalId })
+  const run = (name: string, args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === name)!.run(args)
+  // The attachment tool serves any kind that declares files; this one declares none, and the refusal names its platform.
+  await expect(run('attachment', { trigger_id: trigger.id })).rejects.toThrow('FakeChat messages have no attachments')
+  // `read` routes nothing to it: a feishu/ resource is unknown here, never a Feishu read under a fake kind.
+  await expect(run('read', { resource: `feishu/${trigger.id}/thread` })).rejects.toThrow('Unknown resource')
+})
+
+test("a fake kind's channel sees its own configuration: with a room list, a send into an unlisted room is gone", async () => {
+  // The channel alone, with the configuration the registry would hand it: no client, so nothing else can send.
+  const channel = fakeChatSource(sink).channel!
+  const message = (chatId: string) => ({ id: `r-${chatId}`, channel: fakeChatKind(fakeSink()).chat(chatId), text: 'hello', kind: 'reply' as const })
+  expect(await channel.send({ commands: {} as never, config: { rooms: [], botId: 'fake_bot', botName: 'Fake Bot' } }, message('room1'))).toBe('sent')
+  expect(await channel.send({ commands: {} as never, config: { rooms: ['room1'], botId: 'fake_bot', botName: 'Fake Bot' } }, message('room2'))).toBe('gone')
+  expect(await channel.send({ commands: {} as never, config: { rooms: ['room1'], botId: 'fake_bot', botName: 'Fake Bot' } }, message('room1'))).toBe('sent')
+  expect(sink.sent.map((sent) => sent.channel.address.chatId)).toEqual(['room1', 'room1'])
 })

@@ -8,6 +8,7 @@ import { SOURCE, feishuChannel, feishuTriggerId, feishuUserChannel } from './fei
 import { sourceContext } from './host.js'
 import type { SourceKind } from './kind.js'
 import { feishuChatKind } from './feishu-chat.js'
+import { feishuFiles } from './feishu-files.js'
 import type { SourceRegistry } from './registry.js'
 
 export { REPLY_STYLES, SOURCE, feishuRef, feishuThreadId, feishuTime, feishuTrigger, feishuTriggerId, historyEvent, replyChannel, withMentionNames, type ReplyStyle }
@@ -34,7 +35,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,
   title: 'Feishu',
   schema: FeishuConfigSchema,
-  health: ['feishu', 'history'],
+  // `feishu` and `history` belong to the watch loop; `feishu-login` to the sign-in check, so the two never overwrite each other.
+  health: ['feishu', 'history', 'feishu-login'],
   scope({ meta }, config) {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const chat = config.chats.find(item => item.chatId === meta.chatId)
@@ -94,7 +96,17 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     values: ({ deployment, trigger }) => ({ SWARM_TICKET_FEISHU_BOT: deployment.feishu ? deployment.feishu.name || deployment.feishu.botId : '', SWARM_TICKET_FEISHU_CHAT: trigger?.source === SOURCE ? String(trigger.meta.chatId ?? '') : '' }),
   },
   chat: feishuChatKind,
+  files: feishuFiles,
   watch: async (ctx, signal) => { await runFeishu(ctx, signal) },
+  check: {
+    entry: 'feishu-login',
+    async verify(commands, deployment, config) {
+      await feishuChatKind.probe(commands, deployment, config)
+      const bot = deployment.feishu
+      if (!bot) throw new Error('The deployment has no Feishu bot')
+      return `Signed in as ${bot.name || bot.botId}`
+    },
+  },
 }
 
 /** Returns the Feishu Source's settings, falling back to schema defaults while the Source is off. */

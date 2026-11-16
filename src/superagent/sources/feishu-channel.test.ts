@@ -6,9 +6,12 @@ import { expect } from '../testing/expect.js'
 import { CliError, type Commands } from '../commands.js'
 import { sendFeishu, withMentions } from './feishu-channel.js'
 import { feishuUserChannel } from './feishu-trigger.js'
+import { feishuKind } from './feishu.js'
 import { sendGithub } from './github-channel.js'
 import type { OutboundMessage } from '../core/index.js'
 
+// The kind's own default configuration: these tests exercise the CLI shapes, which read none of it.
+const config = feishuKind.schema.parse({})
 const message = (attachment?: string): OutboundMessage => ({ id: 'm1', kind: 'reply', text: 'The patch is ready.', channel: { source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } },
   ...attachment ? { attachment } : {} })
 function withPatch(run: (path: string) => Promise<void>): Promise<void> {
@@ -22,7 +25,7 @@ describe('attachments', () => {
   it('replies on Feishu with the text, then the attachment as a file from its directory', () => withPatch(async (path) => {
     const calls: [string[], string | undefined][] = []
     const commands = { lark: async (args: string[], cwd?: string) => { calls.push([args, cwd]); return {} } } as unknown as Commands
-    expect(await sendFeishu({ commands }, message(path))).toBe('sent')
+    expect(await sendFeishu({ commands, config }, message(path))).toBe('sent')
     expect(calls.map(([args, cwd]) => [args.slice(4, 6), args.at(-1), cwd])).toEqual([
       [['--markdown', 'The patch is ready.'], 'm1', undefined],
       [['--file', 'fix-typo-abc.patch'], 'm1-file', join(path, '..')]
@@ -32,17 +35,17 @@ describe('attachments', () => {
   it('says that an attachment Feishu refuses for good could not be attached, and retries one that fails for a while', () => withPatch(async (path) => {
     const calls: string[][] = []
     const refuse = (error: Error) => ({ lark: async (args: string[]) => { calls.push(args); if (args.includes('--file')) throw error; return {} } }) as unknown as Commands
-    expect(await sendFeishu({ commands: refuse(new CliError('No permission to upload (99991672)', 99991672)) }, message(path))).toBe('sent')
+    expect(await sendFeishu({ commands: refuse(new CliError('No permission to upload (99991672)', 99991672)), config }, message(path))).toBe('sent')
     expect(calls.at(-1)).toContain('m1-nofile')
-    await expect(sendFeishu({ commands: refuse(new CliError('lark-cli timed out')) }, message(path))).rejects.toThrow('timed out')
+    await expect(sendFeishu({ commands: refuse(new CliError('lark-cli timed out')), config }, message(path))).rejects.toThrow('timed out')
   }))
   it('posts into the chat itself, as a plain message or a reply that quotes a message, not in a topic, attachments too', () => withPatch(async (path) => {
     const calls: [string[], string | undefined][] = []
     const commands = { lark: async (args: string[], cwd?: string) => { calls.push([args, cwd]); return {} } } as unknown as Commands
     const chat = (address: Record<string, string>, attachment?: string): OutboundMessage => ({ id: 'c1', kind: 'notice', text: 'Tea time?',
       channel: { source: 'feishu', thread: 'feishu:oc_1', address }, ...attachment ? { attachment } : {} })
-    expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat' }))).toBe('sent')
-    expect(await sendFeishu({ commands }, chat({ chatId: 'oc_1', mode: 'chat', messageId: 'om_9' }, path))).toBe('sent')
+    expect(await sendFeishu({ commands, config }, chat({ chatId: 'oc_1', mode: 'chat' }))).toBe('sent')
+    expect(await sendFeishu({ commands, config }, chat({ chatId: 'oc_1', mode: 'chat', messageId: 'om_9' }, path))).toBe('sent')
     expect(calls).toEqual([
       [['im', '+messages-send', '--chat-id', 'oc_1', '--markdown', 'Tea time?', '--idempotency-key', 'c1'], undefined],
       [['im', '+messages-reply', '--message-id', 'om_9', '--markdown', 'Tea time?', '--idempotency-key', 'c1'], undefined],
@@ -53,15 +56,15 @@ describe('attachments', () => {
     const calls: string[][] = []
     const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands
     const at = (address: Record<string, string>): OutboundMessage => ({ id: 'a1', kind: 'reply', text: '@小王 你好', channel: { source: 'feishu', thread: 'feishu:oc_1', address } })
-    await sendFeishu({ commands }, at({ chatId: 'oc_1', messageId: 'om_1' }))
-    await sendFeishu({ commands }, at({ chatId: 'oc_1', mode: 'chat' }))
-    await sendFeishu({ commands }, { ...at({}), channel: feishuUserChannel('ou_alice') })
+    await sendFeishu({ commands, config }, at({ chatId: 'oc_1', messageId: 'om_1' }))
+    await sendFeishu({ commands, config }, at({ chatId: 'oc_1', mode: 'chat' }))
+    await sendFeishu({ commands, config }, { ...at({}), channel: feishuUserChannel('ou_alice') })
     expect(calls.map((args) => args[args.indexOf(args.includes('--text') ? '--text' : '--markdown') + 1])).toEqual(['@@小王 你好', '@@小王 你好', '@@小王 你好'])
   })
   it('tells the host the id Feishu gave each message it posted, so a reply to that message is a reply to the agent', async () => {
     const posted: unknown[] = []
     const commands = { lark: async (args: string[]) => args.includes('--user-id') ? { message_id: 'om_dm', chat_id: 'oc_dm' } : { message_id: 'om_new' } } as unknown as Commands
-    const send = (address: Record<string, string>) => sendFeishu({ commands, posted: (remote) => posted.push(remote) },
+    const send = (address: Record<string, string>) => sendFeishu({ commands, config, posted: (remote) => posted.push(remote) },
       { id: 'p1', kind: 'notice', text: 'hi', channel: { source: 'feishu', thread: 'feishu:oc_1', address } })
     await send({ chatId: 'oc_1', mode: 'chat' })
     await send({ userId: 'ou_bob', mode: 'user', direct: 'true' })
@@ -72,7 +75,7 @@ describe('attachments', () => {
     const commands = { lark: async (args: string[]) => { calls.push(args); return {} } } as unknown as Commands
     const mentions = [{ id: 'ou_bob', name: 'Bob' }, { id: 'ou_carol', name: 'Carol' }]
     const send = (channel: OutboundMessage['channel'], text = '@Bob ' + 'word '.repeat(98)) =>
-      sendFeishu({ commands }, { id: 'm1', kind: 'reply', text, channel, mentions })
+      sendFeishu({ commands, config }, { id: 'm1', kind: 'reply', text, channel, mentions })
     await send({ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } })
     await send({ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', mode: 'chat' } }, '@Bob 好的')
     await send(feishuUserChannel('ou_bob'), 'see you at eight')
@@ -88,10 +91,10 @@ describe('attachments', () => {
     const calls: string[][] = []
     const send = (error?: Error) => ({ lark: async (args: string[]) => { calls.push(args); if (error) throw error; return {} } }) as unknown as Commands
     const direct: OutboundMessage = { id: 'd1', kind: 'reply', text: 'Enter ABCD-1234.', channel: feishuUserChannel('ou_alice') }
-    expect(await sendFeishu({ commands: send() }, direct)).toBe('sent')
+    expect(await sendFeishu({ commands: send(), config }, direct)).toBe('sent')
     expect(calls).toEqual([['im', '+messages-send', '--user-id', 'ou_alice', '--text', 'Enter ABCD-1234.', '--idempotency-key', 'd1']])
-    expect(await sendFeishu({ commands: send(new CliError('Bot has NO availability to this user. (230013)', 230013)) }, direct)).toBe('gone')
-    await expect(sendFeishu({ commands: send(new CliError('lark-cli timed out')) }, direct)).rejects.toThrow('timed out')
+    expect(await sendFeishu({ commands: send(new CliError('Bot has NO availability to this user. (230013)', 230013)), config }, direct)).toBe('gone')
+    await expect(sendFeishu({ commands: send(new CliError('lark-cli timed out')), config }, direct)).rejects.toThrow('timed out')
   })
   it('folds an attachment into the end of a GitHub comment', () => withPatch(async (path) => {
     const posted: string[] = []

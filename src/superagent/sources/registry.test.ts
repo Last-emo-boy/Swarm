@@ -79,6 +79,8 @@ describe('Source registry', () => {
     expect(() => sources.register({ ...probe, health: ['github'] })).toThrow('declares the health entry github')
     for (const name of ['runtime', 'reply', 'sync:github']) expect(() => sources.register({ ...probe, health: ['probe', name] })).toThrow(name)
     expect(sources.kind('probe')).toBeUndefined()
+    // A check must report on an entry its own kind declares.
+    expect(() => sources.register({ ...probe, health: ['probe'], check: { entry: 'elsewhere', verify: async () => '' } })).toThrow('declares the health entry elsewhere')
     sources.register({ ...probe, health: ['probe'] })
     const context = (kind: { kind: string; health: readonly string[] }) => sourceContextOf({ sources } as unknown as SourceContextDeps, kind)
     const first = context(githubKind)
@@ -104,6 +106,58 @@ describe('Source registry', () => {
     expect(sources.repliesTo({ ...reply, meta: { ...reply.meta, parentId: undefined } })).toBeUndefined()
     expect(sources.repliesTo({ ...reply, source: 'github' })).toBeUndefined()
   })
+  it('hands a channel its kind\'s validated configuration at send time, and rewrites it only from the settings it resolves', async () => {
+    let stored = { enabled: true, config: { interval: 7 } }
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: stored } }))
+    const seen: unknown[] = []
+    const seenAt: number[] = []
+    const configs = [7, 9]
+    sources.register({ ...probe, channel: {
+      send: async (host, message) => { seen.push(message); seenAt.push(host.config.interval); return 'sent' },
+      link: () => ({ url: '', label: 'Probe' }) } })
+    const message = { id: 'r1', channel: { source: 'probe', thread: 'probe:1', address: { room: 'r' } }, text: 'hi', kind: 'reply' } as OutboundMessage
+    expect(await sources.send(message, {} as Commands)).toBe('sent')
+    // The next delivery resolves the settings as they stand, the same moment `allowed` reads them.
+    stored = { enabled: true, config: { interval: 9 } }
+    expect(await sources.send(message, {} as Commands)).toBe('sent')
+    expect(seenAt).toEqual(configs)
+  })
+  it('runs a kind\'s declared check and writes its entry, and stays quiet while it is off or has no deployment', async () => {
+    const board = new HealthBoard()
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: { enabled: true, config: { interval: 7 } } } }), board)
+    sources.register({ ...probe, health: ['probe-login'], check: { entry: 'probe-login',
+      verify: async (_commands, deployment, config) => { if (deployment.repository !== 'acme/widgets') throw new Error('wrong deployment'); return `ready at ${config.interval}` } } })
+    const deployment = testDeployment()
+    expect(await sources.check('probe', {} as Commands, deployment)).toEqual({ state: 'ready', detail: 'ready at 7', at: expect.any(String) })
+    expect(board.all['probe-login']).toMatchObject({ state: 'ready', detail: 'ready at 7' })
+    // A failing check writes its message on the same entry, and an off Source or no deployment runs nothing.
+    sources.register({ ...probe, kind: 'fails', health: ['fails-login'], check: { entry: 'fails-login', verify: async () => { throw new Error('signed out') } } })
+    expect(await sources.check('fails', {} as Commands, deployment)).toEqual({ state: 'error', detail: 'signed out', at: expect.any(String) })
+    expect(board.all['fails-login']).toEqual({ state: 'error', detail: 'signed out', at: expect.any(String) })
+    expect(await sources.check('probe', {} as Commands, undefined)).toBeUndefined()
+    expect(await sources.check('missing', {} as Commands, deployment)).toBeUndefined()
+    const off = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: { enabled: false, config: {} } } }))
+    off.register({ ...probe, health: ['probe-login'], check: { entry: 'probe-login', verify: async () => { throw new Error('must not run') } } })
+    // A deployment is supplied, so only the enabled gate can refuse it: a check that ran would have written or thrown.
+    expect(await off.check('probe', {} as Commands, testDeployment())).toBeUndefined()
+  })
+  it('binds a kind\'s files with its configuration now, and gives a kind without them none', async () => {
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: { enabled: true, config: { interval: 3 } } } }))
+    const reads: unknown[] = []
+    sources.register({ ...probe, files: {
+      prefix: 'probe',
+      attachments: trigger => [{ file_key: `k-${trigger.id}`, type: 'file' }],
+      read: async (_commands, trigger, ref, config) => ({ ...ref, name: ref.file_key, format: 'txt', bytes: 0, note: `interval ${config.interval}` }),
+      readResource: async (_commands, trigger, resource, config) => { reads.push([trigger.id, resource, config.interval]); return { ok: true } } } })
+    const files = sources.files('probe')!
+    const trigger = { id: 't1', source: 'probe', threads: [], actor: { source: 'probe', id: 'u' }, human: true, at: '', text: '', meta: {} }
+    expect(files.prefix).toBe('probe')
+    expect(files.attachments(trigger)).toEqual([{ file_key: 'k-t1', type: 'file' }])
+    expect(await files.read({} as Commands, trigger, files.attachments(trigger)[0]!)).toMatchObject({ note: 'interval 3' })
+    expect(await files.readResource({} as Commands, trigger, 'probe/t1/thread')).toEqual({ ok: true })
+    expect(reads).toEqual([['t1', 'probe/t1/thread', 3]])
+    expect(sources.files('missing')).toBeUndefined()
+  })
   it('finds what a search query names in each kind\'s terms', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
     sources.register(feishuKind); sources.register(githubKind)
@@ -118,6 +172,11 @@ describe('Source registry', () => {
     expect(() => sources.register(probe)).toThrow('already registered')
     dispose()
     expect(sources.instance('probe')).toBeUndefined()
+  })
+  it('refuses the github files prefix, which ticket reads route to the repository API before any kind', () => {
+    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    expect(() => sources.register({ ...probe, files: { prefix: 'github', attachments: () => [], read: async () => { throw new Error('never') },
+      readResource: async () => ({}) } })).toThrow('files prefix github')
   })
   it('validates each Source\'s part of the Policy with its kind, keeping parts of kinds that are not installed as stored', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice' }] } } } }))

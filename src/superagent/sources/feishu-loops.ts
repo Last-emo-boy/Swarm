@@ -35,9 +35,10 @@ export async function probeLoop(ctx: SourceContext, signal: AbortSignal, chatHea
   const kind = feishuChatKind
   await ctx.ready
   while (!signal.aborted) {
-    if (enabled(ctx)) {
+    const config = enabled(ctx)
+    if (config) {
       const report = (entry: Health): void => { ctx.report(kind.source, entry) }
-      try { await kind.probe(ctx.commands, ctx.deployment); chatHealth.record(undefined, report) }
+      try { await kind.probe(ctx.commands, ctx.deployment, config); chatHealth.record(undefined, report) }
       catch (error) { if (!signal.aborted) chatHealth.record(String(error), report) }
     }
     await delay(everyMs, undefined, { signal }).catch(() => {})

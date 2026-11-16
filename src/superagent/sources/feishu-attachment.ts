@@ -10,12 +10,10 @@ import { promisify } from 'node:util'
 import { inflateRawSync } from 'node:zlib'
 import { z } from 'zod/v4'
 import { CliError, type Commands } from '../commands.js'
-
-export interface Attachment { file_key: string; type: 'file' | 'image'; name?: string }
-/** What a worker reads of one attachment; `base64` is for the worker's own tools to save, never for its model. */
-export interface AttachmentRead extends Attachment {
-  name: string; format: string; bytes: number; text?: string; text_note?: string; base64?: string; note?: string
-}
+import type { AttachmentRead, AttachmentRef } from './kind.js'
+/** The attachment shapes live with the kind contract now; re-exported here so the existing readers keep their import. */
+export type Attachment = AttachmentRef
+export type { AttachmentRead }
 
 /** The largest attachment the host downloads, and the largest whose bytes it passes on to the worker. */
 export const ATTACHMENT_BYTES = 20 * 1024 * 1024, INLINE_BYTES = 4 * 1024 * 1024

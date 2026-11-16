@@ -41,8 +41,8 @@ export interface ChatKind {
   source: string
   /** The platform word prompts and cards say: 'Feishu'. */
   platform: string
-  /** The agent's own identity there, once the deployment resolved it. */
-  agent(deployment: Deployment): ChatAgent | undefined
+  /** The agent's own identity there, once the deployment resolved it, from its configuration when the platform keeps it there. */
+  agent(deployment: Deployment, config: Record<string, unknown>): ChatAgent | undefined
   directory: ChatDirectory
   /** The thread a chat's messages belong to; its key is the `thread` of every channel into that chat. */
   thread(chatId: string): ThreadRef
@@ -58,7 +58,7 @@ export interface ChatKind {
    * Whether the platform's API is reachable; throws with the platform's message when it is not. Required: a kind whose watch
    * loop claims `ready` must say how to tell that the claim is stale, so an adapter cannot report ready while every call fails.
    */
-  probe(commands: Commands, deployment: Deployment): Promise<void>
+  probe(commands: Commands, deployment: Deployment, config: Record<string, unknown>): Promise<void>
 }
 
 /** How often a chat kind's API is probed while its watch loop runs. */
