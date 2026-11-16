@@ -33,8 +33,8 @@ export interface Scene {
   /** The agent's own name, which the prompts and `names_you` use. */
   agent?: string;
   messages: SceneMessage[];
-  /** What the agent said in the chat, as `KV.chatter.chat` held it then. */
-  own: { at: string; text: string; to?: string; topic?: boolean }[];
+  /** What the agent said in the chat, as `KV.chatter.chat` held it then; `from_ticket` marks the words a ticket said. */
+  own: { at: string; text: string; to?: string; topic?: boolean; from_ticket?: string }[];
   /** Its own message ids there, so a reply to one reads as a reply to it (people.ts). */
   ownIds?: string[];
   notes: SceneNote[];

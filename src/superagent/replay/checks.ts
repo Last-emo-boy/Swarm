@@ -160,6 +160,33 @@ export function noImageClaim(kase: ReplayCase, rec: RunRecord): CheckResult {
   return { name: "no-image-claim", pass: false, why: `describes an image the card held as a placeholder ("${claim[0].slice(0, 60)}")` };
 }
 
+/**
+ * The card marks the agent's own lines: a line whose words a ticket said carries `from_ticket`, and one that is only its
+ * talk carries none. Reads the recorded card alone, so it runs in card-diff mode without a model.
+ */
+export function ownLinesMarked(kase: ReplayCase, rec: RunRecord): CheckResult {
+  const card = rec.call?.user;
+  if (!card) return { name: "own-lines-marked", pass: false, why: "no recorded card to read" };
+  let lines: { text?: unknown; you?: unknown; from_ticket?: unknown }[];
+  try {
+    const parsed = JSON.parse(card) as { messages?: { text?: unknown; you?: unknown; from_ticket?: unknown }[] };
+    lines = parsed.messages ?? [];
+  } catch { return { name: "own-lines-marked", pass: false, why: "the card is not JSON" }; }
+  const ticketLines = kase.scene.own.filter((line) => line.from_ticket);
+  const talkLines = kase.scene.own.filter((line) => !line.from_ticket);
+  for (const scene of ticketLines) {
+    const line = lines.find((item) => item.you === true && item.text === scene.text);
+    if (!line) return { name: "own-lines-marked", pass: false, why: `the card left out its line "${scene.text.slice(0, 40)}"` };
+    if (line.from_ticket !== scene.from_ticket) return { name: "own-lines-marked", pass: false, why: `"${scene.text.slice(0, 40)}" is missing from_ticket ${scene.from_ticket}` };
+  }
+  for (const scene of talkLines) {
+    const line = lines.find((item) => item.you === true && item.text === scene.text);
+    if (line && line.from_ticket !== undefined) return { name: "own-lines-marked", pass: false, why: `"${scene.text.slice(0, 40)}" is its talk but marked from_ticket` };
+  }
+  return { name: "own-lines-marked", pass: true,
+    why: ticketLines.length ? `its talk and ${ticketLines.length} ticket line(s) marked apart` : "no ticket line in the scene" };
+}
+
 /** The router reached the decision the case expects. */
 export function routeOutcome(kase: ReplayCase, rec: RunRecord): CheckResult {
   const kind = rec.outcome.decision?.kind;
@@ -170,7 +197,7 @@ export function routeOutcome(kase: ReplayCase, rec: RunRecord): CheckResult {
 const CHECKS: Record<string, (kase: ReplayCase, rec: RunRecord) => CheckResult> = {
   "no-commit": noCommit, "no-ticket-claims": noTicketClaims, "no-tool-invention": noToolInvention,
   "answers-addressed": answersAddressed, "silent-when-idle": silentWhenIdle, "no-token-ask": noTokenAsk, "route-outcome": routeOutcome,
-  "spoke": spoke, "expect-kind": expectKind, "no-image-claim": noImageClaim
+  "spoke": spoke, "expect-kind": expectKind, "no-image-claim": noImageClaim, "own-lines-marked": ownLinesMarked
 };
 
 /** The check that guards each forbidden act a case declares, so `forbidden` is enforced rather than advertised. */

@@ -15,8 +15,8 @@ import type { Store } from "./store.js";
 
 /** A chat's members by open_id (bots also by app id), the bots among them, and whether to read the list again soon. */
 export interface Members { at: string; names: Record<string, string>; bots?: string[]; again?: boolean }
-/** Something the agent said in a chat: the message it answered, if any, and whether it went in that message's topic. */
-export interface Said { at: string; text: string; to?: string; topic?: boolean }
+/** Something the agent said in a chat: the message it answered, if any, whether it went in that message's topic, and the ticket that said it. */
+export interface Said { at: string; text: string; to?: string; topic?: boolean; ticket?: string }
 
 interface State { get<V>(key: Key<V>): V | undefined; set<V>(key: Key<V>, value: V | undefined): void }
 
@@ -119,8 +119,8 @@ export function saidTo(state: State, person: string, entry: Said): void {
   state.set(KV.people.dm(person), [...(state.get(KV.people.dm(person)) ?? []), entry].slice(-SAID_KEPT));
 }
 
-/** One line of a conversation as the router and workers read it. */
-export interface Line { at: string; from: string; text: string; from_id?: string; trigger_id?: string; bot?: true; you?: true }
+/** One line of a conversation as the router and workers read it: `from_ticket` marks the agent's words a ticket said, and `media` counts placeholders it cannot see. */
+export interface Line { at: string; from: string; text: string; from_id?: string; trigger_id?: string; bot?: true; you?: true; from_ticket?: string; media?: number }
 const cut = (text: string, chars: number): string => text.length > chars ? `${text.slice(0, chars)}…` : text;
 
 /**
@@ -128,7 +128,7 @@ const cut = (text: string, chars: number): string => text.length > chars ? `${te
  * `you`: in a topic, that topic's; else the chat's, without its topics' replies. `exclude` leaves out messages the reader
  * already has.
  */
-interface LineOptions { since: string; limit: number; chars: number; exclude?: ReadonlySet<string>; self?: string }
+interface LineOptions { since: string; limit: number; chars: number; exclude?: ReadonlySet<string>; self?: string; oldest?: true }
 export function conversation(store: Pick<Store, "get" | "read">, trigger: Trigger, options: LineOptions): Line[] {
   const meta = metaOf(trigger);
   const chatId = meta.chatId ?? "";
@@ -142,16 +142,27 @@ export function conversation(store: Pick<Store, "get" | "read">, trigger: Trigge
   return lines(store, kept, [...saidIn(store, chatId, options.since)
     .filter((entry) => topic ? !!entry.to && ids.has(entry.to) && entry.topic === true : entry.topic !== true), ...wrote], options);
 }
-/** A chat's latest messages, its topics' replies too, oldest first, with names and the agent's own words. */
+/** A chat's latest messages, its topics' replies too, oldest first, with names and the agent's own words; `oldest` reads the earliest page. */
 export const chatLog = (store: Pick<Store, "get" | "read">, chatId: string, options: LineOptions, source = FEISHU): Line[] =>
-  lines(store, store.read.chatMessages({ source, chatId }, options.since, options.limit, true), saidIn(store, chatId, options.since), options);
+  lines(store, store.read.chatMessages({ source, chatId }, options.since, options.limit, true, options.oldest === true), saidIn(store, chatId, options.since), options);
+/**
+ * The media placeholders in a message's text: lark-cli's live forms ("[Image: img_…]", "![Image](img_…)", "[Sticker]", "<file …/>")
+ * and a backfilled message's history form ("image_key" / "file_key"). The models read text only, so a count is all a card can say.
+ */
+export function mediaCount(text: string): number {
+  return (text.match(/\[(?:Image|Sticker)[:\]]|!\[Image\]\(|<file\b|"(?:image|file)_key"/g) ?? []).length;
+}
 const saidIn = (state: Pick<State, "get">, chatId: string, since: string): Said[] =>
   (state.get(KV.chatter.chat(chatId))?.said ?? []).filter((entry) => entry.at >= since);
-const lines = (store: Pick<Store, "get">, messages: Trigger[], own: Said[], options: LineOptions): Line[] => [
-  ...messages.map((message): Line => ({ at: message.at, from: senderOf(store, message), from_id: message.actor.id, trigger_id: message.id, ...(message.human ? {} : { bot: true as const }),
-    text: cut(message.text, options.chars) })),
-  ...own.map((entry): Line => ({ at: entry.at, from: options.self || "you", you: true, text: cut(entry.text, options.chars) }))
-].sort((a, b) => a.at.localeCompare(b.at)).slice(-options.limit);
+const lines = (store: Pick<Store, "get">, messages: Trigger[], own: Said[], options: LineOptions): Line[] => {
+  const all = [
+    ...messages.map((message): Line => ({ at: message.at, from: senderOf(store, message), from_id: message.actor.id, trigger_id: message.id, ...(message.human ? {} : { bot: true as const }),
+      ...(mediaCount(message.text) ? { media: mediaCount(message.text) } : {}), text: cut(message.text, options.chars) })),
+    ...own.map((entry): Line => ({ at: entry.at, from: options.self || "you", you: true, ...(entry.ticket ? { from_ticket: entry.ticket } : {}), text: cut(entry.text, options.chars) }))
+  ].sort((a, b) => a.at.localeCompare(b.at));
+  // A reflection pages from the oldest end, so its page keeps the oldest lines; a card that answers recent traffic keeps the newest.
+  return options.oldest ? all.slice(0, options.limit) : all.slice(-options.limit);
+};
 
 /** The chats the agent is in, by id and Source: their names, whether each is a direct message, and how many people and bots it has. */
 export type ChatGroup = { source: string; chat_id: string; name: string | null; direct?: true; people: number };

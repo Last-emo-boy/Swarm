@@ -68,7 +68,9 @@ export function seedScene(client: SuperagentClient, kase: ReplayCase): { trigger
     ids.push(trigger.id);
   }
   const state = client.store.get(KV.chatter.chat(scene.chatId)) ?? { said: [] };
-  client.store.set(KV.chatter.chat(scene.chatId), { ...state, said: scene.own, ...scene.chatterState });
+  // A scene's own line marks a ticket's words with `from_ticket`; the KV record keeps that as `ticket`.
+  client.store.set(KV.chatter.chat(scene.chatId), { ...state,
+    said: scene.own.map(({ from_ticket: ticket, ...line }) => ({ ...line, ...(ticket ? { ticket } : {}) })), ...scene.chatterState });
   if (scene.reflectMark) client.store.set(KV.memory.reflected(scene.chatId), scene.reflectMark);
   if (scene.asks?.length) client.store.set(KV.asks.open, scene.asks as never);
   for (const note of scene.notes) client.store.memory.save(note as never);

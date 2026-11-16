@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
-import { AGAIN_MS, MEMBERS_MS, chatsToRead, conversation, findPeople, noticed, peopleIn, readMembers, senderOf } from "./people.js";
+import { AGAIN_MS, MEMBERS_MS, chatLog, chatsToRead, conversation, findPeople, mediaCount, noticed, peopleIn, readMembers, senderOf } from "./people.js";
 import { feishuTrigger } from "./sources/feishu.js";
 
 let stateDir: string;
@@ -86,4 +86,25 @@ test("a conversation shows the chat's latest messages with names, bots and the a
   ]);
   const topic = conversation(client.store, { ...inTopic, id: "other" }, { since, limit: 12, chars: 300 });
   assert.deepEqual(topic.map((line) => line.text), ["anyone tried the new build?", "details here"]);
+});
+
+test("a line counts the media it cannot show, marks the agent's own words a ticket said, and a log read oldest-first keeps the oldest page", () => {
+  assert.equal(mediaCount("看这个 [Image: img_v3_abc]"), 1);
+  assert.equal(mediaCount("[Image: img_a] ![Image](img_b) [Sticker] <file key=\"file_v3_1\" name=\"a.txt\"/>"), 4);
+  assert.equal(mediaCount('{"image_key":"img_a"} {"file_key":"file_b"}'), 2);
+  assert.equal(mediaCount("no media here"), 0);
+  const now = Date.now();
+  for (let index = 0; index < 3; index++) client.engine.receive(noticed(client.store, message("oc_team", "ou_alice", index === 1 ? "[Image: img_v3_x] look" : `m${index}`)));
+  const said = (text: string, ago: number, ticket?: string) => client.store.set(KV.chatter.chat("oc_team"), { said: [
+    ...(client.store.get(KV.chatter.chat("oc_team"))?.said ?? []), { at: new Date(now - ago).toISOString(), text, ...(ticket ? { ticket } : {}) }] });
+  said("ticket report", 2 * 60_000, "t-1");
+  said("my own talk", 30_000);
+  const log = chatLog(client.store, "oc_team", { since: new Date(now - 3_600_000).toISOString(), limit: 10, chars: 300, self: "w33d" });
+  assert.deepEqual(log.map((line) => [line.you ?? false, line.from_ticket ?? null, line.media ?? 0]), [
+    [true, "t-1", 0], [false, null, 0], [false, null, 1], [false, null, 0], [true, null, 0]]);
+  // Read from the oldest end, the page keeps the oldest lines; the usual read keeps the newest.
+  const earliest = chatLog(client.store, "oc_team", { since: new Date(now - 3_600_000).toISOString(), limit: 2, chars: 300, oldest: true });
+  assert.deepEqual(earliest.map((line) => line.text), ["ticket report", "m0"]);
+  assert.deepEqual(chatLog(client.store, "oc_team", { since: new Date(now - 3_600_000).toISOString(), limit: 2, chars: 300 }).map((line) => line.text),
+    ["m2", "my own talk"]);
 });

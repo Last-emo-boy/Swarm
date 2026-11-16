@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "./testing/expect.js";
 import type { Trigger } from "./core/index.js";
 import { ChatterRoom, attendPrompt, chatterPrompt, namesAgent, quietAt } from "./chatter.js";
+import { CHAT_CREDENTIALS, CHAT_SAFETY, OWN_WORDS, UNSEEN_MEDIA } from "./prompt-text.js";
 import { cutToFit, wordCount } from "./text.js";
 import { ask, closeAsks, openAsks } from "./asks.js";
 import { posted } from "./people.js";
@@ -131,6 +132,29 @@ describe("a consideration", () => {
       channel: { source: "feishu", thread: `feishu:${CHAT}`, address: { chatId: CHAT, mode: "chat", messageId: asked.meta.messageId } } })]);
     expect(client.store.get(KV.chatter.chat(CHAT))?.said.map((item) => item.text)).toEqual(["Tea is always the answer.", "The oolong there is worth the queue."]);
   });
+  it("counts the media it cannot show on its card, and marks the agent's own words a ticket said", async () => {
+    message("ou_alice", "[Image: img_v3_aaa] 看这个", 300);
+    message("ou_bob", "[Image: img_v3_bbb] 还有这个", 250);
+    // What the outbox records with a ticket id is a ticket's words; nothing else on the card writes that field.
+    // `spoke` counts what it said on its own; without it two said entries an hour old would spend the hourly budget.
+    client.store.set(KV.chatter.chat(CHAT), { spoke: [], said: [
+      { at: new Date(now - 200_000).toISOString(), text: "ticket report", ticket: "f4df52f8" },
+      { at: new Date(now - 150_000).toISOString(), text: "my own talk" }] });
+    await room.consider(CHAT);
+    const card = JSON.parse(calls[0]!.user) as { messages: ({ media?: number; from_ticket?: string; you?: true; text: string })[] };
+    expect(card.messages.map((line) => [line.text, line.media ?? 0, line.from_ticket ?? null, line.you ?? false])).toEqual([
+      ["[Image: img_v3_aaa] 看这个", 1, null, false], ["[Image: img_v3_bbb] 还有这个", 1, null, false],
+      ["ticket report", 0, "f4df52f8", true], ["my own talk", 0, null, true]]);
+  });
+  it("lists this chat's tickets on the card, with the state each is in", async () => {
+    const started = message("ou_alice", "把这个报错修一下", 500);
+    client.store.tickets.save({ id: "f4df52f8", title: "Fix the crash", mandate: { strength: "explicit" }, origin: { triggerId: started.id },
+      assignments: [], inputs: [], undelivered: [], activity: [], createdAt: new Date(now - 400_000).toISOString() } as never);
+    message("ou_alice", "another thing", 300);
+    await room.consider(CHAT);
+    const card = JSON.parse(calls[0]!.user) as { tickets?: { ticket_id: string; title: string; state: string }[] };
+    expect(card.tickets?.map((ticket) => [ticket.ticket_id, ticket.title, ticket.state])).toEqual([["f4df52f8", "Fix the crash", "working/queued"]]);
+  });
   it("sees other bots' replies: one answering a person restarts the lull and is on the card, marked bot", async () => {
     message("ou_alice", "@yyu 在吗？", 120);
     n += 1;
@@ -223,6 +247,18 @@ it("says in its instructions who it is, and that silence is the usual answer", (
   expect(chatterPrompt("w33d", "")).toContain("Most of the time the right answer is nothing");
 });
 
+it("tells every talk-only call that it has no tools, cannot promise, cannot see media and keeps secrets out of groups", () => {
+  for (const [prompt, noun] of [[chatterPrompt("w33d", ""), "answer"], [attendPrompt("w33d", ""), "reply"]] as const) {
+    expect(prompt).toContain(`Never promise anything you do not do in this ${noun}.`);
+    expect(prompt).toContain("there is no later turn of yours");
+    expect(prompt).toContain(OWN_WORDS);
+    expect(prompt).toContain(UNSEEN_MEDIA);
+    expect(prompt).toContain(CHAT_SAFETY);
+  }
+  // The credentials sentence alone is what the promise keeper adds (memories.test.ts); the rest stays out of it.
+  expect(CHAT_SAFETY).toContain(CHAT_CREDENTIALS);
+});
+
 it("remembers what it says in a Feishu chat, whatever sends it, once, and nothing it sends to a person's direct messages", () => {
   const chat = (address: Record<string, string>) => ({ source: "feishu", thread: `feishu:${CHAT}`, address: { chatId: CHAT, ...address } });
   client.outbox.send({ id: "r1", kind: "acknowledgement", text: "On it.", channel: chat({ messageId: "om_1" }) });
@@ -230,8 +266,12 @@ it("remembers what it says in a Feishu chat, whatever sends it, once, and nothin
   client.outbox.send({ id: "r2", kind: "notice", text: "Tea?", channel: chat({ mode: "chat" }) });
   client.outbox.send({ id: "r3", kind: "reply", text: "Morning!", channel: chat({ messageId: "om_2", mode: "chat" }) });
   client.outbox.send({ id: "r4", kind: "reply", text: "Enter ABCD-1234.", channel: feishuUserChannel("ou_alice") });
+  // A message a ticket sent carries its id; one chatter or a memory sent is the agent's own talk, with none.
+  client.outbox.send({ id: "r5", kind: "notice", text: "最小请求已发出，返回 403", channel: chat({ mode: "chat" }), ticketId: "f4df52f8" });
+  client.outbox.send({ id: "r6", kind: "notice", text: "我先去问问予谦", channel: chat({ mode: "chat" }) });
   expect(client.store.get(KV.chatter.chat(CHAT))?.said.map(({ at: _at, ...entry }) => entry)).toEqual([
-    { text: "On it.", to: "om_1", topic: true }, { text: "Tea?" }, { text: "Morning!", to: "om_2" }
+    { text: "On it.", to: "om_1", topic: true }, { text: "Tea?" }, { text: "Morning!", to: "om_2" },
+    { text: "最小请求已发出，返回 403", ticket: "f4df52f8" }, { text: "我先去问问予谦" }
   ]);
 });
 

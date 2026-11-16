@@ -37,10 +37,12 @@ export class Outbox implements OutboxPort {
       // Whatever sent it, a message into a chat is what the agent said there (people.ts).
       if (!kind) return
       const { chatId, messageId, userId, mode } = kind.describe(message.channel)
+      // A message a ticket sent is a ticket's words, marked as such; one from chatter or a memory is the agent's own talk.
+      const ticket = message.ticketId ? { ticket: message.ticketId } : {}
       if (chatId && mode !== 'user') {
-        said(store, chatId, { at: new Date().toISOString(), text: message.text, ...(messageId ? { to: messageId } : {}), ...(mode !== 'chat' ? { topic: true } : {}) })
+        said(store, chatId, { at: new Date().toISOString(), text: message.text, ...(messageId ? { to: messageId } : {}), ...(mode !== 'chat' ? { topic: true } : {}), ...ticket })
       }
-      if (mode === 'user' && userId) saidTo(store, userId, { at: new Date().toISOString(), text: message.text })
+      if (mode === 'user' && userId) saidTo(store, userId, { at: new Date().toISOString(), text: message.text, ...ticket })
     })
   }
   status(id: string): ReplyStatus | undefined { return this.host.store.receipts.get(id)?.status }

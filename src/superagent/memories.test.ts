@@ -7,6 +7,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { Memories, SELF, applyOps, chatSubject, localNow, noteLine, notesCard, personSubject, planOps, reflectionPrompt, ticketReflectionPrompt, type Note } from "./memories.js";
+import { CHAT_CREDENTIALS, NOTE_MEDIA, NOTE_OWN_WORDS, UNSEEN_MEDIA } from "./prompt-text.js";
 import { noticed, readMembers } from "./people.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
@@ -75,6 +76,25 @@ const posts = () => client.store.db.prepare("SELECT value FROM outbox ORDER BY r
   .map((row) => JSON.parse(String(row.value)) as { text: string; channel: { address: Record<string, string> }; mentions?: unknown });
 const note = (fields: Partial<Note> & Pick<Note, "about" | "text">): Note => ({ id: `n${++n}`, kind: "fact", origin: { chatId: CHAT },
   created: new Date(now).toISOString(), updated: new Date(now).toISOString(), ...fields });
+
+test("a reflection pages a backlog from the oldest end: the oldest page is read and marked, not the newest one", async () => {
+  const base = now - 4 * 3_600_000;
+  for (let index = 0; index < 70; index++) {
+    const trigger = feishuTrigger({ message_id: `om_backlog_${index}`, chat_id: CHAT, chat_type: "group", sender_id: "ou_alice", sender_type: "user",
+      content: `backlog ${index}`, create_time: String(base + index * 60_000), mentions: [] }, "ou_bot", "cli_app")!;
+    client.engine.receive(noticed(client.store, trigger));
+  }
+  const mark = { at: new Date(base - 60_000).toISOString(), from: new Date(base - 3_600_000).toISOString(), upTo: new Date(base - 60_000).toISOString() };
+  client.store.set(KV.memory.reflected(CHAT), mark);
+  now = base + 70 * 60_000 + 3_600_000;
+  memories.pass();
+  assert.deepEqual(queued("reflect"), [`chat:${CHAT}`]);
+  assert.equal(client.store.get(KV.memory.reflected(CHAT))!.upTo, new Date(base + 59 * 60_000).toISOString(), "marked through the oldest page only");
+  answers.push(JSON.stringify({ notes: [] }));
+  await memories.reflect(CHAT);
+  const card = JSON.parse(calls[0]!.user) as { messages: { text: string }[] };
+  assert.deepEqual(card.messages.map((line) => line.text), Array.from({ length: 60 }, (_, index) => `backlog ${index}`));
+});
 
 test("reflects on a chat once it went quiet with enough new messages, or one to the agent, and no more often than the settings allow", () => {
   say("ou_alice", "the release is on Friday", 400);
@@ -646,4 +666,60 @@ test("notes each answer it could not use with its purpose, and a usable one with
   answers.push("not json", "still not json");
   await memories.tidy(personSubject("ou_alice"));
   assert.deepEqual(logs, ["superagent: no usable answer for superagent_memory after 2 tries: still not json"]);
+});
+
+test("the reflection and promise prompts carry the note rules on media and its own words, and the credentials sentence", async () => {
+  for (const needle of [NOTE_MEDIA, NOTE_OWN_WORDS, UNSEEN_MEDIA]) assert.ok(reflectionPrompt("w33d", "").includes(needle), `missing: ${needle.slice(0, 40)}`);
+  const due = new Date(now + 60_000).toISOString();
+  const item = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice", due });
+  client.store.memory.save(item);
+  now += 120_000;
+  answers.push(JSON.stringify({ say: "Alice, the reminder." }));
+  await memories.keep(item.id);
+  assert.equal(calls[0]!.purpose, "superagent_promise");
+  assert.ok(calls[0]!.system.includes(CHAT_CREDENTIALS));
+  assert.ok(!calls[0]!.system.includes(NOTE_OWN_WORDS), "only the credentials sentence, not the whole safety block");
+});
+
+test("a note rule the code can check: a rule about the bot goes under self, a citation needs its URL, a verdict about a person is refused", async () => {
+  const store = client.store;
+  const scope = { subjects: (name: string) => name === SELF ? SELF : name === "chat" ? chatSubject(CHAT)
+    : name === "ou_alice" ? personSubject("ou_alice") : undefined, shown: new Set<string>(), agent: "w33d" };
+  // A rule naming the agent filed under a person, or under the chat, is a rule about the agent: rewritten, not dropped.
+  for (const about of ["ou_alice", "chat"]) {
+    const planned = planOps(store, [{ op: "add", about, kind: "fact", text: "w33d should never post before a release is green" }], scope, { chatId: CHAT }, new Date(now));
+    assert.ok(typeof planned === "function", `a rule under ${about} is kept: ${planned}`);
+    planned();
+    assert.equal(client.store.memory.about(SELF, 10).at(-1)?.text, "w33d should never post before a release is green");
+  }
+  // A rule that names no one stays where it was filed.
+  const plain = planOps(store, [{ op: "add", about: "ou_alice", kind: "fact", text: "prefers short PRs" }], scope, { chatId: CHAT }, new Date(now));
+  assert.ok(typeof plain === "function", `a plain note is kept: ${plain}`);
+  plain();
+  assert.equal(client.store.memory.about(personSubject("ou_alice"), 10).at(-1)?.text, "prefers short PRs");
+  // A note that cites a source without its URL is refused; one with the URL is kept.
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "来源：团队周会，发布定在周五" }], scope, { chatId: CHAT }, new Date(now)),
+    "a note that cites a source needs its URL");
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "发布定在周五，见 https://example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "周会笔记来源：wiki" }], scope, { chatId: CHAT }, new Date(now)),
+    "a note that cites a source needs its URL");
+  // A link is a URL whatever its scheme, and text about HTTP the protocol is not a citation.
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "周会笔记，见 http://wiki.example.com/notes" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "接口走 HTTP，不用 HTTPS" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+  // A verdict about a person dressed as a fact is refused; the same words as an event or preference are not, and a fact about a thing is not.
+  assert.equal(planOps(store, [{ op: "add", about: "ou_alice", kind: "fact", text: "Alice 水平一般，不靠谱" }], scope, { chatId: CHAT }, new Date(now)),
+    "about a person keep what they did or said, or how they like things, never a judgement of them");
+  assert.equal(planOps(store, [{ op: "add", about: "ou_alice", kind: "preference", text: "不太喜欢在截止日当天改需求" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+  assert.equal(planOps(store, [{ op: "add", about: "chat", kind: "fact", text: "这份配置不太靠谱，已经换掉了" }], scope, { chatId: CHAT }, new Date(now)) instanceof Function, true);
+});
+
+test("a note a reflection cannot keep is dropped, and the reflection keeps the notes it can", async () => {
+  // Four messages, quiet long enough that the pass reflects on them.
+  for (let index = 0; index < 4; index++) say("ou_alice", `message ${index}`, 900 - index);
+  memories.pass();
+  answers.push(JSON.stringify({ notes: [
+    { op: "add", about: "ou_alice", kind: "fact", text: "Alice 水平一般" },
+    { op: "add", about: "ou_alice", kind: "fact", text: "prefers short PRs" }], reach_out: null }));
+  await memories.reflect(CHAT);
+  assert.deepEqual(client.store.memory.about(personSubject("ou_alice"), 10).map((item) => item.text), ["prefers short PRs"]);
 });
