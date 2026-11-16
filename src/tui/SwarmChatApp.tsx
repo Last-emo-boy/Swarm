@@ -3190,6 +3190,14 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       return runPluginSlashCommand(pluginSlash, parsed?.rawArgs ?? args.join(" "));
     }
 
+    // A bot command the TUI has none of its own for: the terminal is a chat, so the host's own implementation answers it
+    // here. Names the TUI already defines (help, memory, ...) keep their TUI meaning; /chat with the same text reaches the bot.
+    const { FORWARDED } = await import("../superagent/bot-commands.js");
+    if ((FORWARDED as readonly string[]).includes(command)) {
+      const { started } = await ticketsController().chat(`/${command}${args.length ? ` ${args.join(" ")}` : ""}`);
+      refreshTickets();
+      return { brief: started ? "Sent as chat; a host started here answers it." : "Sent as chat." };
+    }
     throw new Error(`Unknown command: /${command}. Try /help.`);
   }
 

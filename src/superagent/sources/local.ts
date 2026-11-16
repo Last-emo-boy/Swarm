@@ -108,10 +108,11 @@ export function takeLocalInbox(ctx: {
   for (const { inboxKey, message } of queued) {
     if (!message) { ctx.state.set(inboxKey, undefined); continue; }
     // The take and the receive are one transaction: a crash between them must not take the message in twice, nor lose it.
+    // A message the engine refuses is dropped with its row, not retried forever: one bad message must not stop the rest.
     ctx.atomic(() => {
       ctx.state.set(inboxKey, undefined);
-      // On the terminal chat's own Thread, so the reply comes back there and the card reads it as chat.
-      ctx.receive(localTrigger({ id: message.id, text: message.text, actor: message.actor, at: message.at, threadId: TUI_CHAT, chatId: TUI_CHAT }));
+      try { ctx.receive(localTrigger({ id: message.id, text: message.text, actor: message.actor, at: message.at, threadId: TUI_CHAT, chatId: TUI_CHAT })) }
+      catch { /* dropped: the row is gone with it, and the watch loop goes on */ }
     });
     taken++;
   }
@@ -139,7 +140,9 @@ export const localKind: SourceKind<Record<string, never>> = {
   async watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     await ctx.ready;
     while (!signal.aborted) {
-      try { takeLocalInbox(ctx) } catch (error) { if (signal.aborted) return; throw error; }
+      // A failed drain is logged by the host and retried next tick; throwing here would stop the terminal Source for good,
+      // since the host keeps the watcher it already holds and starts none in its place.
+      try { takeLocalInbox(ctx) } catch { /* next tick */ }
       await new Promise<void>((resolve) => {
         const done = (): void => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
         const timer = setTimeout(done, INBOX_MS);

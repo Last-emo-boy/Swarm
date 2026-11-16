@@ -14,6 +14,9 @@ import { harnessIds } from "./harness.js";
 import { KV } from "./kv.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
+import { SOURCE as LOCAL } from "./sources/local.js";
+
+const localChatSource = (source: string): boolean => source === LOCAL;
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, localNotice, repositoryFor, roleOf,
   seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
@@ -235,7 +238,8 @@ export class ModelAssessor {
     return {
       ...triggerMessage(primary, primary.url ? { source_url: primary.url } : {}, undefined, parent),
       text: cut(primary.text, TRIGGER_CHARS).text,
-      ...(this.host.client.sources.chatKind(primary.source) ? { posted_in: metaOf(primary).topic ? "a topic" : metaOf(primary).direct ? "a direct message" : "a group chat" } : {}),
+      // A terminal chat is a direct conversation, whatever its flat address says: the operator is the only one in it.
+      ...(this.host.client.sources.chatKind(primary.source) ? { posted_in: metaOf(primary).topic ? "a topic" : metaOf(primary).direct || localChatSource(primary.source) ? "a direct message" : "a group chat" } : {}),
       ...this.people(candidate, primary),
       strength: candidate.strength,
       ...(others.length ? { batch: others.map((trigger) => triggerCard(trigger)) } : {}),
