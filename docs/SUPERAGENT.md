@@ -66,6 +66,13 @@ handlers.
   revisioned settings store. The host applies a changed Policy version as upstream's save did: running Evals are
   discarded and live tickets the change bears on receive a policy-changed Input. Team prompt sections can be replaced
   by `~/.swarm/superagent/prompts/{communication,scope,delivery}.md`.
+- **A chat seam.** What the core needs to know about a conversation is one optional part of a Source kind,
+  `SourceKind.chat` (`sources/chat.ts`): the platform's name, the agent's identity there, a directory of the kind's chats
+  and their people, and constructors for thread keys and channel addresses. Talking paths read a message's fields through
+  `metaOf` (`sources/meta.ts`) and build channels through the kind, so nothing outside `sources/` spells a platform's
+  names; Feishu is one such kind (`feishu-chat.ts`), and a second chat kind plugs in without touching chatter, memory,
+  people, asks, commands or the outbox. `src/testing/fake-chat.ts` is a second kind the tests run the ticket, memory,
+  chatter and command paths on. A Source whose API calls all fail no longer reads ready.
 - **Sources.** The local Source is new: each TUI or CLI request starts a Thread, and the operator's OS account is on its
   allowed list by default. GitHub and Feishu stay off until set up. Assessments read the thread window upstream read,
   without further reads; Feishu images are not read yet.

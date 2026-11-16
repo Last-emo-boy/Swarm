@@ -15,9 +15,10 @@ const OPEN_KEPT = 50;
 
 export interface Ask {
   id: string;
-  /** Where it asked: a group chat, or a person's direct messages. */
+  /** Where it asked: a group chat, or a person's direct messages, both of the chat kind that is `source` (Feishu when absent). */
   chatId?: string;
   person?: string;
+  source?: string;
   /** Whom it asked in a group, by open_id: those it @-ed; none when it asked the group as a whole. */
   to: string[];
   /** What it asked. */

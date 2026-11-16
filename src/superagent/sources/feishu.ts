@@ -4,15 +4,17 @@ import { FeishuBotSchema } from '../setup.js'
 import { feishuLink, sendFeishu } from './feishu-channel.js'
 import { feishuThreadContext } from './feishu-read.js'
 import { runFeishu } from './feishu-loops.js'
-import { SOURCE, feishuTriggerId } from './feishu-trigger.js'
+import { SOURCE, feishuChannel, feishuTriggerId, feishuUserChannel } from './feishu-trigger.js'
 import { sourceContext } from './host.js'
 import type { SourceKind } from './kind.js'
+import { feishuChatKind } from './feishu-chat.js'
 import type { SourceRegistry } from './registry.js'
 
 export { REPLY_STYLES, SOURCE, feishuRef, feishuThreadId, feishuTime, feishuTrigger, feishuTriggerId, historyEvent, replyChannel, withMentionNames, type ReplyStyle }
   from './feishu-trigger.js'
 export type { FeishuEvent } from './feishu-trigger.js'
 export { backfillChat, consumerRetry, pollThreads, refreshChatNames, threadRef } from './feishu-loops.js'
+export { feishuChatKind } from './feishu-chat.js'
 const MembersSchema = z.looseObject({
   users: z.array(z.looseObject({ member_id: z.string(), name: z.string() })),
   has_more: z.boolean(), truncations: z.array(z.unknown()).optional(),
@@ -91,7 +93,9 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     ],
     values: ({ deployment, trigger }) => ({ SWARM_TICKET_FEISHU_BOT: deployment.feishu ? deployment.feishu.name || deployment.feishu.botId : '', SWARM_TICKET_FEISHU_CHAT: trigger?.source === SOURCE ? String(trigger.meta.chatId ?? '') : '' }),
   },
+  chat: feishuChatKind,
   watch: async (ctx, signal) => { await runFeishu(ctx, signal) },
 }
+
 /** Returns the Feishu Source's settings, falling back to schema defaults while the Source is off. */
 export const feishuSettings = (sources: SourceRegistry): FeishuConfig => sources.instance<FeishuConfig>(SOURCE)?.config ?? FeishuConfigSchema.parse({})

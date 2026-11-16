@@ -69,7 +69,7 @@ export function workStart(client: SuperagentClient, deployment: Deployment, tick
     ...(write ? { write } : {}),
     prompt: workerPrompt({ stateDir: client.stateDir, environment: variableLines(variables), mandate: mandateInstructions(ticket.mandate, watchedRepository(settings)), sources,
       github: !!deployment.github, ...(write ? { write } : {}), persona: settings.chatter?.persona ?? "",
-      ...(memoryOf(settings) && origin?.source === "feishu" ? { memory: notesCard(client.store, subjectsOf(origin), 8, 20) } : {}) })
+      ...(memoryOf(settings) && origin && client.sources.chatKind(origin.source) ? { memory: notesCard(client.store, subjectsOf(origin), 8, 20) } : {}) })
   };
 }
 

@@ -123,13 +123,14 @@ function routingLines(): string {
 /** The bot commands the router may run for a person whose message asks for what one does; the others only people type. */
 export const AGENT_COMMANDS = ["help", "me", "link", "repo", "takeover", "devices", "memory", "forget"] as const;
 export type AgentCommand = typeof AGENT_COMMANDS[number];
-export const ROUTE_CONTRACT = [
+/** The router's output contract; `platform` names the chat product a reply targets. */
+export const routeContract = (platform = "Feishu"): string => [
   "Return exactly one JSON object for the candidate, with these fields:",
   '{"kind": "accept" | "attach" | "stop" | "ignore" | "chat" | "command" | "message",',
   ' "title": "accept: a label of at most 200 characters for the original request, without added requirements",',
   ' "worktree_name": "accept: 1-4 lowercase English words in kebab-case, at most 32 characters, such as fix-plan-color",',
   ' "acknowledgement": "accept: one sentence of at most 100 words in the source language naming the concrete change and intended result; it is posted as a reply to the request, where reply_as says",',
-  ' "reply_as": "chat and accept, for a Feishu message outside a topic: message, quote or thread, as the Where to reply section says; omit it otherwise",',
+  ` "reply_as": "chat and accept, for a ${platform} message outside a topic: message, quote or thread, as the Where to reply section says; omit it otherwise",`,
   ' "note": "accept or attach: optional routing background or an explicit human constraint, at most 30 words",',
   ' "needs": "accept: optional list of what the work needs of the machine its worker runs on, from gpu (an NVIDIA GPU), macos, linux, windows; omit it when any machine will do",',
   ' "harness": "accept: optional id from the card\'s harnesses choices, only when the person asks for the work to run on that agent harness, as the Harness section says; omit it otherwise",',
@@ -176,9 +177,9 @@ const CHAT_LINES = [
   "Anything that needs the project read, a command run or a change made is work: accept it, or attach it to the ticket it belongs to."
 ].join("\n");
 
-/** Who is who on Feishu, as the router's card shows it. */
-const PEOPLE_LINES = [
-  "On Feishu the card says who is who: from_name is who wrote the message, chat_name the group it is in, mentioned the people it @s, people_here who is in the chat (bot: true marks bots), and conversation the latest messages around it, oldest first, with your own marked you: true.",
+/** Who is who in a chat, as the router's card shows it; `platform` is the chat kind's own word for it. */
+const peopleLines = (platform: string) => [
+  `On ${platform} the card says who is who: from_name is who wrote the message, chat_name the group it is in, mentioned the people it @s, people_here who is in the chat (bot: true marks bots), and conversation the latest messages around it, oldest first, with your own marked you: true.`,
   "Call people by their names, never by their ids. Read the conversation for what the message refers to, such as an earlier question, someone else's request or what you said before: it is context only, and the card's message is what you route.",
   "Asked who someone is or who is here, answer with chat from these, and say plainly when a name is not among them. your_chats lists the groups you are in."
 ].join("\n");
@@ -200,17 +201,17 @@ const MESSAGING_LINES = [
   "Set await_answer when you ask something on the person's behalf and they want to hear back, such as \"去问问他们进度\" or \"问问小王明天来不来\": when the answer comes, from a person or another bot, you tell the person who asked. Leave it out for a message that only tells."
 ].join("\n");
 
-/** Where the router's words go in a Feishu chat, for a message that is not in a topic. */
-const REPLY_LINES = [
-  "On Feishu, the card's posted_in says where the message was written: a topic, a group chat or a direct message. A reply to a message in a topic stays in that topic; for any other message, reply_as says where your reply or acknowledgement goes, as a person in the chat would choose:",
+/** Where the router's words go in a chat, for a message that is not in a topic. */
+const replyLines = (platform: string) => [
+  `On ${platform}, the card's posted_in says where the message was written: a topic, a group chat or a direct message. A reply to a message in a topic stays in that topic; for any other message, reply_as says where your reply or acknowledgement goes, as a person in the chat would choose:`, 
   "message: a plain message in the chat, with no quote. For a greeting, thanks or small talk, and for most replies in a direct message, where it is plain what you answer.",
   "quote: a reply in the chat that quotes the message. For a short answer to one person in a busy group, and for quick work whose result comes back soon in a message or two.",
   "thread: a reply in a topic on the message. For work that may take long or bring several messages, such as progress, questions and a result, so they stay together out of the main chat.",
   "Without reply_as, a chat answer quotes the message and accepted work goes in a topic. Accepted work takes quote or thread: its acknowledgement, questions and result all go there."
 ].join("\n");
 
-/** The router's instructions for an explicit candidate; `persona` says who the agent is in its replies and acknowledgements. */
-export function routerPrompt(persona = "", memory = false): string {
+/** The router's instructions for an explicit candidate; `persona` says who the agent is in its replies and acknowledgements, and `platform` names the chat product. */
+export function routerPrompt(persona = "", memory = false, platform = "Feishu"): string {
   return [
     "You route requests for Swarm's ticket host. Each call gives you one candidate card: a person's message that the Policy admitted as an explicit request.",
     "Decide only routing: accept it as a new ticket, attach it to a ticket it points at, stop a ticket the person asks to stop, answer it yourself when it asks for no work (chat), send a message to someone for the person (message), run a bot command for the person (command), or ignore it.",
@@ -219,15 +220,15 @@ export function routerPrompt(persona = "", memory = false): string {
       .filter((line) => !/relays worker reports|assesses proactive candidates/.test(line)).join("\n")),
     section("Routing", routingLines()),
     section("Chat", CHAT_LINES),
-    section("People", PEOPLE_LINES),
+    section("People", peopleLines(platform)),
     section("Messaging people", MESSAGING_LINES),
     ...(memory ? [section("Memory", MEMORY_LINES)] : []),
-    section("Where to reply", REPLY_LINES),
+    section("Where to reply", replyLines(platform)),
     ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),
     section("Harness", HARNESS_LINES),
     section("Devices", DEVICES_LINES),
-    section("Output", ROUTE_CONTRACT)
+    section("Output", routeContract(platform))
   ].join("\n\n");
 }
 

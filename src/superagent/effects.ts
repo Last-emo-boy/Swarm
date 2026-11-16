@@ -23,11 +23,11 @@ export interface EffectPayloads {
   /** Send a message for a Channel through its Source; the key is the message ID, whose receipt the Outbox keeps. */
   reply: Record<string, never>
   /** Ask the model whether the agent says something in a group chat after a lull; the key is the chat ID. */
-  chatter: { chatId: string }
+  chatter: { chatId: string; source?: string }
   /** Answer messages in a chat that call for the agent where its router does not, and pass on answers to what it asked for someone; the key is the chat and the last message read. */
-  attend: { chatId: string; ids: string[] }
+  attend: { chatId: string; source?: string; ids: string[] }
   /** Ask the model what the agent remembers from a chat's new messages or an ended ticket; the key is `chat:<id>` or `ticket:<id>`. */
-  reflect: { chatId?: string; ticketId?: string }
+  reflect: { chatId?: string; source?: string; ticketId?: string }
   /** Keep a promise that fell due: write and send its message; the key is the note's ID. */
   promise: { noteId: string }
   /** Tidy a subject's notes into fewer; the key is the subject. */

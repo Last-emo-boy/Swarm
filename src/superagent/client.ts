@@ -22,6 +22,7 @@ import { readSettings, settingsPath, superagentStateDir, type Settings, type Set
 import type { Deployment } from "./setup.js";
 import { Store } from "./store.js";
 import { feishuKind } from "./sources/feishu.js";
+import type { SourceKind } from "./sources/kind.js";
 import { githubKind } from "./sources/github.js";
 import { pullEndNotices } from "./sources/github-pull.js";
 import { localKind, localOperator, localTrigger, SOURCE as LOCAL } from "./sources/local.js";
@@ -47,6 +48,8 @@ export interface ClientOptions {
   onEvent?: (event: DomainEvent) => void;
   /** What a follow-up after a commit threw, such as a notice that could not be queued; unreported, it would vanish. */
   onError?: (error: unknown) => void;
+  /** Extra Source kinds to register beside the built-in ones (a test's fake chat kind); the built-in set is unchanged without it. */
+  kinds?: readonly SourceKind[];
 }
 
 export class SuperagentClient {
@@ -68,7 +71,8 @@ export class SuperagentClient {
     this.read = readSettings(settingsPath(this.stateDir));
     this.store = new Store(databasePath(this.stateDir), options.onError);
     this.sources = new SourceRegistry(() => this.settings(), this.health);
-    for (const kind of [localKind, githubKind, feishuKind]) this.sources.register(kind as never);
+    for (const kind of [localKind, githubKind, feishuKind, ...options.kinds ?? []]) this.sources.register(kind as never);
+    this.store.setChatSources(() => this.sources);
     this.effects = new Effects(this.store, this.health);
     const lifetime = new AbortController();
     this.commands = new Commands(() => this.deployment(), {}, lifetime.signal);

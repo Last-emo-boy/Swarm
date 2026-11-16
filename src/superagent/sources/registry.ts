@@ -4,6 +4,8 @@ import type { Commands } from '../commands.js'
 import { HealthBoard, type HealthEntry } from '../health.js'
 import { AdmissionTableSchema, CeilingsSchema, RolesSchema, type Settings } from '../settings.js'
 import type { ChannelLink, ChannelLinks, SendHost, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.js'
+import type { ChatAgent, ChatKind } from './chat.js'
+import type { Deployment } from '../setup.js'
 
 
 /**
@@ -111,6 +113,28 @@ export class SourceRegistry implements SourceScope {
     return { threads: [...new Set(found.flatMap(item => item.threads))], terms: [...new Set(found.flatMap(item => item.terms))] }
   }
   repliesTo(trigger: Trigger): string | undefined { return this.kinds.get(trigger.source)?.repliesTo?.(trigger) }
+  /** The chat knowledge of `source`, when its kind has any. */
+  chatKind(source: string): ChatKind | undefined { return this.kinds.get(source)?.chat }
+  /**
+   * Every installed kind's chat knowledge, in kind order, whether its instance is on or off. Whether a chat may be spoken in
+   * is each caller's to judge (the outbox by `channelAllowed`, the tools by `instance().enabled`), so records a kind kept
+   * while it was on stay readable here after it is turned off.
+   */
+  chatKinds(): ChatKind[] {
+    return [...this.kinds.values()].sort((a, b) => a.kind.localeCompare(b.kind)).flatMap(kind => kind.chat ? [kind.chat] : [])
+  }
+  /** The Source whose chat kind's directory holds `id` as a person, when one does (Feishu: `ou_…`). */
+  sourceOfPerson(id: string): string | undefined {
+    return [...this.kinds.values()].find(kind => kind.chat?.directory.personKey(id) === true)?.kind
+  }
+  /** The Source whose chat kind's directory holds `id` as a chat, when one does (Feishu: `oc_…`). */
+  sourceOfChat(id: string): string | undefined {
+    return [...this.kinds.values()].find(kind => kind.chat?.directory.chatKey(id) === true)?.kind
+  }
+  /** The agent's own identity on `source`, once the deployment resolved it. */
+  agent(source: string, deployment: Deployment | undefined): ChatAgent | undefined {
+    return deployment ? this.kinds.get(source)?.chat?.agent(deployment) : undefined
+  }
   threadContext(trigger: Trigger, settings = this.settings()): TriggerContext | undefined {
     const kind = this.kinds.get(trigger.source)
     const context = kind?.threadContext
