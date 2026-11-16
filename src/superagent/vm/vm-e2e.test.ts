@@ -87,9 +87,15 @@ function answer(request: ModelRequest): string {
       { id: "write", action: "Write", inputs: { file_path: "hello.txt", content: "hi\n" } }
     ] });
   }
+  if (!request.user.includes("key=")) {
+    // The check goes alone: the test reads its output from the next turn, and a report in the same turn ends the
+    // ticket before the worker's next request, so the output would have no request to appear in.
+    return loop({ status: "continue", summary: "Verify", message: "Checking the file.", tool_calls: [
+      { id: "check", action: "Bash", inputs: { command: "cat hello.txt; echo \"gh=$(command -v gh) token=${SWARM_GUEST_TOKEN:+set} key=${LOCAL_TEST_API_KEY:-none}\"" } }
+    ] });
+  }
   if (!reported(request)) {
-    return loop({ status: "continue", summary: "Verify and report", message: "Checking the file and reporting.", tool_calls: [
-      { id: "check", action: "Bash", inputs: { command: "cat hello.txt; echo \"gh=$(command -v gh) token=${SWARM_GUEST_TOKEN:+set} key=${LOCAL_TEST_API_KEY:-none}\"" } },
+    return loop({ status: "continue", summary: "Report", message: "Reporting.", tool_calls: [
       { id: "report", action: "mcp__ticket__report", inputs: { state: "ready", summary: "Wrote hello.txt; cat shows hi.", message_for_person: "hello.txt is ready." } }
     ] });
   }
