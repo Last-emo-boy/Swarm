@@ -426,8 +426,12 @@ export class ModelAssessor {
           // it will be: the same id the accept stamps. Bots and inferred work have no person to tell, and their local is honest.
           // The way out is worded for where the person wrote: a chat, this terminal, or elsewhere (a GitHub comment thread),
           // where neither command runs and the notice names the chat and host terminal instead.
-          const place = !trigger ? "terminal" as const : client.sources.chatKind(trigger.source) ? "chat" as const
-            : trigger.source === "local" ? "terminal" as const : "elsewhere" as const;
+          // Where the person wrote decides the wording: the kind's own chat (a message in the terminal's tui chat counts as
+          // one) is a chat wherever commands run; a terminal ticket Thread is this terminal; anything else is elsewhere.
+          const kind = trigger ? client.sources.chatKind(trigger.source) : undefined;
+          const inChat = !!(kind && trigger?.channel && kind.describe(trigger.channel).chatId);
+          const place = !trigger ? "terminal" as const : inChat ? "chat" as const
+            : trigger.source === "local" || kind ? "terminal" as const : "elsewhere" as const;
           const notice = candidate.thread.evaluating?.strength === "explicit" && trigger?.human
             ? localNotice(capability?.local, place, key("ticket", candidate.evalId).slice(0, 8), githubApp(client.settings()), trigger.text)
             : undefined;

@@ -427,7 +427,7 @@ test("messages someone for the person who asked: by name in a direct message, wi
   answers.push(JSON.stringify({ kind: "message", to: "Bob", text: "Alice 让我告诉你：今晚的会改到八点。", reply: "好，已经私聊 Bob 了。" }));
   await judge(first.id);
   assert.match(calls[0]!.system, /## Messaging people/);
-  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.your_chats, [{ chat_id: "oc_team", name: "Team" }]);
+  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.your_chats, [{ source: "feishu", chat_id: "oc_team", name: "Team" }]);
   assert.deepEqual(sent().map((item) => [item.kind, item.text, item.channel.address]), [
     ["notice", "Alice 让我告诉你：今晚的会改到八点。", { userId: "ou_bob", mode: "user", direct: "true" }],
     ["reply", "好，已经私聊 Bob 了。", { chatId: "oc_team", messageId: "om_1", mode: "chat" }]
