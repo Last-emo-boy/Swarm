@@ -273,7 +273,9 @@ there is no limit per hour. It always answers what is put to it directly, a ques
 or a contest it is called into, if only to say it has nothing to report or cannot take it on; a bot's message that only
 acknowledges or thanks gets no answer, and in quiet hours, where an owner set them, it answers no bot. A reply too long
 for the chat is written again, then cut after a whole sentence. A bot's message never starts work: it is answered, not
-acted on.
+acted on. Each message that calls for it gets its own answer: two people naming it inside one window hear from it twice,
+one message apiece, and a message it leaves out is read again at the next settle rather than swallowed. In the same
+answer it may keep what it learned as a note, under the rule the router's notes follow.
 
 When the router messages someone on a person's behalf and they want to hear back (`await_answer`, such as "去问问他们进度"),
 the agent waits up to 12 hours for the answer: in the group, a message to it (an @, a reply to its message or its name)
