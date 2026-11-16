@@ -7,7 +7,7 @@ import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell } from "./admiss
 import type { AssessmentOutcome, Capability, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
   GateResult, WriteLevel } from "./core/index.js";
 import type { LinkView } from "./github-link.js";
-import { sameName } from "./text.js";
+import { sameActor, sameName } from "./text.js";
 import { AllowedSchema, RuleIdSchema, policyVersion, type Settings } from "./settings.js";
 
 export const RuleMatchSchema = z.object({ rule_id: RuleIdSchema, reason: z.string().trim().min(1).max(500) }).strict()
@@ -156,7 +156,8 @@ export const seesNodes = (settings: Settings, actor: ActorRef): boolean => !sett
 /** Whether `actor` steers a ticket under `mandate`: always without the access model, else its requester and maintainers do. */
 export function steers(settings: Settings, mandate: Pick<Mandate, 'actor'>, actor: ActorRef): boolean {
   if (!settings.access) return true
-  const requester = mandate.actor.source === actor.source && sameName(mandate.actor.id, actor.id)
+  // Both sides' account numbers when they carry one, so a freed login does not steer its old holder's ticket.
+  const requester = sameActor(mandate.actor, actor)
   return requester || atLeast(roleOf(settings, actor), 'maintainer')
 }
 

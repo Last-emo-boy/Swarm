@@ -147,6 +147,20 @@ test("a chatter line in a fake chat posts into its sink through the kind, and is
   expect(said?.said?.map((line) => line.text)).toEqual(['About time: I was starting to think they were a rumour.'])
 })
 
+test("the consider card's memory is the fake chat's own, not a Feishu person who shares the id", async () => {
+  client.engine.receive(fakeTrigger('room1', 'fk_ann', 'the release notes are finally out', { mention: false, at: new Date(Date.now() - 10 * 60_000).toISOString() }))
+  const now = new Date().toISOString()
+  client.store.memory.save({ id: 'fake-ann', about: personSubject('fk_ann', FAKE_SOURCE), text: 'Ann here owns the release train', kind: 'fact', origin: { chatId: 'room1', source: FAKE_SOURCE }, created: now, updated: now })
+  client.store.memory.save({ id: 'feishu-ann', about: personSubject('fk_ann'), text: 'Someone else on another platform', kind: 'fact', origin: { chatId: 'oc_elsewhere' }, created: now, updated: now })
+  const users: string[] = []
+  const room = new ChatterRoom({ client, now: () => Date.now(),
+    complete: async (input) => { users.push(input.user); return JSON.stringify({ say: 'Neither has anything new to say.', reply_to: null, mention: null, reason: 'a lull' }) } })
+  await room.consider('room1', FAKE_SOURCE)
+  // Ann's notes under this kind reach the card, and the Feishu person with the same raw id is someone else.
+  const card = JSON.parse(users[0]!) as { memory?: { text: string }[] }
+  expect(card.memory?.map((item) => item.text)).toEqual(['Ann here owns the release train'])
+})
+
 test("a bot command from a fake chat answers in the conversation, and the router runs one for a person the same way", async () => {
   const trigger = fakeTrigger('room1', 'fk_ann', '/me', { mention: true })
   const commands = new BotCommands(client)
@@ -178,6 +192,21 @@ test("the router accepts a fake-chat request with an acknowledgement that goes i
   const acknowledgement = sink.sent.find((message) => message.text === 'On it: renaming the build script.')
   expect(acknowledgement?.channel.source).toBe(FAKE_SOURCE)
   expect(acknowledgement?.channel.address).toMatchObject({ chatId: 'room1' })
+})
+
+test("the router remembering about the chat on a fake-chat request writes the fake kind's subject, not Feishu's", async () => {
+  const trigger = fakeTrigger('room1', 'fk_ann', 'the release is Friday, remember that', { mention: true })
+  client.engine.receive(trigger)
+  client.engine.evaluateDue()
+  const assessor = new ModelAssessor({ client, configured: () => false, complete: script([JSON.stringify({
+    kind: 'chat', reply: 'Noted.', remember: [{ about: 'chat', kind: 'event', text: 'The release is Friday' }] })]) })
+  const candidate = client.engine.candidate(trigger.id)!
+  await assessor.judge(trigger.id, candidate.evalId)
+  client.effects.start()
+  await client.effects.idle()
+  // The chat's own subject, where its reflection reads it; the plain id a Feishu chat would use stays empty.
+  expect(client.store.memory.about(chatSubject('room1', FAKE_SOURCE)).map((note) => note.text)).toEqual(['The release is Friday'])
+  expect(client.store.memory.about(chatSubject('room1'))).toEqual([])
 })
 
 test('a person is addressed by id and by name through the ticket\'s own kind, with Feishu off', async () => {
@@ -221,6 +250,22 @@ test("a promise made in a fake-chat ticket is kept through that chat's own kind"
   expect(client.store.memory.get(note.id)?.done).toBeTruthy()
 })
 
+test("a ticket's worker remembering about its chat writes the fake kind's subject, and reads a Feishu chat id the same way", async () => {
+  const trigger = fakeTrigger('room1', 'fk_ann', 'remember what we decided about the release', { mention: true })
+  client.engine.receive(trigger)
+  client.engine.evaluateDue()
+  const candidate = client.engine.candidate(trigger.id)!
+  const { ticketId } = client.engine.decide(trigger.id, { kind: 'accept', title: 'Remember the release', scope: 'x', reason: 'asked', name: 'remember-release', evalId: candidate.evalId })
+  const run = (name: string, args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === name)!.run(args)
+  expect(await run('remember', { about: 'chat', kind: 'event', text: 'The release is Friday' })).toEqual({ remembered: true })
+  // The note hangs off the fake kind's own chat, where that chat's reflection reads it, not Feishu's plain chat id.
+  expect(client.store.memory.about(chatSubject('room1', FAKE_SOURCE)).map((note) => note.text)).toEqual(['The release is Friday'])
+  expect(client.store.memory.about(chatSubject('room1'))).toEqual([])
+  // Naming the chat by its id resolves through the kind that holds it, to the same subject.
+  expect(await run('remember', { about: 'room1', kind: 'event', text: 'The release moved to Monday' })).toEqual({ remembered: true })
+  expect(client.store.memory.about(chatSubject('room1', FAKE_SOURCE)).map((note) => note.text).sort()).toEqual(['The release is Friday', 'The release moved to Monday'].sort())
+})
+
 test("the periodic reflection pass sees a fake chat's conversations, and its reflection keeps a note", async () => {
   const say = fakeTrigger('room1', 'fk_ann', 'we settled on the new release date: Friday', { mention: false, at: new Date(Date.now() - 10 * 60_000).toISOString() })
   client.engine.receive(say)
@@ -238,10 +283,20 @@ test("the periodic reflection pass sees a fake chat's conversations, and its ref
 test("a room message naming the bot in a fake chat is attended to, under the fake kind's name and platform", async () => {
   const named = fakeTrigger('room1', 'fk_ann', 'Fake Bot, what do you think of Friday?', { mention: false, at: new Date(Date.now() - 60_000).toISOString() })
   client.engine.receive(named)
+  // What it remembers of Ann as this chat kind's person, and a note about a same-id person on Feishu that must not be hers.
+  const { personSubject: subject } = await import('../memories.js')
+  client.store.memory.save({ id: 'fake-ann', about: subject('fk_ann', FAKE_SOURCE), text: 'Ann here owns the release train', kind: 'fact', origin: { chatId: 'room1', source: FAKE_SOURCE },
+    created: new Date().toISOString(), updated: new Date().toISOString() })
+  client.store.memory.save({ id: 'feishu-ann', about: subject('fk_ann'), text: 'Someone else on another platform', kind: 'fact', origin: { chatId: 'oc_elsewhere' },
+    created: new Date().toISOString(), updated: new Date().toISOString() })
   const prompts: string[] = []
+  const users: string[] = []
   const room = new ChatterRoom({ client, now: () => Date.now(),
-    complete: async (input) => { prompts.push(input.system); return JSON.stringify({ reply: { text: 'Friday works.', reply_to: null }, relay: [], ask_back: [], reason: 'someone put a question to me' }) } })
+    complete: async (input) => { prompts.push(input.system); users.push(input.user); return JSON.stringify({ reply: { text: 'Friday works.', reply_to: null }, relay: [], ask_back: [], reason: 'someone put a question to me' }) } })
   await room.attend('room1', [named.id], FAKE_SOURCE)
+  // The card's memory is the fake chat's own: the source it attends under reaches the subjects it reads.
+  const card = JSON.parse(users[0]!) as { memory?: { text: string }[] }
+  expect(card.memory?.map((item) => item.text)).toEqual(['Ann here owns the release train'])
   client.effects.start()
   await client.effects.idle()
   // The persona says where it is: the kind's own platform, not Feishu's.

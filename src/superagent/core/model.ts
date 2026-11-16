@@ -2,7 +2,13 @@
 import type { Reason } from './reasons.js'
 
 /** Actor identity in the source's own vocabulary; Policy decides which actors may originate work on that Source. */
-export interface ActorRef { source: string; id: string }
+export interface ActorRef {
+  source: string
+  /** The source's handle for the actor, such as a login, which a person can give up and someone else take. */
+  id: string
+  /** The account's number, when the source has one and sends it: an identity that a handle never crosses. */
+  accountId?: number
+}
 /** Thread identity; the rule that derives `id` from a native event belongs to the source. */
 export interface ThreadRef { source: string; id: string }
 /** Write-only address on a thread; the address format belongs to the source. */

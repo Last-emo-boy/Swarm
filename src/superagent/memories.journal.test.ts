@@ -95,12 +95,17 @@ test("a promise with nowhere to send is skipped as such and still kept, and one 
   assert.equal(client.store.receipts.get(run.outbox![0]!)?.text, "The report is due today.");
 });
 
-test("a promise whose message is null is silent, and one the chat cannot receive is skipped", async () => {
+test("a promise whose message is null is silent and waits once, then sends a fixed message; one the chat cannot receive is skipped", async () => {
   const owed = note({ about: personSubject("ou_alice"), kind: "promise", text: "remind", due: new Date(now - 60_000).toISOString() });
   client.store.memory.save(owed);
   answers.push(JSON.stringify({ say: null }));
   await memories.keep(owed.id);
-  assert.deepEqual(runs(`note:${owed.id}`).map((run) => [run.outcome, run.reason]), [["silent", "the model said null"]]);
+  // Left open for one more pass, and the journal says why nothing went out.
+  assert.deepEqual(runs(`note:${owed.id}`).map((run) => [run.outcome, run.reason]), [["silent", "no usable answer; it stays due to ask once more"]]);
+  assert.equal(client.store.memory.get(owed.id)!.done, undefined);
+  answers.push(JSON.stringify({ say: null }));
+  await memories.keep(owed.id);
+  assert.equal(runs(`note:${owed.id}`).at(-1)?.outcome, "sent", "the fixed message went out");
 
   const muted = note({ about: chatSubject(CHAT), kind: "promise", text: "say hi", due: new Date(now - 60_000).toISOString() });
   client.store.memory.save(muted);

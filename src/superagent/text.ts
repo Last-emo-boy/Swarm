@@ -42,6 +42,12 @@ export const fill = (template: string, values: Record<string, string>): string =
   template.replace(/\{(\w+)\}/g, (_, name: string) => values[name] ?? "");
 /** Case-insensitive comparison for GitHub logins and repository names. */
 export const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+/**
+ * Whether two references are the same actor: the same source and, when both carry the account's number, that number. A
+ * handle is compared only when one side lacks the number, as mandates and links stored before it was carried do.
+ */
+export const sameActor = (a: { source: string; id: string; accountId?: number }, b: { source: string; id: string; accountId?: number }): boolean =>
+  a.source === b.source && (a.accountId !== undefined && b.accountId !== undefined ? a.accountId === b.accountId : sameName(a.id, b.id));
 export const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** Whether a person writes Chinese: Han characters and no kana, which would make it Japanese. */
 export const inChinese = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text);

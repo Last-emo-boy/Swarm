@@ -378,6 +378,21 @@ test("a promise changed or forgotten while its message is written is not overwri
   assert.equal(typeof client.store.memory.get(moved.id)!.done, "string");
 });
 
+test("a promise whose text changes while its message is written keeps the promise as it now reads", async () => {
+  const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes", tries: 1, due: new Date(now + 60_000).toISOString() });
+  client.store.memory.save(promise);
+  now += 120_000;
+  const memories2 = new Memories({ client, now: () => now, complete: async () => {
+    applyOps(client.store, [{ op: "update", id: promise.id, text: "Remind Alice to send the slides" }], { subjects: () => undefined, shown: new Set([promise.id]) }, {}, new Date(now));
+    return JSON.stringify({ say: null });
+  } });
+  answers.push(JSON.stringify({ say: null }));
+  await memories2.keep(promise.id);
+  // The second empty answer sends the fixed message, quoting the promise as it reads now.
+  assert.deepEqual(posts().map((post) => post.text), ["I promised you this earlier: Remind Alice to send the slides…"]);
+  assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
+});
+
 test("a promise's message too long for a chat is cut to fit and sent", async () => {
   const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Tell Alice how the release went", due: new Date(now + 60_000).toISOString() });
   client.store.memory.save(promise);
@@ -422,11 +437,13 @@ test("gives up on an answer it cannot use after asking twice, and still fails wh
   assert.equal(await asks(() => memories.tidy(personSubject("ou_alice")), { notes: "none" }), 2);
   assert.equal(client.store.memory.get(promise.id)!.done, undefined);
   assert.equal(await asks(() => memories.keep(promise.id), { say: 5 }), 2);
+  assert.equal(client.store.memory.get(promise.id)!.tries, 1, "left open for one more pass");
+  assert.equal(await asks(() => memories.keep(promise.id), { say: 5 }), 2);
   assert.deepEqual(answers, []);
   assert.deepEqual([client.store.memory.count(personSubject("ou_alice")), client.store.memory.count(chatSubject(CHAT)), client.store.memory.count(SELF)], [8, 0, 0], "nothing is kept or tidied");
   assert.equal(typeof client.store.memory.get(promise.id)!.done, "string", "the promise is not asked about again");
   assert.deepEqual(client.store.memory.due(new Date(now).toISOString()), []);
-  assert.equal(posts().length, sent, "and nothing is posted for it");
+  assert.equal(posts().length, sent + 1, "and its second empty answer posted the fixed message");
   // A call that fails is an error still, which its effect tries again.
   const failing = new Memories({ client, now: () => now, complete: async () => { throw new Error("the model is unreachable"); } });
   const second = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice again", due: new Date(now - 60_000).toISOString() });
@@ -456,11 +473,20 @@ test("the effects that reflect, keep a promise and tidy are over after two answe
   await client.effects.idle();
   assert.equal(calls.length, 6, "each asked twice");
   assert.deepEqual(waiting(), [[], [], []], "none is left to try again");
-  assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
+  // The promise alone was left open by its empty answer, for one more pass.
+  assert.equal(client.store.memory.get(promise.id)!.done, undefined);
+  assert.equal(client.store.memory.get(promise.id)!.tries, 1);
+  answers.push(...Array<string>(2).fill("I would rather not say."));
   now += 120_000;
   memories.pass();
   await client.effects.idle();
-  assert.deepEqual([calls.length, waiting(), posts()], [6, [[], [], []], []], "and the next pass queues none of them again");
+  assert.equal(calls.length, 8, "the promise asked twice more");
+  assert.equal(typeof client.store.memory.get(promise.id)!.done, "string", "and its second empty answer sent the fixed message");
+  assert.deepEqual(waiting(), [[], [], []], "and the next pass queues none of them again");
+  now += 120_000;
+  memories.pass();
+  await client.effects.idle();
+  assert.deepEqual([calls.length, waiting()], [8, [[], [], []]]);
   // A call that fails is another matter: its effect stays, with the failure counted, and the promise stays due.
   const second = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice again", due: new Date(now).toISOString() });
   client.store.memory.save(second);
@@ -471,6 +497,49 @@ test("the effects that reflect, keep a promise and tidy are over after two answe
   assert.deepEqual(client.store.db.prepare("SELECT key, attempts, error FROM effect WHERE kind = 'promise'").all().map((row) => ({ ...row })),
     [{ key: second.id, attempts: 1, error: "Error: the model is unreachable" }]);
   assert.equal(client.store.memory.get(second.id)!.done, undefined);
+});
+
+test("a chat subject is plain for Feishu, which keeps its old notes, and qualified by any other kind's source", () => {
+  // Every note kept before sources wrote `chat:<id>`, and every card must still find them.
+  assert.equal(chatSubject(CHAT), `chat:${CHAT}`);
+  assert.equal(chatSubject("room1", "fakechat"), "chat:fakechat:room1");
+  // A note kept before sources, with the plain subject spelled by hand, still reaches a Feishu chat's card.
+  client.store.memory.save(note({ about: "chat:" + CHAT, text: "The old note still counts" }));
+  assert.deepEqual(notesCard(client.store, [chatSubject(CHAT)], 4).map((item) => item.text), ["The old note still counts"]);
+  // A card names a qualified chat by its id alone, as it names a person's.
+  assert.equal(noteLine(client.store, note({ about: chatSubject("room1", "fakechat"), text: "The room decided on Friday" })).about, "room1");
+});
+
+test("a reach-out message longer than a chat takes is cut to fit and sent, not withheld", async () => {
+  for (const [sender, text, ago] of [["ou_alice", "I lead the 2048 project", 900], ["ou_bob", "anyone know how to train it faster?", 800],
+    ["ou_alice", "not me", 700], ["ou_alice", "call me Ali", 600]] as const) say(sender, text, ago);
+  now += 600_000;
+  const long = Array.from({ length: 30 }, (_, index) => `Step ${index + 1} of the training run went well for everyone here.`).join(" ");
+  assert.ok(wordCount(long) > IM_WORDS);
+  memories.pass();
+  answers.push(JSON.stringify({ notes: [], reach_out: { to: "ou_bob", text: long } }));
+  await memories.reflect(CHAT);
+  const sent = posts().map((post) => post.text);
+  assert.equal(sent.length, 1);
+  assert.ok(wordCount(sent[0]!) > 0 && wordCount(sent[0]!) <= IM_WORDS, `${wordCount(sent[0]!)} words`);
+  assert.ok(sent[0]!.endsWith("…") && long.startsWith(sent[0]!.slice(0, -1)), "what is sent is the start of the message");
+});
+
+test("reflects on a chat that only has the agent's own lines, about the chat and itself and nobody else", async () => {
+  // Its own words in the window, and no person's: the reflection still asks the model, scoped to the chat and self.
+  client.store.set(KV.chatter.chat(CHAT), { said: [{ at: new Date(now - 300_000).toISOString(), text: "I will look into the deploy badge" }] });
+  client.store.set(KV.memory.reflected(CHAT), { at: new Date(now - 600_000).toISOString(), from: new Date(now - 900_000).toISOString(), upTo: new Date(now - 100_000).toISOString() });
+  answers.push(JSON.stringify({ notes: [
+    { op: "add", about: "self", kind: "promise", text: "Look into the deploy badge", due: new Date(now + 3_600_000).toISOString() },
+    { op: "add", about: "chat", kind: "event", text: "The deploy badge is still open" },
+    { op: "add", about: "ou_alice", kind: "fact", text: "Alice was here" }
+  ] }));
+  await memories.reflect(CHAT);
+  assert.equal(calls.length, 1, "its own lines alone are still a reflection");
+  assert.deepEqual(JSON.parse(calls[0]!.user).messages.map((line: { you?: boolean }) => line.you), [true]);
+  assert.deepEqual(client.store.memory.about(SELF).map((item) => item.kind), ["promise"]);
+  assert.deepEqual(client.store.memory.about(chatSubject(CHAT)).map((item) => item.text), ["The deploy badge is still open"]);
+  assert.deepEqual(client.store.memory.about(personSubject("ou_alice")), [], "nobody it did not see");
 });
 
 test("takes an answer whose notes is null for the empty list it would rather write, in a single call", async () => {
@@ -496,7 +565,7 @@ test("takes an answer whose notes is null for the empty list it would rather wri
   assert.equal(calls.length, 1);
 });
 
-test("takes a promise's null message as none, marking it kept in a single call", async () => {
+test("a promise whose message comes back null waits one pass, then a fixed message keeps it, in both languages and within the limit", async () => {
   const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes",
     due: new Date(now).toISOString() });
   client.store.memory.save(promise);
@@ -504,7 +573,24 @@ test("takes a promise's null message as none, marking it kept in a single call",
   await memories.keep(promise.id);
   assert.equal(calls.length, 1);
   assert.deepEqual(posts(), []);
+  assert.equal(client.store.memory.get(promise.id)!.done, undefined, "not kept with nothing sent");
+  assert.equal(client.store.memory.get(promise.id)!.tries, 1, "open for one more pass");
+  // The pass queues it again, since no effect of it is pending, and the second empty answer sends the fixed message.
+  memories.pass();
+  assert.deepEqual(queued("promise"), [promise.id]);
+  answers.push(JSON.stringify({ say: null }));
+  await memories.keep(promise.id);
+  const sent = posts().map((post) => post.text);
+  assert.deepEqual(sent, ["I promised you this earlier: Remind Alice to send the release notes…"]);
+  assert.ok(wordCount(sent[0]!) > 0 && wordCount(sent[0]!) <= IM_WORDS);
   assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
+  assert.equal(client.store.memory.get(promise.id)!.tries, undefined, "the note no longer says it is waiting");
+  // A promise written in Chinese gets its fixed message in Chinese, quoting its own words.
+  const chinese = note({ about: personSubject("ou_alice"), kind: "promise", text: "提醒 Alice 把发布说明发出来", due: new Date(now).toISOString(), tries: 1 });
+  client.store.memory.save(chinese);
+  answers.push(JSON.stringify({ say: null }));
+  await memories.keep(chinese.id);
+  assert.deepEqual(posts().map((post) => post.text).at(-1), "我之前答应过你：提醒 Alice 把发布说明发出来…");
 });
 
 test("takes a tidy's null notes as no change, in a single call", async () => {
@@ -534,6 +620,11 @@ test("notes each answer it could not use with its purpose, and a usable one with
   const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes",
     due: new Date(now).toISOString() });
   client.store.memory.save(promise);
+  answers.push("not json", "still not json");
+  await memories.keep(promise.id);
+  assert.deepEqual(logs, ["superagent: no usable answer for superagent_promise after 2 tries: still not json"]);
+  assert.equal(client.store.memory.get(promise.id)!.done, undefined, "it waits for one more pass");
+  logs = [];
   answers.push("not json", "still not json");
   await memories.keep(promise.id);
   assert.deepEqual(logs, ["superagent: no usable answer for superagent_promise after 2 tries: still not json"]);

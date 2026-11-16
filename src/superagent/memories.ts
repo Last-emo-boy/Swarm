@@ -18,7 +18,7 @@ import type { JournalTarget } from "./journal.js";
 import { feishuChatKind } from "./sources/feishu-chat.js";
 import { metaOf } from "./sources/meta.js";
 import type { Store } from "./store.js";
-import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
+import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount, wording } from "./text.js";
 
 export const NOTE_KINDS = ["fact", "preference", "event", "promise"] as const;
 export type NoteKind = typeof NOTE_KINDS[number];
@@ -29,18 +29,30 @@ export interface Note {
   origin: { chatId?: string; direct?: boolean; triggerId?: string; ticketId?: string; source?: string };
   /** When a promise falls due, and when it was kept. */
   due?: string; done?: string;
+  /** How many times a promise's message came back empty and it was left open to ask again. */
+  tries?: number;
   created: string; updated: string;
 }
 
 const SOURCE = "feishu";
 export const SELF = "self";
-/** The Source a note came from: its person subject's, else the origin's, else Feishu's as notes kept before it had one. */
-const sourceOfNote = (note: Note): string => note.about.startsWith("person:") ? note.about.slice("person:".length, note.about.lastIndexOf(":")) : note.origin.source ?? SOURCE;
+/** The Source a note came from: its person subject's, else its chat subject's when qualified, else the origin's, else Feishu's as notes kept before either had one. */
+const sourceOfNote = (note: Note): string => note.about.startsWith("person:") ? note.about.slice("person:".length, note.about.lastIndexOf(":"))
+  : note.about.startsWith("chat:") && note.about.indexOf(":", 5) !== -1 ? note.about.slice(5, note.about.lastIndexOf(":")) : note.origin.source ?? SOURCE;
 /** A person's subject in the notes; `source` is the chat kind their messages come from (Feishu when absent). */
 export const personSubject = (id: string, source = SOURCE): string => `person:${source}:${id}`;
-export const chatSubject = (id: string): string => `chat:${id}`;
+/**
+ * A chat's subject in the notes: plain for Feishu, which every note kept before sources wrote without one, and qualified by
+ * its kind for any other chat kind, so the same chat id on two kinds is two chats.
+ */
+export const chatSubject = (id: string, source = SOURCE): string => source === SOURCE ? `chat:${id}` : `chat:${source}:${id}`;
+/**
+ * The fixed message that keeps a promise whose model answer came back empty twice: the promise's own words, quoted short,
+ * in their language, within what a chat takes.
+ */
+const promiseFallback = (text: string): string => wording(text)("I promised you this earlier: " + cutToFit(text, 40), "我之前答应过你：" + cutToFit(text, 40));
 /** A subject as cards name it: a person's or chat's id, or self. */
-const shortSubject = (about: string): string => about.startsWith("person:") ? about.slice(about.lastIndexOf(":") + 1) : about.startsWith("chat:") ? about.slice(5) : about;
+const shortSubject = (about: string): string => about.startsWith("person:") ? about.slice(about.lastIndexOf(":") + 1) : about.startsWith("chat:") ? about.slice(about.lastIndexOf(":") + 1) : about;
 /** The settings of the agent's memory, when it is on. */
 export const memoryOf = (settings: Pick<Settings, "memory">): Memory | undefined => settings.memory?.enabled ? settings.memory : undefined;
 
@@ -71,7 +83,7 @@ export function notesCard(store: Pick<Store, "get" | "memory">, subjects: readon
 export function subjectsOf(trigger: Trigger): string[] {
   const meta = metaOf(trigger);
   const mentioned = (meta.mentions ?? []).map((mention) => personSubject(mention.id, trigger.source));
-  return [personSubject(trigger.actor.id, trigger.source), ...mentioned, ...(meta.chatId && !meta.direct ? [chatSubject(meta.chatId)] : []), SELF];
+  return [personSubject(trigger.actor.id, trigger.source), ...mentioned, ...(meta.chatId && !meta.direct ? [chatSubject(meta.chatId, trigger.source)] : []), SELF];
 }
 
 /** Now, as the agent tells time to its models: in the chats' time zone, with its offset. */
@@ -127,7 +139,7 @@ export function planOps(store: Pick<Store, "memory">, ops: readonly NoteOp[], sc
     if (op.text && op.text.length > NOTE_CHARS) return `A note has at most ${NOTE_CHARS} characters`;
     const due = op.due ? dueOf(op.due, now) : undefined;
     // A new time makes a promise already kept due again, so it is saved without done; a new text alone, or the time it has, leaves it kept.
-    const { done: _kept, ...open } = note;
+    const { done: _kept, tries: _tries, ...open } = note;
     changes.push(() => store.memory.save({ ...(due && due !== note.due ? open : note), ...(op.text ? { text: op.text } : {}), ...(due ? { due } : {}), updated: at }));
   }
   return () => { for (const change of changes) change(); };
@@ -161,7 +173,7 @@ export function reflectionPrompt(name: string, persona: string): string {
     "The card holds what was said in a chat since you last thought about it (oldest first, your own words marked you: true), and what you already remember about the people there, the chat and yourself, each note with its id.",
     "Decide what is worth remembering for later, as a thoughtful colleague would: who people are and what they work on, how they like things, what they asked of you and what you promised, and what the chat decided. Most conversations leave little or nothing worth keeping: an empty list is a fine answer.",
     NOTE_RULES,
-    "reach_out: only when a short direct message to one person who spoke would clearly be welcome now, such as following up on their question nobody answered, give its text in their language as a person would write it; most of the time leave it null.",
+    `reach_out: only when a short direct message to one person who spoke would clearly be welcome now, such as following up on their question nobody answered, give its text in their language as a person would write it, at most ${IM_WORDS} words and one or two sentences; most of the time leave it null.`,
     `Return exactly one JSON object: {${OPS_CONTRACT}, "reach_out": {"to": "<their id>", "text": "..."} | null}`
   ].join("\n");
 }
@@ -178,7 +190,7 @@ export function ticketReflectionPrompt(name: string, persona: string): string {
 const promisePrompt = (name: string, persona: string): string => [
   `You are ${name || "the bot"}. ${persona.trim()}`.trim(),
   "The card holds a promise you made that falls due now, with who it is for, where you made it and what you remember of them.",
-  "Write the message that keeps it, as you would write it yourself: short, in their language, naming the person when it goes into a chat. If it no longer makes sense, say null.",
+  `Write the message that keeps it, as you would write it yourself: short, in their language, at most ${IM_WORDS} words, naming the person when it goes into a chat. If it no longer makes sense, say null.`,
   'Return exactly one JSON object: {"say": "the message" | null}'
 ].join("\n");
 const tidyPrompt = (name: string): string => [
@@ -263,7 +275,7 @@ export class Memories {
   private scope(people: readonly string[], chatId: string | undefined, shown: readonly { id: string }[], source: string) {
     const ids = new Set(people);
     return {
-      subjects: (name: string) => name === SELF ? SELF : name === "chat" && chatId ? chatSubject(chatId) : name === chatId ? chatSubject(chatId)
+      subjects: (name: string) => name === SELF ? SELF : (name === "chat" || name === chatId) && chatId ? chatSubject(chatId, source)
         : ids.has(name) ? personSubject(name, source) : undefined,
       shown: new Set(shown.map((note) => note.id))
     };
@@ -289,8 +301,9 @@ export class Memories {
     const messages = chatLog(client.store, chatId, { since: mark.from, limit: REFLECT_MESSAGES, chars: 500, self: this.name(source) }, source)
       .filter((line) => line.at > mark.from && line.at <= mark.upTo || line.you);
     const people = [...new Set(messages.flatMap((line) => line.from_id && !line.bot ? [line.from_id] : []))];
-    if (!people.length) return;
-    const shown = notesCard(client.store, [...people.map((id) => personSubject(id, source)), ...(direct ? [] : [chatSubject(chatId)]), SELF], PER_SUBJECT, 40);
+    // Only its own lines still reflect: the chat and itself are what it remembers then, and the scope keeps it to them.
+    if (!messages.length) return;
+    const shown = notesCard(client.store, [...people.map((id) => personSubject(id, source)), ...(direct ? [] : [chatSubject(chatId, source)]), SELF], PER_SUBJECT, 40);
     const card = { ...localNow(settings, this.now()), chat: direct ? "a direct message" : chatName(client.store, chatId, source) ?? chatId, messages,
       people: people.map((id) => ({ id, name: personName(client.store, { source, id }) ?? id })), memory: shown };
     const answer = await this.answer(ReflectionSchema, "superagent_memory", () => this.complete("superagent_memory", reflectionPrompt(this.name(source), chatterOf(settings).persona), card,
@@ -300,7 +313,7 @@ export class Memories {
     const scope = this.scope(people, direct ? undefined : chatId, shown, source);
     // A reflection keeps the changes it can; one it cannot apply leaves the rest.
     for (const op of ops.slice(0, OPS)) applyOps(client.store, [op], scope, { chatId, source, ...(direct ? { direct: true } : {}) }, new Date(this.now()));
-    this.crowded([...people.map((id) => personSubject(id, source)), chatSubject(chatId), SELF]);
+    this.crowded([...people.map((id) => personSubject(id, source)), ...(direct ? [] : [chatSubject(chatId, source)]), SELF]);
     const reached = answer.reach_out && people.includes(answer.reach_out.to) ? this.reachOut(answer.reach_out.to, answer.reach_out.text, source) : undefined;
     client.journal?.outcome("reflect", `chat:${chatId}`, reached ? "sent" : "silent",
       { reason: `${ops.slice(0, OPS).length} notes kept`, ...(reached ? { outbox: [reached] } : {}) });
@@ -317,7 +330,7 @@ export class Memories {
     const source = origin.source;
     const chatId = metaOf(origin).chatId;
     const direct = metaOf(origin).direct;
-    const shown = notesCard(client.store, [personSubject(origin.actor.id, origin.source), ...(chatId && !direct ? [chatSubject(chatId)] : []), SELF]);
+    const shown = notesCard(client.store, [personSubject(origin.actor.id, origin.source), ...(chatId && !direct ? [chatSubject(chatId, origin.source)] : []), SELF]);
     const card = { ...localNow(settings, this.now()), ticket: { title: ticket.title, asked: origin.text.slice(0, 1000), outcome: ticket.ended?.outcome ?? "open",
       last_report: latestReport(ticket)?.summary.slice(0, 1500) ?? null }, requester: { id: origin.actor.id, name: senderOf(client.store, origin) },
       chat: direct ? "a direct message" : chatId ? chatName(client.store, chatId, origin.source) ?? chatId : null, memory: shown };
@@ -329,7 +342,7 @@ export class Memories {
       const op = OpSchema.safeParse(item);
       if (op.success) applyOps(client.store, [op.data], scope, { ticketId, source, ...(chatId ? { chatId } : {}), ...(direct ? { direct: true } : {}) }, new Date(this.now()));
     }
-    this.crowded([personSubject(origin.actor.id, origin.source), SELF]);
+    this.crowded([personSubject(origin.actor.id, origin.source), ...(chatId && !direct ? [chatSubject(chatId, origin.source)] : []), SELF]);
     client.journal?.outcome("ticket_reflect", `ticket:${ticketId}`, "silent", { reason: `${answer.notes.slice(0, OPS).length} notes kept`, ticketId });
   }
 
@@ -355,18 +368,19 @@ export class Memories {
     const keyOf = (at: string) => key("reach-out", person, at);
     const at = new Date(now).toISOString();
     const skipped = (reason: string): undefined => { client.journal?.skip("reach_out", `person:${person}:${at}`, "skipped", reason); return undefined };
-    // A message that says too much is not sent, rather than cut.
     if (!memory) return skipped("memory is off");
     if (recent.length >= memory.dmPerDay) return skipped("today's direct messages are spent");
     if (recent.some((item) => item.person === person)) return skipped("it wrote to them already today");
     if (quietAt(chatterOf(settings), now)) return skipped("quiet hours");
-    if (wordCount(text) > IM_WORDS) return skipped("too long for a direct message");
     if (!client.sources.channelAllowed(channel)) return skipped("their direct messages cannot be reached now");
+    // A message longer than a chat takes is cut to fit rather than withheld: what it has to say reaches them.
+    const long = wordCount(text) > IM_WORDS;
+    const fit = long ? cutToFit(text, IM_WORDS) : text;
     client.store.atomic(() => {
-      client.outbox.send({ id: keyOf(at), channel, text, kind: "notice" });
+      client.outbox.send({ id: keyOf(at), channel, text: fit, kind: "notice" });
       client.store.set(KV.memory.reached, [...recent, { at, person }]);
     });
-    client.journal?.outcome("reach_out", `person:${person}:${at}`, "sent", { reason: "wrote to them on its own", outbox: [keyOf(at)] });
+    client.journal?.outcome("reach_out", `person:${person}:${at}`, "sent", { reason: long ? "wrote to them on its own, cut to fit" : "wrote to them on its own", outbox: [keyOf(at)] });
     return keyOf(at);
   }
 
@@ -394,24 +408,29 @@ export class Memories {
       memory: notesCard(client.store, person ? [note.about] : [], 6, 6) };
     const answer = await this.answer(PromiseSchema, "superagent_promise", () => this.complete("superagent_promise", promisePrompt(this.name(sourceOfNote(note)), chatterOf(settings).persona), card,
       { note: note.id, ...(chatId ? { chat: chatId } : {}) }));
-    // A message too long for a chat is cut to fit; with no usable answer the promise is kept without one, rather than asked about again every minute.
+    // A message too long for a chat is cut to fit. An empty answer leaves the note open for one more pass, and a second
+    // one sends a fixed message instead: tries counts the empties in the note, so this ends, whatever asks keep again.
     const say = answer?.say || undefined;
-    const text = say && wordCount(say) > IM_WORDS ? cutToFit(say, IM_WORDS) : say;
+    const retry = !say && (note.tries ?? 0) < 1;
     const outboxId = key("promise", note.id, note.due ?? "");
-    let changed = false;
+    let changed = false, text: string | undefined;
     client.store.atomic(() => {
       // Given a new time or forgotten while its message was written, it is left as it is now.
       const latest = client.store.memory.get(note.id);
       if (!latest || latest.due !== note.due) return;
       changed = true;
       const kept = new Date(this.now()).toISOString();
+      // The fixed message quotes the promise as it reads now, not as it read before the model was asked.
+      text = say ? (wordCount(say) > IM_WORDS ? cutToFit(say, IM_WORDS) : say) : retry ? undefined : promiseFallback(latest.text);
       // Named after its due time too, so a promise made again posts again.
       if (text) client.outbox.send({ id: outboxId, channel, text, kind: "notice", triggerId: note.origin.triggerId, ...(chatId && person ? { mentions: [person] } : {}) });
-      client.store.memory.save({ ...latest, done: kept, updated: kept });
+      if (retry) client.store.memory.save({ ...latest, tries: (latest.tries ?? 0) + 1, updated: kept });
+      else client.store.memory.save({ ...latest, ...(say ? {} : { tries: undefined }), done: kept, updated: kept });
     });
     if (!changed) { client.journal?.outcome("promise", `note:${note.id}`, "dropped", { reason: "the promise changed while its message was written" }); return }
     client.journal?.outcome("promise", `note:${note.id}`, text ? "sent" : "silent",
-      { reason: text ? "" : answer ? "the model said null" : "no usable answer after 2 tries", ...(text ? { outbox: [outboxId] } : {}) });
+      { reason: text ? "" : retry ? "no usable answer; it stays due to ask once more" : "no usable answer twice; a fixed message kept it",
+        ...(text ? { outbox: [outboxId] } : {}) });
   }
 
   /** Tidies a subject's notes into fewer. */

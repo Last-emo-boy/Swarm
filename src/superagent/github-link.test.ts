@@ -76,6 +76,9 @@ describe("linking", () => {
     expect(linkOf(store, ALICE)?.login).toBe("alice-gh");
     // Someone writing on GitHub as the linked login uses the same link.
     expect(linkOf(store, { source: "github", id: "Alice-GH" })?.id).toBe(7);
+    // A GitHub actor that carries the account's number matches only that number: the freed login is someone else.
+    expect(linkOf(store, { source: "github", id: "alice-gh", accountId: 7 })?.id).toBe(7);
+    expect(linkOf(store, { source: "github", id: "alice-gh", accountId: 99 })).toBeUndefined();
     expect(linkOf(store, { source: "feishu", id: "ou_bob" })).toBeUndefined();
     expect(await links().credential(app, ALICE)).toEqual({ token: "ghu_1", login: "alice-gh", id: 7 });
   });
