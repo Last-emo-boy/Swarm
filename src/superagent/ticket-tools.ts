@@ -63,7 +63,7 @@ export async function directoryPatch(directory: string): Promise<Patch | undefin
   }
 }
 /** The largest report of stopped work that carries its patch: a ticket VM's gateway and a paired node's owner read a request of 1,000,000 bytes at most. */
-const STOPPED_REPORT_BYTES = 950_000;
+export const STOPPED_REPORT_BYTES = 950_000;
 /**
  * The ticket tools with a report that also carries the patch of the worker's directory when it is ready, blocked or failed:
  * the host keeps a local ticket's as its result, and that of work that stopped so its commits outlast its directory. Work
@@ -432,6 +432,19 @@ export interface ReportArgs {
   patch?: Patch;
 }
 
+/**
+ * The arguments of a report the worker files itself when its work stops, with the patch of its directory as `withPatch`
+ * gives the report tool's blocked and failed reports: the commits outlast the directory, as a ticket VM's disk does not.
+ * A directory whose patch cannot be read still reports, without it.
+ */
+export async function withStoppedPatch(directory: string, args: ReportArgs): Promise<ReportArgs> {
+  if (args.state !== "blocked" && args.state !== "failed") return args;
+  const patch = await directoryPatch(directory);
+  if (!patch) return args;
+  const fits = Buffer.byteLength(JSON.stringify({ ...args, patch })) <= STOPPED_REPORT_BYTES;
+  return { ...args, patch: fits ? patch : { ...patch, text: "" } };
+}
+
 /** What a local ticket's result says when its worker gave no message: the patch is the result. */
 const PATCH_RESULT = "The change is ready as the attached patch; nothing was pushed.";
 
@@ -547,6 +560,10 @@ export function prunePatches(stateDir: string, now = Date.now()): void {
     if (now - statSync(path).mtimeMs > PATCH_DAYS * 86_400_000) rmSync(path, { force: true });
   }
 }
+
+/** The note a ticket gets when its own kept patch, from work that stopped, could not be applied to its prepared directory. */
+export const keptPatchNote = (path: string, why: string): string =>
+  `The commits this ticket made before it stopped are kept as a patch at ${path}, which did not apply to its new directory, so the directory starts without them. Restore them by hand if the work needs them: ${why.slice(0, 500)}`;
 
 /** Writes a ticket's patch where the host keeps it (owner-only), and returns its path. */
 function keepPatch(stateDir: string, ticket: Ticket, text: string): string {

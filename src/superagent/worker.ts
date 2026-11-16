@@ -17,6 +17,7 @@ import { SessionLost } from "./harness.js";
 import { batchLine, inputMessage, inputResource, transient, triggerMessage, workerSessionId } from "./messages.js";
 import type { WorkLink, WorkStart, WorkView } from "./work-link.js";
 import { parseJsonObject, type Complete } from "./assessor.js";
+import { withStoppedPatch } from "./ticket-tools.js";
 import { z } from "zod/v4";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -250,11 +251,12 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     const answer = ConclusionSchema.parse(parseJsonObject(await complete({ purpose: "superagent_conclude", system: CONCLUDE_PROMPT,
       user: JSON.stringify(card, null, 2), model })));
     const question = answer.state === "ready" || answer.state === "dropped" ? undefined : answer.human_action;
-    await link.fileReport({
+    // A concluded turn that stopped keeps its commits too, as the worker's own stop report does.
+    await link.fileReport(await withStoppedPatch(directory, {
       state: answer.state, summary: `${answer.summary} (Reported by the host from the worker's last words.)`,
       ...(question ? { human_action: question } : {}),
       ...(answer.message_for_person && (answer.state === "ready" || question) ? { message_for_person: answer.message_for_person } : {})
-    });
+    }));
     return true;
   };
 
@@ -370,8 +372,11 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     const capped = error instanceof BudgetReached || (error as { status?: unknown } | undefined)?.status === 402 || /\bHTTP 402\b/.test(String(error));
     const message = error instanceof Error ? error.message : String(error);
     const summary = (capped ? `${message} Retry the ticket once it is raised.` : `The worker failed: ${message}`).slice(0, 4000);
-    // A report that cannot be filed, such as while the owner node does not answer, leaves the failure to the exit code.
-    const filed = !!ticket && await link.report({ state: capped ? "blocked" : "failed", summary }).then(() => true, () => false);
+    // Work that stops keeps its commits as a patch, as the report tool's blocked and failed reports do: the directory may not
+    // outlast the ticket. A report that cannot be filed, such as while the owner node does not answer, leaves the failure to
+    // the exit code.
+    const filed = !!ticket && await withStoppedPatch(directory, { state: capped ? "blocked" : "failed", summary })
+      .then((args) => link.fileReport(args)).then(() => true, () => false);
     if (!filed) exitCode = stopping ? 0 : 1;
   } finally {
     try { turns.dispose(); } catch { /* The process exits next; a failed cleanup changes nothing the ticket records. */ }
