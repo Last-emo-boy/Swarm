@@ -210,7 +210,10 @@ Source's settings: `"app": { "clientId": "Iv23...", "slug": "your-app" }` under 
   whoever enters it links their own account to the person who asked. The host keeps the account's tokens, sealed with
   AES-256-GCM under a key from `SWARM_LINK_KEY_FILE`, the service's `link-key` credential (`$CREDENTIALS_DIRECTORY`),
   or `<stateDir>/link-key`. It refreshes them before they expire, and tells the person in the conversation they linked
-  from when GitHub refuses a refresh.
+  from when GitHub refuses a refresh. A link, and the mandate of a ticket asked for on GitHub, carry the account's number
+  as well as its login: work runs as the person only when the number matches, so a login that was freed and registered by
+  someone else never receives the old holder's token or steering rights. A link made before numbers were kept still
+  matches by login until that person links again.
 - `/repo [owner/name]` lists the repositories where the person installed the app and may push, and sets their default.
   `/unlink` removes the link; GitHub's authorizations page revokes the app itself.
 - Someone who asks for a pull request before linking an account gets the work as a local ticket and the code to link.
@@ -300,7 +303,9 @@ and promises, which have a due time.
   for tact about what was said in private, and never to keep secrets or keys.
 - **Acting on it.** When a promise falls due, the agent writes the message itself and posts it where it was made, with an @,
   or in the person's direct messages. A promise moved to a later time while kept falls due again then; one whose message
-  cannot be written or posted yet keeps its backoff and stays due. After a conversation it may also write to someone on
+  cannot be written or posted yet keeps its backoff and stays due. A model answer that comes back empty leaves it due for
+  one more pass, and a second empty answer sends a fixed message quoting the promise instead of closing it unsaid. A
+  reach-out too long for a chat is cut to fit rather than withheld. After a conversation it may also write to someone on
   its own, at most `dmPerDay` times a day, once a day per person, and never in chatter's quiet hours.
 - **Upkeep.** A subject with more than `perSubject` notes is tidied by the model into about half.
 - **Control.** `/memory` shows anyone what it remembers about them, and `/forget` erases it; owners can name anyone.
