@@ -439,7 +439,7 @@ export interface ReportArgs {
  */
 export async function withStoppedPatch(directory: string, args: ReportArgs): Promise<ReportArgs> {
   if (args.state !== "blocked" && args.state !== "failed") return args;
-  const patch = await directoryPatch(directory).catch(() => undefined);
+  const patch = await directoryPatch(directory);
   if (!patch) return args;
   const fits = Buffer.byteLength(JSON.stringify({ ...args, patch })) <= STOPPED_REPORT_BYTES;
   return { ...args, patch: fits ? patch : { ...patch, text: "" } };

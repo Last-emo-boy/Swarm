@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -104,7 +105,7 @@ test("budgets show what each cap has spent, and the TUI status line names a reac
   }
 });
 
-test("a harness whose budget is reached runs no turn, and its ticket gets a blocked report saying so", { timeout: 60_000 }, async () => {
+test("a harness whose budget is reached runs no turn, and its ticket gets a blocked report saying so, carrying its commits", { timeout: 60_000 }, async () => {
   const { writeFakeHarnesses } = await import("../superagent/testing/fake-harness.js");
   const fakes = writeFakeHarnesses(join(root, "bin"), join(root, "harness"));
   process.env.SWARM_SUPERAGENT_HOME = join(root, "superagent");
@@ -125,20 +126,29 @@ test("a harness whose budget is reached runs no turn, and its ticket gets a bloc
     client.engine.assignmentStarted(ticketId!, ticket.assignments[0]!.id);
     const directory = join(root, "work");
     mkdirSync(directory, { recursive: true });
-    const reports: { state: string; summary: string }[] = [];
+    // A commit no remote has, as a worker's directory after its turn: a report that stops carries it as a patch.
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+      { cwd: directory, stdio: ["ignore", "pipe", "ignore"] });
+    execFileSync("git", ["init", "-q", directory]); git("commit", "-q", "--allow-empty", "-m", "Start");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    writeFileSync(join(directory, "NOTICE"), "Swarm\n"); git("add", "NOTICE"); git("commit", "-q", "-m", "Add NOTICE");
+    const reports: { state: string; summary: string; patch?: { text: string } }[] = [];
     const view = () => {
       const now = client.store.tickets.get(ticketId!)!;
       return { ticket: { ...now, execution: { ...now.execution!, harness: "codex", directory } }, triggers: {} };
     };
     const code = await runWorker({ ticketId: ticketId!, entry: [process.execPath, "unused"], link: {
       view: async () => view(), start: async () => ({ directory, prompt: "", blockedCommands: [] }),
-      delivered: async () => {}, turnEnded: async () => {}, fileReport: async () => {},
+      delivered: async () => {}, turnEnded: async () => {},
+      // A worker that stops files through fileReport, as the report tool does, so its report carries its patch.
+      fileReport: async (args) => { reports.push(args); client.engine.report(ticketId!, args); },
       report: async (report) => { reports.push(report); client.engine.report(ticketId!, report); },
       tools: { args: [], env: {} }, close: () => {}
     } });
     assert.equal(code, 0);
     assert.deepEqual(reports.map((report) => report.state), ["blocked"]);
     assert.match(reports[0]!.summary, /^The daily budget for harness codex is reached: 20\.0K tokens used of 100 tokens today\. New codex turns stop until it resets at midnight; to raise it, set usage\.budgets\.harnesses\.codex\.dailyTokens in .+settings\.json\. Retry the ticket once it is raised\.$/);
+    assert.match(reports[0]!.patch?.text ?? "", /Subject: \[PATCH\] Add NOTICE/, "the stop report carries the commits no remote has");
     assert.deepEqual(fakes.calls(), [], "codex ran no turn");
   } finally {
     client.close();

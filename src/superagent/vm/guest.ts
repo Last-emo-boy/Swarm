@@ -119,7 +119,7 @@ async function keptPatch(gateway: Gateway): Promise<string | undefined> {
  * the patch of a ticket it takes over, then its own kept patch, from work that stopped. A kept patch that does not apply
  * leaves the directory as prepared, and the host tells the ticket: the directory goes on without it.
  */
-async function prepare(spec: GuestSpec, gateway: Gateway, env: NodeJS.ProcessEnv): Promise<void> {
+export async function prepare(spec: GuestSpec, gateway: Gateway, env: NodeJS.ProcessEnv): Promise<void> {
   const { directory } = spec;
   if (spec.clone) await cloneRepository(directory, spec.clone, `agent/${spec.name}`, env);
   else await prepareDirectory(directory, spec.prepare, env);

@@ -262,6 +262,12 @@ describe("take-over", () => {
     expect(replies().at(-1)!.text).toContain("has no patch yet: I'll open the pull request as @alice-gh once it reports ready");
     expect(takerOf(local)).toBeUndefined();
     await ready(local);
+    // Ready but with its patch file gone: still nothing to take over, since ready without a patch is no take-over either.
+    rmSync(path);
+    commands.receive(message(MAINTAINER, "/takeover", { root }));
+    expect(replies().at(-1)!.text).toContain("has no patch yet: I'll open the pull request as @alice-gh once it reports ready");
+    expect(takerOf(local)).toBeUndefined();
+    writeFileSync(path, "From 0000 Mon Sep 17 00:00:00 2001\n");
     commands.receive(message(MAINTAINER, "/takeover", { root }));
     const taken = takerOf(local)!;
     expect(taken.mandate).toMatchObject({ actor: { id: MAINTAINER }, capability: { role: "maintainer", write: "github", from: local.id,
