@@ -145,6 +145,20 @@ export class Engine {
    */
   requestStatus(ticketId: string): boolean { return this.repo.atomic(() => this.tickets.requestStatus(ticketId)) }
   /**
+   * A worker's request to be woken `afterMinutes` from now, with `note` as what its next turn starts with, replacing any
+   * earlier one: a check-back is the ticket waking itself, so it stays under the ticket and its own clock.
+   * @returns the time it will wake, and whether it replaced an earlier request.
+   * @throws UserError when the ticket is unknown or has ended.
+   */
+  checkBack(ticketId: string, afterMinutes: number, note: string): { at: string; rescheduled: boolean } {
+    return this.repo.atomic(() => this.tickets.checkBack(ticketId, afterMinutes, note))
+  }
+  /**
+   * The host's fact that a ticket's check-back is due: the ticket drops it, takes its worker's note as an Input, and wakes
+   * as a person's message would. A ticket that ended meanwhile takes nothing; false also while it is not due.
+   */
+  fireCheckBack(ticketId: string): boolean { return this.repo.atomic(() => this.tickets.fireCheckBack(ticketId)) }
+  /**
    * Queue a message for the Channel its purpose names: an acknowledgement or an answer goes where the person's message was
    * written, attention where the message that raised the question was, else, like a result, to the conversation the ticket
    * started in. A message queued before is not queued again (see `Replies.reply`).
@@ -286,4 +300,4 @@ export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reeva
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
 export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
-  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>
+  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply' | 'checkBack'>

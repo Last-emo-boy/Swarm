@@ -513,4 +513,25 @@ test("an abandoned boot after the cap frees its slot for another ticket", async 
   assert.equal(await vm.run(other.ticket, other.assignmentId), true);
   assert.equal(client.store.get(KV.vm.slot("c0"))?.ticketId, other.ticket.id);
   assert.equal(client.store.get(KV.vm.slot("c0"))?.fails, undefined, "a new ticket starts its own count");
+})
+
+test("a worker in a ticket VM leaves a check-back through the gateway's tool route", async () => {
+  const vm = await start();
+  const { ticket: first, assignmentId } = ticket("watch the CI run to the end", "watch-ci");
+  await vm.run(first, assignmentId);
+  const secret = token(0);
+  // The route parses the tool's own schema, as a worker's call arrives from the guest.
+  assert.equal((await call(0, "POST", "/v1/work/tools/check_back", secret, { args: { after_minutes: 0, note: "too soon" } })).status, 400);
+  const answer = await call(0, "POST", "/v1/work/tools/check_back", secret, { args: { after_minutes: 5, note: "waiting for CI" } });
+  assert.equal(answer.status, 200);
+  assert.deepEqual(Object.keys(answer.body.result as Record<string, unknown>), ["scheduled"]);
+  assert.equal(client.store.tickets.get(first.id)!.checkBack?.note, "waiting for CI");
+  // The slot still holds the Assignment a retry ended, until its worker stops: its calls reach the store, and the tool
+  // refuses one whose Assignment no longer runs the ticket.
+  client.engine.assignmentStarted(first.id, assignmentId);
+  client.engine.report(first.id, { state: "blocked", summary: "need a decision" });
+  client.retry(first.id);
+  const stale = await call(0, "POST", "/v1/work/tools/check_back", secret, { args: { after_minutes: 1, note: "waiting for CI" } });
+  assert.equal(stale.status, 422);
+  assert.equal(client.store.tickets.get(first.id)!.checkBack, undefined);
 });

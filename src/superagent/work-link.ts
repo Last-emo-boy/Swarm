@@ -92,7 +92,7 @@ export function localLink(client: SuperagentClient, deployment: Deployment, tick
     report: async (report) => { client.engine.report(ticketId, report); },
     fileReport: async (args) => { await fileReport(client, ticketId, args); },
     tools: {
-      args: ["superagent", "mcp", "--ticket", ticketId],
+      args: ["superagent", "mcp", "--ticket", ticketId, "--assignment", assignmentId],
       env: { SWARM_SUPERAGENT_HOME: client.stateDir, SWARM_SUPERAGENT_DEPLOYMENT: JSON.stringify(deployment) }
     },
     close: () => client.close()

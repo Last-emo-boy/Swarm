@@ -79,6 +79,7 @@ export function workerPrompt(input: WorkerPromptInput): string {
     section("Subscriptions", BUILT_IN.subscriptions),
     section("Replies", BUILT_IN.replies),
     section("Work", BUILT_IN.work),
+    section("Check-backs", BUILT_IN.checkBack),
     section("Handoff", `${BUILT_IN.handoff}\n${BUILT_IN.handoffWorker}`),
     section("Delivery in Swarm", input.write === "local" || input.write === "read-only" ? SWARM_DELIVERY
       : input.github ? SWARM_DELIVERY : `${SWARM_DELIVERY}\n${LOCAL_DELIVERY}`),
