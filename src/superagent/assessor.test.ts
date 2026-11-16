@@ -8,6 +8,7 @@ import { ModelAssessor, routeProblem, type AgentCommands, type Complete } from "
 import { SuperagentClient } from "./client.js";
 import { devicesOf } from "./devices.js";
 import { KV } from "./kv.js";
+import { Journal, journaled } from "./journal.js";
 import { placementOf, workNeeds, type MeshView } from "./placement.js";
 import { routerPrompt } from "./prompts.js";
 import { settingsPath, writeSettings } from "./settings.js";
@@ -44,11 +45,12 @@ afterEach(() => {
   opened = false;
   rmSync(stateDir, { recursive: true, force: true });
 });
-function start(settings: unknown = {}, commands?: AgentCommands) {
+function start(settings: unknown = {}, commands?: AgentCommands, withJournal = false) {
   writeSettings(settings, settingsPath(stateDir));
   client = new SuperagentClient({ stateDir });
   opened = true;
-  assessor = new ModelAssessor({ client, complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}),
+  if (withJournal) client.journal = new Journal(client.store);
+  assessor = new ModelAssessor({ client, complete: withJournal ? journaled(client.journal, complete) : complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}),
     log: (message) => { logs.push(message); },
     devices: async () => {
       if (devicesFail) throw new Error(devicesFail);
@@ -180,6 +182,25 @@ test("records an observed proactive accept as ignore with would_accept, and acce
   const ticket = client.store.tickets.get(decision.ticketId!)!;
   assert.equal(ticket.mandate.strength, "inferred");
   assert.deepEqual(ticket.mandate.basis.rules, ["copy"]);
+});
+
+test("an assessment records its outcome in the journal, so why never shows it as interrupted", async () => {
+  start(githubSettings("observe"), undefined, true);
+  const observed = comment(1, "the button should just say 'Save'");
+  client.engine.receive(observed);
+  answers.push(assessment("accept"));
+  await judge(observed.id);
+  const [run] = client.journal!.byKey(`trigger:${observed.id}`);
+  assert.equal(run!.purpose, "superagent_assessment");
+  assert.equal(run!.outcome, "ignore");
+  assert.match(run!.reason!, /would accept/);
+
+  // Both tries unusable: the run says it gave up, rather than reading as a crash.
+  const failed = comment(2, "and the cancel button should just say 'Close'");
+  client.engine.receive(failed);
+  answers.push("not json", "still not json");
+  await assert.rejects(judge(failed.id), /could not be used/);
+  assert.equal(client.journal!.byKey(`trigger:${failed.id}`).at(-1)!.outcome, "unavailable");
 });
 
 test("stops the tickets a person's follow-up asks to stop, and nothing on a message that only comments", async () => {

@@ -370,6 +370,9 @@ export class OpenAIProvider {
       purpose: context?.purpose ?? purpose,
       sessionId: context?.sessionId,
       taskId: context?.taskId,
+      ...(context?.chatId ? { chatId: context.chatId } : {}),
+      ...(context?.triggerId ? { triggerId: context.triggerId } : {}),
+      ...(context?.ticketId ? { ticketId: context.ticketId } : {}),
       cacheMode,
       promptCacheKey: prompt.cacheKey,
       promptCacheScope: promptCacheScope(resolved, prompt, context),
@@ -473,6 +476,10 @@ export type ProviderUsageContext = {
   sessionId?: string;
   taskId?: string;
   purpose?: string;
+  /** What the call was about: the chat, the message that triggered it and the ticket, for the usage ledger. */
+  chatId?: string;
+  triggerId?: string;
+  ticketId?: string;
 };
 
 export type ProviderUsageReport = {
@@ -482,6 +489,9 @@ export type ProviderUsageReport = {
   purpose: string;
   sessionId?: string;
   taskId?: string;
+  chatId?: string;
+  triggerId?: string;
+  ticketId?: string;
   cacheMode: string;
   promptCacheKey: string;
   promptCacheScope: string;

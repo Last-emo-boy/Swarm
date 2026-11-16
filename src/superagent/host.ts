@@ -8,6 +8,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from 
 import { join } from "node:path";
 import { key, liveTicket, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
+import { Journal, journaled } from "./journal.js";
 import { BotCommands } from "./bot-commands.js";
 import { ChatterRoom } from "./chatter.js";
 import { Memories } from "./memories.js";
@@ -34,6 +35,8 @@ const PASS_MS = 2000;
 const PRUNE_MS = 3_600_000;
 /** How often the host looks for tickets that waited on a person too long (notices.ts). */
 const SWEEP_MS = 60_000;
+/** How often the host deletes the journal rows it kept too long. */
+const JOURNAL_PRUNE_MS = 3_600_000;
 /** How long the router and `/devices` reuse what the paired nodes answered, rather than asking each of them again. */
 const MESH_VIEW_MS = 30_000;
 /** How old the devices snapshot its tickets' workers read may grow while any of them works. */
@@ -92,9 +95,11 @@ export class SuperagentHost {
   private readonly botCommands: BotCommands;
   private readonly chatter: ChatterRoom;
   private readonly memories: Memories;
+  private readonly journal: Journal;
   private readonly links: GithubLinks;
   private release?: () => void;
   private prunedAt = 0;
+  private journalPrunedAt = 0;
   private sweptAt = 0;
   private deployment?: Deployment;
   problem?: SetupProblem;
@@ -118,6 +123,10 @@ export class SuperagentHost {
       this.client = new SuperagentClient({ stateDir: this.stateDir, deployment: () => this.deployment,
         onError: (error) => this.log(`superagent: a follow-up after a commit failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`) });
       this.links = new GithubLinks({ store: this.client.store, key: () => linkKey(this.stateDir), broken: (actor, link) => this.linkBroken(link) });
+      // The talking paths record what they asked the model and what became of it (journal.ts): one wrapper around the one model call.
+      this.journal = new Journal(this.client.store);
+      this.client.journal = this.journal;
+      const complete = journaled(this.journal, options.complete);
       this.executor = new SwarmExecutor({
         client: this.client,
         deployment: () => this.requireDeployment(),
@@ -129,12 +138,12 @@ export class SuperagentHost {
         credential: (ticket) => this.credential(ticket)
       });
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log, devices: () => this.devices() });
-      this.assessor = new ModelAssessor({ client: this.client, complete: options.complete, configured: () => !!this.deployment, commands: this.botCommands,
+      this.assessor = new ModelAssessor({ client: this.client, complete, configured: () => !!this.deployment, commands: this.botCommands,
         mesh: () => this.mesh(), devices: () => this.devices(), log: this.log });
       this.assessor.install();
-      this.chatter = new ChatterRoom({ client: this.client, complete: options.complete, log: this.log });
+      this.chatter = new ChatterRoom({ client: this.client, complete, log: this.log });
       this.chatter.install();
-      this.memories = new Memories({ client: this.client, complete: options.complete, log: this.log });
+      this.memories = new Memories({ client: this.client, complete, log: this.log });
       this.memories.install();
     } catch (error) {
       this.release();
@@ -231,6 +240,7 @@ export class SuperagentHost {
       }
       this.syncSources(settings);
       if (Date.now() - this.prunedAt > PRUNE_MS) { prunePatches(this.stateDir); this.prunedAt = Date.now(); }
+      if (Date.now() - this.journalPrunedAt > JOURNAL_PRUNE_MS) { this.journal.prune(); this.journalPrunedAt = Date.now(); }
       this.client.engine.evaluateDue();
       if (!settings.paused) {
         this.chatter.pass();

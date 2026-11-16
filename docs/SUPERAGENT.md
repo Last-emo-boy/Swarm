@@ -69,7 +69,13 @@ handlers.
 - **Sources.** The local Source is new: each TUI or CLI request starts a Thread, and the operator's OS account is on its
   allowed list by default. GitHub and Feishu stay off until set up. Assessments read the thread window upstream read,
   without further reads; Feishu images are not read yet.
-- **No web panel.** The CLI and the TUI's tickets pane and "needs you" strip show what waits for a person.
+- **No web panel.** The CLI and the TUI's tickets pane and "needs you" strip show what waits for a person. The
+  terminal also answers why: `swarm superagent why <ticket|message>` reads the store (the message, its routing and the
+  router's reason, the ticket's work and reports, the queued messages and whether they went out, the talking paths'
+  model calls around it, its usage), and the journal (`journal.ts`) keeps one row per run of chatter, attend, reflection,
+  promises and routing with the card sent, the answer when it could not be used, and the outcome and its reason. Rows
+  older than 14 days are pruned in the host's pass. Outbox rows record when they went out and the platform's message id.
+  `swarm usage --by chat` groups the ledger by the chat or ticket that asked.
 
 ## Settings
 
@@ -335,6 +341,20 @@ creates the pod's token Secret, after the nodes' public addresses are in the egr
 the pod runs before its node is out of its reach. A start that fails ends the boot's lease after 30 seconds per boot so
 far, and the ticket launches again, failing after three boots with the error. A boot holds its lease for 15 minutes;
 while cluster VMs run, the host keeps the except list current every 15 seconds.
+
+## The journal
+
+Every model call the host makes on its own behalf is one row in the `journal` table of the store: the agent's
+considerations and attends, a reflection on a chat or a ticket, a promise's message, a tidy, and the router's routing
+and assessment calls. A row holds the purpose and what the call was about (the chat, message, ticket, note or subject),
+the card exactly as sent, and as the call returns, its outcome: `sent`, `silent` or `dropped` with the model's reason,
+`skipped` when no call was made, `failed` with the error, `answered`, `attached`, or the router's decision kind. A retry
+is its own row; a run that left one open is marked `dropped` with reason `retried` when the next starts. `why` joins
+these rows to the trigger, its disposition and decision, the ticket and its reports, the outbox rows and the usage
+ledger, so a person can see what the agent heard, what it thought it was doing, and what it did.
+
+The journal is additive: nothing it records changes what the agent says or does. It stays in the state directory with
+the rest of the store, is pruned after 14 days, and holds people's messages, so it is never copied into the repository.
 
 ## Safety
 

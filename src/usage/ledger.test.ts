@@ -112,3 +112,33 @@ test("harness turns, the host's own calls and ticket workers' calls are told apa
   assert.deepEqual(groupLedger(priceLedger([route, chatter, chatter], DEFAULT_PRICES), "purpose").map((total) => [total.key, total.calls]),
     [["superagent_route", 1], ["superagent_chatter", 2]]);
 });
+
+test("the talking paths' calls carry the chat and the message they were about, and group by chat", () => {
+  const event = (metadata: Record<string, unknown>) => ({
+    event_id: `usage_${Math.random()}`, session_id: undefined, kind: "llm_call" as const, amount: 1, unit: "count" as const, metadata, created_at: "2026-11-07T08:00:00.000Z"
+  });
+  const chatter = ledgerEntry(event({ ...report({ purpose: "superagent_chatter", chatId: "oc_team", triggerId: "tr1", inputTokens: 300, outputTokens: 20 }) }), "mac")!;
+  assert.deepEqual([chatter.source, chatter.chatId, chatter.triggerId], ["assessor", "oc_team", "tr1"]);
+  const route = ledgerEntry(event({ ...report({ purpose: "superagent_route", triggerId: "tr2", inputTokens: 900, outputTokens: 60 }) }), "mac")!;
+  assert.equal(route.chatId, undefined);
+  // A worker's call has a ticket from its session and no chat.
+  const worker = ledgerEntry(event({ ...report({ sessionId: "worker-abc12345", inputTokens: 10, outputTokens: 1 }) }), "mac")!;
+  assert.deepEqual(groupLedger(priceLedger([chatter, chatter, route, worker], DEFAULT_PRICES), "chat").map((total) => [total.key, total.calls]),
+    [["-", 2], ["oc_team", 2]], "largest tokens first");
+});
+
+test("a talking path's call reaches the usage database with its chat, and --by chat groups it after a read from disk", async () => {
+  const { SwarmRuntime } = await import("../runtime/runtime.js");
+  const databasePath = join(root, "chat-usage.db");
+  const runtime = new SwarmRuntime({ databasePath, workspace: root });
+  try {
+    runtime.events.emitEvent({ type: "provider_usage", usage: report({ purpose: "superagent_chatter", chatId: "oc_tea", triggerId: "tr9",
+      inputTokens: 400, outputTokens: 40, totalInputWithCacheTokens: 400 }) });
+    runtime.events.emitEvent({ type: "provider_usage", usage: report({ purpose: "superagent_route", triggerId: "tr10",
+      inputTokens: 900, outputTokens: 60, totalInputWithCacheTokens: 900 }) });
+  } finally { runtime.dispose(); }
+  const entries = readLedgerAt(databasePath, "mac");
+  assert.deepEqual(entries.map((entry) => [entry.purpose, entry.chatId, entry.triggerId]),
+    [["superagent_chatter", "oc_tea", "tr9"], ["superagent_route", undefined, "tr10"]]);
+  assert.deepEqual(groupLedger(entries, "chat").map((total) => [total.key, total.calls]), [["-", 1], ["oc_tea", 1]]);
+});

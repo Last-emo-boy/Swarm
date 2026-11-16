@@ -2,13 +2,20 @@
  * Ticket and host views shared by the CLI and the TUI: one row per ticket with the stage it waits in (docs/003 of
  * dsh-superagent: whom the ticket waits for and what it needs), and the list of what needs a person, first.
  */
-import { latestReport, ticketOutcome, ticketStage, type Decision, type Ticket, type Trigger } from "./core/index.js";
+import { latestReport, reasonText, threadKey, ticketOutcome, ticketStage, type Decision, type Ticket, type Trigger } from "./core/index.js";
 import { unroutedRequest, type SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { EXPIRED_REASON, expiredWhy } from "./notices.js";
 import type { Health } from "./health.js";
 import { pulledBy, workerNode } from "./placement.js";
 import { pullOf } from "./sources/github-pull.js";
+import { chatName, senderOf } from "./people.js";
+import { feishuAttachments, type Attachment } from "./sources/feishu-attachment.js";
+import type { Receipt } from "./store.js";
+import { Journal, type JournalKind, type JournalRun } from "./journal.js";
+import type { LedgerEntry } from "../usage/ledger.js";
+import { costText, formatTokens } from "../usage/report.js";
+import { thisDevice } from "../usage/cli.js";
 
 export type TicketGroup = "person" | "working" | "queued" | "idle" | "ended";
 export interface TicketRow {
@@ -179,6 +186,16 @@ export interface HostStatus {
    * node on an older version sends a status without it.
    */
   unrouted: { triggerId: string; decisionId: string; at: string; text: string }[];
+  /** Replies the host could not deliver, and replies it dropped, so a person can see what did not reach them. */
+  replies: {
+    failing: { id: string; ticketId?: string; attempts: number; error: string }[];
+    dropped: { id: string; ticketId?: string; at: string; reason: string }[];
+  };
+  /**
+   * Tickets whose replies wait on a Source that is switched off: nothing is retried until someone enables it. A chat that is
+   * merely filtered stays out, since its Source is on and the reply is dropped rather than held.
+   */
+  waitingOnOff: { ticketId?: string; source: string; messages: number }[];
 }
 /** The requests the status lists as unrouted, newest first. */
 function unrouted(client: SuperagentClient): HostStatus["unrouted"] {
@@ -197,11 +214,285 @@ export function hostStatus(client: SuperagentClient, now = Date.now()): HostStat
   const running = !!owner && now - Date.parse(owner.heartbeatAt) < 15_000;
   const counts: Record<TicketGroup, number> = { person: 0, working: 0, queued: 0, idle: 0, ended: 0 };
   for (const ticket of client.store.tickets.open()) counts[ticketRow(client, ticket).group] += 1;
-  return { running, ...(owner ? { pid: owner.pid, heartbeatAt: owner.heartbeatAt } : {}), health: health?.entries ?? {}, counts, unrouted: unrouted(client) };
+  // Only a reply that failed at least once says something about today; one never tried is not failing.
+  const failing = client.store.read.failingReplies().filter((receipt) => receipt.attempts > 0)
+    .map((receipt) => ({ id: receipt.id, ...(receipt.ticketId ? { ticketId: receipt.ticketId } : {}), attempts: receipt.attempts, error: receipt.error }));
+  const dropped = client.store.read.droppedReplies().map((receipt) => ({ id: receipt.id, ...(receipt.ticketId ? { ticketId: receipt.ticketId } : {}),
+    at: receipt.dropped.at, reason: receipt.dropped.reason }));
+  const off = new Map<string, HostStatus["waitingOnOff"][number]>();
+  for (const receipt of client.store.receipts.waiting()) {
+    // A kind this build does not register can never deliver the message: nothing to wait for, and not "off".
+    const instance = client.sources.instance(receipt.channel.source)
+    if (!instance || instance.enabled) continue;
+    const group = `${receipt.ticketId ?? ""} ${receipt.channel.source}`;
+    const seen = off.get(group)
+    if (seen) seen.messages += 1
+    else off.set(group, { ...(receipt.ticketId ? { ticketId: receipt.ticketId } : {}), source: receipt.channel.source, messages: 1 })
+  }
+  return { running, ...(owner ? { pid: owner.pid, heartbeatAt: owner.heartbeatAt } : {}), health: health?.entries ?? {}, counts, unrouted: unrouted(client),
+    replies: { failing, dropped }, waitingOnOff: [...off.values()] };
 }
 
 /** Replies the host posted to a local Thread, oldest first, which the TUI shows as the ticket's messages. */
 export function localReplies(client: SuperagentClient, limit = 50): { id: string; ticketId?: string; kind: string; text: string; status: string }[] {
   return client.store.db.prepare("SELECT value FROM outbox WHERE value ->> '$.channel.source' = 'local' ORDER BY rowid DESC LIMIT ?")
     .all(limit).map((row) => JSON.parse(String(row.value)) as { id: string; ticketId?: string; kind: string; text: string; status: string }).reverse();
+}
+
+/** A message the host queued for a ticket, whatever the Source it goes to: its status, when it went out, and what it carries. */
+export interface TicketMessage {
+  id: string;
+  kind: string;
+  text: string;
+  status: string;
+  source: string;
+  triggerId?: string;
+  sentAt?: string;
+  platformMessageId?: string;
+  /** Where the file the message sends is kept, when it sends one. */
+  attachment?: string;
+  dropped?: { at: string; reason: string };
+  /** How many times its delivery failed in a row, and the last error. */
+  attempts: number;
+  error?: string;
+  at?: string;
+}
+
+/** Every message the host queued for a ticket, oldest first, whichever Source it goes to, with its delivery status. */
+export function ticketMessages(client: SuperagentClient, ticketId: string, limit = 500): TicketMessage[] {
+  // The newest `limit` messages are read and brought back oldest first, so a long ticket keeps its latest ones.
+  return client.store.db.prepare(`SELECT o.value, IFNULL(e.attempts, 0) AS attempts, IFNULL(e.error, '') AS error FROM outbox o
+    LEFT JOIN effect e ON e.kind = 'reply' AND e.key = o.id WHERE o.value ->> '$.ticketId' = ? ORDER BY o.rowid DESC LIMIT ?`)
+    .all(ticketId, limit).map((row) => messageRow(row)).reverse()
+}
+/** One outbox row as the terminal shows it; a message that already went out shows no failed tries, whichever effect row it left. */
+function messageRow(row: Record<string, unknown>): TicketMessage {
+  const receipt = JSON.parse(String(row.value)) as Receipt
+  const pending = receipt.status === "pending"
+  return { id: receipt.id, kind: receipt.kind, text: receipt.text, status: receipt.status, source: receipt.channel.source,
+    ...(receipt.triggerId ? { triggerId: receipt.triggerId } : {}),
+    ...(receipt.sentAt ? { sentAt: receipt.sentAt } : {}), ...(receipt.platformMessageId ? { platformMessageId: receipt.platformMessageId } : {}),
+    ...(receipt.attachment ? { attachment: receipt.attachment } : {}), ...(receipt.dropped ? { dropped: receipt.dropped } : {}),
+    attempts: pending ? Number(row.attempts) : 0, ...(pending && row.error ? { error: String(row.error) } : {}) }
+}
+
+/** What a ticket's stored work says: its assignments, the latest report and the calls its worker made on paired nodes. */
+export interface WhyWork {
+  assignments: { id: string; state: string; harness?: string; report?: { state: string; summary: string; at: string } }[];
+  calls: { at: string; node: string; tool: string; args: string; ok?: boolean; ms?: number; error?: string }[];
+}
+/** One routed message of a ticket: the message, the Decision it ended with, and the few around it it was read with. */
+export interface WhyRouting {
+  trigger: { id: string; at: string; text: string; source: string; platformMessageId?: string };
+  /** Who wrote it, by name, and the chat it was written in, by name: what a person reads. */
+  sender: string;
+  chat?: string;
+  disposition: { command?: string; filtered?: unknown; fanout: string[]; decisionId?: string };
+  decision?: { id: string; kind: string; at: string; strength: string; reason: string; ticketId?: string; dismissed?: true };
+  around: { id: string; at: string; text: string; actor: string }[];
+}
+/** One run of a talking path the journal kept: what it was, when, and what became of it. */
+export interface WhyRun { at: string; kind: JournalKind; outcome?: string; reason?: string; outbox?: string[]; card?: string }
+
+/**
+ * Why a ticket or a message was handled the way it was, from what the store kept: the message and how it was routed, the
+ * ticket's work, the messages the host queued for it, the talking paths' journal rows around it, and its model usage. The
+ * journal rows are what no other row has: the card a consideration, an attend or a reflection sent, and its reason.
+ */
+export async function whyReport(client: SuperagentClient, handle: string): Promise<WhyReport> {
+  const ticket = findTicket(client, handle);
+  // A ticket's id and a message's cannot be mistaken for each other; a handle that names neither is neither of them.
+  let trigger: Trigger | undefined;
+  try { if (!ticket) trigger = findTrigger(client, handle) } catch (error) {
+    if (!(error instanceof Error) || !/^No message /.test(error.message)) throw error
+  }
+  if (!ticket && !trigger) throw new Error(`No ticket or message ${handle}`);
+  // A ticket is explained by the message it was accepted from, which also names its chat; a message by itself, though the
+  // Decision that took it in can name the ticket it became.
+  const origin = ticket ? client.store.triggers.get(ticket.origin.triggerId) : trigger;
+  const routing = origin ? routingOf(client, origin) : undefined;
+  const ticketId = ticket?.id ?? routing?.decision?.ticketId;
+  const full = ticketId ? client.store.tickets.get(ticketId) : undefined;
+  const chat = chatOf(origin);
+  // The journal holds a run under the trigger it routed, the chat it considered or the ticket it reflected on; a chat run
+  // holds the message in its card, which the key scan cannot find, so the chat's rows come whole.
+  const keys: string[] = []
+  const prefixes: string[] = []
+  if (origin) prefixes.push(`trigger:${origin.id}`)
+  if (full) keys.push(`ticket:${full.id}`)
+  if (chat) keys.push(`chat:${chat}`)
+  // A promise is journaled under its note, not the message that made it: the origin's own promises come along by note id.
+  if (origin) keys.push(...client.store.db.prepare("SELECT id FROM memory WHERE value ->> '$.origin.triggerId' = ?").all(origin.id)
+    .map((row) => `note:${String(row.id)}`))
+  // The command runs in its own process, without the host's journal: the rows are in the store either way.
+  const runs = (client.journal ?? new Journal(client.store)).history(keys, prefixes);
+  // A message shows what was queued while answering it; a ticket every message queued for it, whatever it answers.
+  const messages = trigger ? messagesOf(client, trigger.id) : full ? ticketMessages(client, full.id) : [];
+  const since = new Date(Date.parse(origin?.at ?? new Date().toISOString()) - 3_600_000);
+  // A message's usage is its own calls, and a ticket's its own plus its chat's from when it was asked: the chat arm has no
+  // message bound, so a message handle that kept it would count every other message's calls in the hour before.
+  const usage = await usageOf(client, { ...(full?.id ? { ticketId: full.id } : {}), ...(routing?.decision?.ticketId ? { ticketId: routing.decision.ticketId } : {}),
+    ...(origin?.id ? { triggerId: origin.id } : {}), ...(ticket && chat ? { chatId: chat, chatSince: new Date(origin?.at ?? new Date().toISOString()) } : {}), since });
+  return {
+    handle: ticket ? `ticket ${ticket.id}` : `message ${trigger!.id}`,
+    ...(full ? { ticket: ticketRow(client, full) } : {}),
+    ...(routing ? { routing } : {}),
+    ...(full ? { work: workOf(client, full) } : {}),
+    messages,
+    ...(origin?.text ? { attachments: feishuAttachments(origin.text) } : {}),
+    talking: runs.map((entry) => ({ at: entry.at, kind: entry.kind, ...(entry.run.outcome ? { outcome: entry.run.outcome } : {}),
+      ...(entry.run.reason ? { reason: entry.run.reason } : {}), ...(entry.run.outbox?.length ? { outbox: entry.run.outbox } : {}),
+      ...(entry.run.user ? { card: entry.run.user.slice(0, 2000) } : {}) })),
+    usage
+  };
+}
+/** How a time reads in `why`: the clock alone for today, its date and clock for another day. */
+function clock(at: string, now = new Date()): string {
+  const date = new Date(at)
+  if (Number.isNaN(date.getTime())) return at
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
+  return date.toDateString() === now.toDateString() ? time : `${date.toLocaleDateString()} ${time}`
+}
+const oneLine = (text: string, limit = 100): string => { const flat = text.replace(/\s+/g, " ").trim(); return [...flat].length > limit ? `${[...flat].slice(0, limit - 1).join("")}…` : flat }
+
+/**
+ * The report as the terminal shows it: the message and how it was routed, the ticket's work, the messages queued for it,
+ * the journal rows of the talking paths around it, and its usage. Sections with nothing to show are left out.
+ */
+export function whyText(client: SuperagentClient, report: WhyReport): string {
+  const lines: string[] = []
+  const routing = report.routing
+  if (routing) {
+    const where = routing.chat ? ` in "${routing.chat}"` : ""
+    const platform = routing.trigger.platformMessageId ? `  ${routing.trigger.platformMessageId}` : ""
+    lines.push(`  asked  ${clock(routing.trigger.at)}  ${routing.sender}${where}${platform}`)
+    lines.push(`         "${oneLine(routing.trigger.text, 90)}"`)
+  }
+  if (routing && (routing.decision || routing.disposition.command || routing.disposition.filtered)) {
+    lines.push("", "  routing")
+    if (routing.disposition.filtered) lines.push(`    filtered by its Source: ${oneLine(JSON.stringify(routing.disposition.filtered), 120)}`)
+    if (routing.disposition.command) lines.push(`    command  ${routing.disposition.command}`)
+    const decision = routing.decision
+    if (decision) {
+      lines.push(`    ${clock(decision.at)}  ${decision.kind}  ${decision.strength}${decision.dismissed ? "  (dismissed)" : ""}${decision.ticketId ? `  ticket ${decision.ticketId.slice(0, 8)}` : ""}`)
+      if (decision.reason) lines.push(`      ${oneLine(decision.reason, 240)}`)
+    }
+  }
+  const ticket = report.ticket
+  if (ticket) lines.push("", `  ticket ${ticket.short}  ${ticket.label}  ${ticket.title}`)
+  if (report.work?.assignments.length) {
+    lines.push("", "  work")
+    for (const assignment of report.work.assignments) {
+      const ran = `${assignment.state}${assignment.harness ? `  ${assignment.harness}` : ""}`
+      const text = assignment.report ? `${oneLine(assignment.report.summary.split("\n")[0] ?? "", 100)}` : "no report yet"
+      const at = assignment.report ? `${clock(assignment.report.at)}  ` : ""
+      lines.push(`    ${at}${ran}  "${text}"`)
+    }
+  }
+  if (report.work?.calls.length) {
+    for (const call of report.work.calls) {
+      const went = call.ok === undefined ? "?" : call.ok ? "ok" : `failed: ${oneLine(call.error ?? "", 60)}`
+      lines.push(`    mesh  ${call.node} ${call.tool}  "${oneLine(call.args, 60)}"  → ${went}`)
+    }
+  }
+  if (report.messages.length) {
+    lines.push("", "  messages")
+    for (const message of report.messages) {
+      const when = message.sentAt ?? message.dropped?.at
+      const tried = message.attempts ? ` (${message.attempts} failed ${message.attempts === 1 ? "try" : "tries"})` : ""
+      const platform = message.platformMessageId ? `  ${message.platformMessageId}` : ""
+      lines.push(`    ${when ? clock(when) : "--:--:--"}  ${message.kind}  ${message.status}${tried}${platform}  "${oneLine(message.text, 80)}"`)
+      if (message.attachment) lines.push(`                attachment  ${message.attachment}`)
+      if (message.error) lines.push(`                ${oneLine(message.error, 120)}`)
+    }
+  }
+  if (report.attachments?.length) {
+    lines.push("", "  attachments in the ask")
+    for (const attachment of report.attachments) lines.push(`    ${attachment.type}  ${attachment.file_key}${attachment.name ? `  ${attachment.name}` : ""}`)
+  }
+  if (report.talking.length) {
+    lines.push("", "  talking")
+    for (const run of report.talking) {
+      const outcome = run.outcome ?? "interrupted"
+      const queued = run.outbox?.length ? `  outbox ${run.outbox.map((id) => id.slice(0, 8)).join(", ")}` : ""
+      lines.push(`    ${clock(run.at)}  ${run.kind.padEnd(13)} ${outcome.padEnd(11)} "${oneLine(run.reason ?? "", 90)}"${queued}`)
+    }
+  } else {
+    lines.push("", "  talking", "    none kept for this yet; the journal starts with the next run")
+  }
+  const usage = report.usage
+  if (usage.calls) {
+    lines.push("", `  usage  ${usage.calls} call${usage.calls === 1 ? "" : "s"} · ${formatTokens(usage.input)} in · ${formatTokens(usage.output)} out · ${costText(usage)}`)
+  }
+  return lines.join("\n")
+}
+
+/** The report `why` prints, as text or JSON. */
+export interface WhyReport {
+  handle: string;
+  ticket?: TicketRow;
+  routing?: WhyRouting;
+  work?: WhyWork;
+  messages: TicketMessage[];
+  attachments?: Attachment[];
+  talking: WhyRun[];
+  usage: { calls: number; input: number; output: number; cost: Record<string, number>; unpriced: number };
+}
+
+/** The chat a message was written in, from its Source's own meta. */
+function chatOf(trigger: Trigger | undefined): string | undefined {
+  const chat = trigger?.meta.chatId;
+  return typeof chat === "string" ? chat : undefined;
+}
+
+/** How one message was routed: its own row, the Decision it ended with, and the few messages it was read with. */
+function routingOf(client: SuperagentClient, trigger: Trigger): WhyRouting {
+  const disposition = client.store.triggers.disposition(trigger.id);
+  const decision = disposition?.decisionId ? client.store.decisions.get(disposition.decisionId) : undefined;
+  const thread = trigger.threads[0];
+  const around = thread ? client.store.read.threadTriggers(threadKey(thread), 7) : [];
+  return {
+    trigger: { id: trigger.id, at: trigger.at, text: trigger.text, source: trigger.source,
+      ...(typeof trigger.meta.messageId === "string" ? { platformMessageId: trigger.meta.messageId } : {}) },
+    sender: senderOf(client.store, trigger),
+    ...(chatOf(trigger) ? { chat: chatName(client.store, chatOf(trigger)!) ?? chatOf(trigger)! } : {}),
+    disposition: { ...(disposition?.command ? { command: disposition.command } : {}), ...(disposition?.filtered ? { filtered: disposition.filtered } : {}),
+      fanout: disposition?.fanout ?? [], ...(disposition?.decisionId ? { decisionId: disposition.decisionId } : {}) },
+    ...(decision ? { decision: { id: decision.id, kind: decision.kind, at: decision.at, strength: decision.strength, reason: reasonText(decision.reason),
+      ...(decision.ticketId ? { ticketId: decision.ticketId } : {}), ...(decision.dismissed ? { dismissed: true as const } : {}) } } : {}),
+    around: around.map((item) => ({ id: item.id, at: item.at, text: [...item.text.replace(/\s+/g, " ").trim()].slice(0, 160).join(""), actor: item.actor.id }))
+  };
+}
+
+/** The messages the host queued while answering one message, whichever Source they went to. */
+function messagesOf(client: SuperagentClient, triggerId: string): TicketMessage[] {
+  // The reply effect is joined as the ticket's messages join it, so a failed delivery reads the same under either handle.
+  return client.store.db.prepare(`SELECT o.value, IFNULL(e.attempts, 0) AS attempts, IFNULL(e.error, '') AS error FROM outbox o
+    LEFT JOIN effect e ON e.kind = 'reply' AND e.key = o.id WHERE o.value ->> '$.triggerId' = ? ORDER BY o.rowid DESC LIMIT 500`)
+    .all(triggerId).map((row) => messageRow(row)).reverse()
+}
+
+/** A ticket's assignments and mesh calls, the calls with how each went. */
+function workOf(client: SuperagentClient, ticket: Ticket): WhyWork {
+  const calls = client.store.get(KV.mesh.calls(ticket.id)) ?? [];
+  return {
+    assignments: ticket.assignments.map((assignment) => ({ id: assignment.id, state: assignment.state,
+      ...(ticket.execution?.harness ? { harness: ticket.execution.harness } : {}), ...(assignment.report ? { report: assignment.report } : {}) })),
+    calls
+  }
+}
+
+/** What the talking paths used for a ticket, a message or a chat: its calls, their tokens, and their cost from this device's prices. */
+async function usageOf(client: SuperagentClient, about: { ticketId?: string; triggerId?: string; chatId?: string; since: Date; chatSince?: Date }): Promise<WhyReport["usage"]> {
+  // The ledger lives in the whole Swarm's database, not the superagent store's, and is read without writing to it.
+  const { readLedgerAt, priceLedger, totalOf } = await import("../usage/ledger.js")
+  const { mergedPrices } = await import("../usage/prices.js")
+  const { loadSwarmSettings } = await import("../config/settings.js")
+  let entries: LedgerEntry[]
+  try { entries = readLedgerAt(loadSwarmSettings().runtime.databasePath, thisDevice(), { since: about.since }) } catch { entries = [] }
+  const mine = entries.filter((entry) => (about.ticketId && entry.ticketId === about.ticketId)
+    || (about.triggerId && entry.triggerId === about.triggerId)
+    || (about.chatId && about.chatSince && entry.chatId === about.chatId && entry.at >= about.chatSince.toISOString()))
+  const total = totalOf(priceLedger(mine, mergedPrices(loadSwarmSettings().usage.prices)))
+  return { calls: total.calls, input: total.input, output: total.output, cost: total.cost, unpriced: total.unpriced }
 }

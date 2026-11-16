@@ -15,6 +15,7 @@ import { seesNodes, watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
 import { devicesCard } from "./devices.js";
+import { workerNode } from "./placement.js";
 import { callLent, lentByPeers } from "../mesh/borrow.js";
 import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
 import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
@@ -344,9 +345,21 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const call = { ...(args.args && typeof args.args === "object" ? args.args as Record<string, unknown> : {}) };
       // A command runs within the time a ticket tool may take.
       if (args.tool === "shell") call.timeout_ms = Math.min(Number(call.timeout_ms) || MESH_SHELL_MS, MESH_SHELL_MS);
-      const calls = client.store.get(KV.mesh.calls(ticketId)) ?? [];
-      client.store.set(KV.mesh.calls(ticketId), [...calls, { at: new Date().toISOString(), node: args.node, tool: args.tool, args: JSON.stringify(call).slice(0, MESH_ARGS_CHARS) }].slice(-MESH_CALLS_KEPT));
-      return { node: args.node, tool: args.tool, result: await callLent(args.node, args.tool, call, MESH_SHELL_MS + 5000) };
+      // The call is recorded once it ends, with how it went, so the ticket's report can say what ran where and what failed.
+      const started = Date.now();
+      const entry = { at: new Date().toISOString(), node: args.node, tool: args.tool, args: JSON.stringify(call).slice(0, MESH_ARGS_CHARS) };
+      const record = (outcome: { ok: boolean; error?: string }) => {
+        const calls = client.store.get(KV.mesh.calls(ticketId)) ?? [];
+        client.store.set(KV.mesh.calls(ticketId), [...calls, { ...entry, ...outcome, ms: Date.now() - started }].slice(-MESH_CALLS_KEPT));
+      };
+      try {
+        const result = await callLent(args.node, args.tool, call, MESH_SHELL_MS + 5000);
+        record({ ok: true });
+        return { node: args.node, tool: args.tool, result };
+      } catch (error) {
+        record({ ok: false, error: String(error).slice(0, 300) });
+        throw error;
+      }
     },
     people: async (args) => {
       if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };
@@ -473,6 +486,20 @@ function handOver(client: SuperagentClient, ticket: Ticket, answers?: string): s
   });
 }
 
+/**
+ * One line of where a ticket's work ran, for its report: the node and harness its worker ran on, and what it ran on paired
+ * nodes, written by the process that files the report rather than the worker's model.
+ */
+export function ranWhere(records: Parameters<typeof workerNode>[0], ticket: Ticket): string {
+  const node = workerNode(records, ticket);
+  const harness = ticket.execution?.harness;
+  const where = node ? `Ran on ${node}` : "Ran on this node";
+  const calls = records.store.get(KV.mesh.calls(ticket.id)) ?? [];
+  const failed = calls.filter((call) => call.ok === false).length;
+  const mesh = calls.length ? `; mesh: ${calls.length} call${calls.length === 1 ? "" : "s"}${failed ? ` (${failed} failed)` : ""}` : "";
+  return `${where}${harness ? ` (${harness})` : ""}${mesh}`;
+}
+
 export async function fileReport(client: SuperagentClient, ticketId: string, args: ReportArgs) {
   const current = client.store.tickets.get(ticketId);
   if (!current || !liveTicket(current)) throw new Error("Ticket ended (its PR closed or the work finished); do not resume it");
@@ -509,8 +536,10 @@ export async function fileReport(client: SuperagentClient, ticketId: string, arg
   return client.store.atomic(() => {
     const refused = github && pull && claimPull(github, ticketId, pull);
     if (refused) throw new Error(refused);
+    // Every report ends with one host-written line of where the work ran; the worker's own words stay above it.
+    const ran = ranWhere({ store: client.store }, current);
     const report = {
-      state: args.state, summary: args.summary,
+      state: args.state, summary: `${args.summary.trimEnd()}\n\n${ran}`,
       ...(args.human_action !== undefined ? { question: args.human_action } : {}),
       ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
       ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {})

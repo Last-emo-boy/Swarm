@@ -24,6 +24,9 @@ export interface LedgerEntry {
   harness?: string;
   sessionId?: string;
   ticketId?: string;
+  /** The chat and the message a talking-path call was about, which the superagent's host records with it. */
+  chatId?: string;
+  triggerId?: string;
   input: number;
   cached: number;
   cacheWrite: number;
@@ -70,6 +73,7 @@ export function ledgerEntry(event: UsageEvent, device: string): LedgerEntry | un
     id: event.event_id, at: event.created_at, device, source,
     provider: text(usage.providerId) ?? "unknown", model: text(usage.model) ?? "unknown", purpose,
     ...(harness ? { harness } : {}), ...(sessionId ? { sessionId } : {}), ...(ticketId ? { ticketId } : {}),
+    ...(text(usage.chatId) ? { chatId: text(usage.chatId)! } : {}), ...(text(usage.triggerId) ? { triggerId: text(usage.triggerId)! } : {}),
     input: Math.max(input, cached + cacheWrite), cached, cacheWrite, output: number(usage.outputTokens) ?? 0,
     ...(reportedCost === undefined ? {} : { reportedCost })
   };
@@ -117,8 +121,8 @@ export const priceLedger = (entries: readonly LedgerEntry[], prices: Readonly<Re
     return cost ? { ...entry, cost } : { ...entry };
   });
 
-export type LedgerGrouping = "model" | "provider" | "harness" | "device" | "ticket" | "day" | "source" | "purpose";
-export const LEDGER_GROUPINGS: readonly LedgerGrouping[] = ["model", "provider", "harness", "device", "ticket", "day", "source", "purpose"];
+export type LedgerGrouping = "model" | "provider" | "harness" | "device" | "ticket" | "chat" | "day" | "source" | "purpose";
+export const LEDGER_GROUPINGS: readonly LedgerGrouping[] = ["model", "provider", "harness", "device", "ticket", "chat", "day", "source", "purpose"];
 
 /** Calls added up: tokens, cost by currency, and how many calls had no price. */
 export interface LedgerTotal { key: string; calls: number; input: number; cached: number; output: number; cost: Record<string, number>; unpriced: number }
@@ -134,6 +138,7 @@ export function groupKey(entry: LedgerEntry, by: LedgerGrouping): string {
   if (by === "harness") return entry.harness ?? "-";
   if (by === "device") return entry.device;
   if (by === "ticket") return entry.ticketId?.slice(0, 8) ?? "-";
+  if (by === "chat") return entry.chatId ?? "-";
   if (by === "source") return entry.source;
   if (by === "purpose") return entry.purpose;
   return localDay(entry.at);

@@ -11,6 +11,7 @@ import { Commands } from "./commands.js";
 import { Effects } from "./effects.js";
 import { linkOf } from "./github-link.js";
 import { harnessIds } from "./harness.js";
+import type { Journal } from "./journal.js";
 import { HealthBoard } from "./health.js";
 import { KV } from "./kv.js";
 import { ticketExecution } from "./messages.js";
@@ -57,6 +58,8 @@ export class SuperagentClient {
   readonly outbox: Outbox;
   readonly commands: Commands;
   readonly engine: Engine;
+  /** The talking paths' journal (journal.ts), which the host and the tests that drive them install; processes without one record none. */
+  journal?: Journal;
   private read: SettingsRead;
   private readonly listeners = new Set<(event: DomainEvent) => void>();
 

@@ -89,6 +89,8 @@ export interface Executor {
  * host keeps that goes with it, such as a local ticket's patch.
  */
 export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
+  /** The message this one answers, when it answers one, so `why` finds a ticket's messages by the request that caused them. */
+  triggerId?: string
   attachment?: string
   /** People the message @s, by id and name: the text names them as `@name`, and the Channel turns that into a real mention. */
   mentions?: { id: string; name: string }[] }
