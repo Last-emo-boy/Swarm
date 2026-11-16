@@ -815,7 +815,17 @@ swarm superagent stop <id>
 swarm superagent retry <id>
 swarm superagent again <message id>   # send a request the router could not take in
 swarm superagent dismiss <id>         # or drop the notice and the request
+swarm superagent ticket <id>          # every message it queued, with delivery status
+swarm superagent why <ticket|message> # why it was handled this way, step by step
 ```
+
+`swarm superagent why <ticket|message>` explains a decision from what the store kept: the message and who sent it, how
+it was filtered or routed and the router's reason, the ticket's work and its reports, the messages the host queued and
+whether they went out, the model calls the talking paths made around it with their cards and reasons, and the usage.
+`swarm superagent ticket <id>` shows a ticket's own conversation: every message queued for it, whatever Source it goes
+to, with its status and any attachment. `swarm superagent status` also names replies that keep failing, requests waiting
+on a Source that is switched off, and messages that could only be dropped. `swarm usage --by chat` groups spending by
+the chat or ticket that asked for it.
 
 A ticket that waits on a person, for an answer or after a blocked or failed report, reminds them once after a day with
 nothing said and closes a day after that reminder, saying so where it asked; a reply there resumes it, as one to a

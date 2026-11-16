@@ -23,9 +23,12 @@ import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, perso
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
 import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, noAnswer, orNull, parseJsonObject, sameName, wordCount } from "./text.js";
+import type { JournalTarget } from "./journal.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
-export type Complete = (input: { purpose: string; system: string; user: string; model?: string }) => Promise<string>;
+export type Complete = (input: { purpose: string; system: string; user: string; model?: string
+  /** What the call is about, for the journal and the usage ledger: the chat, the message that triggered it, the ticket, the note or the subject. */
+  target?: JournalTarget }) => Promise<string>;
 
 /** The bot commands the router runs for a person as their built-in tools (bot-commands.ts). */
 export interface AgentCommands {
@@ -341,7 +344,7 @@ export class ModelAssessor {
     for (let attempt = 0; attempt < 2; attempt++) {
       const user = JSON.stringify(attempt ? { candidate: card, previous_answer: previous, problem: last } : { candidate: card }, null, 2);
       const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? "", !!memoryOf(client.settings())), user,
-        model: client.settings().eval.model ?? undefined });
+        model: client.settings().eval.model ?? undefined, target: { message: triggerId } });
       previous = answer.slice(0, ANSWER_CHARS);
       let route: Route;
       try {
@@ -356,6 +359,8 @@ export class ModelAssessor {
         const outcome = this.carryOut(candidate, triggerId, route, harnesses);
         // What the message asked it to remember is kept with the route it took, so its reply can say so.
         if (!outcome) remembered?.();
+        // The Decision already stores what the router decided; the journal keeps the card and the reason with it.
+        client.journal?.outcome("route", `trigger:${triggerId}`, route.kind, { reason: route.reason ?? route.acknowledgement ?? route.note ?? "" });
         return outcome;
       });
       if (!refused) return;
@@ -553,18 +558,22 @@ export class ModelAssessor {
     let last = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       const user = JSON.stringify(attempt ? { candidate: card, problem: last } : { candidate: card }, null, 2);
-      const answer = await complete({ purpose: "superagent_assessment", system: assessmentPrompt(settings), user, model: settings.eval.model ?? undefined });
+      const answer = await complete({ purpose: "superagent_assessment", system: assessmentPrompt(settings), user, model: settings.eval.model ?? undefined, target: { message: trigger.id } });
       try {
         const assessment = AssessmentSchema.parse(parseJsonObject(answer));
         let outcome = assessmentOutcome(assessment, client.settings(), candidate.strength);
         if (outcome.kind === "accept" && outcome.acknowledgement) outcome = { ...outcome, acknowledgement: checkedImText(outcome.acknowledgement) };
         client.engine.decide(trigger.id, { ...outcome, evalId: candidate.evalId });
+        client.journal?.outcome("assess", `trigger:${trigger.id}`, outcome.kind,
+          { reason: typeof outcome.reason === "string" ? outcome.reason : reasonText(outcome.reason) });
         return;
       } catch (error) {
         if (error instanceof UserError) throw error;
         last = problem(error);
       }
     }
+    // Both tries gave an answer that cannot be used, and the throw ends the run: say so rather than read as a crash.
+    client.journal?.outcome("assess", `trigger:${trigger.id}`, "unavailable", { reason: `no usable answer after 2 tries: ${last}` });
     throw new Error(`The assessment could not be used: ${last}`);
   }
 
@@ -582,15 +591,17 @@ export class ModelAssessor {
     const card = { message: { ...triggerMessage(trigger, {}), text: cut(trigger.text, TRIGGER_CHARS).text },
       delivered_to: tickets.map((ticket) => ({ ticket_id: ticket.id, title: ticket.title, state: ticketCard(ticket).state })) };
     const answer = await answerOf(FollowupSchema, () => complete({ purpose: "superagent_followup", system: followupPrompt(),
-      user: JSON.stringify(card, null, 2), model: client.settings().eval.model ?? undefined }), 2,
+      user: JSON.stringify(card, null, 2), model: client.settings().eval.model ?? undefined, target: { message: triggerId } }), 2,
       (last) => this.host.log?.(noAnswer("superagent_followup", 2, last)));
-    if (!answer) return;
-    for (const ticketId of answer.stop.filter((id) => owners.includes(id))) {
+    if (!answer) { client.journal?.outcome("followup", `trigger:${triggerId}`, "unavailable", { reason: "no usable answer after 2 tries" }); return }
+    const stopped = answer.stop.filter((id) => owners.includes(id));
+    for (const ticketId of stopped) {
       try {
         client.engine.decide(triggerId, { kind: "stop", ticketId, reason: answer.reason || { code: "humanStop" } });
       } catch (error) {
         if (!(error instanceof UserError)) throw error;
       }
     }
+    client.journal?.outcome("followup", `trigger:${triggerId}`, stopped.length ? "accepted" : "ignored", { reason: answer.reason ?? "" })
   }
 }

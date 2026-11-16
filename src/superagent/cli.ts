@@ -13,17 +13,21 @@ import { requestOn, updatePlacement, type NodeRef } from "./placement.js";
 import { readSettings, settingsPath, superagentStateDir, updateSettings, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import type { TicketTool } from "./ticket-tools.js";
-import { dismissUnrouted, findTicket, hostStatus, localReplies, routeAgain, ticketRow, ticketRows, type TicketRow } from "./views.js";
+import { dismissUnrouted, findTicket, hostStatus, routeAgain, ticketMessages, ticketRow, ticketRows, whyReport, whyText, type TicketMessage, type TicketRow } from "./views.js";
 import type { WorkLink } from "./work-link.js";
 
 const USAGE = `Usage: swarm superagent <command>
 
 Commands:
   run                         Run the ticket host in the foreground: Sources, model judgements, workers, replies
-  status [--json]             Whether a host runs, its health, and how many tickets wait where
+  status [--json]             Whether a host runs, its health, how many tickets wait where, and what waits to be delivered
   tickets [--all] [--all-devices] [--json]
                               Tickets, what waits for a person first; --all-devices adds paired mesh devices' tickets
-  ticket <id> [--json]        One ticket with its latest report and messages; <device>:<id> for a paired device's
+  ticket <id> [--json]        One ticket with its latest report and every message queued for it, whatever its Source;
+                              <device>:<id> for a paired device's
+  why <ticket|message> [--json]
+                              Why a ticket or a message was handled as it was: how it was routed, the ticket's work, the
+                              messages queued for it, and what the agent considered and why it spoke or stayed silent
   request [--device <name> | --on <node>] [--harness <id>] <text...>
                               File a request as a new ticket from this terminal, or on a paired device;
                               --on keeps the ticket here and runs its worker on a paired node;
@@ -53,6 +57,17 @@ function value(args: string[], name: string): string | undefined {
   return found;
 }
 
+/** One queued message of a ticket: its kind, how its delivery stands, and what it says; its attachment on a line of its own. */
+export const messageLines = (message: Partial<TicketMessage> & Pick<TicketMessage, "kind" | "text" | "status">): string[] => {
+  const when = message.sentAt ?? message.dropped?.at;
+  const tried = message.attempts ? ` (${message.attempts} failed ${message.attempts === 1 ? "try" : "tries"})` : "";
+  const platform = message.platformMessageId ? `  ${message.platformMessageId}` : "";
+  const lines = [`\n[${message.kind}  ${message.status}${when ? ` ${new Date(when).toLocaleString()}` : ""}${tried}${platform}] ${message.text}`];
+  if (message.dropped) lines.push(`  dropped: ${message.dropped.reason}`);
+  if (message.error) lines.push(`  last error: ${message.error}`);
+  if (message.attachment) lines.push(`  attachment: ${message.attachment}`);
+  return lines;
+};
 const rowLine = (row: TicketRow): string =>
   `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.harness ? `  (via ${row.harness})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
 
@@ -107,6 +122,23 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
         for (const request of status.unrouted) console.log(`  ${request.triggerId.slice(0, 8)}  ${new Date(request.at).toLocaleString()}  ${request.text}`);
         console.log("  Send one again with `swarm superagent again <id>`, or drop it from this list with `swarm superagent dismiss <id>`.");
       }
+      // What did not reach anyone: a reply whose delivery keeps failing, one dropped, and tickets whose replies wait on a Source that is off.
+      if (status.replies.failing.length) {
+        console.log(`${status.replies.failing.length} repl${status.replies.failing.length === 1 ? "y" : "ies"} failing to deliver:`);
+        for (const reply of status.replies.failing) {
+          console.log(`  ${reply.id.slice(0, 8)}${reply.ticketId ? `  ticket ${reply.ticketId.slice(0, 8)}` : ""}  ${reply.attempts} failed ${reply.attempts === 1 ? "try" : "tries"}  ${reply.error}`);
+        }
+      }
+      if (status.replies.dropped.length) {
+        console.log(`${status.replies.dropped.length} repl${status.replies.dropped.length === 1 ? "y" : "ies"} dropped:`);
+        for (const reply of status.replies.dropped) {
+          console.log(`  ${reply.id.slice(0, 8)}${reply.ticketId ? `  ticket ${reply.ticketId.slice(0, 8)}` : ""}  ${new Date(reply.at).toLocaleString()}  ${reply.reason}`);
+        }
+      }
+      if (status.waitingOnOff.length) {
+        console.log(`Replies waiting on a Source that is off:`);
+        for (const waiting of status.waitingOnOff) console.log(`  ${waiting.ticketId ? `ticket ${waiting.ticketId.slice(0, 8)}` : "no ticket"}  ${waiting.source}  ${waiting.messages} message${waiting.messages === 1 ? "" : "s"}`);
+      }
       // A stopped host's last snapshot says nothing about now.
       for (const [name, health] of Object.entries(status.running ? status.health : {})) {
         if (health.state === "error" || health.state === "starting") console.log(`  ${name}: ${health.state} ${health.detail}`.trimEnd());
@@ -156,17 +188,25 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
         : `Queued message ${short} for the router again; it was not on the list in status.`}${host}`);
       return;
     }
+    if (command === "why") {
+      const handle = args.shift();
+      if (!handle) throw new Error("Usage: swarm superagent why <ticket|message> [--json]");
+      const report = await whyReport(client, handle);
+      console.log(json ? JSON.stringify(report, null, 2) : `${report.handle}\n${whyText(client, report)}`);
+      return;
+    }
     const handle = args.shift();
     if (!handle) throw new Error(`Usage: swarm superagent ${command} <ticket id>`);
     const ticket = findTicket(client, handle);
     if (!ticket) throw new Error(`No ticket ${handle}`);
     if (command === "ticket") {
       const row = ticketRow(client, ticket);
-      const messages = localReplies(client, 200).filter((message) => message.ticketId === ticket.id);
+      // Every message queued for it, whatever the Source it goes to, with its delivery status and what it carries.
+      const messages = ticketMessages(client, ticket.id);
       if (json) { console.log(JSON.stringify({ ...row, ticket, messages }, null, 2)); return; }
       console.log(rowLine(row));
       if (row.summary) console.log(`\nLatest report:\n${row.summary}`);
-      for (const message of messages) console.log(`\n[${message.kind}] ${message.text}`);
+      for (const message of messages) console.log(messageLines(message).join("\n"));
       return;
     }
     if (command === "say") {
@@ -246,7 +286,7 @@ async function runOnDevice(command: string, args: string[], json: boolean): Prom
     if (json) { console.log(JSON.stringify({ ...row, messages }, null, 2)); return true; }
     console.log(rowLine(row));
     if (row.summary) console.log(`\nLatest report:\n${row.summary}`);
-    for (const message of messages) console.log(`\n[${message.kind}] ${message.text}`);
+    for (const message of messages) console.log(messageLines(message).join("\n"));
     return true;
   }
   if (command === "say") {

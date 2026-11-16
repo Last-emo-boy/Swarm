@@ -477,7 +477,11 @@ swarm superagent stop <id>
 swarm superagent retry <id>
 swarm superagent again <消息 id>   # 把没能受理的请求重新提交路由
 swarm superagent dismiss <id>     # 或者忽略它和它的提醒
+swarm superagent ticket <id>      # 它排队的每条消息与送达状态
+swarm superagent why <工单|消息>  # 按保存下来的记录，逐步说明为什么这样处理
 ```
+
+`swarm superagent why <工单|消息>` 用存下来的记录解释一次处理：消息和发送者、被怎么过滤或路由以及路由的理由、工单的工作与每次报告、宿主排过的消息及是否发出、说话路径在此前后的模型调用（卡片与理由）和用量。`swarm superagent ticket <id>` 显示工单自己的对话：为它排队的每条消息，不论发往哪个来源，带状态和附件。`swarm superagent status` 还会列出反复失败的回复、在等一个已关闭来源的请求、以及只能被丢弃的消息。`swarm usage --by chat` 按提出请求的聊天或工单汇总花费。
 
 等着某人的工单（等回答，或报告卡住、失败之后），在对方一天没有回应后提醒一次，再一天后关闭，并在提问的地方说明；在那里回复会像回复已结束的工单一样把它重新打开。所在对话已经发不出去消息的工单同样关闭，但不另行通知。模型超时导致路由没能受理的请求，会在提出请求的地方收到一次说明，`swarm superagent status` 也会列出它：`again` 保留消息重新走一次评估，`dismiss` 放弃这条提醒。
 

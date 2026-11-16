@@ -8,9 +8,12 @@ import type { Complete } from "./assessor.js";
 export async function providerComplete(options: { onUsage?: ProviderUsageHandler } = {}): Promise<Complete> {
   const { OpenAIProvider } = await import("../providers/openai-provider.js");
   const provider = new OpenAIProvider({ onUsage: options.onUsage ?? await usageRecorder() });
-  return ({ purpose, system, user, model }) => provider.generateText({
+  return ({ purpose, system, user, model, target }) => provider.generateText({
     model: model ?? provider.workerModel, system: [{ text: system, cache: true }], user,
-    responseFormat: "json_object", maxOutputTokens: 4000, usage: { purpose }
+    responseFormat: "json_object", maxOutputTokens: 4000,
+    // The ledger keeps what a call was about, so `swarm usage --by chat` and `why` can join it to the chat and the ticket.
+    usage: { purpose, ...(target?.chat ? { chatId: target.chat } : {}), ...(target?.message ? { triggerId: target.message } : {}),
+      ...(target?.ticket ? { ticketId: target.ticket } : {}) }
   });
 }
 

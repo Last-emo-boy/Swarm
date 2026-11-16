@@ -236,7 +236,10 @@ export class ChatterRoom {
     const bots = !quietAt(chatter, now);
     const replyable = this.chats(chatter).includes(chatId)
       ? calls.filter((call) => call.message.meta.direct !== true && !(call.message.human && call.message.addressed) && (call.message.human || bots)) : [];
-    if (!replyable.length && !answering.length) return;
+    if (!replyable.length && !answering.length) {
+      client.journal?.skip("attend", `chat:${chatId}`, "skipped", "nothing for it here");
+      return;
+    }
     // Whom it asked something for here, whom it may ask in turn for what only they can give.
     const acting = [...new Map(recentAsks(client.store, now).filter((item) => item.chatId === chatId).map((item) => [item.for.id, item])).values()];
     const own = state.said.filter((item) => Date.parse(item.at) >= now - WINDOW_MS);
@@ -256,12 +259,16 @@ export class ChatterRoom {
     const think = (problem?: string) => {
       const tries = problem ? 1 : 2;
       return answerOf(AttendSchema, () => complete({ purpose: "superagent_attend", system: attendPrompt(name, chatter.persona),
-        user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), tries,
+        user: JSON.stringify(problem ? { ...card, problem } : card, null, 2), ...(chatter.model ? { model: chatter.model } : {}),
+        target: { chat: chatId, ...(calls[0] ? { message: calls[0].message.id } : {}) } }), tries,
         (answer) => this.host.log?.(noAnswer(purpose(problem), tries, answer)));
     };
     // Asked twice with no answer it can use, it gives up: the effect ends rather than ask again every minute.
     const first = await think();
-    if (!first) return;
+    if (!first) {
+      client.journal?.outcome("attend", `chat:${chatId}`, "silent", { reason: "no usable answer after 2 tries" });
+      return;
+    }
     // An answer longer than Feishu takes gets one more try; a relay still too long is cut to fit, never dropped.
     // That try is one call: when it gives no answer it can use, the first one stays.
     const problem = tooLong(first, answering);
@@ -304,12 +311,15 @@ export class ChatterRoom {
       const messageId = reply.target.meta.messageId;
       const channel: ChannelRef = { source: "feishu", thread: `feishu:${chatId}`, address: { chatId, mode: "chat", ...(typeof messageId === "string" ? { messageId } : {}) } };
       const mentions = answer.reply?.mention === reply.target.actor.id ? [{ id: reply.target.actor.id, name: senderOf(client.store, reply.target) }] : [];
-      client.outbox.send({ id: key("attend", chatId, reply.target.id), channel, text: checkedImText(reply.text), kind: "notice", ...(mentions.length ? { mentions } : {}) });
+      client.outbox.send({ id: key("attend", chatId, reply.target.id), channel, text: checkedImText(reply.text), kind: "notice", triggerId: reply.target.id, ...(mentions.length ? { mentions } : {}) });
       // What it answered is kept for the record, and the chat waits for something newer before it joins in on its own.
       const current = client.store.get(KV.chatter.chat(chatId)) ?? { said: [] };
       client.store.set(KV.chatter.chat(chatId), { ...current, consideredAt: new Date(now).toISOString(),
         answered: [...(current.answered ?? []), { at: new Date(now).toISOString(), ...(reply.target.human ? {} : { bot: true as const }) }].slice(-40) });
     });
+    const queued = [...(relays.length ? relays.map(({ ask }) => key("relay", ask.id)) : []), ...(backs.length ? [key("askback", asker!.id)] : []), ...(reply ? [key("attend", chatId, reply.target.id)] : [])];
+    client.journal?.outcome("attend", `chat:${chatId}`, queued.length ? "sent" : "silent",
+      { reason: answer.reason || (queued.length ? (relays.length && !reply ? "passed an answer on" : "") : "nothing to say"), ...(queued.length ? { outbox: queued } : {}) });
   }
 
   /** Asks the model whether the agent says something in a chat now, and posts it when it does; no answer it can use is nothing said. */
@@ -317,10 +327,20 @@ export class ChatterRoom {
     const { client, complete } = this.host;
     const settings = client.settings();
     const chatter = chatterOf(settings);
-    if (!this.chats(chatter).includes(chatId) || this.silent(chatter, chatId)) return;
+    if (!this.chats(chatter).includes(chatId)) {
+      client.journal?.skip("chatter", `chat:${chatId}`, "skipped", "the chat is off for chatter");
+      return;
+    }
+    if (this.silent(chatter, chatId)) {
+      client.journal?.skip("chatter", `chat:${chatId}`, "skipped", "budget spent or quiet hours");
+      return;
+    }
     const messages = client.store.read.chatMessages(chatId, new Date(this.now() - WINDOW_MS).toISOString(), WINDOW_MESSAGES, true).reverse();
     const latest = messages.at(-1);
-    if (!latest) return;
+    if (!latest) {
+      client.journal?.skip("chatter", `chat:${chatId}`, "skipped", "no messages");
+      return;
+    }
     const own = (client.store.get(KV.chatter.chat(chatId))?.said ?? []).filter((item) => Date.parse(item.at) >= this.now() - WINDOW_MS);
     const bot = client.deployment().feishu?.name ?? "";
     const timeline = [
@@ -334,12 +354,16 @@ export class ChatterRoom {
     const card = { chat: client.store.get(KV.sources.labels("feishu"))?.[chatId] ?? chatId, now: new Date(this.now()).toISOString(), messages: timeline,
       ...(memory.length ? { memory } : {}) };
     const answer = await answerOf(SaySchema, () => complete({ purpose: "superagent_chatter", system: chatterPrompt(bot, chatter.persona),
-      user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}) }), 2,
+      user: JSON.stringify(card, null, 2), ...(chatter.model ? { model: chatter.model } : {}), target: { chat: chatId, message: latest.id } }), 2,
       (answer) => this.host.log?.(noAnswer("superagent_chatter", 2, answer)));
     // Asked twice with no answer it can use, it says nothing: the effect ends rather than ask again every minute.
-    if (!answer) return;
+    if (!answer) { client.journal?.outcome("chatter", `chat:${chatId}`, "silent", { reason: "no usable answer after 2 tries" }); return; }
     const text = answer.say?.trim();
-    if (!text || wordCount(text) > SAY_WORDS || own.some((item) => item.text === text)) return;
+    if (!text || wordCount(text) > SAY_WORDS || own.some((item) => item.text === text)) {
+      client.journal?.outcome("chatter", `chat:${chatId}`, "silent",
+        { reason: answer.reason || (!text ? "nothing to say" : wordCount(text) > SAY_WORDS ? "too long" : "would repeat itself") });
+      return;
+    }
     const replyTo = messages.find((message) => message.meta.messageId === answer.reply_to)?.meta.messageId;
     const channel: ChannelRef = { source: "feishu", thread: `feishu:${chatId}`,
       address: { chatId, mode: "chat", ...(typeof replyTo === "string" ? { messageId: replyTo } : {}) } };
@@ -347,9 +371,10 @@ export class ChatterRoom {
     const mentions = mentioned ? [{ id: mentioned.actor.id, name: senderOf(client.store, mentioned) }] : [];
     // The outbox remembers what it says there (people.ts); `spoke` counts what it said on its own.
     client.store.atomic(() => {
-      client.outbox.send({ id: key("chatter", chatId, latest.id), channel, text: checkedImText(text), kind: "notice", ...(mentions.length ? { mentions } : {}) });
+      client.outbox.send({ id: key("chatter", chatId, latest.id), channel, text: checkedImText(text), kind: "notice", triggerId: latest.id, ...(mentions.length ? { mentions } : {}) });
       const state = client.store.get(KV.chatter.chat(chatId)) ?? { said: [] };
       client.store.set(KV.chatter.chat(chatId), { ...state, spoke: [...(state.spoke ?? []), new Date(this.now()).toISOString()].slice(-20) });
     });
+    client.journal?.outcome("chatter", `chat:${chatId}`, "sent", { reason: answer.reason || "", outbox: [key("chatter", chatId, latest.id)] });
   }
 }

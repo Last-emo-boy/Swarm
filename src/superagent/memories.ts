@@ -14,6 +14,7 @@ import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { chatLog, chatName, chatsOf, personName, senderOf } from "./people.js";
 import type { Memory, Settings } from "./settings.js";
+import type { JournalTarget } from "./journal.js";
 import { feishuUserChannel } from "./sources/feishu-trigger.js";
 import type { Store } from "./store.js";
 import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
@@ -263,11 +264,11 @@ export class Memories {
   private answer<T>(schema: z.ZodType<T>, purpose: string, ask: () => Promise<string>): Promise<T | undefined> {
     return answerOf(schema, ask, 2, (last) => this.host.log?.(noAnswer(purpose, 2, last)));
   }
-  private complete(purpose: string, system: string, card: unknown): Promise<string> {
+  private complete(purpose: string, system: string, card: unknown, target?: JournalTarget): Promise<string> {
     const { client, complete } = this.host;
     const memory = memoryOf(client.settings());
     const model = memory?.model ?? client.settings().eval.model;
-    return complete({ purpose, system, user: JSON.stringify(card, null, 2), ...(model ? { model } : {}) });
+    return complete({ purpose, system, user: JSON.stringify(card, null, 2), ...(model ? { model } : {}), ...(target ? { target } : {}) });
   }
 
   /** Reflects on a chat's messages since the last reflection: what to remember, and whether to write to someone. */
@@ -284,14 +285,17 @@ export class Memories {
     const shown = notesCard(client.store, [...people.map(personSubject), ...(direct ? [] : [chatSubject(chatId)]), SELF], PER_SUBJECT, 40);
     const card = { ...localNow(settings, this.now()), chat: direct ? "a direct message" : chatName(client.store, chatId) ?? chatId, messages,
       people: people.map((id) => ({ id, name: personName(client.store, { source: SOURCE, id }) ?? id })), memory: shown };
-    const answer = await this.answer(ReflectionSchema, "superagent_memory", () => this.complete("superagent_memory", reflectionPrompt(this.name(), chatterOf(settings).persona), card));
-    if (!answer) return;
+    const answer = await this.answer(ReflectionSchema, "superagent_memory", () => this.complete("superagent_memory", reflectionPrompt(this.name(), chatterOf(settings).persona), card,
+      { chat: chatId }));
+    if (!answer) { client.journal?.outcome("reflect", `chat:${chatId}`, "silent", { reason: "no usable answer after 2 tries" }); return }
     const ops = answer.notes.flatMap((item) => { const op = OpSchema.safeParse(item); return op.success ? [op.data] : []; });
     const scope = this.scope(people, direct ? undefined : chatId, shown);
     // A reflection keeps the changes it can; one it cannot apply leaves the rest.
     for (const op of ops.slice(0, OPS)) applyOps(client.store, [op], scope, { chatId, ...(direct ? { direct: true } : {}) }, new Date(this.now()));
     this.crowded([...people.map(personSubject), chatSubject(chatId), SELF]);
-    if (answer.reach_out && people.includes(answer.reach_out.to)) this.reachOut(answer.reach_out.to, answer.reach_out.text);
+    const reached = answer.reach_out && people.includes(answer.reach_out.to) ? this.reachOut(answer.reach_out.to, answer.reach_out.text) : undefined;
+    client.journal?.outcome("reflect", `chat:${chatId}`, reached ? "sent" : "silent",
+      { reason: `${ops.slice(0, OPS).length} notes kept`, ...(reached ? { outbox: [reached] } : {}) });
   }
 
   /** Reflects on a ticket that ended: what to remember about its requester and their work. */
@@ -308,14 +312,16 @@ export class Memories {
     const card = { ...localNow(settings, this.now()), ticket: { title: ticket.title, asked: origin.text.slice(0, 1000), outcome: ticket.ended?.outcome ?? "open",
       last_report: latestReport(ticket)?.summary.slice(0, 1500) ?? null }, requester: { id: origin.actor.id, name: senderOf(client.store, origin) },
       chat: direct ? "a direct message" : chatId ? chatName(client.store, chatId) ?? chatId : null, memory: shown };
-    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", ticketReflectionPrompt(this.name(), chatterOf(settings).persona), card));
-    if (!answer) return;
+    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", ticketReflectionPrompt(this.name(), chatterOf(settings).persona), card,
+      { ticket: ticketId }));
+    if (!answer) { client.journal?.outcome("ticket_reflect", `ticket:${ticketId}`, "silent", { reason: "no usable answer after 2 tries" }); return }
     const scope = this.scope([origin.actor.id], direct ? undefined : chatId, shown);
     for (const item of answer.notes.slice(0, OPS)) {
       const op = OpSchema.safeParse(item);
       if (op.success) applyOps(client.store, [op.data], scope, { ticketId, ...(chatId ? { chatId } : {}), ...(direct ? { direct: true } : {}) }, new Date(this.now()));
     }
     this.crowded([personSubject(origin.actor.id), SELF]);
+    client.journal?.outcome("ticket_reflect", `ticket:${ticketId}`, "silent", { reason: `${answer.notes.slice(0, OPS).length} notes kept`, ticketId });
   }
 
   /** Queues tidying for the subjects whose notes outgrew the settings. */
@@ -330,20 +336,29 @@ export class Memories {
    * Writes to a person on its own, at most `dmPerDay` times a day and once a day per person, never in quiet hours, and
    * not at all while a direct message cannot reach them.
    */
-  private reachOut(person: string, text: string): void {
+  private reachOut(person: string, text: string): string | undefined {
     const { client } = this.host;
     const settings = client.settings();
     const memory = memoryOf(settings);
     const now = this.now();
     const recent = (client.store.get(KV.memory.reached) ?? []).filter((item) => now - Date.parse(item.at) < DAY_MS);
     const channel = feishuUserChannel(person);
+    const keyOf = (at: string) => key("reach-out", person, at);
+    const at = new Date(now).toISOString();
+    const skipped = (reason: string): undefined => { client.journal?.skip("reach_out", `person:${person}:${at}`, "skipped", reason); return undefined };
     // A message that says too much is not sent, rather than cut.
-    if (!memory || recent.length >= memory.dmPerDay || recent.some((item) => item.person === person) || quietAt(chatterOf(settings), now)
-      || wordCount(text) > IM_WORDS || !client.sources.channelAllowed(channel)) return;
+    if (!memory) return skipped("memory is off");
+    if (recent.length >= memory.dmPerDay) return skipped("today's direct messages are spent");
+    if (recent.some((item) => item.person === person)) return skipped("it wrote to them already today");
+    if (quietAt(chatterOf(settings), now)) return skipped("quiet hours");
+    if (wordCount(text) > IM_WORDS) return skipped("too long for a direct message");
+    if (!client.sources.channelAllowed(channel)) return skipped("their direct messages cannot be reached now");
     client.store.atomic(() => {
-      client.outbox.send({ id: key("reach-out", person, new Date(now).toISOString()), channel, text, kind: "notice" });
-      client.store.set(KV.memory.reached, [...recent, { at: new Date(now).toISOString(), person }]);
+      client.outbox.send({ id: keyOf(at), channel, text, kind: "notice" });
+      client.store.set(KV.memory.reached, [...recent, { at, person }]);
     });
+    client.journal?.outcome("reach_out", `person:${person}:${at}`, "sent", { reason: "wrote to them on its own", outbox: [keyOf(at)] });
+    return keyOf(at);
   }
 
   /**
@@ -358,40 +373,54 @@ export class Memories {
     if (!memoryOf(settings) || !note || note.done || note.kind !== "promise" || (note.due ?? "") > at) return;
     const { channel, person } = this.recipient(note);
     // One with nowhere to go, such as one about itself made on a ticket, is kept without a message, so no model is asked for one.
-    if (!channel) { client.store.memory.save({ ...note, done: at, updated: at }); return; }
-    if (!client.sources.channelAllowed(channel)) return;
+    if (!channel) {
+      client.store.memory.save({ ...note, done: at, updated: at });
+      client.journal?.skip("promise", `note:${note.id}`, "skipped", "nowhere to send");
+      return;
+    }
+    if (!client.sources.channelAllowed(channel)) { client.journal?.skip("promise", `note:${note.id}`, "skipped", "the chat cannot receive it"); return }
     const chatId: string | undefined = channel.address.chatId;
     const card = { ...localNow(settings, this.now()), promise: noteLine(client.store, note), for: person ?? null,
       goes_to: chatId ? chatName(client.store, chatId) ?? chatId : "their direct messages",
       memory: notesCard(client.store, person ? [note.about] : [], 6, 6) };
-    const answer = await this.answer(PromiseSchema, "superagent_promise", () => this.complete("superagent_promise", promisePrompt(this.name(), chatterOf(settings).persona), card));
+    const answer = await this.answer(PromiseSchema, "superagent_promise", () => this.complete("superagent_promise", promisePrompt(this.name(), chatterOf(settings).persona), card,
+      { note: note.id, ...(chatId ? { chat: chatId } : {}) }));
     // A message too long for a chat is cut to fit; with no usable answer the promise is kept without one, rather than asked about again every minute.
     const say = answer?.say || undefined;
     const text = say && wordCount(say) > IM_WORDS ? cutToFit(say, IM_WORDS) : say;
+    const outboxId = key("promise", note.id, note.due ?? "");
+    let changed = false;
     client.store.atomic(() => {
       // Given a new time or forgotten while its message was written, it is left as it is now.
       const latest = client.store.memory.get(note.id);
       if (!latest || latest.due !== note.due) return;
+      changed = true;
       const kept = new Date(this.now()).toISOString();
       // Named after its due time too, so a promise made again posts again.
-      if (text) client.outbox.send({ id: key("promise", note.id, note.due ?? ""), channel, text, kind: "notice", ...(chatId && person ? { mentions: [person] } : {}) });
+      if (text) client.outbox.send({ id: outboxId, channel, text, kind: "notice", triggerId: note.origin.triggerId, ...(chatId && person ? { mentions: [person] } : {}) });
       client.store.memory.save({ ...latest, done: kept, updated: kept });
     });
+    if (!changed) { client.journal?.outcome("promise", `note:${note.id}`, "dropped", { reason: "the promise changed while its message was written" }); return }
+    client.journal?.outcome("promise", `note:${note.id}`, text ? "sent" : "silent",
+      { reason: text ? "" : answer ? "the model said null" : "no usable answer after 2 tries", ...(text ? { outbox: [outboxId] } : {}) });
   }
 
   /** Tidies a subject's notes into fewer. */
   async tidy(about: string): Promise<void> {
     const { client } = this.host;
     const memory = memoryOf(client.settings());
-    if (!memory || client.store.memory.count(about) <= memory.perSubject) return;
+    if (!memory || client.store.memory.count(about) <= memory.perSubject) { client.journal?.skip("tidy", `subject:${about}`, "skipped", "not crowded"); return }
     const notes = client.store.memory.about(about, 500);
     const shown = notes.map((note) => noteLine(client.store, note));
-    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", tidyPrompt(this.name()), { subject: shortSubject(about), notes: shown }));
-    if (!answer) return;
+    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", tidyPrompt(this.name()), { subject: shortSubject(about), notes: shown },
+      { subject: shortSubject(about) }));
+    // Tidy's runs are keyed by the short subject, as journalPlace records them, so its outcome finds its own row.
+    if (!answer) { client.journal?.outcome("tidy", `subject:${shortSubject(about)}`, "silent", { reason: "no usable answer after 2 tries" }); return }
     const scope = { subjects: () => undefined, shown: new Set(shown.map((note) => note.id)) };
     for (const item of answer.notes) {
       const op = OpSchema.safeParse(item);
       if (op.success && op.data.op !== "add") applyOps(client.store, [op.data], scope, {}, new Date(this.now()));
     }
+    client.journal?.outcome("tidy", `subject:${shortSubject(about)}`, "silent", { reason: `${answer.notes.length} notes tidied` });
   }
 }

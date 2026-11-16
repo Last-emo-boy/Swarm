@@ -9,7 +9,8 @@ import { settingsPath, writeSettings } from "./settings.js";
 import { KV } from "./kv.js";
 import { noticed, readMembers } from "./people.js";
 import { feishuTrigger } from "./sources/feishu.js";
-import { proxiedTicketTools, ticketTools } from "./ticket-tools.js";
+import { fileReport, proxiedTicketTools, ticketTools } from "./ticket-tools.js";
+import { latestReport } from "./core/index.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -126,9 +127,28 @@ test("a worker uses what paired nodes lend through its host's mesh, and each cal
     await assert.rejects(run({ node: "kube", tool: "shell", args: { command: "kubectl get nodes", timeout_ms: 600_000 } }), /No paired node is called kube/);
     const [call] = client.store.get(KV.mesh.calls(ticketId!)) ?? [];
     assert.deepEqual([call?.node, call?.tool, JSON.parse(call!.args)], ["kube", "shell", { command: "kubectl get nodes", timeout_ms: 100_000 }]);
+    // The call is kept once it ends, with how it went, so the ticket's report can say what failed.
+    assert.deepEqual([call?.ok, typeof call?.ms, call?.error?.includes("No paired node is called kube")], [false, "number", true]);
     assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "mesh" && !tool.readOnly), "workers in VMs and on paired nodes get it too, run by the host");
   } finally {
     if (saved === undefined) delete process.env.SWARM_MESH_HOME;
     else process.env.SWARM_MESH_HOME = saved;
   }
+});
+
+test("a ticket's report ends with one line of where its work ran, written by the host and not by the worker's model", async () => {
+  const { triggerId } = client.request("summarize the release notes");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Summarize", scope: "x", reason: "asked", name: "summarize", evalId: candidate.evalId });
+  client.store.set(KV.mesh.calls(ticketId!), [
+    { at: "2026-11-16T09:00:00.000Z", node: "ovh", tool: "shell", args: "{}", ok: true, ms: 120 },
+    { at: "2026-11-16T09:01:00.000Z", node: "kube", tool: "shell", args: "{}", ok: false, error: "timed out", ms: 30_000 }
+  ]);
+  await fileReport(client, ticketId!, { state: "progress", summary: "Reading the notes." });
+  const summary = latestReport(client.store.tickets.get(ticketId!)!)!.summary;
+  const lines = summary.split("\n\n");
+  assert.equal(lines[0], "Reading the notes.");
+  assert.equal(lines.length, 2, "exactly one line is appended");
+  assert.equal(lines[1], "Ran on this node; mesh: 2 calls (1 failed)");
 });

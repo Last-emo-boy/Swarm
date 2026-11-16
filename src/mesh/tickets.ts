@@ -6,12 +6,15 @@
  */
 import { HttpError } from "../server/gateway-http.js";
 import type { SuperagentClient } from "../superagent/client.js";
-import { findTicket, hostStatus, localReplies, ticketRow, ticketRows, type HostStatus, type TicketRow } from "../superagent/views.js";
+import { findTicket, hostStatus, localReplies, ticketMessages, ticketRow, ticketRows, type HostStatus, type TicketMessage, type TicketRow } from "../superagent/views.js";
 import { callPeer } from "./client.js";
 import type { MeshServer } from "./server.js";
 import type { Peer } from "./state.js";
 
+/** A message a peer posted to a local Thread, for the tickets list; a peer on an older version sends only these fields. */
 export interface MeshReply { id: string; ticketId?: string; kind: string; text: string; status: string }
+/** A message a peer queued for a ticket, with its delivery status and what it carries; a peer on an older version sends only the MeshReply fields. */
+export type MeshTicketMessage = Pick<TicketMessage, "id" | "kind" | "text" | "status"> & Partial<TicketMessage>
 export interface PeerTickets { rows: TicketRow[]; status: HostStatus; replies: MeshReply[] }
 
 const text = (body: Record<string, unknown>): string => {
@@ -35,7 +38,7 @@ export function registerTicketRoutes(server: MeshServer, client: SuperagentClien
   }));
   server.route("GET", "/mesh/v1/tickets/:handle", ({ params }) => {
     const found = ticket(params.handle!);
-    return { row: ticketRow(client, found), messages: localReplies(client, 200).filter((reply) => reply.ticketId === found.id) };
+    return { row: ticketRow(client, found), messages: ticketMessages(client, found.id) };
   });
   server.route("POST", "/mesh/v1/requests", ({ body }) => ({ triggerId: client.request(text(body)).triggerId }));
   server.route("POST", "/mesh/v1/tickets/:handle/messages", ({ params, body }) => {
@@ -69,8 +72,8 @@ export async function peerTickets(peer: Peer, timeoutMs = 4000): Promise<PeerTic
   return { ...answer, rows: answer.rows.map((row) => deviceRow(row, peer.name)) };
 }
 
-export async function peerTicket(peer: Peer, id: string): Promise<{ row: TicketRow; messages: MeshReply[] }> {
-  const answer = await callPeer<{ row: TicketRow; messages: MeshReply[] }>(peer, "GET", `/mesh/v1/tickets/${encodeURIComponent(id)}`);
+export async function peerTicket(peer: Peer, id: string): Promise<{ row: TicketRow; messages: MeshTicketMessage[] }> {
+  const answer = await callPeer<{ row: TicketRow; messages: MeshTicketMessage[] }>(peer, "GET", `/mesh/v1/tickets/${encodeURIComponent(id)}`);
   return { ...answer, row: deviceRow(answer.row, peer.name) };
 }
 

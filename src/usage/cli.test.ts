@@ -27,7 +27,8 @@ test("--since takes hours, days, a date or a time, and --by one of the groupings
   assert.deepEqual({ ...options, since: options.since.toISOString() },
     { since: "2026-10-08T12:00:00.000Z", sinceLabel: "30d", by: "device", allDevices: true, json: true });
   assert.equal(parseUsageArgs([], now).by, "model");
-  assert.throws(() => parseUsageArgs(["--by", "colour"], now), /--by takes model, provider, harness, device, ticket, day/);
+  assert.equal(parseUsageArgs(["--by", "chat"], now).by, "chat");
+  assert.throws(() => parseUsageArgs(["--by", "colour"], now), /--by takes model, provider, harness, device, ticket, chat, day/);
   assert.throws(() => parseUsageArgs(["--everything"], now), /Unknown option --everything/);
 });
 
@@ -43,12 +44,13 @@ test("swarm usage groups the ledger, prices it, and shows unpriced models' token
   assert.equal(byModel.total.input, 2_000_000 + 4360 + 2000);
   assert.equal(byModel.total.unpriced, 1);
 
-  const by = (grouping: "provider" | "harness" | "device" | "ticket" | "day") =>
+  const by = (grouping: "provider" | "harness" | "device" | "ticket" | "chat" | "day") =>
     usageReport(entries, devices, { since: parseSince("7d", now), by: grouping }, settings).rows.map((row) => [row.key, row.calls]);
   assert.deepEqual(by("provider"), [["harness:claude", 1], ["deepseek", 2], ["xai", 1]]);
   assert.deepEqual(by("harness"), [["claude", 1], ["-", 3]]);
   assert.deepEqual(by("device"), [["ovh", 2], ["mac", 2]]);
   assert.deepEqual(by("ticket"), [["abcdef12", 2], ["-", 2]]);
+  assert.deepEqual(by("chat"), [["-", 4]], "none of these calls was about a chat");
   assert.equal(by("day").reduce((sum, [, calls]) => sum + Number(calls), 0), 4, "days are local, so these calls fall on one or two");
 
   const text = usageText(byModel, "7d");

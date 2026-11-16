@@ -18,7 +18,9 @@ export interface TimelinePlace { at: string; id: string }
 /** Why a message was dropped: its conversation can never receive it (`channelGone`), or its Source no longer listens to it (`channelIgnored`). */
 export type DropReason = 'channelGone' | 'channelIgnored'
 /** Outbound message receipt tracked in the outbox from the moment it is queued (`pending`, `sent`, or `dropped`); delivery attempt counts live on its `reply` effect. */
-export interface Receipt extends OutboundMessage { status: ReplyStatus; dropped?: { at: string; reason: DropReason } }
+export interface Receipt extends OutboundMessage { status: ReplyStatus; dropped?: { at: string; reason: DropReason }
+  /** When the Source took it, and the id the platform gave the message. */
+  sentAt?: string; platformMessageId?: string }
 /** A dropped outbound message receipt, with the timestamp and reason it was dropped. */
 export type Dropped = Receipt & { dropped: { at: string; reason: DropReason } }
 /**
@@ -37,7 +39,7 @@ const SETS: Record<string, Record<string, string>> = {
     subscribed: "TEXT AS (CASE WHEN json_array_length(value, '$.subscriptions') > 0 THEN value ->> '$.ref.source' END)",
   },
   // Composite key (ticketId + thread) used to preserve per-conversation reply order.
-  outbox: { dropped: "TEXT AS (value ->> '$.dropped.at')", pending: `TEXT AS (CASE WHEN value ->> '$.status' = 'pending'
+  outbox: { dropped: "TEXT AS (value ->> '$.dropped.at')", sentAt: "TEXT AS (value ->> '$.sentAt')", pending: `TEXT AS (CASE WHEN value ->> '$.status' = 'pending'
     AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
   // The promises the agent has yet to keep, by when they fall due (memories.ts).
   memory: { due: "TEXT AS (CASE WHEN value ->> '$.kind' = 'promise' AND value -> '$.done' IS NULL THEN value ->> '$.due' END)" },
@@ -83,6 +85,10 @@ export class Store implements Repositories {
             since TEXT NOT NULL, PRIMARY KEY (kind, key));
           CREATE TABLE IF NOT EXISTS local_request (id TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS memory (id TEXT PRIMARY KEY, about TEXT NOT NULL, value TEXT NOT NULL, updated TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
+            attempt INTEGER NOT NULL, value TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS journal_at ON journal(at);
+          CREATE INDEX IF NOT EXISTS journal_key ON journal(key, at);
           CREATE INDEX IF NOT EXISTS memory_about ON memory(about, updated);
           CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
           CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
@@ -272,13 +278,15 @@ export class Store implements Repositories {
      * Marks a pending receipt as sent or dropped (with drop reason and timestamp), recreating the receipt if the message
      * was withdrawn while being sent so its ID cannot be queued again.
      */
-    settle: (message: OutboundMessage, outcome: 'sent' | DropReason): void => {
-      const settled = outcome === 'sent' ? { status: 'sent' } : { status: 'dropped', dropped: { at: new Date().toISOString(), reason: outcome } }
-      const { id, channel, text, kind, ticketId } = message
+    settle: (message: OutboundMessage, outcome: 'sent' | DropReason, sent?: { at: string; messageId?: string }): void => {
+      const settled = outcome === 'sent' ? { status: 'sent', ...(sent ? { sentAt: sent.at } : {}), ...(sent?.messageId ? { platformMessageId: sent.messageId } : {}) }
+        : { status: 'dropped', dropped: { at: new Date().toISOString(), reason: outcome } }
+      const { id } = message
       const updated = this.db.prepare("UPDATE outbox SET value = json_patch(value, ?) WHERE id = ? AND value ->> '$.status' = 'pending'")
         .run(JSON.stringify(settled), id)
+      // Recreated from the whole message, so the trigger it answers, its file and its mentions are not lost with the row.
       if (!Number(updated.changes)) this.db.prepare('INSERT OR IGNORE INTO outbox (id, value) VALUES (?, ?)')
-        .run(id, JSON.stringify({ id, channel, text, kind, ...ticketId ? { ticketId } : {}, ...settled }))
+        .run(id, JSON.stringify({ ...message, ...settled }))
     },
     /**
      * Withdraws a pending message that has not yet been sent.
