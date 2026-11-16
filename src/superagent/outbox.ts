@@ -28,8 +28,9 @@ export class Outbox implements OutboxPort {
   /** Record a message receipt and enqueue its delivery effect atomically; duplicate message IDs are ignored. */
   send(message: OutboundMessage): void {
     // Validate IM reply length here for a chat kind's conversation; acknowledgements are already validated when decided.
+    // Only a platform that shows a fixed-size bubble is held to it: a terminal shows what it is given.
     const kind = this.host.sources.chatKind(message.channel.source)
-    if (message.kind === 'reply' && kind) checkedImText(message.text)
+    if (message.kind === 'reply' && kind?.imWords) checkedImText(message.text)
     const { store, effects } = this.host
     store.atomic(() => {
       if (!store.receipts.add(message)) return

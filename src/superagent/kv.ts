@@ -33,8 +33,8 @@ export const KV = {
   },
   /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
-  /** Local Source: the requests a Swarm TUI or CLI queued that the host has taken in, by request id. */
-  local: { taken: record<string>('local-taken-at') },
+  /** Local Source: the requests a Swarm TUI or CLI queued that the host has taken in, by request id; and messages a TUI queued for the host to take in as chat. */
+  local: { taken: record<string>('local-taken-at'), inbox: family<{ id: string; text: string; actor: string; at: string }, [message: string]>('local-inbox:') },
   /**
    * Mesh: where a ticket's worker runs, by ticket id or by the id of the request it was filed with, and the lease of the
    * paired node that runs it now, by ticket id. Only the node that owns the tickets writes them.

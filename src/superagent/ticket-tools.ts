@@ -401,10 +401,16 @@ export function ticketTools(client: SuperagentClient, ticketId: string, assignme
       // first chat kind that is on, as its people and chats have always come from a chat kind's records.
       const from = sourceTrigger(client, ticket());
       const enabledChats = client.sources.chatKinds().filter((kind) => client.sources.instance(kind.source)?.enabled);
-      const chat = (from ? client.sources.chatKind(from.source) : undefined) ?? enabledChats[0] ?? feishuChatKind;
-      const source = from && client.sources.chatKind(from.source) ? from.source : chat.source;
+      const home = (from ? client.sources.chatKind(from.source) : undefined) ?? enabledChats[0] ?? feishuChatKind;
+      // The ticket's own kind first, but a name that is nobody there is looked for in the other chats it may speak in: a
+      // request filed from the terminal still tells a person it names where else the agent talks to them.
+      const first = addressee(client.store, String(args.to), home);
+      const other = "problem" in first ? enabledChats.find((kind) => kind.source !== home.source) : undefined;
+      const tried = other ? addressee(client.store, String(args.to), other) : undefined;
+      const chat = other && tried && !("problem" in tried) ? other : home;
+      const target = chat === home ? first : tried!;
+      const source = chat.source;
       if (!client.sources.instance(source)?.enabled) throw new Error(`Messages go out only on ${chat.platform}, which is off here`);
-      const target = addressee(client.store, String(args.to), chat);
       if ("problem" in target) throw new Error(target.problem);
       const mentions = mentionsFor(client.store, Array.isArray(args.mentions) ? args.mentions.map(String) : [], source);
       if ("problem" in mentions) throw new Error(mentions.problem);

@@ -24,6 +24,11 @@ import { inChinese, sayIn, wordCount, type Say } from "./text.js";
 
 const HOUR_MS = 3_600_000;
 export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "ceiling", "chatter", "takeover", "devices", "memory", "forget"] as const;
+/**
+ * The bot commands a terminal hands to the host when its own slash commands have no such name: the TUI keeps the ones it
+ * defines itself (help, memory), and `/chat /…` reaches everything.
+ */
+export const FORWARDED = COMMANDS.filter((name) => !["help", "memory"].includes(name));
 export type CommandName = typeof COMMANDS[number];
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 

@@ -35,6 +35,8 @@ export const feishuChatKind: ChatKind = {
     return { ...chatId ? { chatId } : {}, ...messageId ? { messageId } : {}, ...userId ? { userId } : {},
       direct: direct === 'true', mode: mode === 'user' ? 'user' : mode === 'chat' ? 'chat' : 'reply' }
   },
+  // A Feishu message is one bubble: a reply longer than the limit is rewritten, then cut.
+  imWords: true,
   // One cheap authenticated call: an app that is not installed, a bot outside its availability or a signed-out CLI fails it.
   probe: async (commands, deployment, _config) => { await commands.lark(['auth', 'status']) },
 }

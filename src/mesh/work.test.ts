@@ -137,10 +137,12 @@ before(async () => {
   const server = new MeshServer({ home: mesh, card: () => nodeCard(readMesh(mesh).node, { abilities: ["linux"] }) });
   server.route("POST", "/mesh/v1/work/offers", ({ peer, body }) => {
     offers.push(body);
-    setImmediate(() => {
+    // The offer's response goes out before the ghost disappears: stopping inside the handler's own tick destroys the socket
+    // the response was about to travel on, and the owner reads a failed offer instead of an accepted one.
+    setTimeout(() => {
       void callPeer(peer!, "POST", `${workPath(String(body.ticketId))}/started`, { assignmentId: body.assignmentId, directory: "/ghost/work" })
         .finally(() => server.stop());
-    });
+    }, 100);
     return { accepted: true };
   });
   const { address: url } = await server.start();
@@ -247,6 +249,9 @@ test("a node that stops renewing its lease loses the work: the owner restarts th
   const { client } = ovh.host;
   const { id, name } = findPeer(readMesh(ovh.mesh), "ghost");
   requestOn(client, "train the model on the new data", { id, name });
+  // The ghost takes exactly one offer and then goes away; wait for that offer to have arrived before reading the ticket,
+  // so a slow first placement fails here with what it waited for rather than at the report assertion.
+  await until(() => ghost.offers.length >= 1 ? true : undefined, 30_000);
   const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Train the model");
   const ticket: Ticket = await until(() => find()?.assignments.at(-1)?.report?.state === "failed" ? find() : undefined, 50_000);
   assert.equal(ghost.offers.length, 1, "the ghost took the first Assignment");

@@ -11,6 +11,7 @@ import { noticed, readMembers } from "./people.js";
 import { feishuTrigger } from "./sources/feishu.js";
 import { fileReport, proxiedTicketTools, ticketTools } from "./ticket-tools.js";
 import { latestReport } from "./core/index.js";
+import { localOperator } from "./sources/local.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -42,7 +43,9 @@ test("a worker reads who is who and a group's latest messages from the host's re
   assert.equal(read.name, "Team");
   assert.deepEqual(read.messages.map((line) => [line.from, line.text]), [["Alice", "ship it on Friday"]]);
   await assert.rejects(run("read", { resource: "chat/oc_dm", offset: 0 }), /another person's direct messages/);
-  assert.deepEqual(await run("people", {}), { chats: [{ chat_id: "oc_team", name: "Team", people: 3 }, { chat_id: "oc_dm", name: "Carol", direct: true, people: 1 }] });
+  assert.deepEqual(await run("people", {}), { chats: [{ source: "feishu", chat_id: "oc_team", name: "Team", people: 3 },
+    { source: "feishu", chat_id: "oc_dm", name: "Carol", direct: true, people: 1 }, { source: "local", chat_id: "tui", name: localOperator(), direct: true, people: 1 }] });
+  assert.ok(true);
   assert.deepEqual(await run("people", { chat: "oc_team" }), { chat: "oc_team", name: "Team",
     people: [{ id: "ou_alice", name: "Alice" }, { id: "ou_bob", name: "Bob" }, { id: "ou_tickey", name: "Tickey", bot: true }] });
   assert.deepEqual(await run("people", { name: "bob" }), { people: [{ id: "ou_bob", name: "Bob", chats: ["Team"] }] });
@@ -83,7 +86,9 @@ test("a worker keeps notes for later and looks up what the agent remembers, when
   writeSettings({ memory: { enabled: true } }, settingsPath(stateDir));
   assert.deepEqual(await run("remember", { about: "self", kind: "fact", text: "I set up CI with GitHub Actions" }), { remembered: true });
   assert.deepEqual(await run("remember", { about: "ou_bob", kind: "preference", text: "Bob wants CI to run on every push" }), { remembered: true });
-  await assert.rejects(run("remember", { about: "requester", text: "x" }), /not someone or something here/, "a local request has no Feishu requester");
+  // The terminal is a chat now, so a local request's requester is the operator, and a note about them is kept.
+  assert.deepEqual(await run("remember", { about: "requester", kind: "preference", text: "prefers short PR titles" }), { remembered: true });
+  assert.equal(client.store.memory.about(personSubject(localOperator(), "local"))[0]!.text, "prefers short PR titles");
   const found = await run("recall", { query: "every push" }) as { notes: { text: string; about: string }[] };
   assert.deepEqual(found.notes.map((note) => [note.about, note.text]), [["ou_bob", "Bob wants CI to run on every push"]]);
   assert.equal(client.store.memory.about(personSubject("ou_bob"))[0]!.origin.ticketId, ticketId);
@@ -105,7 +110,6 @@ test("a worker answers what the agent runs work on from the host's devices, with
   assert.deepEqual(await run(), { as_of: "2026-11-10T10:15:00.000Z", this_node: devices.here, paired_nodes: devices.peers,
     ticket_workers: { runs_as: "a VM of its own for each ticket; the cluster takes tickets once this node's VMs are busy", on_this_node: devices.workers.local } });
   // Under the access model, a requester below maintainer gets counts.
-  const { localOperator } = await import("./sources/local.js");
   writeSettings({ access: {}, policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "everyone" } } } } }, settingsPath(stateDir));
   utimesSync(settingsPath(stateDir), new Date(), new Date(Date.now() + 2000));
   const counts = await run() as Record<string, unknown>;

@@ -55,6 +55,11 @@ export interface ChatKind {
   /** What a channel points at, whether it was built here or stored. */
   describe(channel: ChannelRef): ChannelPlace
   /**
+   * Whether a reply is held to the IM word limit (100 words) before it is sent. A platform that shows a fixed-size bubble
+   * needs it; a terminal, which shows what it is given, does not.
+   */
+  imWords?: true
+  /**
    * Whether the platform's API is reachable; throws with the platform's message when it is not. Required: a kind whose watch
    * loop claims `ready` must say how to tell that the claim is stale, so an adapter cannot report ready while every call fails.
    */
