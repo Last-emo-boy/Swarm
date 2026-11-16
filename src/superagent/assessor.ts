@@ -22,7 +22,7 @@ import { ask } from "./asks.js";
 import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, personSubject, planOps, subjectsOf } from "./memories.js";
 import { admissionContext } from "./sources/admission-context.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
-import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, parseJsonObject, sameName, wordCount } from "./text.js";
+import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, noAnswer, orNull, parseJsonObject, sameName, wordCount } from "./text.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
 export type Complete = (input: { purpose: string; system: string; user: string; model?: string }) => Promise<string>;
@@ -49,6 +49,8 @@ export interface AssessorHost {
   mesh?(): Promise<MeshView | undefined>;
   /** What the host runs its tickets' work on now, which the router answers questions about its devices from. */
   devices?(): Promise<Devices>;
+  /** Where to note a model answer it could not use, which then stops nothing. */
+  log?(message: string): void;
 }
 
 const AcknowledgementSchema = z.string().trim().min(1)
@@ -160,7 +162,7 @@ export const AssessmentSchema = z.object({
 }).strict().refine((value) => value.decision !== "accept" || !directionAllowed(value.direction) || !value.rule_assessments.some((rule) => rule.matched)
   || !!value.worktree_name, { message: "Accepted work requires a short English worktree_name", path: ["worktree_name"] });
 
-const FollowupSchema = z.object({ stop: z.array(z.string()).default([]), reason: z.string().max(300).default("") });
+const FollowupSchema = z.object({ stop: orNull(z.array(z.string()), []), reason: orNull(z.string().max(300), "") });
 
 export { parseJsonObject } from "./text.js";
 const problem = (error: unknown): string => error instanceof z.ZodError ? z.prettifyError(error) : error instanceof Error ? error.message : String(error);
@@ -580,7 +582,8 @@ export class ModelAssessor {
     const card = { message: { ...triggerMessage(trigger, {}), text: cut(trigger.text, TRIGGER_CHARS).text },
       delivered_to: tickets.map((ticket) => ({ ticket_id: ticket.id, title: ticket.title, state: ticketCard(ticket).state })) };
     const answer = await answerOf(FollowupSchema, () => complete({ purpose: "superagent_followup", system: followupPrompt(),
-      user: JSON.stringify(card, null, 2), model: client.settings().eval.model ?? undefined }));
+      user: JSON.stringify(card, null, 2), model: client.settings().eval.model ?? undefined }), 2,
+      (last) => this.host.log?.(noAnswer("superagent_followup", 2, last)));
     if (!answer) return;
     for (const ticketId of answer.stop.filter((id) => owners.includes(id))) {
       try {

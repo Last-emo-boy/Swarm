@@ -1,5 +1,5 @@
 /** Word counting and string helpers for chat message limits and templates (from dsh-superagent's infra/text.ts). */
-import type { z } from "zod/v4";
+import { z } from "zod/v4";
 
 const words = new Intl.Segmenter("zh", { granularity: "word" });
 export const IM_WORDS = 100;
@@ -63,17 +63,29 @@ export function parseJsonObject(text: string): unknown {
 }
 
 /**
+ * A schema for a field a model may leave out or write as null, both meaning `fallback`: models often write `"notes": null`
+ * for an empty list, which `.default()` alone refuses, and a refused answer costs a paid call and can leave a caller silent.
+ */
+export const orNull = <T>(schema: z.ZodType<T>, fallback: T): z.ZodType<T> => z.preprocess((value) => value ?? fallback, schema.default(fallback));
+
+/**
  * A model's answer that fits `schema`, asked once more when the first cannot be used: one with no JSON object in it, or
  * one the schema refuses, which a second try usually mends. Undefined when neither can be used, so its caller gives up
- * rather than pay for more. A call that fails, such as on the network, still throws.
+ * rather than pay for more, and `onGiveUp` hears the last answer so a model that keeps returning garbage leaves a trace
+ * in the log. A call that fails, such as on the network, still throws.
  */
-export async function answerOf<T>(schema: z.ZodType<T>, ask: () => Promise<string>, tries = 2): Promise<T | undefined> {
+export async function answerOf<T>(schema: z.ZodType<T>, ask: () => Promise<string>, tries = 2, onGiveUp?: (answer: string) => void): Promise<T | undefined> {
+  let last = "";
   for (let attempt = 0; attempt < tries; attempt++) {
-    const answer = await ask();
+    last = await ask();
     try {
-      const parsed = schema.safeParse(parseJsonObject(answer));
+      const parsed = schema.safeParse(parseJsonObject(last));
       if (parsed.success) return parsed.data;
     } catch { /* The answer holds no JSON object. */ }
   }
+  onGiveUp?.(last);
   return undefined;
 }
+/** A log line for a model whose answers could not be used, naming the purpose and how the last one started. */
+export const noAnswer = (purpose: string, tries: number, answer: string): string =>
+  `superagent: no usable answer for ${purpose} after ${tries === 1 ? "1 try" : `${tries} tries`}: ${[...answer].slice(0, 200).join("")}`;

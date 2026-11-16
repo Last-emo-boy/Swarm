@@ -16,7 +16,7 @@ import { chatLog, chatName, chatsOf, personName, senderOf } from "./people.js";
 import type { Memory, Settings } from "./settings.js";
 import { feishuUserChannel } from "./sources/feishu-trigger.js";
 import type { Store } from "./store.js";
-import { IM_WORDS, answerOf, cutToFit, wordCount } from "./text.js";
+import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
 
 export const NOTE_KINDS = ["fact", "preference", "event", "promise"] as const;
 export type NoteKind = typeof NOTE_KINDS[number];
@@ -133,11 +133,11 @@ function dueOf(value: string | null | undefined, now: Date): string | undefined 
 }
 
 const ReflectionSchema = z.object({
-  notes: z.array(z.unknown()).default([]),
+  notes: orNull(z.array(z.unknown()), []),
   reach_out: z.object({ to: z.string().min(1), text: z.string().trim().min(1) }).nullish()
 });
 const PromiseSchema = z.object({ say: z.string().trim().nullish() });
-const TidySchema = z.object({ notes: z.array(z.unknown()).default([]) });
+const TidySchema = z.object({ notes: orNull(z.array(z.unknown()), []) });
 
 const NOTE_RULES = [
   "Keep notes short, one thing each, in the language people use, about one subject: a person by their id, the chat (chat) or yourself (self).",
@@ -186,6 +186,8 @@ export interface MemoriesHost {
   readonly client: SuperagentClient;
   readonly complete: Complete;
   now?(): number;
+  /** Where to note a model answer it could not use, which leaves what it does then undone. */
+  log?(message: string): void;
 }
 
 /** The agent's memory at work: reflecting on chats and tickets, keeping promises, writing to people, and tidying. */
@@ -255,6 +257,10 @@ export class Memories {
       shown: new Set(shown.map((note) => note.id))
     };
   }
+  /** A model's answer it can use, or undefined, noting in the log the last one it could not. */
+  private answer<T>(schema: z.ZodType<T>, purpose: string, ask: () => Promise<string>): Promise<T | undefined> {
+    return answerOf(schema, ask, 2, (last) => this.host.log?.(noAnswer(purpose, 2, last)));
+  }
   private complete(purpose: string, system: string, card: unknown): Promise<string> {
     const { client, complete } = this.host;
     const memory = memoryOf(client.settings());
@@ -276,7 +282,7 @@ export class Memories {
     const shown = notesCard(client.store, [...people.map(personSubject), ...(direct ? [] : [chatSubject(chatId)]), SELF], PER_SUBJECT, 40);
     const card = { ...localNow(settings, this.now()), chat: direct ? "a direct message" : chatName(client.store, chatId) ?? chatId, messages,
       people: people.map((id) => ({ id, name: personName(client.store, { source: SOURCE, id }) ?? id })), memory: shown };
-    const answer = await answerOf(ReflectionSchema, () => this.complete("superagent_memory", reflectionPrompt(this.name(), chatterOf(settings).persona), card));
+    const answer = await this.answer(ReflectionSchema, "superagent_memory", () => this.complete("superagent_memory", reflectionPrompt(this.name(), chatterOf(settings).persona), card));
     if (!answer) return;
     const ops = answer.notes.flatMap((item) => { const op = OpSchema.safeParse(item); return op.success ? [op.data] : []; });
     const scope = this.scope(people, direct ? undefined : chatId, shown);
@@ -300,7 +306,7 @@ export class Memories {
     const card = { ...localNow(settings, this.now()), ticket: { title: ticket.title, asked: origin.text.slice(0, 1000), outcome: ticket.ended?.outcome ?? "open",
       last_report: latestReport(ticket)?.summary.slice(0, 1500) ?? null }, requester: { id: origin.actor.id, name: senderOf(client.store, origin) },
       chat: direct ? "a direct message" : chatId ? chatName(client.store, chatId) ?? chatId : null, memory: shown };
-    const answer = await answerOf(TidySchema, () => this.complete("superagent_memory", ticketReflectionPrompt(this.name(), chatterOf(settings).persona), card));
+    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", ticketReflectionPrompt(this.name(), chatterOf(settings).persona), card));
     if (!answer) return;
     const scope = this.scope([origin.actor.id], direct ? undefined : chatId, shown);
     for (const item of answer.notes.slice(0, OPS)) {
@@ -356,7 +362,7 @@ export class Memories {
     const card = { ...localNow(settings, this.now()), promise: noteLine(client.store, note), for: person ?? null,
       goes_to: chatId ? chatName(client.store, chatId) ?? chatId : "their direct messages",
       memory: notesCard(client.store, person ? [note.about] : [], 6, 6) };
-    const answer = await answerOf(PromiseSchema, () => this.complete("superagent_promise", promisePrompt(this.name(), chatterOf(settings).persona), card));
+    const answer = await this.answer(PromiseSchema, "superagent_promise", () => this.complete("superagent_promise", promisePrompt(this.name(), chatterOf(settings).persona), card));
     // A message too long for a chat is cut to fit; with no usable answer the promise is kept without one, rather than asked about again every minute.
     const say = answer?.say || undefined;
     const text = say && wordCount(say) > IM_WORDS ? cutToFit(say, IM_WORDS) : say;
@@ -378,7 +384,7 @@ export class Memories {
     if (!memory || client.store.memory.count(about) <= memory.perSubject) return;
     const notes = client.store.memory.about(about, 500);
     const shown = notes.map((note) => noteLine(client.store, note));
-    const answer = await answerOf(TidySchema, () => this.complete("superagent_memory", tidyPrompt(this.name()), { subject: shortSubject(about), notes: shown }));
+    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", tidyPrompt(this.name()), { subject: shortSubject(about), notes: shown }));
     if (!answer) return;
     const scope = { subjects: () => undefined, shown: new Set(shown.map((note) => note.id)) };
     for (const item of answer.notes) {

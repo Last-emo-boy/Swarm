@@ -41,6 +41,9 @@ const SETS: Record<string, Record<string, string>> = {
     AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
   // The promises the agent has yet to keep, by when they fall due (memories.ts).
   memory: { due: "TEXT AS (CASE WHEN value ->> '$.kind' = 'promise' AND value -> '$.done' IS NULL THEN value ->> '$.due' END)" },
+  // A request the router gave up on because the model did not answer, which nobody dismissed yet (store-read.ts `unroutedDecisions`).
+  decision: { unrouted: `INTEGER AS (CASE WHEN value ->> '$.kind' = 'unavailable' AND value ->> '$.reason[0].code' = 'timeout'
+    AND value ->> '$.strength' = 'explicit' AND value -> '$.dismissed' IS NULL THEN 1 END)` },
 }
 export const SCHEMA_VERSION = 1
 /**
@@ -53,7 +56,7 @@ export class Store implements Repositories {
   /**
   
    * @param report - Receives errors thrown by `afterCommit` callbacks without failing the committed transaction.
-   * @throws When the database schema is older than `OLDEST_SCHEMA` (10), newer than `SCHEMA_VERSION` (11), or when migration fails; in every case the database file is left unchanged and the SQLite handle is closed so a later attempt in the same process can open it.
+   * @throws When the database schema is newer than `SCHEMA_VERSION`, or when migration fails; in every case the database file is left unchanged and the SQLite handle is closed so a later attempt in the same process can open it.
    */
   constructor(path: string, private readonly report: (error: unknown) => void = () => {}) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })

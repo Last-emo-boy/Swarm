@@ -66,7 +66,7 @@ export function storeReads(db: DatabaseSync) {
    * only starts again records an unavailable Decision too, and a dismissed one stays stored, so neither may take the place
    * of a request nobody has seen to yet.
    */
-  unroutedDecisions: (limit = 50): Decision[] => values(`SELECT value FROM decision WHERE ${unrouted} AND value -> '$.dismissed' IS NULL ORDER BY rowid DESC LIMIT ?`, limit),
+  unroutedDecisions: (limit = 50): Decision[] => values('SELECT value FROM decision INDEXED BY decision_unrouted WHERE unrouted = 1 ORDER BY rowid DESC LIMIT ?', limit),
   recentDecisions: (offset = 0, limit = 50): Decision[] => db.prepare('SELECT value FROM decision ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Decision),
   /** Decisions matching `kinds` whose triggers arrived at or after `since`, aligned with `flow` window counts. */
   decisions: (options: { kinds: string[]; since: string }, offset: number, limit: number): { items: Decision[]; more: boolean } => {

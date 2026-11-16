@@ -22,6 +22,8 @@ let room: ChatterRoom;
 let now: number;
 let answers: string[];
 let calls: { system: string; user: string; model?: string }[];
+/** What the room noted through its host's log, such as a model answer it could not use. */
+let logs: string[];
 const write = (chatter: Record<string, unknown> = {}) => writeSettings({
   sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: CHAT, listen: "all" }], directMessages: true } } },
   policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } },
@@ -35,7 +37,8 @@ beforeEach(() => {
   now = Date.parse("2026-11-10T06:00:00Z");
   answers = [];
   calls = [];
-  room = new ChatterRoom({ client, now: () => now,
+  logs = [];
+  room = new ChatterRoom({ client, now: () => now, log: (message) => { logs.push(message); },
     complete: async (input) => { calls.push(input); return answers.shift() ?? JSON.stringify({ say: null, reason: "nothing to add" }); } });
 });
 afterEach(() => {
@@ -453,6 +456,8 @@ describe("when messages call for the agent that its router does not answer", () 
     const [relay] = posts();
     expect(wordCount(relay!.text) <= 100 && relay!.text.endsWith("。…") && relay!.text.startsWith("规范基本定完了")).toBe(true);
     expect(openAsks(client.store, now)).toEqual([]);
+    // The retry that gave no usable answer is noted as its own purpose, with one try.
+    expect(logs).toEqual(["superagent: no usable answer for superagent_attend again after 1 try: not json"]);
   });
 
   it("asks the model three times at most: twice for an answer it can use, once for a shorter one", async () => {
@@ -519,5 +524,58 @@ describe("when messages call for the agent that its router does not answer", () 
     expect(["w33d 你看看", "问问W33D", "@w33d 在吗", "ok w33d."].map((text) => namesAgent(text, "w33d"))).toEqual([true, true, true, true]);
     expect(["see w33d.xyz", "x@w33d.xyz", "aw33d", "w33d_bot"].map((text) => namesAgent(text, "w33d"))).toEqual([false, false, false, false]);
     expect(namesAgent("奶蛋你来", "奶蛋")).toBe(true);
+  });
+
+  it("takes an answer whose relay, ask_back or reason is null for the empty list it would rather write, in a single call", async () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 进度如何？", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    const reply = botMessage("ou_feifei", "规范基本定了，还差发版", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: "收到，我转告 Alice", reply_to: reply.meta.messageId }, relay: null, ask_back: null, reason: null }));
+    await room.attend(CHAT, [reply.id]);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => post.text)).toEqual(["收到，我转告 Alice"]);
+    expect(logs).toEqual([]);
+  });
+
+  it("takes a considered answer whose reason is null, saying it in a single call", async () => {
+    room.pass();
+    message("ou_alice", "anyone tried the new tea place?", 30);
+    now += 61_000;
+    answers.push(JSON.stringify({ say: "The oolong there is worth the queue.", reply_to: null, mention: null, reason: null }));
+    await room.consider(CHAT);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => post.text)).toEqual(["The oolong there is worth the queue."]);
+    expect(logs).toEqual([]);
+  });
+
+  it("gives up after two unusable answers, noting the purpose and the start of the last one", async () => {
+    room.pass();
+    message("ou_alice", "anyone tried the new tea place?", 30);
+    now += 61_000;
+    room.pass();
+    answers.push("I would rather not answer in JSON.", `{"say": ${"x".repeat(300)}}`);
+    await room.consider(CHAT);
+    expect(calls.length).toBe(2);
+    expect(logs.length).toBe(1);
+    expect(logs[0]).toMatch(/^superagent: no usable answer for superagent_chatter after 2 tries: \{"say": xxx/);
+    expect(logs[0]!.length < 300).toBe(true);
+    // An answer it can use is no such trace.
+    logs = [];
+    answers.push(JSON.stringify({ say: "The oolong there is worth the queue." }));
+    await room.consider(CHAT);
+    expect(logs).toEqual([]);
+  });
+
+  it("notes a give-up when answering what called for it leaves no answer it can use", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "你那边有 fixtures 的结果吗", 0, { mention: true });
+    answers.push("not json", "still not json");
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.length).toBe(2);
+    expect(logs.length).toBe(1);
+    expect(logs[0]).toBe("superagent: no usable answer for superagent_attend after 2 tries: still not json");
   });
 });
