@@ -239,7 +239,7 @@ const deviceFlow = (login: string, repos: string[]) => ({
 });
 
 describe("take-over", () => {
-  it("lets a maintainer take over a local ticket with a patch: a new ticket of theirs that writes to GitHub from it, and the old one ends", () => {
+  it("lets a maintainer take over a local ticket with a patch: a new ticket of theirs that writes to GitHub from it, and the old one ends", async () => {
     writeSettings(settings({}), settingsPath(stateDir));
     const local = accept(message(READER, "fix the typo"));
     expect(local.mandate.capability).toEqual({ role: "everyone", write: "local" });
@@ -255,6 +255,13 @@ describe("take-over", () => {
     const path = patchPath(stateDir, local);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "From 0000 Mon Sep 17 00:00:00 2001\n");
+    // A blocked local ticket keeps its patch too, of unfinished work, which the take-over leaves alone.
+    client.engine.assignmentStarted(local.id, local.assignments[0]!.id);
+    client.engine.report(local.id, { state: "blocked", summary: "Needs a licence name." });
+    commands.receive(message(MAINTAINER, "/takeover", { root }));
+    expect(replies().at(-1)!.text).toContain("has no patch yet: I'll open the pull request as @alice-gh once it reports ready");
+    expect(takerOf(local)).toBeUndefined();
+    await ready(local);
     commands.receive(message(MAINTAINER, "/takeover", { root }));
     const taken = takerOf(local)!;
     expect(taken.mandate).toMatchObject({ actor: { id: MAINTAINER }, capability: { role: "maintainer", write: "github", from: local.id,

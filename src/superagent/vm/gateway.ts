@@ -13,7 +13,7 @@ import { loadSwarmSettings, resolveModelRef, type ProviderDefinition, type Swarm
 import { HttpError, errorMessage, readJsonBody, sendJson } from "../../server/gateway-http.js";
 import { watchedRepository } from "../policy.js";
 import { usageRecorder } from "../provider.js";
-import { PatchSchema, patchPath, ticketTools, type TicketTool } from "../ticket-tools.js";
+import { keptPatchNote, PatchSchema, patchPath, ticketTools, type TicketTool } from "../ticket-tools.js";
 import { ReportSchema, workDelivered, workStart, workView } from "../work-link.js";
 import { workerAccounts, type WorkerAccounts } from "../environment.js";
 import { harnessProfiles, type HarnessProfile } from "../harness.js";
@@ -238,6 +238,18 @@ export class VmGateway {
       const path = source && patchPath(client.stateDir, source);
       if (!path || !existsSync(path)) throw new HttpError(404, "There is no patch to take over");
       return { patch: readFileSync(path, "utf8") };
+    });
+    // The ticket's own patch, kept from work that stopped: its guest applies it to a fresh directory, so the commits outlast it.
+    this.route("GET", "/v1/patch", (request) => {
+      const path = patchPath(client.stateDir, this.ticket(request));
+      if (!existsSync(path)) throw new HttpError(404, "This ticket has no kept patch");
+      return { patch: readFileSync(path, "utf8") };
+    });
+    // The guest's kept patch did not apply: the ticket notes why and goes on in the directory as prepared.
+    this.route("POST", "/v1/work/patch", (request) => {
+      const why = String(request.body.why ?? "");
+      client.engine.note(request.record.ticketId, keptPatchNote(patchPath(client.stateDir, this.ticket(request)), why));
+      return {};
     });
   }
 

@@ -17,7 +17,7 @@ import { verifyDirectory, workerAccounts, workerEnvironment, type WorkerAccounts
 import type { Credential } from "./github-link.js";
 import { watchedRepository } from "./policy.js";
 import { sameName } from "./text.js";
-import { patchPath } from "./ticket-tools.js";
+import { keptPatchNote, patchPath } from "./ticket-tools.js";
 import type { Deployment } from "./setup.js";
 
 const exec = promisify(execFile);
@@ -94,15 +94,16 @@ export async function cloneRepository(directory: string, repository: string, bra
 
 /**
  * Applies a patch of commits to a prepared ticket directory with `git am`, committing as the agent's account, or as Swarm
- * without one; a patch that does not apply leaves the directory as it was and throws why.
+ * without one; a patch that does not apply leaves the directory as it was and throws why, about the patch of `label`.
  */
-export async function applyPatch(directory: string, patch: string, env: NodeJS.ProcessEnv, variables: Record<string, string>): Promise<void> {
+export async function applyPatch(directory: string, patch: string, env: NodeJS.ProcessEnv, variables: Record<string, string>,
+  label = "the ticket taken over"): Promise<void> {
   const name = variables.SWARM_TICKET_GITHUB_ACCOUNT || "Swarm", email = variables.SWARM_TICKET_GITHUB_COMMIT_EMAIL || "swarm@localhost";
   const git = (...args: string[]) => exec("git", ["-c", `user.name=${name}`, "-c", `user.email=${email}`, ...args],
     { cwd: directory, env, timeout: PREPARE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 });
   await git("am", "--3way", patch).catch(async (error: { stderr?: string; message?: string }) => {
     await git("am", "--abort").catch(() => undefined);
-    throw new PrepareFailed(`The patch of the ticket taken over does not apply: ${(error.stderr || error.message || String(error)).slice(0, 2000)}`);
+    throw new PrepareFailed(`The patch of ${label} does not apply: ${(error.stderr || error.message || String(error)).slice(0, 2000)}`);
   });
 }
 
@@ -230,7 +231,8 @@ export class SwarmExecutor {
   }
   /**
    * Prepares a ticket's new directory: a clone of its repository when that is not the one the GitHub Source watches, else the
-   * prepare command, then the patch of the ticket it takes over; a failure fails the ticket.
+   * prepare command, then the patch of the ticket it takes over and its own kept patch, from work that stopped; a failure
+   * fails the ticket.
    */
   private async prepare(ticket: Ticket, access: WorkerAccess): Promise<void> {
     const variables = { ...this.host.environment(ticket), ...access.extra };
@@ -241,6 +243,11 @@ export class SwarmExecutor {
     else await prepareDirectory(directory, this.host.client.settings().executor.prepare, env);
     const from = ticket.mandate.capability?.from;
     if (from) await applyPatch(directory, this.takenOver(from), env, variables);
+    // Work that stopped kept its commits as a patch, which a fresh directory gets back; one that does not apply leaves the
+    // directory as prepared, since the ticket goes on regardless.
+    const path = patchPath(this.host.client.stateDir, ticket);
+    if (existsSync(path)) await applyPatch(directory, path, env, variables, `ticket ${ticket.id}`)
+      .catch((error: unknown) => { this.host.client.engine.note(ticket.id, keptPatchNote(path, error instanceof Error ? error.message : String(error))); });
   }
   /** The patch of the ticket a take-over carries on with. */
   private takenOver(ticketId: string): string {

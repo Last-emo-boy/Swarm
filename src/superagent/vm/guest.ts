@@ -15,7 +15,7 @@ import { workerEnvironment, writeEnvironment } from "../environment.js";
 import { applyPatch, cloneRepository, prepareDirectory, WORKER_SHELL_AUTO_BACKGROUND_MS } from "../executor.js";
 import { settingsPath, writeSettings } from "../settings.js";
 import type { GuestSpec } from "./gateway.js";
-import { callGateway, GATEWAY_VARIABLE, gatewayFromEnv, TOKEN_VARIABLE, type Gateway } from "./gateway-link.js";
+import { callGateway, gatewayFromEnv, GatewayError, GATEWAY_VARIABLE, TOKEN_VARIABLE, type Gateway } from "./gateway-link.js";
 
 const HEARTBEAT_MS = 15_000;
 /** How long the worker may take to stop once its lease ended, before it is killed. */
@@ -93,20 +93,46 @@ async function environment(spec: GuestSpec, gateway: Gateway): Promise<NodeJS.Pr
     process.env, "requester");
 }
 
-/** Prepares the ticket's new directory in the VM, as the executor prepares one on the host. */
+/** Writes `patch` to a file of its own, applies it to `directory` as `label`'s, and removes the file. */
+async function applyText(directory: string, patch: string, env: NodeJS.ProcessEnv, variables: Record<string, string>, label: string): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "swarm-patch-"));
+  try {
+    writeFileSync(join(dir, "patch"), patch);
+    await applyPatch(directory, join(dir, "patch"), env, variables, label);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The ticket's own kept patch, from work that stopped; undefined when it has none. */
+async function keptPatch(gateway: Gateway): Promise<string | undefined> {
+  try {
+    return (await callGateway<{ patch: string }>(gateway, "GET", "/v1/patch")).patch;
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 404) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Prepares the ticket's new directory in the VM, as the executor prepares one on the host: the prepare command or a clone,
+ * the patch of a ticket it takes over, then its own kept patch, from work that stopped. A kept patch that does not apply
+ * leaves the directory as prepared, and the host tells the ticket: the directory goes on without it.
+ */
 async function prepare(spec: GuestSpec, gateway: Gateway, env: NodeJS.ProcessEnv): Promise<void> {
   const { directory } = spec;
   if (spec.clone) await cloneRepository(directory, spec.clone, `agent/${spec.name}`, env);
   else await prepareDirectory(directory, spec.prepare, env);
-  if (!spec.from) return;
-  const { patch } = await callGateway<{ patch: string }>(gateway, "GET", "/v1/takeover");
-  const dir = mkdtempSync(join(tmpdir(), "swarm-takeover-"));
-  try {
-    writeFileSync(join(dir, "patch"), patch);
-    await applyPatch(directory, join(dir, "patch"), env, spec.variables);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  if (spec.from) {
+    const { patch } = await callGateway<{ patch: string }>(gateway, "GET", "/v1/takeover");
+    await applyText(directory, patch, env, spec.variables, "the ticket taken over");
   }
+  const own = await keptPatch(gateway);
+  if (own === undefined) return;
+  await applyText(directory, own, env, spec.variables, `ticket ${spec.ticketId}`).catch(async (error: unknown) => {
+    // The directory goes on without it either way; a host that does not hear of it keeps no note.
+    await callGateway(gateway, "POST", "/v1/work/patch", { why: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+  });
 }
 
 /** Flushes the guest's disks, so the host may power the VM off as soon as it hears the worker exited. */

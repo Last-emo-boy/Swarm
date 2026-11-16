@@ -3,14 +3,15 @@
  * listeners on 127.0.0.1 with the tokens the slots' directories hold.
  */
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { latestAssignment } from "../core/index.js";
 import { SuperagentClient } from "../client.js";
 import { Later } from "../effects.js";
 import { KV } from "../kv.js";
+import { patchPath } from "../ticket-tools.js";
 import { settingsPath, writeSettings } from "../settings.js";
 import { localOperator } from "../sources/local.js";
 import { startFakeModel, writeFakeModelHome } from "../testing/fake-model.js";
@@ -382,4 +383,25 @@ test("a cluster start runs in the background: the launch returns at once, and a 
   const held = client.store.get(KV.vm.slot("c0"))!;
   assert.equal(held.error, undefined);
   assert.ok(Date.parse(held.expiresAt) - Date.now() > 14 * 60_000, "a cluster boot holds its lease for 15 minutes");
+});
+
+test("a slot's gateway serves the ticket's own kept patch, and nothing for a slot whose ticket has none", async () => {
+  const vm = await start();
+  const { ticket: first, assignmentId } = ticket("add a NOTICE file", "add-notice");
+  await vm.run(first, assignmentId);
+  const secret = token(0);
+  assert.equal((await call(0, "GET", "/v1/patch", secret)).status, 404, "no patch to give yet");
+  const path = patchPath(stateDir, first);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, "From 0000 Mon Sep 17 00:00:00 2001\n");
+  const second = ticket("add a VERSION file", "add-version");
+  await vm.run(second.ticket, second.assignmentId);
+  assert.deepEqual((await call(0, "GET", "/v1/patch", secret)).body, { patch: "From 0000 Mon Sep 17 00:00:00 2001\n" });
+  // Only for the slot's own ticket: another slot's gateway takes neither its token nor its patch.
+  assert.equal((await call(1, "GET", "/v1/patch", secret)).status, 401);
+  assert.equal((await call(1, "GET", "/v1/patch", token(1))).status, 404, "slot 1 runs a ticket of its own, without a patch");
+  // The guest tells the host its kept patch did not apply, and the ticket notes where its commits are.
+  assert.deepEqual((await call(0, "POST", "/v1/work/patch", secret, { applied: false, why: "The patch of ticket x does not apply: conflict" })).body, {});
+  const note = client.store.tickets.get(first.id)!.inputs.find((input) => input.kind === "note");
+  assert.match(note?.text ?? "", new RegExp(`kept as a patch at ${path}.*conflict`));
 });
