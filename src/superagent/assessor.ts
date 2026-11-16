@@ -54,6 +54,8 @@ export interface AssessorHost {
   devices?(): Promise<Devices>;
   /** Where to note a model answer it could not use, which then stops nothing. */
   log?(message: string): void;
+  /** The clock the router reads, so replay fixes it; production leaves it out and uses the wall clock. */
+  now?(): number;
 }
 
 const AcknowledgementSchema = z.string().trim().min(1)
@@ -182,6 +184,7 @@ const cut = (text: string, limit: number) => text.length <= limit ? { text } : {
 
 export class ModelAssessor {
   constructor(private readonly host: AssessorHost) {}
+  private now(): number { return this.host.now?.() ?? Date.now(); }
 
   /** Registers the host's handlers for the assessment and follow-up effects. */
   install(): void {
@@ -245,7 +248,7 @@ export class ModelAssessor {
     const sender = senderOf(store, primary);
     const chat = primary.meta.direct === true ? undefined : chatName(store, chatId);
     const mentioned = Array.isArray(primary.meta.mentions) ? primary.meta.mentions : [];
-    const lines = conversation(store, primary, { since: new Date(Date.now() - CONVERSATION_MS).toISOString(), limit: CONVERSATION_LINES,
+    const lines = conversation(store, primary, { since: new Date(this.now() - CONVERSATION_MS).toISOString(), limit: CONVERSATION_LINES,
       chars: LINE_CHARS, exclude: new Set(candidate.triggers.map((trigger) => trigger.id)), self: this.host.client.resolvedDeployment()?.feishu?.name ?? "" });
     const here = primary.meta.direct === true ? [] : peopleIn(store, chatId, PEOPLE_HERE);
     const groups = chatsOf(store).filter((item) => !item.direct).map(({ chat_id, name }) => ({ chat_id, name }));
@@ -255,7 +258,7 @@ export class ModelAssessor {
       ...(sender !== primary.actor.id ? { from_name: sender } : {}), ...(chat ? { chat_name: chat } : {}),
       ...(mentioned.length ? { mentioned } : {}), ...(lines.length ? { conversation: lines } : {}), ...(here.length ? { people_here: here } : {}),
       ...(groups.length ? { your_chats: groups } : {}),
-      ...(memory ? { ...localNow(settings), memory } : {})
+      ...(memory ? { ...localNow(settings, this.now()), memory } : {})
     };
   }
   /**
@@ -473,7 +476,7 @@ export class ModelAssessor {
             // Asked on the person's behalf, it waits to hear back and tells them the answer (chatter.ts).
             const back = trigger && replyChannel(trigger, "quote");
             if (route.await_answer && trigger && back) {
-              const now = Date.now();
+              const now = this.now();
               ask(client.store, { id: key("ask", triggerId), ...("person" in target ? { person: target.person.id } : { chatId: target.chat.id }),
                 to: "person" in target ? [target.person.id] : mentions.flatMap((mention) => mention.id === "all" ? [] : [mention.id]), text, at: new Date(now).toISOString(),
                 for: { id: trigger.actor.id, name: senderOf(client.store, trigger), channel: back } }, now);

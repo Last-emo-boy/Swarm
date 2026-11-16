@@ -41,6 +41,9 @@ Commands:
   pause | resume              Pause or resume processing: new Evals, launches, deliveries and replies
   config [path|show|init]     The settings file: its path, its content, or a starting file
   harness list|check [<id>]   The agent harness profiles here: installed, signed in, keys set (also swarm harness)
+  replay export|run|diff|grade ...
+                              Replay recorded chats: export cases, run them, diff the cards, grade the runs
+                              (see replay help; cases stay under <state>/replay, never in a repository)
 
 Settings live in ${settingsPath()}; ticket directories default to <state>/work.`;
 
@@ -107,6 +110,7 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
     console.log(command === "pause" ? "Processing paused: no new Evals, launches, deliveries or replies until resume." : "Processing resumed.");
     return;
   }
+  if (command === "replay") return (await import("./replay/cli.js")).runReplayCommand(args);
   const json = flag(args, "json");
   if (await runOnDevice(command, args, json)) return;
   const client = new SuperagentClient();
