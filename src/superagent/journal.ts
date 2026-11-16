@@ -26,6 +26,8 @@ export interface JournalRun {
   ticketId?: string
   /** The outbox message ids the run queued. */
   outbox?: string[]
+  /** What the run kept in the agent's memory, as the notes it wrote. */
+  notes?: string[]
   /** The raw answer, kept when the run's answer could not be used, or the router needed it again. */
   answer?: string
 }
@@ -112,9 +114,10 @@ export class Journal {
    * patched, so a run the host could not finish keeps its card. One that found no such row, such as after a restart,
    * records itself as a row of its own rather than losing the outcome.
    */
-  outcome(kind: JournalKind, keyValue: string, outcome: JournalOutcome, extra: { reason?: string; ticketId?: string; outbox?: readonly string[]; answer?: string } = {}): void {
+  outcome(kind: JournalKind, keyValue: string, outcome: JournalOutcome, extra: { reason?: string; ticketId?: string; outbox?: readonly string[]; answer?: string; notes?: readonly string[] } = {}): void {
     const patch = JSON.stringify({ outcome, ...(extra.reason ? { reason: [...extra.reason].slice(0, REASON_CHARS).join('') } : {}),
-      ...(extra.ticketId ? { ticketId: extra.ticketId } : {}), ...queued(extra.outbox), ...(extra.answer ? { answer: [...extra.answer].slice(0, TEXT_CHARS).join('') } : {}) })
+      ...(extra.ticketId ? { ticketId: extra.ticketId } : {}), ...queued(extra.outbox), ...(extra.notes?.length ? { notes: extra.notes } : {}),
+      ...(extra.answer ? { answer: [...extra.answer].slice(0, TEXT_CHARS).join('') } : {}) })
     this.store.atomic(() => {
       const row = this.store.db.prepare(`SELECT id FROM journal WHERE kind = ? AND key = ?
         AND json_extract(value, '$.outcome') IS NULL ORDER BY rowid DESC LIMIT 1`).get(kind, keyValue)

@@ -403,3 +403,89 @@ test("a fake kind's channel sees its own configuration: with a room list, a send
   expect(await channel.send({ commands: {} as never, config: { rooms: ['room1'], botId: 'fake_bot', botName: 'Fake Bot' } }, message('room1'))).toBe('sent')
   expect(sink.sent.map((sent) => sent.channel.address.chatId)).toEqual(['room1', 'room1'])
 })
+
+test("an attend remembers a fact it learns, under the fake kind's own subject and only while memory is on", async () => {
+  const named = fakeTrigger('room1', 'fk_ann', 'Fake Bot, I run the release train; ping me before you ship', { mention: false, at: new Date(Date.now() - 60_000).toISOString() })
+  client.engine.receive(named)
+  const room = new ChatterRoom({ client, now: () => Date.now(), complete: script([JSON.stringify({ reply: { text: 'Noted: pinging you first.', reply_to: named.meta.messageId },
+    remember: [{ about: 'fk_ann', kind: 'fact', text: 'Ann runs the release train' }], reason: 'learned who runs the release' })]) })
+  await room.attend('room1', [named.id], FAKE_SOURCE)
+  client.effects.start()
+  await client.effects.idle()
+  // The note is Ann's on the fake chat, never the same-id person on another chat kind, and its origin names the source it came from.
+  const notes = client.store.memory.about(personSubject('fk_ann', FAKE_SOURCE))
+  expect(notes.map((note) => [note.kind, note.text])).toEqual([['fact', 'Ann runs the release train']])
+  expect(notes[0]!.origin).toMatchObject({ chatId: 'room1', source: FAKE_SOURCE, triggerId: named.id })
+  expect(client.store.memory.about(personSubject('fk_ann'))).toEqual([])
+  expect(sink.sent.at(-1)!.text).toBe('Noted: pinging you first.')
+
+  // Memory off means no note, whatever the answer asks for.
+  writeSettings({ sources: { feishu: { enabled: false, config: {} }, github: { enabled: false, config: {} }, [FAKE_SOURCE]: { enabled: true, config: {} } },
+    policy: { sources: { [FAKE_SOURCE]: { allowed: [{ id: 'fk_ann', name: 'Ann' }] } } },
+    memory: { enabled: false }, chatter: { everywhere: true } }, settingsPath(stateDir))
+  const after = fakeTrigger('room1', 'fk_ann', 'Fake Bot, I also maintain the docs site', { mention: false, at: new Date(Date.now() - 30_000).toISOString() })
+  client.engine.receive(after)
+  const off = new ChatterRoom({ client, now: () => Date.now(), complete: script([JSON.stringify({ reply: { text: 'Good to know.', reply_to: after.meta.messageId },
+    remember: [{ about: 'fk_ann', kind: 'fact', text: 'Ann maintains the docs site' }], reason: 'learned more' })]) })
+  await off.attend('room1', [after.id], FAKE_SOURCE)
+  client.effects.start()
+  await client.effects.idle()
+  expect(client.store.memory.about(personSubject('fk_ann', FAKE_SOURCE)).map((note) => note.text)).toEqual(['Ann runs the release train'])
+  expect(sink.sent.at(-1)!.text).toBe('Good to know.')
+})
+
+test("an attend may not change a note it was not shown: the id is refused and the reply still goes out", async () => {
+  const named = fakeTrigger('room1', 'fk_ann', 'Fake Bot, we moved the release to Monday', { mention: false, at: new Date(Date.now() - 60_000).toISOString() })
+  client.engine.receive(named)
+  const room = new ChatterRoom({ client, now: () => Date.now(), complete: script([JSON.stringify({ reply: { text: 'Monday then.', reply_to: named.meta.messageId },
+    remember: [{ id: 'note_not_shown', text: 'The release is Monday' }], reason: 'the date changed' })]) })
+  await room.attend('room1', [named.id], FAKE_SOURCE)
+  client.effects.start()
+  await client.effects.idle()
+  expect(client.store.memory.about('self')).toEqual([])
+  expect(client.store.memory.about(personSubject('fk_ann', FAKE_SOURCE))).toEqual([])
+  expect(sink.sent.at(-1)!.text).toBe('Monday then.')
+})
+
+test("two messages that call for the bot in one settle window are each answered, with one outbox message apiece", async () => {
+  // A person's @ is the router's (the card would leave it alone); naming the bot is attend's own call, two senders at once.
+  const ann = fakeTrigger('room1', 'fk_ann', 'Fake Bot, is Friday fine for the release?', { mention: false, at: new Date(Date.now() - 20_000).toISOString() })
+  const bo = fakeTrigger('room1', 'fk_bo', 'Fake Bot, or would Thursday be better?', { mention: false, at: new Date(Date.now() - 10_000).toISOString() })
+  client.engine.receive(ann)
+  client.engine.receive(bo)
+  const room = new ChatterRoom({ client, now: () => Date.now(), complete: script([JSON.stringify({ reply: [
+    { text: 'Friday works.', reply_to: ann.meta.messageId, mention: 'fk_ann' },
+    { text: 'Thursday is tighter.', reply_to: bo.meta.messageId }], relay: [], reason: 'two questions put to me' })]) })
+  room.install()
+  client.store.set(KV.chatter.chat('room1'), { said: [], attendedAt: new Date(Date.now() - 60_000).toISOString() })
+  room.pass()
+  client.effects.start()
+  await client.effects.idle()
+  // One message per answer, each quoting the message it answers; neither sender is left silent.
+  expect(sink.sent.map((sent) => [sent.text, sent.channel.address.messageId])).toEqual([
+    ['Friday works.', ann.meta.messageId], ['Thursday is tighter.', bo.meta.messageId]])
+  expect(sink.sent.map((sent) => sent.mentions?.map((mention) => mention.id) ?? [])).toEqual([['fk_ann'], []])
+  // Both calls were answered, so the mark passes both: neither is asked again next settle.
+  expect(client.store.get(KV.chatter.chat('room1'))?.attendedAt).toBe(bo.at)
+})
+
+test("a declined call is marked seen while an undirected message after it is read again next settle", async () => {
+  const declined = fakeTrigger('room1', 'fk_ann', 'Fake Bot, does anyone still use the old dashboard?', { mention: false, at: new Date(Date.now() - 30_000).toISOString() })
+  const aside = fakeTrigger('room1', 'fk_bo', 'no rush on that, whenever', { mention: false, at: new Date(Date.now() - 29_000).toISOString() })
+  client.engine.receive(declined)
+  client.engine.receive(aside)
+  const room = new ChatterRoom({ client, now: () => Date.now(), complete: script([JSON.stringify({ reply: [
+    { text: null, reply_to: declined.meta.messageId }], relay: [], reason: 'talk between others' })]) })
+  room.install()
+  client.store.set(KV.chatter.chat('room1'), { said: [], attendedAt: new Date(Date.now() - 60_000).toISOString() })
+  room.pass()
+  client.effects.start()
+  await client.effects.idle()
+  // Declined: nothing posted, and the mark stops at the declined message, so what came after it is still to be read.
+  expect(sink.sent).toEqual([])
+  expect(client.store.get(KV.chatter.chat('room1'))?.attendedAt).toBe(declined.at)
+  // The next settle reads the message after it; it calls for nobody, and the mark then passes it too.
+  room.pass()
+  expect(client.store.get(KV.chatter.chat('room1'))?.attendedAt).toBe(aside.at)
+  expect(client.store.db.prepare("SELECT 1 FROM effect WHERE kind = 'attend'").all()).toEqual([])
+})

@@ -112,6 +112,32 @@ describe("an attend", () => {
     expect(run.reason).toBe("a bot asked for progress");
     expect(run.outbox![0]).toBeDefined();
   });
+  it("records the notes it kept about what it answered", async () => {
+    writeSettings({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: CHAT, listen: "all" }], directMessages: true } } },
+      policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } }, chatter: { chats: [CHAT], persona: "Dry humour, loves tea." },
+      memory: { enabled: true } }, settingsPath(stateDir));
+    const named = message("ou_alice", "w33d, my name is Alice and I own the release train", 30);
+    answers.push(JSON.stringify({ reply: { text: "Good to meet you, Alice." }, reason: "a person introduced herself",
+      remember: [{ about: "ou_alice", kind: "fact", text: "Alice owns the release train" }] }));
+    await room.attend(CHAT, [named.id]);
+    const run = runs().at(-1)! as JournalRun;
+    expect(run.outcome).toBe("sent");
+    expect(run.notes).toEqual(["Alice owns the release train"]);
+    expect(client.store.memory.about("person:feishu:ou_alice").map((note) => note.text)).toEqual(["Alice owns the release train"]);
+  });
+  it("records a refused note and still sends the reply", async () => {
+    writeSettings({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [{ chatId: CHAT, listen: "all" }], directMessages: true } } },
+      policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }] } } }, chatter: { chats: [CHAT], persona: "Dry humour, loves tea." },
+      memory: { enabled: true } }, settingsPath(stateDir));
+    const named = message("ou_alice", "w33d, the release moved to Monday", 30);
+    answers.push(JSON.stringify({ reply: { text: "Monday, then." }, reason: "the date changed",
+      remember: [{ id: "journal_note_unseen", text: "The release is Monday" }] }));
+    await room.attend(CHAT, [named.id]);
+    const run = runs().at(-1)! as JournalRun;
+    expect(run.outcome).toBe("sent");
+    expect(run.notes).toBeUndefined();
+    expect(run.reason).toContain("remember: id: journal_note_unseen is not a note on the card");
+  });
   it("records that nothing called for it, with no model call", async () => {
     const plain = message("ou_alice", "lunch?", 30);
     await room.attend(CHAT, [plain.id]);
