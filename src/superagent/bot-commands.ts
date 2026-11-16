@@ -5,24 +5,22 @@
  * what one does (`perform`, see `AGENT_COMMANDS`), as their built-in tools. It also holds back a sender's messages beyond
  * their role's requests per hour, and new requests beyond their open tickets, with an answer that says so.
  */
-import { existsSync } from "node:fs";
 import { z } from "zod/v4";
-import { UserError, key, latestReport, liveTicket, threadKey, type ActorRef, type ChannelRef, type ReceiveResult, type Role, type Ticket, type Trigger,
-  type WriteLevel } from "./core/index.js";
+import { key, liveTicket, threadKey, type ActorRef, type ChannelRef, type ReceiveResult, type Role, type Ticket, type Trigger, type WriteLevel } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { chatterOf } from "./chatter.js";
 import { devicesText, type Devices } from "./devices.js";
 import { WorktreeNameSchema } from "./messages.js";
 import { AUTHORIZATIONS_URL, githubApp, installUrl, linkOf, namedRepository, type GithubApp, type GithubLinks, type LinkView } from "./github-link.js";
+import { openTicketsOf, patchReady, takeOverTicket, ticketNamed, wantPullRequest as wantPullRequestFor, type TakeOverOutcome } from "./github-commands.js";
 import { KV } from "./kv.js";
 import { memoryOf, personSubject } from "./memories.js";
-import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, seesNodes, steers, watchedRepository } from "./policy.js";
+import { addressable, allowedWrite, atLeast, ceilingOf, limitOf, roleOf, seesNodes, watchedRepository } from "./policy.js";
 import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
 import { metaOf } from "./sources/meta.js";
 import type { ChatKind } from "./sources/chat.js";
-import { inChinese, sameName, sayIn, wordCount, type Say } from "./text.js";
-import { patchPath } from "./ticket-tools.js";
+import { inChinese, sayIn, wordCount, type Say } from "./text.js";
 
 const HOUR_MS = 3_600_000;
 export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "ceiling", "chatter", "takeover", "devices", "memory", "forget"] as const;
@@ -51,13 +49,6 @@ const repoList = (link: LinkView, say: Say): string => {
     : names.join(say(", ", "、"));
 };
 const notLinked = (say: Say): string => say("Link your GitHub account first: send /link.", "先绑定你的 GitHub 账号：发 /link。");
-/**
- * Whether a ticket has the patch of its finished work: its latest report is ready, which is when a local ticket's result
- * keeps its patch, and the host holds that patch's file. One that reported blocked or failed has a patch file too, of
- * unfinished work, which no take-over runs.
- */
-const patchReady = (client: SuperagentClient, ticket: Ticket): boolean =>
-  latestReport(ticket)?.state === "ready" && existsSync(patchPath(client.stateDir, ticket));
 /** How long a wanted pull request waits for its person to link and for its ticket's patch. */
 const WANTED_MS = 7 * 24 * HOUR_MS;
 
@@ -462,73 +453,64 @@ export class BotCommands {
     return this.takeOver(ticket, trigger, settings);
   }
   /**
-   * Takes a local ticket over for the sender of `trigger`, whose message decides the new ticket. Until they linked an account
-   * and the ticket has its patch, the take-over waits for both (see `takeOverWanted`), and a sender who has not linked yet
-   * gets the code to link in a direct message.
+   * Takes a local ticket over for the sender of `trigger`, whose message decides the new ticket, and words how it went. Until
+   * they linked an account and the ticket has its patch, the take-over waits for both (see `takeOverWanted`), and a sender
+   * who has not linked yet gets the code to link in a direct message.
    */
   private takeOver(ticket: Ticket, trigger: Trigger, settings: Settings): string {
     const { client } = this;
     const say = this.say(trigger);
     const name = short(ticket.id);
-    if (ticket.mandate.capability?.write !== "local") {
-      return say(`Ticket ${name} does not keep its work local, so there is nothing to take over.`, `工单 ${name} 不是本地工单，没有可接手的补丁。`);
+    const outcome: TakeOverOutcome = takeOverTicket(client, ticket, trigger, settings);
+    if (outcome.kind === "taken") {
+      return say(`Ticket ${short(outcome.ticketId)} takes over ticket ${name}: it applies the patch and opens a pull request.`,
+        `工单 ${short(outcome.ticketId)} 接手了工单 ${name}：它会应用补丁并开拉取请求。`);
     }
-    const taker = client.store.tickets.list().find((item) => item.mandate.capability?.from === ticket.id);
-    if (taker) return say(`Ticket ${name} was taken over as ticket ${short(taker.id)} already.`, `工单 ${name} 已经由工单 ${short(taker.id)} 接手了。`);
-    if (ticket.mandate.strength !== "inferred" && !steers(settings, ticket.mandate, trigger.actor)) {
-      return say(`Only the person who asked for ticket ${name} or a maintainer can take it over.`, `只有提出工单 ${name} 的人或 maintainer 能接手它。`);
+    if (outcome.kind === "waiting" && outcome.needs === "patch") {
+      wantPullRequestFor(client, ticket, trigger);
+      const login = linkOf(client.store, trigger.actor)?.login ?? "you";
+      return say(`Ticket ${name} has no patch yet: I'll open the pull request as @${login} once it reports ready.`,
+        `工单 ${name} 还没有补丁：等它完成后，我会以 @${login} 的身份开拉取请求。`);
     }
-    const scope = client.sources.scope(trigger);
-    const row = scope.listened ? scope.row : undefined;
-    const addressed = trigger.addressed === "direct" ? "direct" as const : "mention" as const;
-    const mandate = { strength: "explicit" as const, actor: trigger.actor,
-      basis: { via: "addressed" as const, addressed, source: trigger.source, ...(row === undefined ? {} : { row }) } };
-    // A local ticket's patch is on the watched repository, where the taker opens the pull request as themselves.
-    const watched = watchedRepository(settings);
-    const patched = patchReady(client, ticket);
-    const link = linkOf(client.store, trigger.actor);
-    if (!link || link.broken) {
-      if (!githubApp(settings) || !this.options.links || allowedWrite(settings, mandate) !== "github") return notLinked(say);
-      this.want(ticket, trigger);
+    if (outcome.kind === "waiting") {
+      wantPullRequestFor(client, ticket, trigger);
       const direct = metaOf(trigger).direct && !!trigger.channel;
       const via = this.kind(trigger)?.user(trigger.actor.id) ?? trigger.channel;
       const here = !!via && this.startLink(trigger.actor, direct ? trigger.channel! : via, trigger.id, say) && direct;
       return say(`Link your GitHub account first: enter the code ${here ? "I'm sending you here" : "I sent you in a direct message"}. `
-        + `Once it is linked${patched ? "" : ` and ticket ${name} reports ready`}, I'll open the pull request as you.`,
-        `先绑定你的 GitHub 账号：输入${here ? "我在这里发你" : "我私聊发你"}的验证码。绑定好${patched ? "" : `、工单 ${name} 完成`}后，我会以你的身份开拉取请求。`);
+        + `Once it is linked${patchReady(client, ticket) ? "" : ` and ticket ${name} reports ready`}, I'll open the pull request as you.`,
+        `先绑定你的 GitHub 账号：输入${here ? "我在这里发你" : "我私聊发你"}的验证码。绑定好${patchReady(client, ticket) ? "" : `、工单 ${name} 完成`}后，我会以你的身份开拉取请求。`);
     }
-    const would = capabilityOf(settings, mandate, link, { repository: watched });
-    if (would?.write !== "github" || !sameName(would.repository ?? "", watched)) {
-      return say(`You cannot open pull requests on ${watched} from here (your role: ${roleOf(settings, trigger.actor)}, GitHub: @${link.login}).`,
-        `你在这里不能在 ${watched} 上开拉取请求（你的角色：${roleOf(settings, trigger.actor)}，GitHub：@${link.login}）。`);
+    switch (outcome.reason) {
+      case "not-local":
+        return say(`Ticket ${name} does not keep its work local, so there is nothing to take over.`, `工单 ${name} 不是本地工单，没有可接手的补丁。`);
+      case "already-taken":
+        return say(`Ticket ${name} was taken over as ticket ${short(outcome.taker ?? "")} already.`, `工单 ${name} 已经由工单 ${short(outcome.taker ?? "")} 接手了。`);
+      case "not-steerer":
+        return say(`Only the person who asked for ticket ${name} or a maintainer can take it over.`, `只有提出工单 ${name} 的人或 maintainer 能接手它。`);
+      case "cannot-write": {
+        const link = linkOf(client.store, trigger.actor);
+        // Linking can only help when this conversation's ceiling lets a take-over write to GitHub at all; otherwise the
+        // ceiling is what stops it, and the person would link for nothing.
+        if (!link || link.broken) {
+          const scope = client.sources.scope(trigger);
+          const row = scope.listened ? scope.row : undefined;
+          const mandate = { strength: "explicit" as const, actor: trigger.actor, basis: { via: "addressed" as const, addressed: "mention" as const, source: trigger.source, ...(row === undefined ? {} : { row }) } };
+          if (allowedWrite(settings, mandate) !== "github") {
+            return say(`The work here cannot write to GitHub: this conversation's ceiling does not let it, so linking would not change that.`,
+              `这里的工作不能写到 GitHub：这个对话的上限不允许，绑定账号也不会改变。`);
+          }
+        }
+        if (!link || link.broken || !githubApp(settings) || !this.options.links) return notLinked(say);
+        const watched = watchedRepository(settings);
+        return say(`You cannot open pull requests on ${watched} from here (your role: ${roleOf(settings, trigger.actor)}, GitHub: @${link.login}).`,
+          `你在这里不能在 ${watched} 上开拉取请求（你的角色：${roleOf(settings, trigger.actor)}，GitHub：@${link.login}）。`);
+      }
+      case "limit": {
+        const mine = openTicketsOf(client, trigger, ticket.id).length;
+        return say(`You have ${mine} open tickets, as many as your role allows: take this over once one finishes.`, `你有 ${mine} 张未结工单，达到你角色的上限：等一张结束后再接手。`);
+      }
     }
-    if (!patched) {
-      this.want(ticket, trigger);
-      return say(`Ticket ${name} has no patch yet: I'll open the pull request as @${link.login} once it reports ready.`,
-        `工单 ${name} 还没有补丁：等它完成后，我会以 @${link.login} 的身份开拉取请求。`);
-    }
-    const limit = limitOf(settings, roleOf(settings, trigger.actor), "openTickets");
-    const mine = this.openTickets(trigger).filter((item) => item.id !== ticket.id).length;
-    if (limit !== undefined && mine >= limit) {
-      return say(`You have ${mine} open tickets, as many as your role allows: take this over once one finishes.`, `你有 ${mine} 张未结工单，达到你角色的上限：等一张结束后再接手。`);
-    }
-    const request = client.store.triggers.get(ticket.origin.triggerId)?.text ?? "";
-    const worktree = WorktreeNameSchema.safeParse(ticket.execution?.name.replace(/-[0-9a-f]{12}$/, "")).data ?? "takeover";
-    const decision = client.store.atomic(() => {
-      const decided = client.engine.decide(trigger.id, { kind: "accept", title: ticket.title, scope: ticket.mandate.scope,
-        reason: { code: "takeover", values: { ticket: ticket.id } }, from: ticket.id, name: worktree, repository: watched,
-        note: `Takes over ticket ${ticket.id}, whose request was: ${request.slice(0, 1000)}` });
-      if (decided.ticketId && liveTicket(client.store.tickets.get(ticket.id)!)) client.engine.stopTicket(ticket.id, `Taken over as ticket ${decided.ticketId}`);
-      return decided;
-    });
-    if (!decision.ticketId) throw new UserError("notAdmissible", { reason: "the take-over was not accepted" });
-    client.store.delete(KV.links.wanted(ticket.id));
-    return say(`Ticket ${short(decision.ticketId)} takes over ticket ${name}: it applies the patch and opens a pull request.`,
-      `工单 ${short(decision.ticketId)} 接手了工单 ${name}：它会应用补丁并开拉取请求。`);
-  }
-  /** Remembers that the sender of `trigger` wants a pull request from a local ticket, which `takeOverWanted` opens. */
-  private want(ticket: Ticket, trigger: Trigger): void {
-    this.client.store.set(KV.links.wanted(ticket.id), { triggerId: trigger.id, at: new Date().toISOString() });
   }
   /**
    * After the router accepted work from someone who wants a pull request from it but cannot open one yet, as their GitHub
@@ -576,13 +558,6 @@ export class BotCommands {
 
   /** The ticket `/takeover` names: by its id's start or its name, else the latest local ticket on the message's Threads. */
   private ticketNamed(name: string | undefined, trigger: Trigger): Ticket | undefined {
-    const { store } = this.client;
-    if (name) {
-      if (name.length < 6) return undefined;
-      return store.tickets.list().find((ticket) => ticket.id.startsWith(name) || ticket.execution?.name === name);
-    }
-    const ids = trigger.threads.flatMap((ref) => store.threads.get(threadKey(ref))?.subscriptions ?? []);
-    return ids.flatMap((id) => store.tickets.get(id) ?? []).filter((ticket) => ticket.mandate.capability?.write === "local")
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    return ticketNamed(this.client, name, trigger.threads);
   }
 }

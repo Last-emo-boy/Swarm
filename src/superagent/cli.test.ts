@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { runSuperagentCommand } from "./cli.js";
+import { localOperator } from "./sources/local.js";
 import { SuperagentClient } from "./client.js";
 import { Journal } from "./journal.js";
+import { KV } from "./kv.js";
 import { settingsPath, writeSettings } from "./settings.js";
 
 const home = process.env.SWARM_SUPERAGENT_HOME;
@@ -33,6 +35,13 @@ async function run(...args: string[]): Promise<string> {
   try { await runSuperagentCommand(args); } finally { console.log = log; }
   return lines.join("\n");
 }
+
+test("help names the terminal's GitHub commands beside the rest", async () => {
+  const shown = await run("help");
+  assert.match(shown, /link \[--repo owner\/name\] \[--wait\]/);
+  assert.match(shown, /repo \[owner\/name\]/);
+  assert.match(shown, /takeover <ticket>/);
+});
 
 /** A ticket accepted from a request, as the router's accept decision makes one. */
 function accept(text = "write the essay about tea"): { triggerId: string; ticketId: string } {
@@ -104,4 +113,29 @@ test("status says which replies keep failing, which went nowhere, and which wait
   // With the Source enabled, nothing waits on it.
   writeSettings({ sources: { feishu: { enabled: true, config: { cli: "lark-cli", chats: [] } } } }, settingsPath(stateDir));
   assert.doesNotMatch(await run("status"), /waiting on a Source that is off/);
+});
+
+test("tickets says why one stays local, and ticket says what would let its work act on GitHub", async () => {
+  const { ticketId } = accept();
+  const ticket = client.store.tickets.get(ticketId)!;
+  ticket.mandate.capability = { role: "everyone", write: "local", local: "unlinked" };
+  client.store.tickets.save(ticket);
+  const short = ticketId.slice(0, 8);
+  assert.match(await run("tickets"), new RegExp(`${short}  .*  \\(local: link needed\\)`));
+  assert.match(await run("ticket", ticketId), new RegExp(`run swarm superagent link, then swarm superagent takeover ${short} once it is ready`));
+  // JSON carries the reason unchanged, for the TUI and scripts.
+  const report = JSON.parse(await run("ticket", ticketId, "--json")) as { write: string; local?: string };
+  assert.deepEqual([report.write, report.local], ["local", "unlinked"]);
+  // Linked since it was accepted: the notice says so instead of asking for the link again.
+  client.store.set(KV.links.github("local", localOperator()), { login: "operator-gh", id: 7, repos: ["owner/watched"], reposAt: "", linkedAt: "", access: { iv: "", data: "", tag: "" } });
+  const later = await run("ticket", ticketId);
+  assert.match(later, /accepted before your GitHub account was linked/);
+  assert.doesNotMatch(later, /run swarm superagent link/);
+  assert.match(await run("why", ticketId), /accepted before your GitHub account was linked/);
+  client.store.delete(KV.links.github("local", localOperator()));
+  // A ticket whose reason nobody can act on prints no way out.
+  ticket.mandate.capability = { role: "everyone", write: "local", local: "inferred" };
+  client.store.tickets.save(ticket);
+  assert.match(await run("tickets"), /\(local: inferred, no one asked\)/);
+  assert.doesNotMatch(await run("ticket", ticketId), /superagent link/);
 });

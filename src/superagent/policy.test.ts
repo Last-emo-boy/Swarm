@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import { each, expect } from './testing/expect.js'
-import { addressable, allowedWrite, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, repositoryFor, roleOf, settingsPolicy, allowedSender,
+import { addressable, allowedWrite, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, localNotice, policyEffects, repositoryFor, roleOf, settingsPolicy, allowedSender,
   anyoneAllowed, steers } from './policy.js'
 import { SettingsSchema, policyVersion, type Settings } from './settings.js'
 import type { MandateBasis } from './core/index.js'
@@ -473,20 +473,54 @@ describe('access model', () => {
   it('lets a person\'s explicit work write to GitHub as their linked account, whatever their role, keeps the rest local, and lowers either to the ceiling', () => {
     const gated = settingsPolicy(watching(roles), sources, links())
     expect(gated.capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'github', credential: { login: 'alice-gh', id: 7 }, repository: WATCHED })
-    expect(gated.capability?.(explicit(READER) as never)).toEqual({ role: 'everyone', write: 'local' })
+    expect(gated.capability?.(explicit(READER) as never)).toEqual({ role: 'everyone', write: 'local', local: 'unlinked' })
     expect(capabilityOf(watching(roles), explicit(READER), linked)).toEqual({ role: 'everyone', write: 'github', credential: { login: 'alice-gh', id: 7 }, repository: WATCHED })
-    expect(gated.capability?.({ ...explicit(BOSS), strength: 'inferred' } as never)).toEqual({ role: 'owner', write: 'local' })
+    expect(gated.capability?.({ ...explicit(BOSS), strength: 'inferred' } as never)).toEqual({ role: 'owner', write: 'local', local: 'inferred' })
     // How far work may write before a link counts, which tells whether linking would let it write to GitHub.
     expect([allowedWrite(roles, explicit(READER)), allowedWrite(roles, { ...explicit(BOSS), strength: 'inferred' }), allowedWrite(roles, explicit(BOSS, 'other'))])
       .toEqual(['github', 'local', 'local'])
     // Without a working link, work that could write to GitHub stays local.
-    expect(settingsPolicy(watching(roles), sources).capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'local' })
-    expect(capabilityOf(watching(roles), explicit(MEMBER), { ...linked, broken: 'refused' })).toEqual({ role: 'maintainer', write: 'local' })
+    expect(settingsPolicy(watching(roles), sources).capability?.(explicit(MEMBER) as never)).toEqual({ role: 'maintainer', write: 'local', local: 'unlinked' })
+    expect(capabilityOf(watching(roles), explicit(MEMBER), { ...linked, broken: 'refused' })).toEqual({ role: 'maintainer', write: 'local', local: 'link-broken' })
     // Chats nobody listed write locally unless their ceiling says otherwise; a ceiling can also make a chat read-only.
-    expect(capabilityOf(roles, explicit(BOSS, 'other'), linked)).toEqual({ role: 'owner', write: 'local' })
+    expect(capabilityOf(roles, explicit(BOSS, 'other'), linked)).toEqual({ role: 'owner', write: 'local', local: 'ceiling' })
     expect(capabilityOf(watching(withAccess({ ceilings: { other: 'github' } })), explicit(MEMBER, 'other'), linked)).toMatchObject({ write: 'github' })
-    expect(capabilityOf(withAccess({ ceilings: { [CHAT]: 'read-only' } }), explicit(MEMBER), linked)).toEqual({ role: 'maintainer', write: 'read-only' })
+    expect(capabilityOf(withAccess({ ceilings: { [CHAT]: 'read-only' } }), explicit(MEMBER), linked)).toEqual({ role: 'maintainer', write: 'read-only', local: 'ceiling' })
+    // The ceiling /ceiling writes: local, a level the read-only case does not reach, with its own reason.
+    expect(capabilityOf(withAccess({ ceilings: { [CHAT]: 'local' } }), explicit(MEMBER), linked)).toEqual({ role: 'maintainer', write: 'local', local: 'ceiling' })
     expect(ceilingOf(roles, 'feishu', 'direct')).toBe('github')
+  })
+  it('tells a person how to let work that stays local act on GitHub, differently in a chat and in a terminal, and never for work nobody asked for', () => {
+    const app = { clientId: 'Iv23client', slug: 'swarm-oauth' }
+    // Work nobody asked for, or a lowered ceiling, has no person to tell: linking would change nothing.
+    expect([localNotice('inferred', 'chat', 'a1b2c3d4'), localNotice('ceiling', 'terminal', 'a1b2c3d4'), localNotice(undefined, 'chat', 'a1b2c3d4')])
+      .toEqual([undefined, undefined, undefined])
+    expect(localNotice('unlinked', 'chat', 'a1b2c3d4')).toBe(
+      "Your GitHub account isn't linked yet, so this stays local: send /link here, then /takeover a1b2c3d4 once it is ready.")
+    expect(localNotice('unlinked', 'terminal', 'a1b2c3d4')).toBe(
+      "Your GitHub account isn't linked yet, so this stays local: run swarm superagent link, then swarm superagent takeover a1b2c3d4 once it is ready.")
+    // A GitHub commenter runs neither command where they wrote: the notice names the chat or the host terminal instead.
+    expect(localNotice('unlinked', 'elsewhere', 'a1b2c3d4')).toBe(
+      "Your GitHub account isn't linked yet, so this stays local: link it from a chat or the host terminal, then take it over from a chat or the host terminal once it is ready.")
+    expect(localNotice('link-broken', 'chat', 'a1b2c3d4')).toBe(
+      "Your GitHub link stopped working, so this stays local: link again (send /link), then take it over once it is ready.")
+    expect(localNotice('link-broken', 'terminal', 'a1b2c3d4')).toBe(
+      "Your GitHub link stopped working, so this stays local: link again (run swarm superagent link), then take it over once it is ready.")
+    expect(localNotice('uninstalled', 'chat', 'a1b2c3d4', app)).toBe(
+      "Your GitHub account is linked, but the app is not installed on a repository you can push to, so this stays local: install it at https://github.com/apps/swarm-oauth/installations/new, set one (/repo), then take it over once it is ready.")
+    expect(localNotice('uninstalled', 'terminal', 'a1b2c3d4', app)).toBe(
+      "Your GitHub account is linked, but the app is not installed on a repository you can push to, so this stays local: install it at https://github.com/apps/swarm-oauth/installations/new, set one (swarm superagent repo), then take it over once it is ready.")
+    // A host with no app has no install page to name.
+    expect(localNotice('uninstalled', 'terminal', 'a1b2c3d4')).toBe(
+      "Your GitHub account is linked, but no repository you can push to is set, so this stays local: set one (swarm superagent repo), then take it over once it is ready.")
+    // An app installed on other repositories than this work's says so, rather than claiming it is installed nowhere.
+    expect(localNotice('not-served', 'chat', 'a1b2c3d4', app)).toBe(
+      "Your GitHub account is linked, but the repository this work is about is not one you can push to through the app, so this stays local: install it there at https://github.com/apps/swarm-oauth/installations/new, then take it over once it is ready.")
+    // A bot's candidate is work nobody asked for, as an inferred one is.
+    const bot = { strength: 'inferred' as const, actor: { source: 'feishu', id: 'cli_alerts' }, basis: { via: 'bot' as const, source: 'feishu', observation: { mode: 'auto' as const } } }
+    expect(capabilityOf(withAccess({ bots: [{ id: 'cli_alerts' }] }), bot, linked)).toEqual({ role: 'everyone', write: 'local', local: 'inferred' })
+    // A bot's mandate stays work nobody asked for even should the gate ever stamp it explicit: the via, not the strength, decides.
+    expect(capabilityOf(withAccess({ bots: [{ id: 'cli_alerts' }] }), { ...bot, strength: 'explicit' }, linked)).toEqual({ role: 'everyone', write: 'local', local: 'inferred' })
   })
   it('writes to the repository the request names, else the default, else the watched one, else the only one, and on GitHub to the watched one', () => {
     const settings = watching(roles)
@@ -495,7 +529,8 @@ describe('access model', () => {
     // A repository the person cannot push to does not count; the next choice applies.
     expect(capabilityOf(settings, explicit(MEMBER), linked, { repository: 'someone/else' })?.repository).toBe(WATCHED)
     expect(capabilityOf(roles, explicit(MEMBER), { ...linked, repos: ['alice-gh/tool'] })?.repository).toBe('alice-gh/tool')
-    expect(capabilityOf(roles, explicit(MEMBER), { ...linked, repos: ['a/b', 'c/d'] })).toEqual({ role: 'maintainer', write: 'local' })
+    expect(capabilityOf(roles, explicit(MEMBER), { ...linked, repos: ['a/b', 'c/d'] })).toEqual({ role: 'maintainer', write: 'local', local: 'not-served' })
+    expect(capabilityOf(roles, explicit(MEMBER), { ...linked, repos: [] })).toEqual({ role: 'maintainer', write: 'local', local: 'uninstalled' })
     const onGithub = { ...explicit(MEMBER), basis: { ...explicit(MEMBER).basis, source: 'github' } }
     expect(capabilityOf(settings, onGithub, { ...linked, defaultRepo: 'alice-gh/tool' }, { repository: 'alice-gh/tool' })?.repository).toBe(WATCHED)
     expect(repositoryFor(linked, '', undefined)).toBeUndefined()

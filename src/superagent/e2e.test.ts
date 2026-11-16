@@ -329,7 +329,7 @@ test("a local ticket's worker has no agent accounts, commits its change, and its
     }
     const seen = model.requests.filter((request) => request.system.includes("add-notice-")).map((request) => request.user.slice(-1500)).join("\n=====\n");
     assert.equal(ticket?.ended?.outcome, "completed", `ticket: ${JSON.stringify(ticket?.ended)} report: ${JSON.stringify(ticket?.assignments.at(-1)?.report)} ${seen}`);
-    assert.deepEqual(ticket.mandate.capability, { role: "everyone", write: "local" });
+    assert.deepEqual(ticket.mandate.capability, { role: "everyone", write: "local", local: "unlinked" });
     assert.ok(model.requests.some((request) => request.system.includes("add-notice-") && request.system.includes("This ticket keeps its change local")));
     assert.ok(model.requests.some((request) => request.user.includes("gh is unavailable")), "the worker's gh has no account");
     const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as { text: string; attachment?: string });

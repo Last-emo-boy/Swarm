@@ -13,7 +13,7 @@ import { requestOn, updatePlacement, type NodeRef } from "./placement.js";
 import { readSettings, settingsPath, superagentStateDir, updateSettings, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import type { TicketTool } from "./ticket-tools.js";
-import { dismissUnrouted, findTicket, hostStatus, routeAgain, ticketMessages, ticketRow, ticketRows, whyReport, whyText, type TicketMessage, type TicketRow } from "./views.js";
+import { dismissUnrouted, findTicket, hostStatus, localNoticeOf, localPhrase, routeAgain, ticketMessages, ticketRow, ticketRows, whyReport, whyText, type TicketMessage, type TicketRow } from "./views.js";
 import type { WorkLink } from "./work-link.js";
 
 const USAGE = `Usage: swarm superagent <command>
@@ -37,6 +37,11 @@ Commands:
   retry <id>                  Start a ticket again after it failed or blocked
   again <message id>          Send a request that could not be routed to the router again; status lists them
   dismiss <message id>        Drop one from status without sending it again; its Decision's id names it too
+  link [--repo owner/name] [--wait]
+                              Link this terminal's GitHub account through the GitHub App's device flow; --wait
+                              finishes a code it printed already, and --repo sets the repository it works on
+  repo [owner/name]           List, refresh or set the repository your local tickets work on
+  takeover <ticket>           Open the pull request of a local ticket's patch as your linked account
   place <id> <node>|here      Run a ticket's next worker on a paired node, or here
   pause | resume              Pause or resume processing: new Evals, launches, deliveries and replies
   config [path|show|init]     The settings file: its path, its content, or a starting file
@@ -72,7 +77,7 @@ export const messageLines = (message: Partial<TicketMessage> & Pick<TicketMessag
   return lines;
 };
 const rowLine = (row: TicketRow): string =>
-  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.harness ? `  (via ${row.harness})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
+  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.harness ? `  (via ${row.harness})` : ""}${row.local ? `  (local: ${localPhrase(row.local)})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
 
 /** A paired node by name, id or a unique start of either, as a placement names it. */
 async function pairedNode(handle: string): Promise<NodeRef> {
@@ -115,6 +120,13 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
   if (await runOnDevice(command, args, json)) return;
   const client = new SuperagentClient();
   try {
+    if (command === "link" || command === "repo" || command === "takeover") {
+      // The operator's own account, linked where the host reads every local request's and ticket's link.
+      const { GithubLinks, linkKey } = await import("./github-link.js");
+      const { runGithubCommand } = await import("./github-cli.js");
+      await runGithubCommand(client, command, args, new GithubLinks({ store: client.store, key: () => linkKey(client.stateDir) }));
+      return;
+    }
     if (command === "status") {
       const status = hostStatus(client);
       if (json) { console.log(JSON.stringify(status, null, 2)); return; }
@@ -209,6 +221,9 @@ export async function runSuperagentCommand(input: string[]): Promise<void> {
       const messages = ticketMessages(client, ticket.id);
       if (json) { console.log(JSON.stringify({ ...row, ticket, messages }, null, 2)); return; }
       console.log(rowLine(row));
+      // Why its work stays local, and the way out, when a person can act on it.
+      const notice = localNoticeOf(client, ticket.id, row.local, row.short, "terminal");
+      if (notice) console.log(notice);
       if (row.summary) console.log(`\nLatest report:\n${row.summary}`);
       for (const message of messages) console.log(messageLines(message).join("\n"));
       return;

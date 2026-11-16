@@ -12,7 +12,7 @@ import { Journal } from "./journal.js";
 import { KV } from "./kv.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import { feishuTrigger } from "./sources/feishu.js";
-import { hostStatus, ticketMessages, whyReport, whyText } from "./views.js";
+import { hostStatus, localPhrase, ticketMessages, ticketRow, whyReport, whyText } from "./views.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -202,4 +202,30 @@ test("why reaches a promise made on the ticket or message, whose run is journale
     assert.deepEqual(report.talking.filter((run) => run.kind === "promise").map((run) => [run.outcome, run.reason]),
       [["sent", "said it would send it"]], `a promise made on ${handle === ticketId ? "the ticket" : "the message"} shows in its why`);
   }
+});
+
+test("a ticket row says how far its work may write and why it stays local, and why shows the way out", async () => {
+  const { ticketId } = accept();
+  // A ticket accepted before the access model: nothing ever decided it could write to GitHub, so the row says only that.
+  const plain = ticketRow(client, client.store.tickets.get(ticketId)!);
+  assert.deepEqual([plain.write, plain.local], ["local", undefined]);
+  const ticket = client.store.tickets.get(ticketId)!;
+  ticket.mandate.capability = { role: "maintainer", write: "local", local: "unlinked" };
+  client.store.tickets.save(ticket);
+  const row = ticketRow(client, client.store.tickets.get(ticketId)!);
+  assert.deepEqual([row.write, row.local], ["local", "unlinked"]);
+  assert.equal(localPhrase("unlinked"), "link needed");
+  assert.equal(localPhrase("link-broken"), "link broken");
+  assert.equal(localPhrase("uninstalled"), "app installed nowhere to push to");
+  assert.equal(localPhrase("not-served"), "not a repository the app may push to");
+  assert.equal(localPhrase("inferred"), "inferred, no one asked");
+  assert.equal(localPhrase("ceiling"), "lowered by this scope's ceiling");
+  // why names the ticket's reason and the command that would let its work act on GitHub.
+  const text = whyText(client, await whyReport(client, ticketId));
+  assert.match(text, /ticket \w{8}/);
+  assert.match(text, /run swarm superagent link, then swarm superagent takeover \w{8} once it is ready/);
+  // Work that stays local because nobody asked has no way out to show.
+  ticket.mandate.capability = { role: "maintainer", write: "local", local: "inferred" };
+  client.store.tickets.save(ticket);
+  assert.doesNotMatch(whyText(client, await whyReport(client, ticketId)), /superagent link/);
 });

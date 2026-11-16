@@ -147,7 +147,7 @@ test("a local ticket's ready report keeps its committed patch and attaches it to
   const candidate = client.engine.candidate(triggerId)!;
   const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Add a NOTICE file", scope: "x", reason: "asked", name: "add-notice", evalId: candidate.evalId });
   const ticket = client.store.tickets.get(ticketId!)!;
-  assert.deepEqual(ticket.mandate.capability, { role: "everyone", write: "local" });
+  assert.deepEqual(ticket.mandate.capability, { role: "everyone", write: "local", local: "unlinked" });
   client.engine.assignmentStarted(ticketId!, ticket.assignments[0]!.id);
   const patch = "From 1 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] Add NOTICE\n";
   await assert.rejects(fileReport(client, ticketId!, { state: "ready", summary: "Done.", patch: { text: patch, bytes: patch.length, uncommitted: true } }), /uncommitted changes/);

@@ -245,7 +245,7 @@ describe("take-over", () => {
   it("lets a maintainer take over a local ticket with a patch: a new ticket of theirs that writes to GitHub from it, and the old one ends", async () => {
     writeSettings(settings({}), settingsPath(stateDir));
     const local = accept(message(READER, "fix the typo"));
-    expect(local.mandate.capability).toEqual({ role: "everyone", write: "local" });
+    expect(local.mandate.capability).toEqual({ role: "everyone", write: "local", local: "unlinked" });
     const root = String(client.store.triggers.get(local.origin.triggerId)!.meta.messageId);
     linkAs(MAINTAINER, "alice-gh", ["alice-gh/tool"]);
     commands.receive(message(MAINTAINER, "/takeover", { root }));
@@ -291,6 +291,16 @@ describe("take-over", () => {
     linkAs(READER, "reader-gh", [WATCHED]);
     commands.receive(message(READER, "/takeover", { root: String(client.store.triggers.get(local.origin.triggerId)!.meta.messageId) }));
     expect(takerOf(local)?.mandate.capability).toMatchObject({ role: "everyone", write: "github", credential: { login: "reader-gh" } });
+  });
+  it("tells someone the ceiling stops a take-over here, rather than sending them to link for nothing", async () => {
+    // The chat's owner lowered how far its work writes to local: no link can lift that, so /link would be wasted.
+    writeSettings({ ...settings({}), policy: { sources: { feishu: { ...settings({}).policy.sources.feishu, ceilings: { [CHAT]: "local" } } } } }, settingsPath(stateDir));
+    const local = accept(message(READER, "fix the typo"));
+    await ready(local);
+    commands.receive(message(READER, "/takeover", { root: String(client.store.triggers.get(local.origin.triggerId)!.meta.messageId) }));
+    expect(replies().at(-1)!.text).toContain("this conversation's ceiling does not let it");
+    expect(replies().at(-1)!.text).not.toContain("/link");
+    expect(takerOf(local)).toBeUndefined();
   });
   it("has someone who wants a pull request but has not linked GitHub link it in a direct message, and opens it once linked and ready", async () => {
     writeSettings(settings({}), settingsPath(stateDir));

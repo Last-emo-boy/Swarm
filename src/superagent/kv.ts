@@ -48,7 +48,9 @@ export const KV = {
    * sender wants it, which takes the ticket over once both are there (bot-commands.ts); only the host writes them.
    */
   links: { github: family<GithubLink, [source: string, actor: string]>('github-link:'),
-    wanted: family<{ triggerId: string; at: string }, [ticket: string]>('github-link-wanted:') },
+    wanted: family<{ triggerId: string; at: string }, [ticket: string]>('github-link-wanted:'),
+    /** The device flow a `swarm superagent link` started and has not finished, which `link --wait` reads to finish it. */
+    device: record<{ device: { device_code: string; user_code: string; verification_uri: string; expires_in: number; interval: number }; clientId: string; at: string }>('github-link-device') },
   /**
    * The agent in group chats (chatter.ts): by chat, when it last considered speaking, what it said there lately, from any
    * of its messages to the chat (outbox.ts), with the message it answered and whether that went in its topic, and when it

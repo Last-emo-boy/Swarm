@@ -4,9 +4,9 @@
  */
 import { z } from "zod/v4";
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell } from "./admission.js";
-import type { AssessmentOutcome, Capability, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
+import type { AssessmentOutcome, Capability, LocalWhy, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
   GateResult, WriteLevel } from "./core/index.js";
-import type { LinkView } from "./github-link.js";
+import { installUrl, type GithubApp, type LinkView } from "./github-link.js";
 import { sameActor, sameName } from "./text.js";
 import { AllowedSchema, RuleIdSchema, policyVersion, type Settings } from "./settings.js";
 
@@ -129,19 +129,51 @@ export function allowedWrite(settings: Settings, mandate: Pick<Mandate, 'strengt
 }
 /**
  * The capability of work about to be accepted, while the access model is on: what `allowedWrite` allows, where work that may
- * write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one.
+ * write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one, saying
+ * why. Work nobody asked for or a scope's ceiling lowered is local by the policy, without a person to tell.
  */
 export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>, link?: LinkView,
   requested: { repository?: string } = {}): Capability | undefined {
   if (!settings.access) return undefined
   const role = roleOf(settings, mandate.actor)
   const write = allowedWrite(settings, mandate)
-  if (write !== 'github') return { role, write }
+  // `allowedWrite` already decided how far work may write; only the reason it stopped short is added here.
+  if (write !== 'github') return { role, write, local: mandate.strength === 'inferred' || mandate.basis.via === 'bot' ? 'inferred' : 'ceiling' }
   const watched = watchedRepository(settings)
   const repository = link && !link.broken
     ? repositoryFor(link, watched, mandate.basis.source === 'github' ? watched : requested.repository) : undefined
-  if (!link || !repository) return { role, write: 'local' }
+  if (!link) return { role, write: 'local', local: 'unlinked' }
+  if (link.broken) return { role, write: 'local', local: 'link-broken' }
+  // Two different things: an app installed nowhere, and one installed on repositories that do not include the one this work is about.
+  if (!repository) return { role, write: 'local', local: link.repos.length ? 'not-served' : 'uninstalled' }
   return { role, write, credential: { login: link.login, id: link.id }, repository }
+}
+/**
+ * Where the person who reads a local notice wrote: in this chat, at this terminal, or elsewhere, which is a GitHub issue
+ * comment: the two commands a notice names run in a chat or a terminal, and nowhere a GitHub commenter can reach them.
+ */
+export type NoticePlace = 'chat' | 'terminal' | 'elsewhere'
+/** How a notice names the way out when its reader is not in a chat: the command to run, or where to run it. */
+const wayOut = (place: NoticePlace, chat: string, terminal: string, elsewhere = 'from a chat or the host terminal'): string =>
+  place === 'chat' ? chat : place === 'terminal' ? terminal : elsewhere
+/** What a person can do to let their work act on GitHub, where they wrote it; undefined when no person can. */
+export function localNotice(local: LocalWhy | undefined, place: NoticePlace, short: string, app?: GithubApp): string | undefined {
+  switch (local) {
+    case 'unlinked':
+      // The short id is the ticket this accept makes, so the person can name it to take it over once it is ready.
+      return `Your GitHub account isn't linked yet, so this stays local: ${wayOut(place, 'send /link here', 'run swarm superagent link', 'link it from a chat or the host terminal')}, then ${wayOut(place, `/takeover ${short}`, `swarm superagent takeover ${short}`, 'take it over from a chat or the host terminal')} once it is ready.`
+    case 'link-broken':
+      return `Your GitHub link stopped working, so this stays local: link again ${wayOut(place, '(send /link)', '(run swarm superagent link)')}, then take it over once it is ready.`
+    case 'uninstalled':
+      return app
+        ? `Your GitHub account is linked, but the app is not installed on a repository you can push to, so this stays local: install it at ${installUrl(app)}, set one ${wayOut(place, '(/repo)', '(swarm superagent repo)')}, then take it over once it is ready.`
+        : `Your GitHub account is linked, but no repository you can push to is set, so this stays local: set one ${wayOut(place, '(/repo)', '(swarm superagent repo)')}, then take it over once it is ready.`
+    case 'not-served':
+      return `Your GitHub account is linked, but the repository this work is about is not one you can push to through the app, so this stays local${app ? `: install it there at ${installUrl(app)}` : ''}, then take it over once it is ready.`
+    default:
+      // Work nobody asked for, or a receiving scope's ceiling: there is no person to tell, and linking would change nothing.
+      return undefined
+  }
 }
 /**
  * Whether `actor` may choose the agent harness their work runs on, which the owner's harness accounts pay for: anyone

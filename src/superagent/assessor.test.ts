@@ -6,6 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { liveTicket, type Trigger } from "./core/index.js";
 import { ModelAssessor, routeProblem, type AgentCommands, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
+import { localOperator } from "./sources/local.js";
 import { devicesOf } from "./devices.js";
 import { KV } from "./kv.js";
 import { Journal, journaled } from "./journal.js";
@@ -13,6 +14,7 @@ import { placementOf, workNeeds, type MeshView } from "./placement.js";
 import { routerPrompt } from "./prompts.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import { commentTrigger } from "./sources/github-trigger.js";
+import { checkedImText } from "./text.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -285,7 +287,7 @@ test("routes a request again when the Engine refuses to attach it to a ticket it
   assert.match(calls[2]!.user, /may not steer this ticket/);
   const mine = client.store.tickets.list().find((ticket) => ticket.mandate.actor.id === "bob");
   assert.equal(mine?.title, "Reword the intro");
-  assert.deepEqual(mine?.mandate.capability, { role: "everyone", write: "local" });
+  assert.deepEqual(mine?.mandate.capability, { role: "everyone", write: "local", local: "unlinked" });
   assert.ok(liveTicket(client.store.tickets.get(ticketId)!));
 });
 
@@ -553,12 +555,115 @@ test("has the requester of accepted work link GitHub when the router says they w
   answers.push(accept({ link: true, acknowledgement: "On it: a patch first, and a pull request once you link GitHub." }));
   await judge(wanting.id);
   const ticketId = client.store.decisions.get(client.store.triggers.disposition(wanting.id)!.decisionId!)!.ticketId!;
-  assert.deepEqual(client.store.tickets.get(ticketId)!.mandate.capability, { role: "maintainer", write: "local" });
+  assert.deepEqual(client.store.tickets.get(ticketId)!.mandate.capability, { role: "maintainer", write: "local", local: "unlinked" });
   assert.deepEqual(done, [["want", wanting.id, ticketId]]);
   const plain = await fromAlice("fix the CHANGELOG", "om_2");
   answers.push(accept({ title: "Fix the CHANGELOG", worktree_name: "fix-changelog" }));
   await judge(plain.id);
   assert.equal(done.length, 1);
+});
+
+/** Every acknowledgement queued for a ticket, as the host sends them. */
+const acknowledgements = () => client.store.db.prepare("SELECT value FROM outbox WHERE value ->> '$.kind' = 'acknowledgement'").all()
+  .map((row) => (JSON.parse(String(row.value)) as { text: string }).text);
+
+test("tells a person whose GitHub is not linked that the work stays local, and how to link and take it over, in the chat's own words", async () => {
+  start(ACCESS);
+  const asking = await fromAlice("fix the README and open a pull request", "om_1");
+  answers.push(accept());
+  await judge(asking.id);
+  const ticket = ticketOf(asking.id);
+  assert.deepEqual(ticket.mandate.capability, { role: "maintainer", write: "local", local: "unlinked" });
+  const [text] = acknowledgements();
+  assert.equal(text, `On it: fixing the README typo. Your GitHub account isn't linked yet, so this stays local: send /link here, then /takeover ${ticket.id.slice(0, 8)} once it is ready.`);
+  // The whole message still fits the chat limit the platform enforces.
+  assert.equal(checkedImText(text!), text);
+  // A terminal request names the commands a terminal has.
+  client.close();
+  rmSync(stateDir, { recursive: true, force: true });
+  stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-assessor-"));
+  start({ access: {} });
+  const { triggerId } = client.request("fix the typo in README");
+  answers.push(accept());
+  await judge(triggerId);
+  const local = ticketOf(triggerId);
+  assert.equal(local.mandate.capability?.local, "unlinked");
+  assert.equal(acknowledgements()[0], `On it: fixing the README typo. Your GitHub account isn't linked yet, so this stays local: run swarm superagent link, then swarm superagent takeover ${local.id.slice(0, 8)} once it is ready.`);
+});
+
+test("says nothing extra to a person whose GitHub is linked, or to work nobody asked for", async () => {
+  start(ACCESS);
+  client.store.set(KV.links.github("feishu", "ou_alice"), { login: "alice-gh", id: 7, repos: ["owner/watched"], reposAt: "", linkedAt: "",
+    access: { iv: "", data: "", tag: "" } });
+  const linked = await fromAlice("fix the README", "om_1");
+  answers.push(accept());
+  await judge(linked.id);
+  assert.equal(ticketOf(linked.id).mandate.capability?.write, "github");
+  assert.deepEqual(acknowledgements(), ["On it: fixing the README typo."]);
+  // An inferred candidate has no person to tell: its work is local because nobody asked, and says as much.
+  client.close();
+  rmSync(stateDir, { recursive: true, force: true });
+  stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-assessor-"));
+  start({ ...ACCESS, sources: { ...ACCESS.sources, github: { enabled: true, config: { repository: "owner/watched", cli: "gh", observeComments: true } } }, eval: { mode: "auto" },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }], bots: [{ id: "cli_alerts" }] }, github: { allowed: [{ id: "alice" }] } },
+      rules: [{ id: "copy", name: "Copy", enabled: true, instruction: "Fix typos." }, { id: "visual", name: "Visual", enabled: true, instruction: "Fix colors." }] } });
+  const observed = comment(1, "the button should just say 'Save'");
+  client.engine.receive(observed);
+  answers.push(assessment("accept"));
+  await judge(observed.id);
+  const inferred = client.store.tickets.list()[0]!;
+  assert.deepEqual(inferred.mandate.capability, { role: "maintainer", write: "local", local: "inferred" });
+  assert.deepEqual(acknowledgements(), ["On it: changing the label to Save."]);
+  // A bot's comment is work nobody asked for, and no person is told what to do about it, even under the access model.
+  client.close();
+  rmSync(stateDir, { recursive: true, force: true });
+  stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-assessor-"));
+  start({ sources: { github: { enabled: true, config: { repository: "acme/widgets", cli: "gh", observeComments: true } } },
+    policy: { sources: { github: { allowed: [{ id: "alice" }], bots: [{ id: "dependabot[bot]" }] } },
+      rules: [{ id: "copy", name: "Copy", enabled: true, instruction: "Fix typos." }, { id: "visual", name: "Visual", enabled: true, instruction: "Fix colors." }] }, eval: { mode: "auto" }, access: {} });
+  client.store.set(KV.links.github("github", "dependabot[bot]"), { login: "dependabot[bot]", id: 9, repos: ["owner/watched"], reposAt: "", linkedAt: "",
+    access: { iv: "", data: "", tag: "" } });
+  const botComment = comment(2, "the button should just say 'Save'", "dependabot[bot]");
+  client.engine.receive({ ...botComment, human: false });
+  answers.push(assessment("accept"));
+  await judge(botComment.id);
+  const bots = client.store.tickets.list()[0]!;
+  assert.equal(bots.mandate.basis.via, "bot");
+  assert.equal(bots.mandate.strength, "inferred");
+  assert.deepEqual(bots.mandate.capability, { role: "everyone", write: "local", local: "inferred" });
+  // No acknowledgement, and so no notice: work nobody asked for is never told how to link.
+  assert.deepEqual(acknowledgements(), []);
+  // A terminal request with no link is told, in the terminal's own words.
+  client.close();
+  rmSync(stateDir, { recursive: true, force: true });
+  stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-assessor-"));
+  start({ access: {}, policy: { sources: { local: { allowed: [{ id: localOperator() }] } } } });
+  const { triggerId } = client.request("fix the typo in README");
+  answers.push(accept());
+  await judge(triggerId);
+  const terminal = ticketOf(triggerId);
+  assert.deepEqual(terminal.mandate.capability, { role: "maintainer", write: "local", local: "unlinked" });
+  assert.equal(acknowledgements()[0], `On it: fixing the README typo. Your GitHub account isn't linked yet, so this stays local: run swarm superagent link, then swarm superagent takeover ${terminal.id.slice(0, 8)} once it is ready.`);
+});
+
+test("names no terminal command to a GitHub commenter, whose way out is a chat or the host terminal", async () => {
+  // The access model on and Alice linked to a repository of her own: nothing this host watches, so the comment stays local.
+  const settings = { ...githubSettings("auto"), access: {}, policy: { sources: { github: { allowed: [{ id: "alice" }] } },
+    rules: [{ id: "copy", name: "Copy", enabled: true, instruction: "Fix typos." }, { id: "visual", name: "Visual", enabled: true, instruction: "Fix colors." }] } };
+  start({ ...settings, sources: { github: { enabled: true, config: { repository: "acme/widgets", app: { clientId: "Iv23client", slug: "swarm-oauth" } } } } });
+  // The host knows no account for her, though she may be linked elsewhere: this comment's work stays local.
+
+  const commenter = comment(1, "@agent-bot fix the label");
+  client.engine.receive(commenter);
+  answers.push(JSON.stringify({ kind: "accept", title: "Fix the label", worktree_name: "fix-label", acknowledgement: "On it: changing the label to Save." }));
+  await judge(commenter.id);
+  const ticket = client.store.tickets.list()[0]!;
+  assert.deepEqual(ticket.mandate.capability, { role: "maintainer", write: "local", local: "unlinked" });
+  const [text] = acknowledgements();
+  // Neither command runs in an issue thread, and the app is not on the repository this work is about: the notice names a
+  // chat or the host terminal, and never a command the reader could not run.
+  assert.doesNotMatch(text!, /swarm superagent|\/link|\/takeover/);
+  assert.match(text!, /link it from a chat or the host terminal/);
 });
 
 test("works on the requester's repository the router chose, however they called it, and only on one of theirs", async () => {
