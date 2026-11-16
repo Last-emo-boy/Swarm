@@ -14,9 +14,12 @@ export function producedText(rec: RunRecord): string {
   if (rec.outcome.notes?.length) return rec.outcome.notes.join("\n");
   if (!rec.answer) return "";
   try {
-    const answer = JSON.parse(rec.answer) as { say?: unknown; reply?: { text?: unknown } };
+    const answer = JSON.parse(rec.answer) as { say?: unknown; reply?: { text?: unknown } | { text?: unknown }[] };
     if (typeof answer.say === "string") return answer.say;
-    if (typeof answer.reply?.text === "string") return answer.reply.text;
+    // Attend answers with one reply per calling message; a lone reply is the shape older recordings hold.
+    const replies = Array.isArray(answer.reply) ? answer.reply : answer.reply ? [answer.reply] : [];
+    const texts = replies.flatMap((reply) => typeof reply.text === "string" ? [reply.text] : []);
+    if (texts.length) return texts.join("\n");
   } catch { /* Not JSON: the run had nothing it could use. */ }
   return "";
 }

@@ -406,6 +406,27 @@ describe("when messages call for the agent that its router does not answer", () 
     expect(wordCount(post!.text) <= 60 && post!.text.endsWith("。…") && post!.text.startsWith("我这边还没认领活")).toBe(true);
   });
 
+  it("shortens only the reply that broke the limit, and keeps the other's first answer", async () => {
+    room.pass();
+    now += 1000;
+    const first = botMessage("ou_tickey", "今天能合吗", 0, { mention: true });
+    const second = botMessage("ou_feifei", "你那边还卡着吗", 0, { mention: true });
+    const long = "我这边还没认领活，所以没有进度可报，等正明分配后再说。".repeat(6);
+    answers.push(JSON.stringify({ reply: [
+      { text: "能合，下午我看一下", reply_to: first.meta.messageId },
+      { text: long, reply_to: second.meta.messageId }] }),
+    JSON.stringify({ reply: [{ text: "还卡在等审阅", reply_to: second.meta.messageId }] }));
+    await room.attend(CHAT, [first.id, second.id]);
+    // One retry for the whole card, naming the reply that was long; the short one is never asked for again.
+    expect(calls.length).toBe(2);
+    expect(JSON.parse(calls[1]!.user).problem).toMatch(/^the reply is \d+ words/);
+    expect(JSON.parse(calls[1]!.user).problem).not.toContain("(to ");
+    // The retry replaced only the long reply; the other keeps what it first said, and each message gets one answer.
+    expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([
+      ["能合，下午我看一下", first.meta.messageId], ["还卡在等审阅", second.meta.messageId]
+    ]);
+  });
+
   it("asks once more for an answer it cannot use, then neither replies nor relays, and keeps waiting for what it asked", async () => {
     const live = new ChatterRoom({ client, now: () => now, complete: async (input) => { calls.push(input); return answers.shift()!; } });
     live.install();
@@ -423,20 +444,20 @@ describe("when messages call for the agent that its router does not answer", () 
     expect([calls.length, attending(), posts()]).toEqual([2, [], []]);
     expect(openAsks(client.store, now).map((item) => item.id)).toEqual(["ask-1"]);
     expect(client.store.get(KV.chatter.chat(CHAT))?.answered).toBeUndefined();
-    // Its effect ended, and the message it could not answer is not read again: a later pass asks the model nothing.
+    // Its effect ended, and the call it could not answer stays behind the mark: with nothing newer it is not asked again.
     now += 30_000;
     live.pass();
     await client.effects.idle("attend");
     expect([calls.length, attending()]).toEqual([2, []]);
     // The queue stops here, before anything is posted: a running one would hand the relay below to the Source's CLI.
     await client.effects.drain();
-    // The ask is still open, so the next message that answers it is passed on.
+    // The ask is still open, so the next message that answers it is passed on, read together with the call left unanswered.
     const more = botMessage("ou_feifei", "发版也定了", 0, { mention: true });
     now += 16_000;
     live.pass();
-    expect(attending()).toEqual([{ chatId: CHAT, source: "feishu", ids: [more.id] }]);
-    answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: "飞飞说规范和发版都定了" }] }));
-    await live.attend(CHAT, [more.id]);
+    expect(attending()).toEqual([{ chatId: CHAT, source: "feishu", ids: [reply.id, more.id] }]);
+    answers.push(JSON.stringify({ reply: [{ text: null, reply_to: reply.meta.messageId }], relay: [{ question: "ask-1", text: "飞飞说规范和发版都定了" }] }));
+    await live.attend(CHAT, [reply.id, more.id]);
     expect(calls.length).toBe(3);
     expect(posts().map((post) => post.text)).toEqual(["飞飞说规范和发版都定了"]);
     expect(openAsks(client.store, now)).toEqual([]);
@@ -503,6 +524,35 @@ describe("when messages call for the agent that its router does not answer", () 
     ]);
     // What it waits for is what it asked: the first person, with the question it sent them.
     expect(openAsks(client.store, now).map((item) => [item.to, item.text, item.for.id])).toEqual([[["ou_alice"], "飞飞要 Alice 的 GitHub 账号名，是哪个？", "ou_feifei"]]);
+  });
+
+  it("sends an answer that names a message it cannot place to the call that is waiting, rather than dropping it", async () => {
+    room.pass();
+    now += 1000;
+    const asked = botMessage("ou_tickey", "你那边有 fixtures 的结果吗", 0, { mention: true });
+    // An older card message the router owns, not a call this pass may answer.
+    answers.push(JSON.stringify({ reply: { text: "fixtures 我这边还没跑", reply_to: "om_older_card" } }));
+    await room.attend(CHAT, [asked.id]);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => [post.text, post.channel.address.messageId])).toEqual([["fixtures 我这边还没跑", asked.meta.messageId]]);
+    // Answered for the record, so the call does not sit behind the mark and come back.
+    expect(client.store.get(KV.chatter.chat(CHAT))?.answered?.length).toBe(1);
+  });
+
+  it("still asks the person it acts for when the reply itself is declined", async () => {
+    room.pass();
+    now += 2000;
+    ask(client.store, { id: "ask-1", chatId: CHAT, to: ["ou_feifei"], text: "@飞飞 Alice 想要 repo 的地址", at: new Date(now - 1000).toISOString(),
+      for: { id: "ou_alice", name: "Alice", channel: home } }, now);
+    closeAsks(client.store, ["ask-1"], now);
+    const wants = botMessage("ou_feifei", "要加 collaborator 的话，请告诉我你们的 GitHub 账号名", 0, { mention: true });
+    answers.push(JSON.stringify({ reply: { text: null, reply_to: wants.meta.messageId }, relay: [],
+      ask_back: [{ for: "ou_alice", text: "飞飞要你的 GitHub 账号名来加 collaborator，是哪个？" }] }));
+    await room.attend(CHAT, [wants.id]);
+    const sent = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((row) => JSON.parse(String(row.value)) as
+      { text: string; channel: { address: Record<string, string> } });
+    expect(sent.map((post) => [post.channel.address.chatId, post.text])).toEqual([["oc_home", "飞飞要你的 GitHub 账号名来加 collaborator，是哪个？"]]);
+    expect(openAsks(client.store, now).map((item) => [item.to, item.for.id])).toEqual([[["ou_alice"], "ou_feifei"]]);
   });
 
   it("lets a call that fails reject, so its effect tries again", async () => {

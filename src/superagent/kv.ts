@@ -52,9 +52,10 @@ export const KV = {
   /**
    * The agent in group chats (chatter.ts): by chat, when it last considered speaking, what it said there lately, from any
    * of its messages to the chat (outbox.ts), with the message it answered and whether that went in its topic, and when it
-   * spoke there on its own.
+   * spoke there on its own; and `askedUpTo`, the newest message an attend was already asked about, so a call it left
+   * unanswered is read again only when something newer arrives.
    */
-  chatter: { chat: family<{ consideredAt?: string; said: Said[]; spoke?: string[]; attendedAt?: string; answered?: { at: string; bot?: true }[] }, [chat: string]>('chatter:') },
+  chatter: { chat: family<{ consideredAt?: string; said: Said[]; spoke?: string[]; attendedAt?: string; askedUpTo?: string; answered?: { at: string; bot?: true }[] }, [chat: string]>('chatter:') },
   /**
    * Who is who on Feishu (people.ts): each person's or bot's name by Source and id, and each chat's members as Feishu last
    * listed them, by chat id, which the Feishu Source keeps current.

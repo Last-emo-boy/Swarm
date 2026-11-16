@@ -146,6 +146,18 @@ before(async () => {
   const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
+  // The ghost is offered work the moment the owner knows it, so wait on what the offer needs: the owner's record of the
+  // ghost carries the address the ghost listens at, and the ghost answers there. A pairing that reached the owner before
+  // the address was saved leaves the record empty, and then the first offer is refused without ever dialing: the ghost
+  // would fail the first Assignment as unreachable instead of taking it.
+  await until(() => {
+    const record = readMesh(ovh.mesh).peers.find((item) => item.name === "ghost");
+    if (!record) return undefined;
+    assert.ok(record.addresses.length > 0, "the owner saved the ghost with no address to reach it at");
+    assert.ok(record.addresses.includes(url), `the owner saved ${record.addresses.join(", ")}, not the address the ghost listens at (${url}); pair it again`);
+    return true;
+  });
+  await callPeer(readMesh(ovh.mesh).peers.find((item) => item.name === "ghost")!, "GET", "/mesh/v1/node");
   ghost = { server, mesh, offers };
 });
 after(async () => {
