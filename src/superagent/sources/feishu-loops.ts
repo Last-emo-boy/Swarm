@@ -11,16 +11,37 @@ import { readFeishu, type FeishuRef } from './feishu-read.js'
 import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyEvent, HistoryPageSchema, SOURCE, topicEvent }
   from './feishu-trigger.js'
 import { health, type SourceContext } from './host.js'
+import type { Health } from '../health.js'
 import { KV } from '../kv.js'
 import { chatsToRead, noticed, readMembers } from '../people.js'
 import { cursorAt, polled, pollThreads as pollEach } from './poll.js'
 import type { FeishuConfig } from './feishu.js'
+import { feishuChatKind } from './feishu-chat.js'
+import { ChatHealth, PROBE_MS } from './chat.js'
 
-export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> => {
+export const runFeishu = (ctx: SourceContext, signal: AbortSignal, probeMs = PROBE_MS): Promise<unknown> => {
   // The live stream wakes the history sweep each time it becomes ready: at start and after every reconnect.
   const streamReady = wakeup()
-  return Promise.allSettled([watch(ctx, signal, streamReady), backfillLoop(ctx, signal, streamReady), chatNamesLoop(ctx, signal),
-    membersLoop(ctx, signal)])
+  // Whether Feishu's API answers decides what "ready" may say: a stream that stays up while every call fails reads error.
+  const chatHealth = new ChatHealth()
+  return Promise.allSettled([watch(ctx, signal, streamReady, chatHealth), backfillLoop(ctx, signal, streamReady, undefined, chatHealth),
+    chatNamesLoop(ctx, signal), membersLoop(ctx, signal), probeLoop(ctx, signal, chatHealth, probeMs)])
+}
+/**
+ * Probes Feishu's API every `PROBE_MS` while the Source runs, so a bot whose app was shut down, whose CLI signed out or whose
+ * calls all fail stops reading ready. The first probe runs at once.
+ */
+export async function probeLoop(ctx: SourceContext, signal: AbortSignal, chatHealth: ChatHealth, everyMs = PROBE_MS): Promise<void> {
+  const kind = feishuChatKind
+  await ctx.ready
+  while (!signal.aborted) {
+    if (enabled(ctx)) {
+      const report = (entry: Health): void => { ctx.report(kind.source, entry) }
+      try { await kind.probe(ctx.commands, ctx.deployment); chatHealth.record(undefined, report) }
+      catch (error) { if (!signal.aborted) chatHealth.record(String(error), report) }
+    }
+    await delay(everyMs, undefined, { signal }).catch(() => {})
+  }
 }
 /** A wake-up call for one waiter. One that comes while nobody waits is kept for the next wait, and several merge into one. */
 export interface Wakeup {
@@ -71,7 +92,7 @@ function available(ctx: SourceContext): boolean {
 }
 
 /** Runs the live event consumer only while the Source is enabled; disabling it stops the consumer within five seconds. */
-async function watch(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup): Promise<void> {
+async function watch(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup, chatHealth: ChatHealth): Promise<void> {
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the bot; until then nothing runs.
   if (!available(ctx)) return
@@ -87,7 +108,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeu
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()
-    try { await consume(ctx, running.signal, streamReady) }
+    try { await consume(ctx, running.signal, streamReady, chatHealth) }
     catch (error) { if (!running.signal.aborted) ctx.report('feishu', { state: 'error', detail: String(error) }) }
     finally { clearInterval(check); signal.removeEventListener('abort', stop) }
     if (running.signal.aborted) continue
@@ -98,7 +119,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeu
 /** Wait before restarting the event consumer: 1s after a run that stayed up for a minute, otherwise exponential backoff up to 60s. */
 export const consumerRetry = (previous: number | undefined, ranMs: number): number =>
   previous === undefined || ranMs >= 60_000 ? 1000 : Math.min(previous * 2, 60_000)
-async function consume(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup): Promise<void> {
+async function consume(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup, chatHealth: ChatHealth): Promise<void> {
   const child = spawn(bot(ctx).cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
     { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
@@ -111,7 +132,7 @@ async function consume(ctx: SourceContext, signal: AbortSignal, streamReady: Wak
     diagnostic = line.slice(0, 4000)
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
-      ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
+      ctx.report('feishu', chatHealth.claim({ state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() }))
       streamReady.wake()
     } else if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
   })
@@ -185,7 +206,7 @@ async function membersLoop(ctx: SourceContext, signal: AbortSignal): Promise<voi
  * A sweep that fails for a chat is repeated after `sweepRetry`. Every `tickMs` it looks again without calling Feishu: to
  * report the Source being turned off and to start the cursor of a chat seen for the first time.
  */
-export async function backfillLoop(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup, tickMs = 60_000): Promise<void> {
+export async function backfillLoop(ctx: SourceContext, signal: AbortSignal, streamReady: Wakeup, tickMs = 60_000, chatHealth = new ChatHealth()): Promise<void> {
   await ctx.ready
   if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing')); return }
   let retry: number | undefined
@@ -228,7 +249,7 @@ export async function backfillLoop(ctx: SourceContext, signal: AbortSignal, stre
     const skipped = tally.skipped ? `; ${tally.skipped} unreadable messages skipped` : ''
     ctx.report('history', errors.length
       ? { state: 'error', detail: errors.join('\n') }
-      : { state: 'ready', detail: `Configured groups and known direct chats recovered${skipped}`, at: new Date().toISOString() })
+      : chatHealth.claim({ state: 'ready', detail: `Configured groups and known direct chats recovered${skipped}`, at: new Date().toISOString() }))
   }
 }
 /**

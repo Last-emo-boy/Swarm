@@ -2,6 +2,8 @@
 import { z } from 'zod/v4'
 import { key, type ChannelRef, type Trigger } from '../core/index.js'
 import type { FeishuMessage, FeishuRef } from './feishu-read.js'
+import type { ChatKind } from './chat.js'
+import { metaOf } from './meta.js'
 
 export const SOURCE = 'feishu'
 /**
@@ -13,10 +15,25 @@ export const feishuChannel = (chatId: string, messageId: string, direct = false,
 /** Where an answer to a Feishu message outside a topic goes: in a topic on it, quoting it in the chat, or as a plain message in the chat. */
 export const REPLY_STYLES = ['thread', 'quote', 'message'] as const
 export type ReplyStyle = typeof REPLY_STYLES[number]
-/** The channel that answers `trigger` in `style`: a Feishu message in a topic is answered in its topic, and other sources as they are. */
-export function replyChannel(trigger: Pick<Trigger, 'source' | 'channel' | 'meta'>, style: ReplyStyle): ChannelRef | undefined {
+/**
+ * The channel that answers `trigger` in `style`: a chat message in a topic is answered in its topic, and other sources as
+ * they are. A trigger from another chat kind answers through that kind's own constructors; without one its channel is
+ * returned as it is.
+ */
+export function replyChannel(trigger: Pick<Trigger, 'source' | 'channel' | 'meta'>, style: ReplyStyle, kind?: ChatKind): ChannelRef | undefined {
   const { channel } = trigger
-  if (!channel || trigger.source !== SOURCE || trigger.meta.threadId) return channel
+  if (!channel) return channel
+  if (trigger.source !== SOURCE) {
+    if (!kind) return channel
+    const meta = metaOf(trigger)
+    if (meta.topic) return channel
+    const chatId = meta.chatId
+    if (chatId === undefined) return channel
+    if (style === 'message') return kind.chat(chatId)
+    const messageId = meta.messageId
+    return messageId === undefined ? kind.chat(chatId) : kind.update(chatId, messageId, meta.direct, style === 'quote')
+  }
+  if (trigger.meta.threadId) return channel
   const { mode: _mode, messageId: _message, ...address } = channel.address
   if (style === 'message') return { ...channel, address: { ...address, mode: 'chat' } }
   const { messageId } = channel.address

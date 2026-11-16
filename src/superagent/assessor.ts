@@ -17,10 +17,11 @@ import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
   seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
-import { addressee, channelTo, chatName, chatsOf, conversation, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
+import { addressee, channelTo, chatName, conversation, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
 import { ask } from "./asks.js";
 import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, personSubject, planOps, subjectsOf } from "./memories.js";
 import { admissionContext } from "./sources/admission-context.js";
+import { metaOf } from "./sources/meta.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
 import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, noAnswer, orNull, parseJsonObject, sameName, wordCount } from "./text.js";
 import type { JournalTarget } from "./journal.js";
@@ -225,7 +226,7 @@ export class ModelAssessor {
     return {
       ...triggerMessage(primary, primary.url ? { source_url: primary.url } : {}, undefined, parent),
       text: cut(primary.text, TRIGGER_CHARS).text,
-      ...(primary.source === "feishu" ? { posted_in: primary.meta.threadId ? "a topic" : primary.meta.direct === true ? "a direct message" : "a group chat" } : {}),
+      ...(this.host.client.sources.chatKind(primary.source) ? { posted_in: metaOf(primary).topic ? "a topic" : metaOf(primary).direct ? "a direct message" : "a group chat" } : {}),
       ...this.people(candidate, primary),
       strength: candidate.strength,
       ...(others.length ? { batch: others.map((trigger) => triggerCard(trigger)) } : {}),
@@ -238,20 +239,24 @@ export class ModelAssessor {
     };
   }
   /**
-   * Who is who around a Feishu message: its sender's and chat's names, the people it mentions, the conversation it is
+   * Who is who around a chat message: its sender's and chat's names, the people it mentions, the conversation it is
    * part of (without the candidate's own messages, which the card has), and who else is in the chat.
    */
   private people(candidate: Candidate, primary: Trigger): Record<string, unknown> {
-    if (primary.source !== "feishu") return {};
-    const { store } = this.host.client;
-    const chatId = String(primary.meta.chatId ?? "");
+    const { store, sources } = this.host.client;
+    const kind = sources.chatKind(primary.source);
+    if (!kind) return {};
+    const meta = metaOf(primary);
+    const chatId = meta.chatId ?? "";
     const sender = senderOf(store, primary);
-    const chat = primary.meta.direct === true ? undefined : chatName(store, chatId);
-    const mentioned = Array.isArray(primary.meta.mentions) ? primary.meta.mentions : [];
+    const chat = meta.direct ? undefined : chatName(store, chatId, primary.source);
+    const mentioned = meta.mentions ?? [];
     const lines = conversation(store, primary, { since: new Date(this.now() - CONVERSATION_MS).toISOString(), limit: CONVERSATION_LINES,
-      chars: LINE_CHARS, exclude: new Set(candidate.triggers.map((trigger) => trigger.id)), self: this.host.client.resolvedDeployment()?.feishu?.name ?? "" });
-    const here = primary.meta.direct === true ? [] : peopleIn(store, chatId, PEOPLE_HERE);
-    const groups = chatsOf(store).filter((item) => !item.direct).map(({ chat_id, name }) => ({ chat_id, name }));
+      chars: LINE_CHARS, exclude: new Set(candidate.triggers.map((trigger) => trigger.id)), self: sources.agent(primary.source, this.host.client.resolvedDeployment())?.name ?? "" });
+    const here = meta.direct ? [] : peopleIn(store, chatId, PEOPLE_HERE, kind);
+    const chatKinds = sources.chatKinds();
+    const groups = chatKinds.flatMap((chatKind) => chatKind.directory.chats(store))
+      .filter((item) => !item.direct).map(({ source, chatId, name }) => chatKinds.length > 1 ? { source, chat_id: chatId, name } : { chat_id: chatId, name });
     const settings = this.host.client.settings();
     const memory = memoryOf(settings) ? notesCard(store, subjectsOf(primary)) : undefined;
     return {
@@ -282,7 +287,7 @@ export class ModelAssessor {
     const thisRequest = capability?.credential ? `github, as @${capability.credential.login}`
       : link && !link.broken && mayWrite === "github" ? `github, as @${link.login}, on the repository you set; local if you set none` : capability?.write;
     return { requester: {
-      role: roleOf(settings, evaluation.actor), direct_message: primary.meta.direct === true, may_write: mayWrite, this_request: thisRequest,
+      role: roleOf(settings, evaluation.actor), direct_message: metaOf(primary).direct, may_write: mayWrite, this_request: thisRequest,
       ...(github ? { github } : {})
     } };
   }
@@ -343,10 +348,12 @@ export class ModelAssessor {
     const harnesses = await this.harnesses(candidate);
     const card = { ...this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...await this.devices(candidate) };
     const triggerId = candidate.triggers.at(-1)!.id;
+    // The platform word the prompt uses for where it answers: the request's own chat kind, Feishu's when it has none.
+    const platform = client.sources.chatKind(candidate.triggers.at(-1)!.source)?.platform;
     let last = "", previous = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       const user = JSON.stringify(attempt ? { candidate: card, previous_answer: previous, problem: last } : { candidate: card }, null, 2);
-      const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? "", !!memoryOf(client.settings())), user,
+      const answer = await complete({ purpose: "superagent_route", system: routerPrompt(client.settings().chatter?.persona ?? "", !!memoryOf(client.settings()), platform), user,
         model: client.settings().eval.model ?? undefined, target: { message: triggerId } });
       previous = answer.slice(0, ANSWER_CHARS);
       let route: Route;
@@ -382,13 +389,15 @@ export class ModelAssessor {
     const { store } = this.host.client;
     if (!memoryOf(this.host.client.settings())) return "remember: the agent's memory is off here; leave remember out";
     const primary = candidate.triggers.at(-1)!;
-    if (primary.source !== "feishu") return "remember: the agent remembers only what is said on Feishu; leave remember out";
-    const chatId = typeof primary.meta.chatId === "string" && primary.meta.direct !== true ? primary.meta.chatId : undefined;
-    const known = (id: string) => id === primary.actor.id || personName(store, { source: "feishu", id }) !== undefined;
+    const kind = this.host.client.sources.chatKind(primary.source);
+    if (!kind) return "remember: the agent remembers only what is said in a chat; leave remember out";
+    const meta = metaOf(primary);
+    const chatId = meta.chatId !== undefined && !meta.direct ? meta.chatId : undefined;
+    const known = (id: string) => id === primary.actor.id || personName(store, { source: primary.source, id }) !== undefined;
     const scope = { subjects: (name: string) => name === SELF ? SELF : (name === "chat" || name === chatId) && chatId ? chatSubject(chatId)
-      : name.startsWith("ou_") && known(name) ? personSubject(name) : undefined, shown: new Set<string>() };
+      : kind.directory.personKey(name) && known(name) ? personSubject(name, primary.source) : undefined, shown: new Set<string>() };
     return planOps(store, route.remember.map((item) => ({ op: "add" as const, ...item })), scope,
-      { ...(typeof primary.meta.chatId === "string" ? { chatId: primary.meta.chatId } : {}), ...(primary.meta.direct === true ? { direct: true } : {}), triggerId: primary.id });
+      { ...(meta.chatId !== undefined ? { chatId: meta.chatId } : {}), ...(meta.direct ? { direct: true } : {}), triggerId: primary.id, source: primary.source });
   }
 
   /** Carries out a routing answer as its Engine command; returns why it cannot run or the Engine refused it, if it did. */
@@ -447,10 +456,10 @@ export class ModelAssessor {
           const trigger = client.store.triggers.get(triggerId);
           if (!trigger?.channel) return "chat needs a message with a conversation to answer in; ignore it instead";
           const text = checkedImText(route.reply!);
-          const mentions = mentionsFor(client.store, route.mentions ?? []);
+          const mentions = mentionsFor(client.store, route.mentions ?? [], trigger.source);
           if ("problem" in mentions) return mentions.problem;
-          // In a Feishu chat it answers as a member does, quoting the message unless the router chose otherwise; in a topic, there.
-          const channel = replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote")!;
+          // In a chat it answers as a member does, quoting the message unless the router chose otherwise; in a topic, there.
+          const channel = replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote", this.host.client.sources.chatKind(trigger.source))!;
           client.store.atomic(() => {
             engine.decide(triggerId, { kind: "ignore", reason: { code: "chatted" }, evalId: candidate.evalId });
             client.outbox.send({ id: key("chat", triggerId), channel, text, kind: "reply", ...(mentions.length ? { mentions } : {}) });
@@ -461,28 +470,33 @@ export class ModelAssessor {
           // Anyone may have the agent message someone, in their direct messages or in a chat it is in.
           const { client } = this.host;
           const trigger = client.store.triggers.get(triggerId);
-          if (!client.settings().sources.feishu?.enabled) return "Messages go out only on Feishu, which is off here; answer with chat instead";
-          const target = addressee(client.store, route.to!);
+          // Messages go out over the chat kind the request came by, which must be on.
+          const kind = trigger ? client.sources.chatKind(trigger.source) : undefined;
+          if (!kind || !client.sources.instance(trigger!.source)?.enabled) {
+            return kind ? `Messages go out only on ${kind.platform}, which is off here; answer with chat instead`
+              : "Messages go out only over a chat kind, and this request has none; answer with chat instead";
+          }
+          const target = addressee(client.store, route.to!, kind);
           if ("problem" in target) return target.problem;
-          const mentions = mentionsFor(client.store, route.mentions ?? []);
+          const mentions = mentionsFor(client.store, route.mentions ?? [], trigger!.source);
           if ("problem" in mentions) return mentions.problem;
           const text = checkedImText(route.text!);
           const reply = route.reply ? checkedImText(route.reply) : undefined;
-          const channel = channelTo(target);
+          const channel = channelTo(target, kind);
           const name = "person" in target ? target.person.name : target.chat.name;
           client.store.atomic(() => {
             engine.decide(triggerId, { kind: "ignore", reason: { code: "messaged", values: { to: name } }, evalId: candidate.evalId });
             client.outbox.send({ id: key("message", triggerId), channel, text, kind: "notice", ...(mentions.length ? { mentions } : {}) });
             // Asked on the person's behalf, it waits to hear back and tells them the answer (chatter.ts).
-            const back = trigger && replyChannel(trigger, "quote");
+            const back = trigger && replyChannel(trigger, "quote", kind);
             if (route.await_answer && trigger && back) {
               const now = this.now();
-              ask(client.store, { id: key("ask", triggerId), ...("person" in target ? { person: target.person.id } : { chatId: target.chat.id }),
+              ask(client.store, { id: key("ask", triggerId), source: trigger.source, ...("person" in target ? { person: target.person.id } : { chatId: target.chat.id }),
                 to: "person" in target ? [target.person.id] : mentions.flatMap((mention) => mention.id === "all" ? [] : [mention.id]), text, at: new Date(now).toISOString(),
                 for: { id: trigger.actor.id, name: senderOf(client.store, trigger), channel: back } }, now);
             }
             if (reply && trigger?.channel) {
-              client.outbox.send({ id: key("chat", triggerId), channel: replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote")!, text: reply, kind: "reply" });
+              client.outbox.send({ id: key("chat", triggerId), channel: replyChannel(trigger, (route.reply_as as ReplyStyle | null | undefined) ?? "quote", kind)!, text: reply, kind: "reply" });
             }
           });
           return undefined;
@@ -501,7 +515,7 @@ export class ModelAssessor {
   private answerAs(candidate: Candidate, style: ReplyStyle): void {
     const { store } = this.host.client;
     const primary = store.triggers.get(candidate.thread.evaluating?.primary ?? candidate.triggers.at(-1)!.id);
-    const channel = primary && replyChannel(primary, style === "message" ? "quote" : style);
+    const channel = primary && replyChannel(primary, style === "message" ? "quote" : style, this.host.client.sources.chatKind(primary.source));
     if (primary && channel) store.triggers.save({ ...primary, channel });
   }
 

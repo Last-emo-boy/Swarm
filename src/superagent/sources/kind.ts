@@ -4,6 +4,7 @@ import type { OutboundMessage, ScopeResult, Trigger } from '../core/index.js'
 import type { Commands } from '../commands.js'
 import type { Deployment } from '../setup.js'
 import type { SourceContext, SourceHost } from './host.js'
+import type { ChatKind } from './chat.js'
 
 export interface VariableSpec { key: string; description: string }
 /** A receiving scope of the admission table, and which of its cells apply there: unaddressed cells only where the Source receives every message. */
@@ -66,6 +67,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */
   scope?(input: { meta: Record<string, unknown> }, config: C): ScopeResult
   channel?: SourceChannel<C>
+  /** What the kind's chats *are*: the platform name, the agent's identity there, its directory, and the channel constructors the core must not spell itself. */
+  chat?: ChatKind
   threadContext?: ThreadContext<C>
   /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms. */
   find?(query: string): { threads: string[]; terms: string[] }

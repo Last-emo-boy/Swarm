@@ -12,10 +12,11 @@ import type { Complete } from "./assessor.js";
 import { chatterOf, quietAt } from "./chatter.js";
 import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
-import { chatLog, chatName, chatsOf, personName, senderOf } from "./people.js";
+import { chatLog, chatName, personName, senderOf } from "./people.js";
 import type { Memory, Settings } from "./settings.js";
 import type { JournalTarget } from "./journal.js";
-import { feishuUserChannel } from "./sources/feishu-trigger.js";
+import { feishuChatKind } from "./sources/feishu-chat.js";
+import { metaOf } from "./sources/meta.js";
 import type { Store } from "./store.js";
 import { IM_WORDS, answerOf, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
 
@@ -24,7 +25,8 @@ export type NoteKind = typeof NOTE_KINDS[number];
 /** One thing the agent remembers, about one subject: a person, a chat or itself, with where it learned it. */
 export interface Note {
   id: string; about: string; text: string; kind: NoteKind;
-  origin: { chatId?: string; direct?: boolean; triggerId?: string; ticketId?: string };
+  /** Where it was learned: the chat, ticket or message, and the Source kind they belong to. */
+  origin: { chatId?: string; direct?: boolean; triggerId?: string; ticketId?: string; source?: string };
   /** When a promise falls due, and when it was kept. */
   due?: string; done?: string;
   created: string; updated: string;
@@ -32,7 +34,10 @@ export interface Note {
 
 const SOURCE = "feishu";
 export const SELF = "self";
-export const personSubject = (id: string): string => `person:${SOURCE}:${id}`;
+/** The Source a note came from: its person subject's, else the origin's, else Feishu's as notes kept before it had one. */
+const sourceOfNote = (note: Note): string => note.about.startsWith("person:") ? note.about.slice("person:".length, note.about.lastIndexOf(":")) : note.origin.source ?? SOURCE;
+/** A person's subject in the notes; `source` is the chat kind their messages come from (Feishu when absent). */
+export const personSubject = (id: string, source = SOURCE): string => `person:${source}:${id}`;
 export const chatSubject = (id: string): string => `chat:${id}`;
 /** A subject as cards name it: a person's or chat's id, or self. */
 const shortSubject = (about: string): string => about.startsWith("person:") ? about.slice(about.lastIndexOf(":") + 1) : about.startsWith("chat:") ? about.slice(5) : about;
@@ -47,7 +52,7 @@ const FIRST_WINDOW_MS = DAY_MS, REFLECT_MESSAGES = 60;
 
 /** A note as a card shows it: its subject by id, when a promise falls due and when it was kept (to the minute, in UTC as due is), and where the agent learned it. */
 export function noteLine(store: Pick<Store, "get">, note: Note) {
-  const where = note.origin.direct ? "a direct message" : note.origin.chatId ? chatName(store, note.origin.chatId) ?? note.origin.chatId : note.origin.ticketId ? "a ticket" : undefined;
+  const where = note.origin.direct ? "a direct message" : note.origin.chatId ? chatName(store, note.origin.chatId, note.origin.source) ?? note.origin.chatId : note.origin.ticketId ? "a ticket" : undefined;
   return { id: note.id, about: shortSubject(note.about), kind: note.kind, text: note.text, ...(note.due ? { due: note.due } : {}),
     ...(note.done ? { kept: `${note.done.slice(0, 16)}Z` } : {}), ...(where ? { learned_in: where } : {}), updated: note.updated.slice(0, 10) };
 }
@@ -62,11 +67,11 @@ export function notesCard(store: Pick<Store, "get" | "memory">, subjects: readon
   }
   return shown.slice(0, total).map((note) => noteLine(store, note));
 }
-/** The subjects of a Feishu message: its sender, the people it mentions, its chat, and the agent itself. */
+/** The subjects of a chat message: its sender, the people it mentions, its chat, and the agent itself. */
 export function subjectsOf(trigger: Trigger): string[] {
-  const mentioned = Array.isArray(trigger.meta.mentions) ? (trigger.meta.mentions as { id: string }[]).map((mention) => personSubject(mention.id)) : [];
-  const chatId = typeof trigger.meta.chatId === "string" ? trigger.meta.chatId : undefined;
-  return [personSubject(trigger.actor.id), ...mentioned, ...(chatId && trigger.meta.direct !== true ? [chatSubject(chatId)] : []), SELF];
+  const meta = metaOf(trigger);
+  const mentioned = (meta.mentions ?? []).map((mention) => personSubject(mention.id, trigger.source));
+  return [personSubject(trigger.actor.id, trigger.source), ...mentioned, ...(meta.chatId && !meta.direct ? [chatSubject(meta.chatId)] : []), SELF];
 }
 
 /** Now, as the agent tells time to its models: in the chats' time zone, with its offset. */
@@ -196,13 +201,13 @@ export class Memories {
   private passedAt = 0;
   constructor(private readonly host: MemoriesHost) {}
   private now(): number { return this.host.now?.() ?? Date.now(); }
-  private name(): string { return this.host.client.resolvedDeployment()?.feishu?.name ?? ""; }
+  private name(source: string): string { return this.host.client.sources.agent(source, this.host.client.resolvedDeployment())?.name ?? ""; }
 
   /** Registers its effects, and reflects on each ticket that ends. */
   install(): void {
     const { client } = this.host;
     const limit = () => client.settings().paused || !memoryOf(client.settings()) ? 0 : 1;
-    client.effects.handle("reflect", async (payload) => { await (payload.ticketId ? this.reflectTicket(payload.ticketId) : this.reflect(payload.chatId!)); }, { limit });
+    client.effects.handle("reflect", async (payload) => { await (payload.ticketId ? this.reflectTicket(payload.ticketId) : this.reflect(payload.chatId!, payload.source)); }, { limit });
     client.effects.handle("promise", async ({ noteId }) => { await this.keep(noteId); }, { limit });
     client.effects.handle("consolidate", async ({ about }) => { await this.tidy(about); }, { limit });
     client.subscribe((event) => {
@@ -221,18 +226,19 @@ export class Memories {
     const now = this.now();
     if (!memory || now - this.passedAt < PASS_MS) return;
     this.passedAt = now;
-    for (const { chat_id: chatId } of chatsOf(client.store)) {
+    // Every installed chat kind's chats, through its own directory: a second adapter's conversations are reflected on too.
+    for (const { source, chatId } of client.sources.chatKinds().flatMap((kind) => kind.directory.chats(client.store))) {
       const mark = client.store.get(KV.memory.reflected(chatId));
       const from = mark?.upTo ?? new Date(now - FIRST_WINDOW_MS).toISOString();
       if (mark && now - Date.parse(mark.at) < memory.reflectMinutes * 60_000) continue;
-      const fresh = client.store.read.chatMessages(chatId, from, REFLECT_MESSAGES, true).filter((message) => message.at > from);
+      const fresh = client.store.read.chatMessages({ source, chatId }, from, REFLECT_MESSAGES, true).filter((message) => message.at > from);
       const latest = fresh[0];
       if (!latest || now - Date.parse(latest.at) < memory.lullSeconds * 1000) continue;
       if (fresh.length < memory.minMessages && !fresh.some((message) => message.addressed)) continue;
       // Marked when queued, so a reflection that fails is retried by its effect rather than queued again.
       client.store.atomic(() => {
         client.store.set(KV.memory.reflected(chatId), { at: new Date(now).toISOString(), from, upTo: latest.at });
-        client.effects.enqueue("reflect", `chat:${chatId}`, { chatId });
+        client.effects.enqueue("reflect", `chat:${chatId}`, { chatId, source });
       });
     }
     for (const note of client.store.memory.due(new Date(now).toISOString())) {
@@ -245,18 +251,20 @@ export class Memories {
 
   /** Where a promise's message goes: the chat it was made in, else its person's direct messages, else nowhere, as for one about itself made outside a chat; and that person, by name. */
   private recipient(note: Note): { channel?: ChannelRef; person?: { id: string; name: string } } {
+    const source = sourceOfNote(note);
+    const kind = this.host.client.sources.chatKind(source) ?? feishuChatKind;
     const id = note.about.startsWith("person:") ? shortSubject(note.about) : undefined;
     const chatId = note.origin.direct ? undefined : note.origin.chatId ?? (note.about.startsWith("chat:") ? shortSubject(note.about) : undefined);
-    const channel = chatId ? { source: SOURCE, thread: `feishu:${chatId}`, address: { chatId, mode: "chat" } } : id ? feishuUserChannel(id) : undefined;
-    return { ...(channel ? { channel } : {}), ...(id ? { person: { id, name: personName(this.host.client.store, { source: SOURCE, id }) ?? id } } : {}) };
+    const channel = chatId ? kind.chat(chatId) : id ? kind.user(id) : undefined;
+    return { ...(channel ? { channel } : {}), ...(id ? { person: { id, name: personName(this.host.client.store, { source, id }) ?? id } } : {}) };
   }
 
   /** The subjects a model may write about here, by the names cards give them, and the notes it was shown. */
-  private scope(people: readonly string[], chatId: string | undefined, shown: readonly { id: string }[]) {
+  private scope(people: readonly string[], chatId: string | undefined, shown: readonly { id: string }[], source: string) {
     const ids = new Set(people);
     return {
       subjects: (name: string) => name === SELF ? SELF : name === "chat" && chatId ? chatSubject(chatId) : name === chatId ? chatSubject(chatId)
-        : ids.has(name) ? personSubject(name) : undefined,
+        : ids.has(name) ? personSubject(name, source) : undefined,
       shown: new Set(shown.map((note) => note.id))
     };
   }
@@ -272,28 +280,28 @@ export class Memories {
   }
 
   /** Reflects on a chat's messages since the last reflection: what to remember, and whether to write to someone. */
-  async reflect(chatId: string): Promise<void> {
+  async reflect(chatId: string, source = SOURCE): Promise<void> {
     const { client } = this.host;
     const settings = client.settings();
     const mark = client.store.get(KV.memory.reflected(chatId));
     if (!memoryOf(settings) || !mark) return;
-    const direct = client.store.get(KV.feishu.chats)?.[chatId] === true;
-    const messages = chatLog(client.store, chatId, { since: mark.from, limit: REFLECT_MESSAGES, chars: 500, self: this.name() })
+    const direct = (client.sources.chatKind(source)?.directory.chat(client.store, chatId)?.direct ?? false) === true;
+    const messages = chatLog(client.store, chatId, { since: mark.from, limit: REFLECT_MESSAGES, chars: 500, self: this.name(source) }, source)
       .filter((line) => line.at > mark.from && line.at <= mark.upTo || line.you);
     const people = [...new Set(messages.flatMap((line) => line.from_id && !line.bot ? [line.from_id] : []))];
     if (!people.length) return;
-    const shown = notesCard(client.store, [...people.map(personSubject), ...(direct ? [] : [chatSubject(chatId)]), SELF], PER_SUBJECT, 40);
-    const card = { ...localNow(settings, this.now()), chat: direct ? "a direct message" : chatName(client.store, chatId) ?? chatId, messages,
-      people: people.map((id) => ({ id, name: personName(client.store, { source: SOURCE, id }) ?? id })), memory: shown };
-    const answer = await this.answer(ReflectionSchema, "superagent_memory", () => this.complete("superagent_memory", reflectionPrompt(this.name(), chatterOf(settings).persona), card,
+    const shown = notesCard(client.store, [...people.map((id) => personSubject(id, source)), ...(direct ? [] : [chatSubject(chatId)]), SELF], PER_SUBJECT, 40);
+    const card = { ...localNow(settings, this.now()), chat: direct ? "a direct message" : chatName(client.store, chatId, source) ?? chatId, messages,
+      people: people.map((id) => ({ id, name: personName(client.store, { source, id }) ?? id })), memory: shown };
+    const answer = await this.answer(ReflectionSchema, "superagent_memory", () => this.complete("superagent_memory", reflectionPrompt(this.name(source), chatterOf(settings).persona), card,
       { chat: chatId }));
     if (!answer) { client.journal?.outcome("reflect", `chat:${chatId}`, "silent", { reason: "no usable answer after 2 tries" }); return }
     const ops = answer.notes.flatMap((item) => { const op = OpSchema.safeParse(item); return op.success ? [op.data] : []; });
-    const scope = this.scope(people, direct ? undefined : chatId, shown);
+    const scope = this.scope(people, direct ? undefined : chatId, shown, source);
     // A reflection keeps the changes it can; one it cannot apply leaves the rest.
-    for (const op of ops.slice(0, OPS)) applyOps(client.store, [op], scope, { chatId, ...(direct ? { direct: true } : {}) }, new Date(this.now()));
-    this.crowded([...people.map(personSubject), chatSubject(chatId), SELF]);
-    const reached = answer.reach_out && people.includes(answer.reach_out.to) ? this.reachOut(answer.reach_out.to, answer.reach_out.text) : undefined;
+    for (const op of ops.slice(0, OPS)) applyOps(client.store, [op], scope, { chatId, source, ...(direct ? { direct: true } : {}) }, new Date(this.now()));
+    this.crowded([...people.map((id) => personSubject(id, source)), chatSubject(chatId), SELF]);
+    const reached = answer.reach_out && people.includes(answer.reach_out.to) ? this.reachOut(answer.reach_out.to, answer.reach_out.text, source) : undefined;
     client.journal?.outcome("reflect", `chat:${chatId}`, reached ? "sent" : "silent",
       { reason: `${ops.slice(0, OPS).length} notes kept`, ...(reached ? { outbox: [reached] } : {}) });
   }
@@ -305,22 +313,23 @@ export class Memories {
     const ticket = client.store.tickets.get(ticketId);
     if (!memoryOf(settings) || !ticket) return;
     const origin = client.store.triggers.get(ticket.origin.triggerId);
-    if (!origin || origin.source !== SOURCE) return;
-    const chatId = typeof origin.meta.chatId === "string" ? origin.meta.chatId : undefined;
-    const direct = origin.meta.direct === true;
-    const shown = notesCard(client.store, [personSubject(origin.actor.id), ...(chatId && !direct ? [chatSubject(chatId)] : []), SELF]);
+    if (!origin || !client.sources.chatKind(origin.source)) return;
+    const source = origin.source;
+    const chatId = metaOf(origin).chatId;
+    const direct = metaOf(origin).direct;
+    const shown = notesCard(client.store, [personSubject(origin.actor.id, origin.source), ...(chatId && !direct ? [chatSubject(chatId)] : []), SELF]);
     const card = { ...localNow(settings, this.now()), ticket: { title: ticket.title, asked: origin.text.slice(0, 1000), outcome: ticket.ended?.outcome ?? "open",
       last_report: latestReport(ticket)?.summary.slice(0, 1500) ?? null }, requester: { id: origin.actor.id, name: senderOf(client.store, origin) },
-      chat: direct ? "a direct message" : chatId ? chatName(client.store, chatId) ?? chatId : null, memory: shown };
-    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", ticketReflectionPrompt(this.name(), chatterOf(settings).persona), card,
+      chat: direct ? "a direct message" : chatId ? chatName(client.store, chatId, origin.source) ?? chatId : null, memory: shown };
+    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", ticketReflectionPrompt(this.name(source), chatterOf(settings).persona), card,
       { ticket: ticketId }));
     if (!answer) { client.journal?.outcome("ticket_reflect", `ticket:${ticketId}`, "silent", { reason: "no usable answer after 2 tries" }); return }
-    const scope = this.scope([origin.actor.id], direct ? undefined : chatId, shown);
+    const scope = this.scope([origin.actor.id], direct ? undefined : chatId, shown, source);
     for (const item of answer.notes.slice(0, OPS)) {
       const op = OpSchema.safeParse(item);
-      if (op.success) applyOps(client.store, [op.data], scope, { ticketId, ...(chatId ? { chatId } : {}), ...(direct ? { direct: true } : {}) }, new Date(this.now()));
+      if (op.success) applyOps(client.store, [op.data], scope, { ticketId, source, ...(chatId ? { chatId } : {}), ...(direct ? { direct: true } : {}) }, new Date(this.now()));
     }
-    this.crowded([personSubject(origin.actor.id), SELF]);
+    this.crowded([personSubject(origin.actor.id, origin.source), SELF]);
     client.journal?.outcome("ticket_reflect", `ticket:${ticketId}`, "silent", { reason: `${answer.notes.slice(0, OPS).length} notes kept`, ticketId });
   }
 
@@ -336,13 +345,13 @@ export class Memories {
    * Writes to a person on its own, at most `dmPerDay` times a day and once a day per person, never in quiet hours, and
    * not at all while a direct message cannot reach them.
    */
-  private reachOut(person: string, text: string): string | undefined {
+  private reachOut(person: string, text: string, source: string): string | undefined {
     const { client } = this.host;
     const settings = client.settings();
     const memory = memoryOf(settings);
     const now = this.now();
     const recent = (client.store.get(KV.memory.reached) ?? []).filter((item) => now - Date.parse(item.at) < DAY_MS);
-    const channel = feishuUserChannel(person);
+    const channel = (client.sources.chatKind(source) ?? feishuChatKind).user(person);
     const keyOf = (at: string) => key("reach-out", person, at);
     const at = new Date(now).toISOString();
     const skipped = (reason: string): undefined => { client.journal?.skip("reach_out", `person:${person}:${at}`, "skipped", reason); return undefined };
@@ -381,9 +390,9 @@ export class Memories {
     if (!client.sources.channelAllowed(channel)) { client.journal?.skip("promise", `note:${note.id}`, "skipped", "the chat cannot receive it"); return }
     const chatId: string | undefined = channel.address.chatId;
     const card = { ...localNow(settings, this.now()), promise: noteLine(client.store, note), for: person ?? null,
-      goes_to: chatId ? chatName(client.store, chatId) ?? chatId : "their direct messages",
+      goes_to: chatId ? chatName(client.store, chatId, channel.source) ?? chatId : "their direct messages",
       memory: notesCard(client.store, person ? [note.about] : [], 6, 6) };
-    const answer = await this.answer(PromiseSchema, "superagent_promise", () => this.complete("superagent_promise", promisePrompt(this.name(), chatterOf(settings).persona), card,
+    const answer = await this.answer(PromiseSchema, "superagent_promise", () => this.complete("superagent_promise", promisePrompt(this.name(sourceOfNote(note)), chatterOf(settings).persona), card,
       { note: note.id, ...(chatId ? { chat: chatId } : {}) }));
     // A message too long for a chat is cut to fit; with no usable answer the promise is kept without one, rather than asked about again every minute.
     const say = answer?.say || undefined;
@@ -412,7 +421,8 @@ export class Memories {
     if (!memory || client.store.memory.count(about) <= memory.perSubject) { client.journal?.skip("tidy", `subject:${about}`, "skipped", "not crowded"); return }
     const notes = client.store.memory.about(about, 500);
     const shown = notes.map((note) => noteLine(client.store, note));
-    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", tidyPrompt(this.name()), { subject: shortSubject(about), notes: shown },
+    const source = about.startsWith("person:") ? about.slice("person:".length, about.lastIndexOf(":")) : SOURCE;
+    const answer = await this.answer(TidySchema, "superagent_memory", () => this.complete("superagent_memory", tidyPrompt(this.name(source)), { subject: shortSubject(about), notes: shown },
       { subject: shortSubject(about) }));
     // Tidy's runs are keyed by the short subject, as journalPlace records them, so its outcome finds its own row.
     if (!answer) { client.journal?.outcome("tidy", `subject:${shortSubject(about)}`, "silent", { reason: "no usable answer after 2 tries" }); return }

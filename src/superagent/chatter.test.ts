@@ -260,7 +260,7 @@ describe("when messages call for the agent that its router does not answer", () 
     now += 16_000;
     room.pass();
     const [queuedAttend] = attending();
-    expect(queuedAttend).toEqual({ chatId: CHAT, ids: [reply.id] });
+    expect(queuedAttend).toEqual({ chatId: CHAT, source: "feishu", ids: [reply.id] });
     answers.push(JSON.stringify({ reply: { text: "收到，我转告 Alice", reply_to: reply.meta.messageId }, relay: [{ question: "ask-1", text: "飞飞说规范基本定了，还差合 main 和发版" }] }));
     await room.attend(CHAT, queuedAttend!.ids);
     const card = JSON.parse(calls[0]!.user) as { your_questions: { id: string; asked_for: string }[]; messages: { for_you?: string; bot?: true }[] };
@@ -418,7 +418,7 @@ describe("when messages call for the agent that its router does not answer", () 
     now += 16_000;
     answers.push("not json", '{"reply": 5}');
     live.pass();
-    expect(attending()).toEqual([{ chatId: CHAT, ids: [reply.id] }]);
+    expect(attending()).toEqual([{ chatId: CHAT, source: "feishu", ids: [reply.id] }]);
     await client.effects.idle("attend");
     expect([calls.length, attending(), posts()]).toEqual([2, [], []]);
     expect(openAsks(client.store, now).map((item) => item.id)).toEqual(["ask-1"]);
@@ -434,7 +434,7 @@ describe("when messages call for the agent that its router does not answer", () 
     const more = botMessage("ou_feifei", "发版也定了", 0, { mention: true });
     now += 16_000;
     live.pass();
-    expect(attending()).toEqual([{ chatId: CHAT, ids: [more.id] }]);
+    expect(attending()).toEqual([{ chatId: CHAT, source: "feishu", ids: [more.id] }]);
     answers.push(JSON.stringify({ reply: null, relay: [{ question: "ask-1", text: "飞飞说规范和发版都定了" }] }));
     await live.attend(CHAT, [more.id]);
     expect(calls.length).toBe(3);

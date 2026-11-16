@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { z } from "zod/v4";
 import { key, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
+import type { SourceRegistry } from "./sources/registry.js";
 import { textPage, ticketCard } from "./cards.js";
 import { seesNodes, watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
@@ -17,7 +18,10 @@ import { KV } from "./kv.js";
 import { devicesCard } from "./devices.js";
 import { workerNode } from "./placement.js";
 import { callLent, lentByPeers } from "../mesh/borrow.js";
-import { addressee, channelTo, chatLog, chatName, chatsOf, findPeople, mentionsFor, peopleIn } from "./people.js";
+import { addressee, channelTo, chatGroups, chatLog, chatName, findPeople, mentionsFor, peopleIn } from "./people.js";
+import { feishuChatKind } from "./sources/feishu-chat.js";
+import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
+import { metaOf } from "./sources/meta.js";
 import { NOTE_CHARS, NOTE_KINDS, SELF, applyOps, chatSubject, memoryOf, noteLine, notesCard, personSubject, subjectsOf, type NoteKind } from "./memories.js";
 import { noticeChannel, progressDue, stoppedId } from "./notices.js";
 import { feishuRef } from "./sources/feishu-trigger.js";
@@ -122,12 +126,16 @@ const CHAT_DAYS = 7, CHAT_MESSAGES = 50;
 /** How many notes one recall returns. */
 const RECALLED = 30;
 /** The subjects a ticket's worker names: its requester, a person by id, the ticket's chat, or the agent itself. */
-const subjectFor = (origin: Trigger | undefined) => (name: string): string | undefined => {
-  const chatId = origin?.source === "feishu" && typeof origin.meta.chatId === "string" && origin.meta.direct !== true ? origin.meta.chatId : undefined;
+const subjectFor = (sources: SourceRegistry, origin: Trigger | undefined) => (name: string): string | undefined => {
+  const meta = origin ? metaOf(origin) : undefined;
+  const chatId = meta && !meta.direct ? meta.chatId : undefined;
   if (name === SELF) return SELF;
   if (name === "chat") return chatId ? chatSubject(chatId) : undefined;
-  if (name === "requester") return origin?.source === "feishu" ? personSubject(origin.actor.id) : undefined;
-  return name.startsWith("ou_") ? personSubject(name) : name.startsWith("oc_") ? chatSubject(name) : undefined;
+  if (name === "requester") return origin && sources.chatKind(origin.source) ? personSubject(origin.actor.id, origin.source) : undefined;
+  // An id names its own Source through the kind whose directory holds it; one no installed kind knows is nobody here.
+  const person = sources.sourceOfPerson(name);
+  if (person) return personSubject(name, person);
+  return sources.sourceOfChat(name) ? chatSubject(name) : undefined;
 };
 /** The longest a command a ticket's worker runs on a paired node may take: within the 110 seconds a ticket tool may. */
 const MESH_SHELL_MS = 100_000;
@@ -299,11 +307,13 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
     if (resource.startsWith("chat/")) {
       // Any group the bot is in, and this ticket's own chats; never someone else's direct messages.
       const chatId = resource.slice("chat/".length);
-      const direct = client.store.get(KV.feishu.chats)?.[chatId];
-      const own = ticket().channels.some((channel) => channel.source === "feishu" && channel.address.chatId === chatId);
-      if (!own && direct !== false && chatName(client.store, chatId) === undefined) throw new Error("Unknown chat, or another person's direct messages");
-      return { chat: chatId, name: chatName(client.store, chatId) ?? null, messages: chatLog(client.store, chatId,
-        { since: new Date(Date.now() - CHAT_DAYS * 86_400_000).toISOString(), limit: CHAT_MESSAGES, chars: 600, self: client.resolvedDeployment()?.feishu?.name ?? "" }) };
+      const source = client.sources.sourceOfChat(chatId) ?? FEISHU;
+      const known = chatGroups(client.store, client.sources.chatKind(source) ?? feishuChatKind).find((chat) => chat.chat_id === chatId);
+      const own = ticket().channels.some((channel) => channel.source === source && channel.address.chatId === chatId);
+      // A known group is anyone's to read; a direct chat only this ticket's, and then only with no one else's id.
+      if (!own && (known === undefined || known.direct)) throw new Error("Unknown chat, or another person's direct messages");
+      return { chat: chatId, name: chatName(client.store, chatId, source) ?? null, messages: chatLog(client.store, chatId,
+        { since: new Date(Date.now() - CHAT_DAYS * 86_400_000).toISOString(), limit: CHAT_MESSAGES, chars: 600, self: client.sources.agent(source, client.resolvedDeployment())?.name ?? "" }, source) };
     }
     return undefined;
   };
@@ -362,21 +372,34 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       }
     },
     people: async (args) => {
-      if (typeof args.name === "string") return { people: findPeople(client.store, args.name) };
-      if (typeof args.chat === "string") return { chat: args.chat, name: chatName(client.store, args.chat) ?? null, people: peopleIn(client.store, args.chat, 500) };
-      return { chats: chatsOf(client.store) };
+      if (typeof args.name === "string") {
+        const name = args.name;
+        return { people: client.sources.chatKinds().flatMap((kind) => findPeople(client.store, name, 20, kind)) };
+      }
+      if (typeof args.chat === "string") {
+        const kind = client.sources.chatKind(client.sources.sourceOfChat(args.chat) ?? FEISHU) ?? feishuChatKind;
+        return { chat: args.chat, name: chatName(client.store, args.chat, kind.source) ?? null, people: peopleIn(client.store, args.chat, 500, kind) };
+      }
+      const kinds = client.sources.chatKinds();
+      return { chats: kinds.flatMap((kind) => chatGroups(client.store, kind)).map(({ source, ...chat }) => kinds.length > 1 ? { source, ...chat } : chat) };
     },
     message: async (args) => {
-      if (!client.settings().sources.feishu?.enabled) throw new Error("Messages go out only on Feishu, which is off here");
-      const target = addressee(client.store, String(args.to));
+      // Messages go out over the chat kind this ticket came by; a ticket from elsewhere (or one stopped early) uses the
+      // first chat kind that is on, as its people and chats have always come from a chat kind's records.
+      const from = sourceTrigger(client, ticket());
+      const enabledChats = client.sources.chatKinds().filter((kind) => client.sources.instance(kind.source)?.enabled);
+      const chat = (from ? client.sources.chatKind(from.source) : undefined) ?? enabledChats[0] ?? feishuChatKind;
+      const source = from && client.sources.chatKind(from.source) ? from.source : chat.source;
+      if (!client.sources.instance(source)?.enabled) throw new Error(`Messages go out only on ${chat.platform}, which is off here`);
+      const target = addressee(client.store, String(args.to), chat);
       if ("problem" in target) throw new Error(target.problem);
-      const mentions = mentionsFor(client.store, Array.isArray(args.mentions) ? args.mentions.map(String) : []);
+      const mentions = mentionsFor(client.store, Array.isArray(args.mentions) ? args.mentions.map(String) : [], source);
       if ("problem" in mentions) throw new Error(mentions.problem);
       const text = checkedImText(String(args.text));
       const now = Date.now();
       const sent = (client.store.get(KV.people.sent(ticketId)) ?? []).filter((at) => now - Date.parse(at) < 3_600_000);
       if (sent.length >= MESSAGES_PER_HOUR) throw new Error(`This ticket sent ${MESSAGES_PER_HOUR} messages in the last hour: wait, or report what is left`);
-      const channel = channelTo(target);
+      const channel = channelTo(target, chat);
       client.store.atomic(() => {
         client.outbox.send({ id: key("message", ticketId, JSON.stringify(channel.address), text), channel, text, kind: "notice", ticketId, ...(mentions.length ? { mentions } : {}) });
         client.store.set(KV.people.sent(ticketId), [...sent, new Date(now).toISOString()]);
@@ -387,8 +410,8 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       if (!memoryOf(client.settings())) throw new Error("The agent's memory is off here");
       const origin = sourceTrigger(client, ticket());
       const problem = applyOps(client.store, [{ op: "add", about: String(args.about), kind: args.kind as NoteKind ?? "fact", text: String(args.text),
-        ...(typeof args.due === "string" ? { due: args.due } : {}) }], { subjects: subjectFor(origin), shown: new Set() },
-        { ticketId, ...(typeof origin?.meta.chatId === "string" ? { chatId: origin.meta.chatId } : {}), ...(origin?.meta.direct === true ? { direct: true } : {}) });
+        ...(typeof args.due === "string" ? { due: args.due } : {}) }], { subjects: subjectFor(client.sources, origin), shown: new Set() },
+        { ticketId, ...(origin && metaOf(origin).chatId ? { chatId: metaOf(origin).chatId } : {}), ...(origin && metaOf(origin).direct ? { direct: true } : {}) });
       if (problem) throw new Error(problem);
       return { remembered: true };
     },
@@ -397,11 +420,11 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const origin = sourceTrigger(client, ticket());
       if (typeof args.query === "string") return { notes: client.store.memory.search(args.query, RECALLED).map((note) => noteLine(client.store, note)) };
       if (typeof args.about === "string") {
-        const about = subjectFor(origin)(args.about);
+        const about = subjectFor(client.sources, origin)(args.about);
         if (!about) throw new Error(`${args.about} is not someone or something here: use requester, a person's id, chat or self`);
         return { notes: client.store.memory.about(about, RECALLED).map((note) => noteLine(client.store, note)) };
       }
-      return { notes: origin?.source === "feishu" ? notesCard(client.store, subjectsOf(origin), RECALLED, RECALLED) : notesCard(client.store, [SELF], RECALLED, RECALLED) };
+      return { notes: origin && client.sources.chatKind(origin.source) ? notesCard(client.store, subjectsOf(origin), RECALLED, RECALLED) : notesCard(client.store, [SELF], RECALLED, RECALLED) };
     },
     ack: async (args) => {
       const reply = client.engine.reply({ purpose: "acknowledgement", ticketId, triggerId: String(args.trigger_id), text: String(args.text) });

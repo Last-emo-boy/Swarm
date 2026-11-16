@@ -11,6 +11,7 @@ import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, t
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from './core/index.js'
 import { KV, type Family, type Key } from './kv.js'
 import type { Note } from './memories.js'
+import type { SourceRegistry } from './sources/registry.js'
 import { storeReads } from './store-read.js'
 
 /** A Trigger's position on its thread timeline, ordered by timestamp and then `id` as tie-breaker. */
@@ -55,6 +56,8 @@ export const SCHEMA_VERSION = 1
  */
 export class Store implements Repositories {
   readonly db: DatabaseSync
+  /** What the chat reads resolve a chat or person id's Source with; the client sets it once its registry exists, which is after this Store. */
+  private chatSources: (() => Pick<SourceRegistry, 'sourceOfPerson' | 'sourceOfChat'> | undefined) | undefined
   /**
   
    * @param report - Receives errors thrown by `afterCommit` callbacks without failing the committed transaction.
@@ -63,7 +66,7 @@ export class Store implements Repositories {
   constructor(path: string, private readonly report: (error: unknown) => void = () => {}) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(path)
-    this.read = storeReads(this.db)
+    this.read = storeReads(this.db, () => this.chatSources?.())
     try {
       chmodSync(path, 0o600)
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=10000')
@@ -254,6 +257,9 @@ export class Store implements Repositories {
   }
   /** Read-only queries for management views, orchestrator tools, and source polling (see `storeReads`). */
   readonly read: ReturnType<typeof storeReads>
+
+  /** Names the registry the chat reads look a chat or person id's Source up in; without it only reads handed a Source work. */
+  setChatSources(sources: () => Pick<SourceRegistry, 'sourceOfPerson' | 'sourceOfChat'> | undefined): void { this.chatSources = sources }
 
   /** Delivery status of a queued message; receipts are retained permanently so message IDs are idempotent. */
   replyStatus(id: string): ReplyStatus | undefined { return this.receipts.get(id)?.status }

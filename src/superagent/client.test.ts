@@ -9,9 +9,13 @@ import { SettingsSchema, writeSettings, settingsPath } from "./settings.js";
 
 let stateDir: string;
 let client: SuperagentClient;
+/** The clock the client reads, which a test moves: a message and a report must not land in the same millisecond. */
+let now: number;
+const tick = (ms = 1) => { now += ms; };
 beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "swarm-superagent-client-"));
-  client = new SuperagentClient({ stateDir });
+  now = Date.now();
+  client = new SuperagentClient({ stateDir, now: () => new Date(now).toISOString() });
 });
 afterEach(() => {
   client.close();
@@ -89,6 +93,7 @@ test("a question the person answered leaves needs-you and shows the ticket worki
   client.engine.assignmentStarted(ticketId!, client.store.tickets.get(ticketId!)!.assignments[0]!.id);
   client.engine.report(ticketId!, { state: "progress", summary: "Need the default", question: "Dash or underscore?" });
   assert.deepEqual([ticketRow(client, client.store.tickets.get(ticketId!)!).group, ticketRow(client, client.store.tickets.get(ticketId!)!).label], ["person", "Awaiting answer"]);
+  tick();
   client.message(ticketId!, "dash");
   const row = ticketRow(client, client.store.tickets.get(ticketId!)!);
   assert.deepEqual([row.group, row.label, row.question], ["working", "Working on your answer", undefined]);

@@ -1,13 +1,16 @@
 /**
- * Who is who on Feishu: the people and bots in each chat the agent is in, by name, as Feishu last listed them, the names
- * messages mention, and what the agent itself said in each chat. The Feishu Source keeps the lists current in the
- * background (sources/feishu-loops.ts); the router, chatter and workers read them from the store, so naming someone never
- * waits on Feishu.
+ * Who is who in a chat: the people and bots in each chat the agent is in, by name, as the chat kind last listed them, the
+ * names messages mention, and what the agent itself said in each chat. The Source keeps the lists current in the background
+ * (sources/feishu-loops.ts calls `readMembers`, the Feishu writers below); the router, chatter and workers read them from the
+ * store through the kind's directory, so naming someone never waits on the platform.
  */
 import { z } from "zod/v4";
 import { threadKey, type ChannelRef, type Trigger } from "./core/index.js";
-import { feishuUserChannel } from "./sources/feishu-trigger.js";
+import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
+import { feishuChatKind } from "./sources/feishu-chat.js";
 import { KV, type Key } from "./kv.js";
+import { metaOf } from "./sources/meta.js";
+import type { ChatKind } from "./sources/chat.js";
 import type { Store } from "./store.js";
 
 /** A chat's members by open_id (bots also by app id), the bots among them, and whether to read the list again soon. */
@@ -24,38 +27,37 @@ const CHATS_PER_ROUND = 5;
 /** How many of its own messages per chat the agent remembers. */
 export const SAID_KEPT = 20;
 
-const SOURCE = "feishu";
 export const personName = (state: Pick<State, "get">, actor: { source: string; id: string }): string | undefined =>
   state.get(KV.people.person(actor.source, actor.id))?.name;
-export const chatName = (state: Pick<State, "get">, chatId: string): string | undefined => state.get(KV.sources.labels(SOURCE))?.[chatId];
+/** A chat's name as the kind's writer stored it; the kind of `source`, Feishu unless named. */
+export const chatName = (state: Pick<State, "get">, chatId: string, source = FEISHU): string | undefined => state.get(KV.sources.labels(source))?.[chatId];
 export const chatMembers = (state: Pick<State, "get">, chatId: string): Members | undefined => state.get(KV.people.members(chatId));
 
-const nameIn = (trigger: Trigger): string | undefined => typeof trigger.meta.senderName === "string" ? trigger.meta.senderName : undefined;
 /** A message's sender by name, from the message or the directory, else by id. */
 export const senderOf = (state: Pick<State, "get">, trigger: Trigger): string =>
-  nameIn(trigger) ?? personName(state, trigger.actor) ?? chatMembers(state, String(trigger.meta.chatId ?? ""))?.names[trigger.actor.id] ?? trigger.actor.id;
+  metaOf(trigger).senderName ?? personName(state, trigger.actor) ?? chatMembers(state, metaOf(trigger).chatId ?? "")?.names[trigger.actor.id] ?? trigger.actor.id;
 
-const mentionsOf = (trigger: Trigger): { id: string; name: string }[] =>
-  Array.isArray(trigger.meta.mentions) ? trigger.meta.mentions as { id: string; name: string }[] : [];
+/** The names a trigger's mentions give, by id. */
+const mentionsOf = (trigger: Trigger): { id: string; name: string }[] => metaOf(trigger).mentions ?? [];
 
 /**
- * Takes in what a Feishu message says of people: the names it mentions, and its sender's name, which it carries from then
- * on. A sender with no name yet has their chat's member list read again soon.
+ * Takes in what a message says of people: the names it mentions, and its sender's name, which it carries from then on. A
+ * sender with no name yet has their chat's member list read again soon.
  */
 export function noticed(state: State, trigger: Trigger, at = new Date().toISOString()): Trigger {
   for (const { id, name } of mentionsOf(trigger)) {
     if (personName(state, { source: trigger.source, id }) !== name) state.set(KV.people.person(trigger.source, id), { name, at });
   }
   const name = personName(state, trigger.actor);
-  const chatId = typeof trigger.meta.chatId === "string" ? trigger.meta.chatId : undefined;
+  const chatId = metaOf(trigger).chatId;
   const members = chatId ? chatMembers(state, chatId) : undefined;
   if (!name && chatId && members && !members.again) state.set(KV.people.members(chatId), { ...members, again: true });
-  return name && !nameIn(trigger) ? { ...trigger, meta: { ...trigger.meta, senderName: name } } : trigger;
+  return name && !metaOf(trigger).senderName ? { ...trigger, meta: { ...trigger.meta, senderName: name } } : trigger;
 }
 
 /** The chats whose member lists the next round reads: ones never read first, then ones to read again, then stale ones. */
 export function chatsToRead(state: Pick<State, "get">, now: number): string[] {
-  const chats = new Set([...Object.keys(state.get(KV.sources.labels(SOURCE)) ?? {}), ...Object.keys(state.get(KV.feishu.chats) ?? {})]);
+  const chats = new Set([...Object.keys(state.get(KV.sources.labels(FEISHU)) ?? {}), ...Object.keys(state.get(KV.feishu.chats) ?? {})]);
   const due = [...chats].flatMap((chatId) => {
     const members = chatMembers(state, chatId);
     if (!members) return [{ chatId, rank: 0, at: 0 }];
@@ -69,10 +71,10 @@ export function chatsToRead(state: Pick<State, "get">, now: number): string[] {
 const MemberSchema = z.looseObject({ member_id: z.string(), name: z.string().nullish(), app_id: z.string().nullish() });
 const MembersSchema = z.looseObject({ users: z.array(MemberSchema).default([]), bots: z.array(MemberSchema).default([]) });
 /**
- * Reads a chat's people and bots from Feishu into the directory. A list that cannot be read keeps the names it had and is
- * tried again after a while.
+ * Reads a chat's people and bots from the platform into the directory. A list that cannot be read keeps the names it had and
+ * is tried again after a while.
  */
-export async function readMembers(lark: (args: string[]) => Promise<unknown>, state: State, chatId: string, now = Date.now()): Promise<void> {
+export async function readMembers(lark: (args: string[]) => Promise<unknown>, state: State, chatId: string, now = Date.now(), source = FEISHU): Promise<void> {
   const at = new Date(now).toISOString();
   const previous = chatMembers(state, chatId);
   let listed: z.infer<typeof MembersSchema>;
@@ -90,7 +92,7 @@ export async function readMembers(lark: (args: string[]) => Promise<unknown>, st
     for (const id of ids) {
       names[id] = member.name;
       if (bot) bots.push(id);
-      if (personName(state, { source: SOURCE, id }) !== member.name) state.set(KV.people.person(SOURCE, id), { name: member.name, at });
+      if (personName(state, { source, id }) !== member.name) state.set(KV.people.person(source, id), { name: member.name, at });
     }
   }
   state.set(KV.people.members(chatId), { at, names, ...(bots.length ? { bots } : {}) });
@@ -104,7 +106,7 @@ export function said(state: State, chatId: string, entry: Said): void {
 
 /** How many of its own message ids the agent keeps per chat. */
 const OWN_KEPT = 200;
-/** Remembers the id Feishu gave a message the agent posted in a chat, so a reply to it is a reply to the agent. */
+/** Remembers the id the platform gave a message the agent posted in a chat, so a reply to it is a reply to the agent. */
 export function posted(state: State, chatId: string, messageId: string): void {
   const own = state.get(KV.people.own(chatId)) ?? [];
   if (!own.includes(messageId)) state.set(KV.people.own(chatId), [...own, messageId].slice(-OWN_KEPT));
@@ -122,26 +124,27 @@ export interface Line { at: string; from: string; text: string; from_id?: string
 const cut = (text: string, chars: number): string => text.length > chars ? `${text.slice(0, chars)}…` : text;
 
 /**
- * The latest messages of a Feishu conversation, oldest first, with the senders' names and the agent's own words marked
+ * The latest messages of a conversation, oldest first, with the senders' names and the agent's own words marked
  * `you`: in a topic, that topic's; else the chat's, without its topics' replies. `exclude` leaves out messages the reader
  * already has.
  */
 interface LineOptions { since: string; limit: number; chars: number; exclude?: ReadonlySet<string>; self?: string }
 export function conversation(store: Pick<Store, "get" | "read">, trigger: Trigger, options: LineOptions): Line[] {
-  const chatId = String(trigger.meta.chatId ?? "");
-  const topic = typeof trigger.meta.threadId === "string";
+  const meta = metaOf(trigger);
+  const chatId = meta.chatId ?? "";
+  const topic = meta.topic;
   const messages = topic ? store.read.threadTriggers(threadKey(trigger.threads[0]!), options.limit * 2)
-    : store.read.chatMessages(chatId, options.since, options.limit * 2, true).filter((message) => typeof message.meta.threadId !== "string");
+    : store.read.chatMessages({ source: trigger.source, chatId }, options.since, options.limit * 2, true).filter((message) => !metaOf(message).topic);
   const kept = messages.filter((message) => message.at >= options.since && !options.exclude?.has(message.id));
-  const ids = new Set(kept.map((message) => String(message.meta.messageId ?? "")));
+  const ids = new Set(kept.map((message) => metaOf(message).messageId ?? ""));
   // In a direct message, what it wrote to the person on its own counts too.
-  const wrote = trigger.meta.direct === true ? (store.get(KV.people.dm(trigger.actor.id)) ?? []).filter((entry) => entry.at >= options.since) : [];
+  const wrote = meta.direct ? (store.get(KV.people.dm(trigger.actor.id)) ?? []).filter((entry) => entry.at >= options.since) : [];
   return lines(store, kept, [...saidIn(store, chatId, options.since)
     .filter((entry) => topic ? !!entry.to && ids.has(entry.to) && entry.topic === true : entry.topic !== true), ...wrote], options);
 }
 /** A chat's latest messages, its topics' replies too, oldest first, with names and the agent's own words. */
-export const chatLog = (store: Pick<Store, "get" | "read">, chatId: string, options: LineOptions): Line[] =>
-  lines(store, store.read.chatMessages(chatId, options.since, options.limit, true), saidIn(store, chatId, options.since), options);
+export const chatLog = (store: Pick<Store, "get" | "read">, chatId: string, options: LineOptions, source = FEISHU): Line[] =>
+  lines(store, store.read.chatMessages({ source, chatId }, options.since, options.limit, true), saidIn(store, chatId, options.since), options);
 const saidIn = (state: Pick<State, "get">, chatId: string, since: string): Said[] =>
   (state.get(KV.chatter.chat(chatId))?.said ?? []).filter((entry) => entry.at >= since);
 const lines = (store: Pick<Store, "get">, messages: Trigger[], own: Said[], options: LineOptions): Line[] => [
@@ -150,62 +153,52 @@ const lines = (store: Pick<Store, "get">, messages: Trigger[], own: Said[], opti
   ...own.map((entry): Line => ({ at: entry.at, from: options.self || "you", you: true, text: cut(entry.text, options.chars) }))
 ].sort((a, b) => a.at.localeCompare(b.at)).slice(-options.limit);
 
-/** The chats the agent is in, by id: their names, whether each is a direct message, and how many people and bots it has. */
-export function chatsOf(state: Pick<State, "get">): { chat_id: string; name: string | null; direct?: true; people: number }[] {
-  const direct = state.get(KV.feishu.chats) ?? {};
-  const ids = new Set([...Object.keys(state.get(KV.sources.labels(SOURCE)) ?? {}), ...Object.keys(direct)]);
-  return [...ids].map((chatId) => {
-    const people = peopleIn(state, chatId, 1000);
-    const name = direct[chatId] === true ? people[0]?.name ?? null : chatName(state, chatId) ?? null;
-    return { chat_id: chatId, name, ...(direct[chatId] === true ? { direct: true as const } : {}), people: people.length };
-  });
-}
+/** The chats the agent is in, by id and Source: their names, whether each is a direct message, and how many people and bots it has. */
+export type ChatGroup = { source: string; chat_id: string; name: string | null; direct?: true; people: number };
+/** The chats a chat kind is in, read from the records its writers keep. */
+export const chatGroups = (store: Pick<Store, "get" | "keys">, kind: ChatKind = feishuChatKind): ChatGroup[] =>
+  kind.directory.chats(store).map((entry) => ({ source: entry.source, chat_id: entry.chatId, name: entry.name,
+    ...(entry.direct ? { direct: true as const } : {}), people: entry.people ?? 0 }));
+/** The Feishu chats the agent is in, as its router and workers have always listed them. */
+export const chatsOf = (store: Pick<Store, "get" | "keys">): ChatGroup[] => chatGroups(store, feishuChatKind);
 
 /** The people in a chat as `{id, name}`, bots marked, one entry per name (a bot's app id is not repeated). */
-export function peopleIn(state: Pick<State, "get">, chatId: string, limit: number): { id: string; name: string; bot?: true }[] {
+export function peopleIn(state: Pick<State, "get">, chatId: string, limit: number, kind: ChatKind = feishuChatKind): { id: string; name: string; bot?: true }[] {
   const members = chatMembers(state, chatId);
   if (!members) return [];
   const seen = new Set<string>();
-  return Object.entries(members.names).filter(([id]) => id.startsWith("ou_")).flatMap(([id, name]) => {
+  return Object.entries(members.names).filter(([id]) => kind.directory.personKey(id)).flatMap(([id, name]) => {
     if (seen.has(id)) return [];
     seen.add(id);
     return [{ id, name, ...(members.bots?.includes(id) ? { bot: true as const } : {}) }];
   }).slice(0, limit);
 }
 
-/** The people in the directory whose name contains `name`, with the chats they are in. */
-export function findPeople(store: Pick<Store, "get" | "keys">, name: string, limit = 20): { id: string; name: string; chats: string[] }[] {
+/** The people in the directory whose name contains `name`, with the chats they are in, as the kind's own directory finds them. */
+export function findPeople(store: Pick<Store, "get" | "keys">, name: string, limit = 20, kind: ChatKind = feishuChatKind): { id: string; name: string; chats: string[] }[] {
   const wanted = name.trim().toLowerCase();
   if (!wanted) return [];
-  const chats = new Set([...Object.keys(store.get(KV.sources.labels(SOURCE)) ?? {}), ...Object.keys(store.get(KV.feishu.chats) ?? {})]);
-  const prefix = `${KV.people.person.prefix}${SOURCE}:`;
-  return store.keys(KV.people.person).filter((key) => key.startsWith(prefix)).flatMap((key) => {
-    const id = key.slice(prefix.length);
-    const person = store.get(key);
-    if (!person || !id.startsWith("ou_") || !person.name.toLowerCase().includes(wanted)) return [];
-    const where = [...chats].filter((chatId) => chatMembers(store, chatId)?.names[id] !== undefined).map((chatId) => chatName(store, chatId) ?? chatId);
-    return [{ id, name: person.name, chats: where }];
-  }).slice(0, limit);
+  return kind.directory.findPeople(store, wanted, limit);
 }
 
 /** Someone or some chat a message goes to: a person by id and name, or a chat the agent is in. */
 export type Addressee = { person: { id: string; name: string } } | { chat: { id: string; name: string } };
 /**
  * Who `to` names for a message: a chat the agent is in, by id or name; a person, by open_id or the one person with that
- * name; else why not, naming the people it could mean.
+ * name; else why not, naming the people it could mean. `source` is the chat kind ids and names are read in.
  */
-export function addressee(store: Pick<Store, "get" | "keys">, to: string): Addressee | { problem: string } {
+export function addressee(store: Pick<Store, "get" | "keys">, to: string, kind: ChatKind = feishuChatKind): Addressee | { problem: string } {
   const wanted = to.trim().replace(/^@/, "");
-  const chats = chatsOf(store);
+  const chats = chatGroups(store, kind);
   const chat = chats.find((item) => item.chat_id === wanted || (!item.direct && item.name !== null && item.name.toLowerCase() === wanted.toLowerCase()));
   if (chat && !chat.direct) return { chat: { id: chat.chat_id, name: chat.name ?? chat.chat_id } };
-  if (wanted.startsWith("oc_")) return { problem: `The agent is in no group ${wanted}: send to one of ${chats.filter((item) => !item.direct).map((item) => `${item.chat_id} (${item.name})`).join(", ") || "none"}` };
-  if (wanted.startsWith("ou_")) {
-    const name = personName(store, { source: SOURCE, id: wanted });
-    return name ? { person: { id: wanted, name } } : { problem: `No one with id ${wanted} is in the chats the agent is in` };
+  if (kind.directory.chatKey(wanted)) return { problem: `The agent is in no group ${wanted}: send to one of ${chats.filter((item) => !item.direct).map((item) => `${item.chat_id} (${item.name})`).join(", ") || "none"}` };
+  if (kind.directory.personKey(wanted)) {
+    const person = kind.directory.person(store, wanted);
+    return person ? { person: { id: wanted, name: person.name } } : { problem: `No one with id ${wanted} is in the chats the agent is in` };
   }
   // The closest names first: the whole name, then a name with a word that starts so, then any that contains it.
-  const found = findPeople(store, wanted, 50);
+  const found = findPeople(store, wanted, 50, kind);
   const lower = wanted.toLowerCase();
   const tiers = [found.filter((person) => person.name.toLowerCase() === lower),
     found.filter((person) => person.name.toLowerCase().split(/[\s·._-]+/).some((word) => word.startsWith(lower))), found];
@@ -215,16 +208,16 @@ export function addressee(store: Pick<Store, "get" | "keys">, to: string): Addre
   return { problem: `Several people match ${wanted}: ${matches.slice(0, 8).map((person) => `${person.id} ${person.name} (${person.chats.join(", ")})`).join("; ")}. Use the id of the one meant, or answer with chat and ask which` };
 }
 /** The people a message @s, by id: anyone in the directory, or all for everyone in the chat; else why not. */
-export function mentionsFor(state: Pick<State, "get">, ids: readonly string[]): { id: string; name: string }[] | { problem: string } {
+export function mentionsFor(state: Pick<State, "get">, ids: readonly string[], source = FEISHU): { id: string; name: string }[] | { problem: string } {
   const mentions: { id: string; name: string }[] = [];
   for (const id of new Set(ids)) {
     if (id === "all") { mentions.push({ id, name: "all" }); continue; }
-    const name = personName(state, { source: SOURCE, id });
+    const name = personName(state, { source, id });
     if (!name) return { problem: `mentions: ${id} is no one the agent knows; use ids from the card` };
     mentions.push({ id, name });
   }
   return mentions;
 }
 /** The channel a message to `target` goes by: the person's direct messages, or into the chat itself. */
-export const channelTo = (target: Addressee): ChannelRef => "person" in target ? feishuUserChannel(target.person.id)
-  : { source: SOURCE, thread: `feishu:${target.chat.id}`, address: { chatId: target.chat.id, mode: "chat" } };
+export const channelTo = (target: Addressee, kind: ChatKind = feishuChatKind): ChannelRef => "person" in target ? kind.user(target.person.id)
+  : kind.chat(target.chat.id);

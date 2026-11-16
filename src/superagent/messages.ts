@@ -7,6 +7,7 @@ import { key, threadKey } from './core/index.js'
 import type { AssessmentOutcome, Execution, Mandate, PolicyEffect, Repositories, Ticket, TicketInput, Trigger, WriteLevel } from './core/index.js'
 import { z } from 'zod/v4'
 import type { Settings } from './settings.js'
+import { metaOf } from './sources/meta.js'
 import { sameName } from './text.js'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
@@ -99,9 +100,9 @@ const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
 /** Returns `text` up to `limit` characters, or a truncated preview with total character count and the resource path to read the full text. */
 const capped = (text: string, limit: number, read: string) =>
   text.length <= limit ? { text } : { text: `${text.slice(0, limit)}…`, chars: text.length, read }
-/** The sender's name a Feishu message carries (people.ts), beside their id. */
+/** The sender's name a chat message carries (people.ts), beside their id. */
 export const fromName = (trigger: Trigger): { from_name?: string } =>
-  typeof trigger.meta.senderName === 'string' ? { from_name: trigger.meta.senderName } : {}
+  metaOf(trigger).senderName !== undefined ? { from_name: metaOf(trigger).senderName } : {}
 /**
  * Formats a Trigger for worker delivery: author, thread, timestamp, text up to `TRIGGER_CHARS`, source message link,
  * optional routing note, and a preview of the replied-to message when the worker has not yet seen it.

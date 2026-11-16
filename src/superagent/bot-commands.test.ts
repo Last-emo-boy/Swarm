@@ -78,11 +78,14 @@ const current = () => readSettings(settingsPath(stateDir)).settings;
 
 describe("bot commands", () => {
   it("reads a command after the mentions that address the agent, and nothing else as one", () => {
-    expect(commandOf(message(MAINTAINER, "/me"))).toMatchObject({ name: "me", args: [] });
-    expect(commandOf(message(BOSS, "/role @Reader maintainer", { mentions: [BOT, READER] }))).toMatchObject({ name: "role", args: ["@Reader", "maintainer"] });
-    expect(commandOf(message(MAINTAINER, "/me", { direct: true }))).toMatchObject({ name: "me" });
-    expect(commandOf(message(MAINTAINER, "/etc/hosts looks wrong"))).toBeUndefined();
-    expect(commandOf(message(MAINTAINER, "please check /me"))).toBeUndefined();
+    const isChat = (source: string) => source === "feishu";
+    expect(commandOf(message(MAINTAINER, "/me"), isChat)).toMatchObject({ name: "me", args: [] });
+    expect(commandOf(message(BOSS, "/role @Reader maintainer", { mentions: [BOT, READER] }), isChat)).toMatchObject({ name: "role", args: ["@Reader", "maintainer"] });
+    expect(commandOf(message(MAINTAINER, "/me", { direct: true }), isChat)).toMatchObject({ name: "me" });
+    expect(commandOf(message(MAINTAINER, "/etc/hosts looks wrong"), isChat)).toBeUndefined();
+    expect(commandOf(message(MAINTAINER, "please check /me"), isChat)).toBeUndefined();
+    // Without a kind saying the Source is a chat, nothing is a command: only a chat has commands to give.
+    expect(commandOf(message(MAINTAINER, "/me"))).toBeUndefined();
   });
   it("answers /me once, records it so it reaches no Eval, and takes it in once", () => {
     const trigger = message(MAINTAINER, "/me", { direct: true });
@@ -108,7 +111,7 @@ describe("bot commands", () => {
   it("lets an owner set how far work asked for in a chat writes, and has no /listen: every group is heard", () => {
     commands.receive(message(BOSS, "/ceiling local"));
     expect(current().policy.sources.feishu?.ceilings).toEqual({ [CHAT]: "local" });
-    expect(commandOf(message(BOSS, "/listen all"))).toBeUndefined();
+    expect(commandOf(message(BOSS, "/listen all"), (source) => source === "feishu")).toBeUndefined();
   });
   it("lets an owner have the agent join the conversation in a chat or keep out of it, whatever it listens to there", () => {
     commands.receive(message(MAINTAINER, "/chatter on"));

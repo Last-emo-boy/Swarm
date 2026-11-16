@@ -3,6 +3,7 @@ import type { OutboundMessage, Outbox as OutboxPort, ReplyStatus } from './core/
 import type { Commands } from './commands.js'
 import { checkedImText } from './text.js'
 import { posted, said, saidTo } from './people.js'
+import type { ChatKind } from './sources/chat.js'
 import type { SourceRegistry } from './sources/registry.js'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.js'
 import type { Store } from './store.js'
@@ -10,7 +11,7 @@ import type { Store } from './store.js'
 export interface OutboxHost {
   readonly store: Pick<Store, 'atomic' | 'receipts' | 'get' | 'set'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
-  readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
+  readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send' | 'chatKind'>
   readonly commands: Commands
   paused(): boolean
 }
@@ -26,18 +27,20 @@ export class Outbox implements OutboxPort {
   }
   /** Record a message receipt and enqueue its delivery effect atomically; duplicate message IDs are ignored. */
   send(message: OutboundMessage): void {
-    // Validate IM reply length here; acknowledgements are already validated when decided.
-    if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
+    // Validate IM reply length here for a chat kind's conversation; acknowledgements are already validated when decided.
+    const kind = this.host.sources.chatKind(message.channel.source)
+    if (message.kind === 'reply' && kind) checkedImText(message.text)
     const { store, effects } = this.host
     store.atomic(() => {
       if (!store.receipts.add(message)) return
       effects.enqueue('reply', message.id, {})
-      // Whatever sent it, a message to a Feishu chat is what the agent said there (people.ts).
-      const { chatId, messageId, mode, userId } = message.channel.address
-      if (message.channel.source === 'feishu' && chatId && mode !== 'user') {
+      // Whatever sent it, a message into a chat is what the agent said there (people.ts).
+      if (!kind) return
+      const { chatId, messageId, userId, mode } = kind.describe(message.channel)
+      if (chatId && mode !== 'user') {
         said(store, chatId, { at: new Date().toISOString(), text: message.text, ...(messageId ? { to: messageId } : {}), ...(mode !== 'chat' ? { topic: true } : {}) })
       }
-      if (message.channel.source === 'feishu' && mode === 'user' && userId) saidTo(store, userId, { at: new Date().toISOString(), text: message.text })
+      if (mode === 'user' && userId) saidTo(store, userId, { at: new Date().toISOString(), text: message.text })
     })
   }
   status(id: string): ReplyStatus | undefined { return this.host.store.receipts.get(id)?.status }
@@ -55,13 +58,17 @@ export class Outbox implements OutboxPort {
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')
     if (!sources.channelAllowed(receipt.channel)) { store.receipts.settle(receipt, 'channelIgnored'); return }
     // A permanently unreachable target (such as a recalled message or deleted Issue) settles as `channelGone` so its receipt prevents retries.
-    // What it posted in a Feishu chat is its own message there, which a reply to it answers (people.ts).
+    // What it posted in a chat is its own message there, which a reply to it answers (people.ts), and its id is kept for
+    // `ticket` and `why` to show.
     let platformId: string | undefined
-    const result = await sources.send(receipt, commands, ({ messageId, chatId }) => {
+    // A Source without a chat keeps the platform's id too; only a chat records the agent's own line there (people.ts).
+    const speaksInChat = !!this.host.sources.chatKind(receipt.channel.source)?.chat
+    const postedIn = ({ messageId, chatId }: { messageId: string; chatId?: string }) => {
       platformId = messageId
       const chat = chatId ?? receipt.channel.address.chatId
-      if (receipt.channel.source === 'feishu' && chat) posted(store, chat, messageId)
-    })
+      if (speaksInChat && chat) posted(store, chat, messageId)
+    }
+    const result = await sources.send(receipt, commands, postedIn)
     if (result === 'waiting') throw new Later('The Source is not installed')
     // The receipt keeps when the platform took the message and under which id, for `ticket` and `why` to show.
     store.receipts.settle(receipt, result === 'gone' ? 'channelGone' : 'sent',

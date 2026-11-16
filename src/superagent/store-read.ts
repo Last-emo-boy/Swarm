@@ -1,9 +1,17 @@
 /** Read-only Store queries for views, tools, and Source polling (from dsh-superagent's app/store-read.ts). */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type { Decision, Thread, Trigger } from './core/index.js'
+import type { SourceRegistry } from './sources/registry.js'
 import type { Dropped, Receipt, TimelinePlace } from './store.js'
 
-export function storeReads(db: DatabaseSync) {
+/** The chat a message read is of: its Source, and the platform's id for the chat. */
+export interface ChatRef { source: string; chatId: string }
+
+/**
+ * Builds the read queries over `db`. `sources` resolves the Source of a chat or person id for queries a caller gives only an
+ * id to; it is looked up on each call because the registry is built after the Store that holds these reads.
+ */
+export function storeReads(db: DatabaseSync, sources: () => Pick<SourceRegistry, 'sourceOfPerson' | 'sourceOfChat'> | undefined = () => undefined) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
   /** In SQL, a Decision that gave up on an explicit request because the model did not answer in time, as `unroutedRequest` tells one (client.ts). */
   const unrouted = "value ->> '$.kind' = 'unavailable' AND value ->> '$.reason[0].code' = 'timeout' AND value ->> '$.strength' = 'explicit'"
@@ -93,13 +101,19 @@ export function storeReads(db: DatabaseSync) {
     LEFT JOIN disposition d ON d.id = t.id WHERE t.at >= ? AND t.at < ? AND t.value ->> '$.actor.source' = ? AND t.value ->> '$.actor.id' = ?
     AND t.value ->> '$.addressed' IS NOT NULL AND d.value ->> '$.filtered' IS NULL AND IFNULL(d.value ->> '$.command', '') <> 'limit'`)
     .get(from, to, actor.source, actor.id)?.n ?? 0),
-  /** The latest `limit` messages people (and with `bots`, other bots too) wrote in a Feishu chat at or after `since`, newest first. */
-  chatMessages: (chatId: string, since: string, limit: number, bots = false): Trigger[] => values<Trigger>(`SELECT value FROM trigger WHERE at >= ?
-    AND value ->> '$.source' = 'feishu' AND value ->> '$.meta.chatId' = ? AND (? OR value ->> '$.human' = 1) ORDER BY at DESC, rowid DESC LIMIT ?`,
-    since, chatId, bots ? 1 : 0, limit),
-  /** The chat of a person's latest direct message to the agent on Feishu, if they ever wrote one. */
-  directChat: (person: string): string | undefined => (db.prepare(`SELECT value ->> '$.meta.chatId' AS chat FROM trigger WHERE value ->> '$.source' = 'feishu'
-    AND value ->> '$.actor.id' = ? AND value ->> '$.meta.direct' = 1 ORDER BY at DESC LIMIT 1`).get(person) as { chat?: string } | undefined)?.chat ?? undefined,
+  /** The latest `limit` messages people (and with `bots`, other bots too) wrote in a chat of `chat`'s Source at or after `since`, newest first. */
+  chatMessages: (chat: ChatRef, since: string, limit: number, bots = false): Trigger[] => values<Trigger>(`SELECT value FROM trigger WHERE at >= ?
+    AND value ->> '$.source' = ? AND value ->> '$.meta.chatId' = ? AND (? OR value ->> '$.human' = 1) ORDER BY at DESC, rowid DESC LIMIT ?`,
+    since, chat.source, chat.chatId, bots ? 1 : 0, limit),
+  /**
+   * The chat of a person's latest direct message to the agent, if they ever wrote one. Without a Source named, the one whose
+   * directory holds the id as a person is used; a person no installed kind knows has none.
+   */
+  directChat: (person: string, source = sources()?.sourceOfPerson(person)): string | undefined => source === undefined ? undefined
+    : (db.prepare(`SELECT value ->> '$.meta.chatId' AS chat FROM trigger WHERE value ->> '$.source' = ?
+      AND value ->> '$.actor.id' = ? AND value ->> '$.meta.direct' = 1 ORDER BY at DESC LIMIT 1`).get(source, person) as { chat?: string } | undefined)?.chat ?? undefined,
+  /** The Source whose chat kind's directory holds `chatId` as a chat, when one does; for a read given only an id. */
+  sourceOfChat: (chatId: string): string | undefined => sources()?.sourceOfChat(chatId),
   subscribedThreads: (source?: string): Thread[] => source
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.

@@ -19,7 +19,8 @@ import { memoryOf, personSubject } from "./memories.js";
 import { addressable, allowedWrite, atLeast, capabilityOf, ceilingOf, limitOf, roleOf, seesNodes, steers, watchedRepository } from "./policy.js";
 import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
-import { SOURCE as FEISHU, feishuUserChannel } from "./sources/feishu-trigger.js";
+import { metaOf } from "./sources/meta.js";
+import type { ChatKind } from "./sources/chat.js";
 import { inChinese, sameName, sayIn, wordCount, type Say } from "./text.js";
 import { patchPath } from "./ticket-tools.js";
 
@@ -63,10 +64,10 @@ const WANTED_MS = 7 * 24 * HOUR_MS;
 const failure = (say: Say, error: unknown): string =>
   `${say("That did not work: ", "没成功：")}${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
 
-/** The bot command a person's Feishu message to the agent gives, after the mentions it starts with, if it gives one. */
-export function commandOf(trigger: Trigger): Command | undefined {
-  if (trigger.source !== FEISHU || !trigger.human || !trigger.addressed) return undefined;
-  const mentions = MentionsSchema.catch([]).parse(trigger.meta.mentions);
+/** The bot command a person's chat message to the agent gives, after the mentions it starts with, if it gives one; `isChat` says which Sources are chats. */
+export function commandOf(trigger: Trigger, isChat: (source: string) => boolean = () => false): Command | undefined {
+  if (!isChat(trigger.source) || !trigger.human || !trigger.addressed) return undefined;
+  const mentions = metaOf(trigger).mentions ?? [];
   let text = trigger.text.trim();
   for (let mention = mentions.find((item) => text.startsWith(`@${item.name}`)); mention; mention = mentions.find((item) => text.startsWith(`@${item.name}`))) {
     text = text.slice(mention.name.length + 1).trimStart();
@@ -103,7 +104,7 @@ export class BotCommands {
     if (store.triggers.get(trigger.id)) return engine.receive(trigger);
     const settings = this.client.settings();
     if (!trigger.human || !trigger.addressed || !addressable(settings, sources, trigger)) return engine.receive(trigger);
-    const command = commandOf(trigger);
+    const command = commandOf(trigger, this.isChat);
     const say = this.say(trigger);
     const held = this.held(trigger, settings, !command, say);
     if (held) {
@@ -134,8 +135,9 @@ export class BotCommands {
     const say = this.say(trigger);
     let text: string | undefined;
     try {
-      text = trigger.source !== FEISHU ? say("Bot commands work in Feishu.", "机器人命令只在飞书里能用。")
-        : this.run({ name, args: [...args], mentions: MentionsSchema.catch([]).parse(trigger.meta.mentions) }, trigger, settings);
+      const kind = this.kind(trigger);
+      text = !kind ? say("Bot commands work only in a chat.", "机器人命令只在聊天里能用。")
+        : this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, settings);
     } catch (error) {
       text = failure(say, error);
     }
@@ -147,8 +149,13 @@ export class BotCommands {
    * Chinese on Feishu and English on Lark.
    */
   private say(trigger: Trigger): Say {
-    return sayIn(inChinese(trigger.text) || (!!commandOf(trigger) && this.client.deployment().feishu?.brand !== "lark"));
+    return sayIn(inChinese(trigger.text) || (!!commandOf(trigger, this.isChat) && this.client.deployment().feishu?.brand !== "lark"));
   }
+
+  /** The chat kind a trigger came by, when its Source has one. */
+  private kind(trigger: Trigger): ChatKind | undefined { return this.client.sources.chatKind(trigger.source); }
+  /** Whether a Source is a chat kind: bot commands run only in chats. */
+  private readonly isChat = (source: string): boolean => this.client.sources.chatKind(source) !== undefined;
 
   /** Runs a command that answers once GitHub has; its failure is its answer. */
   private later(trigger: Trigger, work: () => Promise<string>): undefined {
@@ -225,7 +232,7 @@ export class BotCommands {
     const link = githubApp(settings) ? linkOf(this.client.store, trigger.actor) : undefined;
     const github = !githubApp(settings) ? "" : !link ? say(" GitHub: not linked; send /link.", " GitHub：未绑定，发 /link 绑定。")
       : link.broken ? say(` GitHub: @${link.login}, but the link stopped working; send /link again.`, ` GitHub：@${link.login}，但绑定已失效，再发一次 /link。`)
-      : trigger.meta.direct !== true ? ` GitHub: @${link.login}.`
+      : !metaOf(trigger).direct ? ` GitHub: @${link.login}.`
       : say(` GitHub: @${link.login}, working on ${link.repos.length ? repoList(link, say) : "no repository yet"}.`,
         ` GitHub：@${link.login}，可用仓库：${link.repos.length ? repoList(link, say) : "还没有"}。`);
     const open = of(this.openTickets(trigger).length, limitOf(settings, role, "openTickets"));
@@ -236,7 +243,7 @@ export class BotCommands {
 
   /** Whom a memory command is about: the person it names after the command, which only an owner may name for someone else, or the sender. */
   private remembered(command: Command, trigger: Trigger, settings: Settings): { id: string; name: string } {
-    const bot = this.client.resolvedDeployment()?.feishu?.botId;
+    const bot = this.client.sources.agent(trigger.source, this.client.resolvedDeployment())?.id;
     const rest = trigger.text.slice(Math.max(0, trigger.text.indexOf(`/${command.name}`)));
     const named = command.mentions.find((mention) => mention.id !== bot && mention.id !== trigger.actor.id && rest.includes(`@${mention.name}`));
     if (!named) return { id: trigger.actor.id, name: "" };
@@ -263,8 +270,10 @@ export class BotCommands {
     const page = Math.min(pages.length, Math.max(1, Number(command.args.find((arg) => /^\d+$/.test(arg)) ?? 1)));
     const more = page < pages.length ? say(` (page ${page} of ${pages.length}: /memory ${page + 1} for more)`, `（第 ${page}/${pages.length} 页，发 /memory ${page + 1} 看下一页）`) : "";
     const list = `${say(`What I remember ${whom}:`, `我记得${whom}的：`)}\n${pages[page - 1]!.join("\n")}${more}`;
-    if (trigger.meta.direct === true) return list;
-    this.client.outbox.send({ id: key("memory", trigger.id), channel: feishuUserChannel(trigger.actor.id), text: list, kind: "reply" });
+    if (metaOf(trigger).direct) return list;
+    const kind = this.kind(trigger);
+    if (!kind) return say("I cannot send you a direct message here.", "这里没法私聊发给你。");
+    this.client.outbox.send({ id: key("memory", trigger.id), channel: kind.user(trigger.actor.id), text: list, kind: "reply" });
     return say("I sent you the list in a direct message.", "已经私聊发给你了。");
   }
   /** `/forget <number>|all [@name]`: the agent forgets one note about the sender, as /memory numbers them, or all of them; an owner, about someone they name. */
@@ -301,8 +310,10 @@ export class BotCommands {
   private link(trigger: Trigger, settings: Settings): string | undefined {
     const say = this.say(trigger);
     this.linking(settings, say);
-    const direct = trigger.meta.direct === true;
-    if (!this.startLink(trigger.actor, direct && trigger.channel ? trigger.channel : feishuUserChannel(trigger.actor.id), trigger.id, say)) {
+    const direct = metaOf(trigger).direct;
+    const kind = this.kind(trigger);
+    const here = kind ? kind.user(trigger.actor.id) : undefined;
+    if (!this.startLink(trigger.actor, direct && trigger.channel ? trigger.channel : here ?? trigger.channel ?? here!, trigger.id, say)) {
       return say("Enter the code I sent you in a direct message, or wait until it expires to ask for another.", "请输入我私聊发你的验证码，或等它过期后再要一个。");
     }
     return direct ? undefined : say("I sent you a direct message with a code to link your GitHub account. If none arrives, send me a direct message saying /link.",
@@ -349,7 +360,7 @@ export class BotCommands {
   /** `/repo [owner/name]`: reads again which repositories the person may work on, and sets their default. */
   private repo(command: Command, trigger: Trigger, settings: Settings): string | undefined {
     const say = this.say(trigger);
-    if (trigger.meta.direct !== true) return say("Send /repo to me in a direct message.", "请私聊我发 /repo。");
+    if (!metaOf(trigger).direct) return say("Send /repo to me in a direct message.", "请私聊我发 /repo。");
     const { app, links } = this.linking(settings, say);
     if (!linkOf(this.client.store, trigger.actor)) return notLinked(say);
     return this.later(trigger, async () => {
@@ -376,12 +387,12 @@ export class BotCommands {
     const say = this.say(trigger);
     const wanted = command.args.at(-1) ?? "";
     const role = wanted === "none" ? undefined : RoleSchema.safeParse(wanted).data;
-    const bot = this.client.deployment().feishu?.botId;
+    const bot = this.client.sources.agent(trigger.source, this.client.resolvedDeployment())?.id;
     const rest = trigger.text.slice(trigger.text.indexOf("/role"));
     const people = command.mentions.filter((mention) => mention.id !== bot && rest.includes(`@${mention.name}`));
     if ((wanted !== "none" && !role) || !people.length) return say("Usage: /role @name owner|maintainer|everyone|none", "用法：/role @某人 owner|maintainer|everyone|none");
     updateSettings((next) => {
-      const part = next.policy.sources[FEISHU] ??= { allowed: [], admission: {} };
+      const part = next.policy.sources[trigger.source] ??= { allowed: [], admission: {} };
       const roles: Record<string, Role> = { ...part.roles };
       for (const person of people) {
         if (role) roles[person.id] = role;
@@ -405,7 +416,7 @@ export class BotCommands {
     if (!scope.listened || scope.row === undefined) return say("I cannot set a ceiling for this conversation.", "这个对话没法设置上限。");
     const row = scope.row;
     updateSettings((next) => {
-      const part = next.policy.sources[FEISHU] ??= { allowed: [], admission: {} };
+      const part = next.policy.sources[trigger.source] ??= { allowed: [], admission: {} };
       part.ceilings = { ...part.ceilings, [row]: level };
       return next;
     }, settingsPath(this.client.stateDir));
@@ -418,10 +429,10 @@ export class BotCommands {
    */
   private chatter(command: Command, trigger: Trigger, settings: Settings): string {
     const say = this.say(trigger);
-    const chatId = String(trigger.meta.chatId ?? "");
+    const chatId = metaOf(trigger).chatId ?? "";
     const current = chatterOf(settings);
     const on = current.everywhere ? !current.off.includes(chatId) : current.chats.includes(chatId);
-    if (trigger.meta.direct === true) return say("/chatter works in a group chat.", "/chatter 要在群里用。");
+    if (metaOf(trigger).direct) return say("/chatter works in a group chat.", "/chatter 要在群里用。");
     const mode = command.args[0];
     const perHour = chatterOf(settings).perHour;
     if (!mode) return on ? say(`I join the conversation here now and then, at most ${perHour} times an hour.`, `我会时不时加入这里的对话，每小时最多 ${perHour} 次。`)
@@ -479,8 +490,9 @@ export class BotCommands {
     if (!link || link.broken) {
       if (!githubApp(settings) || !this.options.links || allowedWrite(settings, mandate) !== "github") return notLinked(say);
       this.want(ticket, trigger);
-      const direct = trigger.meta.direct === true && !!trigger.channel;
-      const here = this.startLink(trigger.actor, direct ? trigger.channel! : feishuUserChannel(trigger.actor.id), trigger.id, say) && direct;
+      const direct = metaOf(trigger).direct && !!trigger.channel;
+      const via = this.kind(trigger)?.user(trigger.actor.id) ?? trigger.channel;
+      const here = !!via && this.startLink(trigger.actor, direct ? trigger.channel! : via, trigger.id, say) && direct;
       return say(`Link your GitHub account first: enter the code ${here ? "I'm sending you here" : "I sent you in a direct message"}. `
         + `Once it is linked${patched ? "" : ` and ticket ${name} reports ready`}, I'll open the pull request as you.`,
         `先绑定你的 GitHub 账号：输入${here ? "我在这里发你" : "我私聊发你"}的验证码。绑定好${patched ? "" : `、工单 ${name} 完成`}后，我会以你的身份开拉取请求。`);
@@ -525,7 +537,7 @@ export class BotCommands {
    */
   wantPullRequest(trigger: Trigger, ticketId: string): void {
     const ticket = this.client.store.tickets.get(ticketId);
-    if (!ticket || trigger.source !== FEISHU) return;
+    if (!ticket || !this.isChat(trigger.source)) return;
     try {
       this.takeOver(ticket, trigger, this.client.settings());
     } catch (error) {
