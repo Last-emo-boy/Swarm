@@ -25,7 +25,7 @@ import { feishuKind } from "./sources/feishu.js";
 import type { SourceKind } from "./sources/kind.js";
 import { githubKind } from "./sources/github.js";
 import { pullEndNotices } from "./sources/github-pull.js";
-import { localKind, localOperator, localTrigger, SOURCE as LOCAL } from "./sources/local.js";
+import { localKind, localOperator, localTrigger, postLocalChat, SOURCE as LOCAL } from "./sources/local.js";
 import { SourceRegistry } from "./sources/registry.js";
 
 export const databasePath = (stateDir: string): string => join(stateDir, "superagent.db");
@@ -135,6 +135,16 @@ export class SuperagentClient {
       this.engine.receive(trigger);
     });
     return { triggerId: trigger.id, thread: threadKey(trigger.threads[0]!) };
+  }
+
+  /**
+   * Queues a message typed into the TUI as chat for the host to take in (local.ts `takeLocalInbox`): bot commands and the
+   * router see it as a chat message in the terminal's one chat. The host must be running to take it in.
+   */
+  chat(text: string, actor = localOperator()): { messageId: string } {
+    const message = { id: randomUUID(), text, actor, at: new Date().toISOString() };
+    this.store.atomic(() => postLocalChat(this.store, message));
+    return { messageId: message.id };
   }
 
   /** The harness a newly accepted ticket runs on: the one its request was filed with, else the settings' default. */

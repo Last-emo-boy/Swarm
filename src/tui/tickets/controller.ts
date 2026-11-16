@@ -160,6 +160,16 @@ export class TuiTickets {
     return this.starting;
   }
 
+  /**
+   * Queues a message typed into the TUI as chat for the host (local.ts `takeLocalInbox`): the bot's commands and router
+   * answer it there, and the answer comes back through the outbox the tickets pane already reads.
+   */
+  async chat(text: string): Promise<{ messageId: string; started: boolean }> {
+    const started = await this.ensureHost();
+    const { client } = await this.open();
+    return { ...client.chat(text), started };
+  }
+
   /** Files a request here, on the agent harness `harness` when one is given, or on a paired device, which then owns the ticket. */
   async request(text: string, device?: string, harness?: string): Promise<{ triggerId: string }> {
     if (device) return (await this.meshModule()).peerRequest(this.peer(device), text);

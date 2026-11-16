@@ -1692,6 +1692,13 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
       refreshTickets();
       return result.detail ? { brief: appendDetailShortcut(result.brief), detail: result.detail } : { brief: result.brief };
     }
+    if (command === "chat") {
+      const text = args.join(" ").trim();
+      if (!text) throw new Error("Usage: /chat <text>");
+      const { started } = await ticketsController().chat(text);
+      refreshTickets();
+      return { brief: started ? "Sent as chat; a host started here takes it in." : "Sent as chat." };
+    }
     if (command === "ticket" || command === "tickets") {
       const result = await runTicketCommand(ticketsController(), command, args);
       if (result.openPane) {
