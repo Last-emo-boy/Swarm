@@ -3486,6 +3486,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
         completionPlacement="overlay"
         maxRows={bottomRows}
         maxInputRows={inputCapacity.maxInputRows}
+        columns={terminalColumns}
       />
     );
     const completionOverlay = !approval && !pendingPlan && chatCompletion.candidates.length > 0
