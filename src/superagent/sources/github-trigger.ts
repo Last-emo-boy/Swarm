@@ -17,7 +17,7 @@ export function githubAddress(url: string, repository: string): { number: number
   return { number: Number(match[3]), pr: match[2]!.toLowerCase() !== 'issues', ...match[4] ? { discussion: Number(match[4]) } : {} }
 }
 /** GitHub returns a deleted account as `null` and displays it as `ghost`. */
-export const UserSchema = z.looseObject({ login: z.string(), type: z.string().optional() }).nullable()
+export const UserSchema = z.looseObject({ login: z.string(), id: z.number().optional(), type: z.string().optional() }).nullable()
   .transform(user => user ?? { login: 'ghost', type: 'User' })
 /**
  * A GitHub comment or review; a review carries `state` and `commit_id`, and an inline review comment carries its file,
@@ -59,8 +59,9 @@ function commentText(comment: GithubComment, kind: 'conversation' | 'inline' | '
 }
 export const mentions = (text: string, login: string): boolean =>
   new RegExp(`(?:^|[^a-zA-Z0-9_@])@${escapeRegExp(login)}(?![a-zA-Z0-9_-])`, 'i').test(text)
-const author = (user: { login: string; type?: string }, agent: string) =>
-  ({ actor: { source: SOURCE, id: user.login }, human: isHumanLogin(user) && !sameName(user.login, agent) })
+// The actor keeps its login as the handle and the account's number as its identity, so a freed login never passes for its holder.
+const author = (user: { login: string; id?: number; type?: string }, agent: string) =>
+  ({ actor: { source: SOURCE, id: user.login, ...(user.id === undefined ? {} : { accountId: user.id }) }, human: isHumanLogin(user) && !sameName(user.login, agent) })
 /** Builds a trigger for a comment or review; text is empty for a bodyless comment or a `COMMENTED` review without a body. */
 export function commentTrigger(comment: GithubComment, ref: PullRef, kind: 'conversation' | 'inline' | 'review', agent: string): Trigger {
   const at = comment.updated_at ?? comment.submitted_at ?? comment.created_at ?? new Date().toISOString()

@@ -129,13 +129,15 @@ const RECALLED = 30;
 const subjectFor = (sources: SourceRegistry, origin: Trigger | undefined) => (name: string): string | undefined => {
   const meta = origin ? metaOf(origin) : undefined;
   const chatId = meta && !meta.direct ? meta.chatId : undefined;
+  const chatSource = chatId && origin ? origin.source : undefined;
   if (name === SELF) return SELF;
-  if (name === "chat") return chatId ? chatSubject(chatId) : undefined;
+  if (name === "chat") return chatId ? chatSubject(chatId, chatSource) : undefined;
   if (name === "requester") return origin && sources.chatKind(origin.source) ? personSubject(origin.actor.id, origin.source) : undefined;
   // An id names its own Source through the kind whose directory holds it; one no installed kind knows is nobody here.
   const person = sources.sourceOfPerson(name);
   if (person) return personSubject(name, person);
-  return sources.sourceOfChat(name) ? chatSubject(name) : undefined;
+  const chat = sources.sourceOfChat(name);
+  return chat ? chatSubject(name, chat) : undefined;
 };
 /** The longest a command a ticket's worker runs on a paired node may take: within the 110 seconds a ticket tool may. */
 const MESH_SHELL_MS = 100_000;

@@ -21,3 +21,5 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build
+      # The suite is the only regression signal there is; src/testing/env.ts stubs lark-cli and gh for it.
+      - run: npm test

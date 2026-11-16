@@ -11,7 +11,7 @@ import type { ActorRef, ChannelRef } from "./core/index.js";
 import { KV } from "./kv.js";
 import type { Settings } from "./settings.js";
 import type { Store } from "./store.js";
-import { sameName } from "./text.js";
+import { sameActor, sameName } from "./text.js";
 
 /** The GitHub App people link their accounts with: its client id, for the device flow, and its slug. */
 export const GithubAppSchema = z.object({ clientId: z.string().trim().min(1), slug: z.string().regex(/^[a-z0-9-]+$/) }).strict();
@@ -47,13 +47,15 @@ export interface GithubLink {
 export type LinkView = Omit<GithubLink, "access" | "refresh">;
 type LinkStore = Pick<Store, "get" | "set" | "delete" | "keys">;
 
+/** A linked account as the actor it writes on GitHub as: its login, and the account number that login can never leave. */
+const accountOf = (link: Pick<GithubLink, "login" | "id">): ActorRef => ({ source: "github", id: link.login, accountId: link.id });
 /**
  * The linked account a sender writes to GitHub with: the one they linked from their own Source, or, for someone writing on
- * GitHub, the account someone linked under that login.
+ * GitHub, the account someone linked under that login and number, so a freed login never passes for its old holder.
  */
 export function linkOf(store: LinkStore, actor: ActorRef): LinkView | undefined {
   const found = actor.source === "github"
-    ? store.keys(KV.links.github).map((name) => store.get(name)).find((link) => !!link && sameName(link.login, actor.id))
+    ? store.keys(KV.links.github).map((name) => store.get(name)).find((link) => !!link && sameActor(accountOf(link), actor))
     : store.get(KV.links.github(actor.source, actor.id));
   if (!found) return undefined;
   const { access: _access, refresh: _refresh, ...view } = found;
@@ -62,7 +64,7 @@ export function linkOf(store: LinkStore, actor: ActorRef): LinkView | undefined 
 /** The key a sender's link is stored under: their own, or, for a GitHub login, the account linked under it. */
 function linkName(store: LinkStore, actor: ActorRef): ReturnType<typeof KV.links.github> | undefined {
   if (actor.source !== "github") return KV.links.github(actor.source, actor.id);
-  return store.keys(KV.links.github).find((name) => sameName(store.get(name)?.login ?? "", actor.id));
+  return store.keys(KV.links.github).find((name) => { const link = store.get(name); return !!link && sameActor(accountOf(link), actor); });
 }
 const REPOSITORY = /(?:https?:\/\/github\.com\/)?([A-Za-z0-9-]+\/[A-Za-z0-9_.-]+)/g;
 /** The first repository of `repos` that a request names, as owner/name or a github.com link. */

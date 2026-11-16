@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import { each, expect } from './testing/expect.js'
 import { addressable, allowedWrite, assessmentOutcome, capabilityOf, ceilingOf, limitOf, listedSender, policyEffects, repositoryFor, roleOf, settingsPolicy, allowedSender,
-  anyoneAllowed } from './policy.js'
+  anyoneAllowed, steers } from './policy.js'
 import { SettingsSchema, policyVersion, type Settings } from './settings.js'
 import type { MandateBasis } from './core/index.js'
 import { SourceRegistry } from './sources/registry.js'
@@ -508,6 +508,13 @@ describe('access model', () => {
     expect(gated.steers?.(mandate, person(BOSS))).toBe(true)
     expect(gated.steers?.({ actor: person(MEMBER) } as never, person(READER))).toBe(false)
     expect(gated.steers?.({ actor: person(MEMBER) } as never, person(GUEST))).toBe(false)
+    // A GitHub actor is its account's number where both sides carry one: a freed login steers nothing its holder had.
+    const holder = { source: 'github', id: 'alice-gh', accountId: 7 }
+    const freed = { source: 'github', id: 'alice-gh', accountId: 99 }
+    expect(steers(roles, { actor: holder }, holder)).toBe(true)
+    expect(steers(roles, { actor: holder }, freed)).toBe(false)
+    // A mandate stored before the number was carried compares its login, as it always did.
+    expect(steers(roles, { actor: { source: 'github', id: 'Alice-GH' } }, freed)).toBe(true)
   })
   it('limits each role by default and by the settings', () => {
     expect(setup(roles).policy.openLimit?.(person(GUEST))).toBe(1)

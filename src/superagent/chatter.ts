@@ -276,7 +276,7 @@ export class ChatterRoom {
         ...(metaOf(message).parentId !== undefined ? { reply_to: metaOf(message).parentId } : {}), ...(why.has(message.id) ? { for_you: why.get(message.id) } : {}) })),
       ...own.map((item) => ({ at: item.at, from: name || "you", you: true, text: item.text }))
     ].sort((a, b) => a.at.localeCompare(b.at));
-    const memory = memoryOf(settings) ? notesCard(client.store, [chatSubject(chatId), ...new Set(messages.map((message) => personSubject(message.actor.id)))], 4, 16) : [];
+    const memory = memoryOf(settings) ? notesCard(client.store, [chatSubject(chatId, source), ...new Set(messages.map((message) => personSubject(message.actor.id, source)))], 4, 16) : [];
     const card = { chat: chatName(client.store, chatId, source) ?? chatId, now: new Date(now).toISOString(), messages: timeline,
       ...(answering.length ? { your_questions: answering.map((ask) => ({ id: ask.id, asked_for: ask.for.name, asked: ask.text, at: ask.at })) } : {}),
       ...(replyable.length && acting.length ? { acting_for: acting.map((item) => ({ id: item.for.id, name: item.for.name, you_asked_here: item.text })) } : {}),
@@ -376,7 +376,7 @@ export class ChatterRoom {
       ...own.map((item) => ({ at: item.at, from: bot || "you", you: true, text: item.text }))
     ].sort((a, b) => a.at.localeCompare(b.at));
     // What it remembers of the chat and of the people talking there, when its memory is on.
-    const memory = memoryOf(settings) ? notesCard(client.store, [chatSubject(chatId), ...new Set(messages.map((message) => personSubject(message.actor.id)))], 4, 16) : [];
+    const memory = memoryOf(settings) ? notesCard(client.store, [chatSubject(chatId, source), ...new Set(messages.map((message) => personSubject(message.actor.id, source)))], 4, 16) : [];
     const card = { chat: chatName(client.store, chatId, source) ?? chatId, now: new Date(this.now()).toISOString(), messages: timeline,
       ...(memory.length ? { memory } : {}) };
     const answer = await answerOf(SaySchema, () => complete({ purpose: "superagent_chatter", system: chatterPrompt(bot, chatter.persona, kind.platform),

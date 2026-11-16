@@ -53,7 +53,8 @@ function patchOf(stateDir: string): string {
   const base = join(stateDir, "base"), work = join(stateDir, "seed");
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
     { cwd, stdio: ["ignore", "pipe", "ignore"] });
-  execFileSync("git", ["init", "-q", "--bare", base]);
+  // Named, like the push below: a runner whose init.defaultBranch is master would otherwise have an empty HEAD branch.
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", base]);
   execFileSync("git", ["clone", "-q", base, work]);
   writeFileSync(join(work, "README"), "base\n");
   git(work, "add", "README");
