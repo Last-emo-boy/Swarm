@@ -117,6 +117,9 @@ export class Assignments extends EnginePart {
     const attention = report.question === null || report.state === 'ready' ? undefined : asked
     if (attention) ticket.attention = attention
     else delete ticket.attention
+    // A ready or dropped worker has nothing left to wake for; one that keeps working leaves a new check-back. The ticket
+    // following a thread stays open in review, so its end does not drop it here, and a wake would find nobody to receive it.
+    if (report.state === 'ready' || report.state === 'dropped') delete ticket.checkBack
     // A replaced or cleared attention question withdraws any pending unsent reply for the previous question from the outbox.
     if (previous && previous.id !== attention?.id) this.replies.withdrawAttention(previous.id)
     assignment.report = { state: report.state, summary: report.summary, at }

@@ -73,7 +73,7 @@ export class SuperagentClient {
     this.sources = new SourceRegistry(() => this.settings(), this.health);
     for (const kind of [localKind, githubKind, feishuKind, ...options.kinds ?? []]) this.sources.register(kind as never);
     this.store.setChatSources(() => this.sources);
-    this.effects = new Effects(this.store, this.health);
+    this.effects = new Effects(this.store, this.health, options.now ? () => Date.parse(options.now!()) : undefined);
     const lifetime = new AbortController();
     this.commands = new Commands(() => this.deployment(), {}, lifetime.signal);
     this.outbox = new Outbox({ store: this.store, effects: this.effects, sources: this.sources, commands: this.commands, paused: () => this.settings().paused });

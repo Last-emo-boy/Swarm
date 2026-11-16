@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeF
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod/v4";
-import { key, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
+import { CHECK_BACK_MAX_MINUTES, CHECK_BACK_MIN_MINUTES, UserError, key, latestAssignment, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import type { SourceRegistry } from "./sources/registry.js";
 import { textPage, ticketCard } from "./cards.js";
@@ -238,6 +238,15 @@ const TOOLS = {
         + "With progress, one sentence at a milestone they would care about, never for a routine step; the host sends at most one every few minutes.")
     },
     readOnly: false
+  },
+  check_back: {
+    description: "Ask this ticket to wake you later, when you wait for something outside Swarm that will change on its own: a CI run, a review, someone's reply elsewhere. Report progress or waiting now, then leave one; the host wakes this ticket then, from its own clock, and your next turn starts with the note.",
+    input: {
+      after_minutes: z.number().int().min(CHECK_BACK_MIN_MINUTES).max(CHECK_BACK_MAX_MINUTES)
+        .describe("From now, in minutes; the host sets the time by its own clock, wherever you run."),
+      note: z.string().trim().min(1).max(300).describe("Why you want to be woken, so the next turn knows what it waited for.")
+    },
+    readOnly: false
   }
 } satisfies Record<string, Omit<TicketTool, "name" | "run">>;
 type ToolName = keyof typeof TOOLS;
@@ -249,7 +258,12 @@ const withRuns = (run: (name: ToolName) => TicketTool["run"]): TicketTool[] =>
 export const proxiedTicketTools = (call: (name: string, args: Record<string, unknown>) => Promise<unknown>): TicketTool[] =>
   withRuns((name) => (args) => call(name, args));
 
-export function ticketTools(client: SuperagentClient, ticketId: string): TicketTool[] {
+/**
+ * The ticket tools of a worker. `assignmentId` names the Assignment the caller runs it for, which only the node that
+ * started the worker knows: the tools read it from the worker's command line, so a worker process whose Assignment was
+ * replaced cannot write to the ticket the newer one runs.
+ */
+export function ticketTools(client: SuperagentClient, ticketId: string, assignmentId?: string): TicketTool[] {
   const snapshots = new Map<string, string>();
   const ticket = (): Ticket => {
     const found = client.store.tickets.get(ticketId);
@@ -274,7 +288,7 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       const current = ticket();
       return {
         ...ticketCard(current), stage: ticketStage(current), mandate: { strength: current.mandate.strength, scope: current.mandate.scope, rules: current.mandate.basis.rules ?? [] },
-        origin: current.origin.triggerId, follows: current.follows ?? [], latest_report: latestReport(current) ?? null, attention: current.attention ?? null,
+        origin: current.origin.triggerId, follows: current.follows ?? [], latest_report: latestReport(current) ?? null, attention: current.attention ?? null, check_back: current.checkBack ?? null,
         inputs: current.inputs.slice(-20).reverse().map((input) => ({ id: key(input.id), kind: input.kind, at: input.at,
           ...(input.kind === "trigger" ? { trigger_id: input.triggerId, read: `trigger/${input.triggerId}` } : {}) }))
       };
@@ -449,7 +463,17 @@ export function ticketTools(client: SuperagentClient, ticketId: string): TicketT
       ...(typeof args.reply_to_trigger_id === "string" ? { reply_to_trigger_id: args.reply_to_trigger_id } : {}),
       ...(typeof args.message_for_person === "string" ? { message_for_person: args.message_for_person } : {}),
       ...(args.patch ? { patch: PatchSchema.parse(args.patch) } : {})
-    })
+    }),
+    // The worker's own limits are the schema's: a direct call checks them here, and the engine clamps whatever reaches it.
+    check_back: async (args) => {
+      const { after_minutes, note } = z.object(TOOLS.check_back.input).parse(args);
+      // A stale worker of an ended Assignment still reaches the shared store: it may not reschedule the live one's wake.
+      // This is the check `Assignments.report` makes, before or after its own launch ends.
+      const current = ticket(), assignment = latestAssignment(current);
+      if (assignmentId !== undefined && (!assignment || assignment.id !== assignmentId || assignment.state === "ended")) throw new UserError("assignmentEnded");
+      const { at, rescheduled } = client.engine.checkBack(ticketId, after_minutes, note);
+      return { scheduled: at, ...(rescheduled ? { rescheduled: true } : {}) };
+    }
   };
   return withRuns((name) => runs[name]);
 }

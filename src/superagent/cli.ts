@@ -77,7 +77,7 @@ export const messageLines = (message: Partial<TicketMessage> & Pick<TicketMessag
   return lines;
 };
 const rowLine = (row: TicketRow): string =>
-  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.harness ? `  (via ${row.harness})` : ""}${row.local ? `  (local: ${localPhrase(row.local)})` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
+  `${row.short}  ${row.label.padEnd(22)} ${row.source.padEnd(7)} ${row.title}${row.pr ? `  (PR #${row.pr})` : ""}${row.pulledBy ? `  (pulled by ${row.pulledBy})` : row.runsOn ? `  (on ${row.runsOn})` : ""}${row.harness ? `  (via ${row.harness})` : ""}${row.local ? `  (local: ${localPhrase(row.local)})` : ""}${row.checkBack ? `\n          ${row.checkBack}` : ""}${row.question ? `\n          ? ${row.question}` : ""}`;
 
 /** A paired node by name, id or a unique start of either, as a placement names it. */
 async function pairedNode(handle: string): Promise<NodeRef> {
@@ -393,7 +393,7 @@ async function runMcpCommand(args: string[]): Promise<void> {
   }
   const deployment = deploymentFromEnv();
   const client = new SuperagentClient({ deployment: () => deployment });
-  await serve(ticketTools(client, ticketId));
+  await serve(ticketTools(client, ticketId, assignmentId));
 }
 
 function runConfig(args: string[]): void {

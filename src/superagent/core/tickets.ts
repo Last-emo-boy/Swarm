@@ -10,8 +10,11 @@ import type { Replies } from './replies.js'
 import { canRetry } from './stage.js'
 
 const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
-/** Whether an Input is a message no person wrote, such as CI's, a bot's, or the main Session's note. */
-export const automatic = (input: TicketInput | undefined): boolean => input?.kind === 'note' || (input?.kind === 'trigger' && !input.human)
+/** Whether an Input is a message no person wrote, such as CI's, a bot's, the main Session's note, or a check-back the ticket asked for. */
+export const automatic = (input: TicketInput | undefined): boolean => input?.kind === 'note' || input?.kind === 'check-back'
+  || (input?.kind === 'trigger' && !input.human)
+/** Bounds of a check-back's delay: a minute keeps a worker from polling, and a week is what the stale clock outlasts anyway. */
+export const CHECK_BACK_MIN_MINUTES = 1, CHECK_BACK_MAX_MINUTES = 10_080
 /**
  * Whether a ticket's worker read a Trigger Input before `until`, its latest report or turn end: its Session took the message
  * into a step before then. One delivered before reads were recorded counts as read once it reached the worker by then.
@@ -53,6 +56,40 @@ export class Tickets extends EnginePart {
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
     this.options.executor.start(this.require(id), assignment)
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
+  }
+  /**
+   * Record a worker's request to be woken `afterMinutes` from now, with `note` as the reason its next turn starts with,
+   * replacing any earlier one; the owner's clock sets the time, wherever the worker runs.
+   * @returns the time it will wake, and whether it replaced an earlier request.
+   * @throws UserError when the ticket is unknown or has ended.
+   */
+  checkBack(ticketId: string, afterMinutes: number, note: string): { at: string; rescheduled: boolean } {
+    const ticket = this.require(ticketId)
+    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    const minutes = Math.min(CHECK_BACK_MAX_MINUTES, Math.max(CHECK_BACK_MIN_MINUTES, Math.round(afterMinutes)))
+    const at = new Date(Date.parse(this.now()) + minutes * 60_000).toISOString()
+    const rescheduled = ticket.checkBack !== undefined
+    ticket.checkBack = { at, note: note.trim().slice(0, 300), requestedAt: this.now() }
+    ticket.updatedAt = this.now()
+    this.repo.tickets.save(ticket)
+    return { at, rescheduled }
+  }
+  /**
+   * Wake a ticket whose check-back is due: drop it, add the worker's own note as a `check-back` Input, and deliver. Reads
+   * the ticket afresh, so a fired check-back changes nothing for one that ended meanwhile and a second fire finds none.
+   * A ticket that waits on a person keeps its check-back, as it takes no automatic Input meanwhile: the pass queues it
+   * again once they reply, and the clock ends the ticket and drops it if they never do. The check is here and not only in
+   * the pass, which reads the ticket before this one does and cannot see a report that landed in between.
+   * @returns whether a check-back was due and woke the ticket.
+   */
+  fireCheckBack(ticketId: string): boolean {
+    const ticket = this.repo.tickets.get(ticketId)
+    const due = ticket?.checkBack
+    if (!ticket || !liveTicket(ticket) || !due || due.at > this.now() || waitsForPerson(ticket)) return false
+    delete ticket.checkBack
+    this.repo.tickets.save(ticket)
+    this.addInput(ticket, { id: key('input', ticketId, 'check-back', due.at), kind: 'check-back', text: due.note, at: due.at })
+    return true
   }
   /**
    * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
@@ -171,6 +208,8 @@ export class Tickets extends EnginePart {
     const ticket = this.require(ticketId)
     const latest = latestAssignment(ticket)
     if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
+    // The stalled Assignment's request woke nobody: the new worker wakes on the person's message instead.
+    delete ticket.checkBack
     this.endAssignment(ticket, latest, 'retried')
     this.requeueUntaken(ticket, latest)
     const assignment = this.newAssignment(ticket)
@@ -357,7 +396,7 @@ export class Tickets extends EnginePart {
     ticket.ended = { at, by, outcome, ...why }; ticket.undelivered = []; ticket.updatedAt = this.now()
     // A question still queued goes with the ticket it belonged to, so nobody is asked it after it ended.
     if (ticket.attention) this.replies.withdrawAttention(ticket.attention.id)
-    delete ticket.attention; delete ticket.delivery
+    delete ticket.attention; delete ticket.delivery; delete ticket.checkBack
     // The Assignments the end stops end with it; the ticket's end says why.
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
     this.repo.tickets.save(ticket)

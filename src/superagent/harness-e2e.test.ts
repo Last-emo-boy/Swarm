@@ -105,7 +105,8 @@ async function harnessTicket(kind: "claude" | "codex" | "kimi" | "opencode", opt
   assert.match(first.instructions ?? "", /## Swarm superagent[\s\S]*## Working in (Claude Code|Codex|Kimi Code|OpenCode)/);
   assert.match(first.instructions ?? "", /stage those files by path, never with `git add -A` or `git add \.`/);
   assert.match(first.instructions ?? "", /no attribution to an agent, model or harness/);
-  assert.deepEqual(first.tools?.args.slice(-4), ["superagent", "mcp", "--ticket", ticket.id]);
+  // The tools name the ticket and the Assignment its worker runs, so a stale process cannot write to the live one.
+  assert.deepEqual(first.tools?.args.slice(-6), ["superagent", "mcp", "--ticket", ticket.id, "--assignment", ticket.assignments[0]!.id]);
 
   client.message(ticket.id, "add one more line");
   await until(() => {

@@ -165,11 +165,12 @@ export class VmGateway {
     return ticket;
   }
 
-  private toolset(ticketId: string): TicketTool[] {
-    let tools = this.toolsets.get(ticketId);
+  private toolset(ticketId: string, assignmentId: string): TicketTool[] {
+    const at = `${ticketId}/${assignmentId}`;
+    let tools = this.toolsets.get(at);
     if (!tools) {
-      tools = ticketTools(this.client, ticketId);
-      this.toolsets.set(ticketId, tools);
+      tools = ticketTools(this.client, ticketId, assignmentId);
+      this.toolsets.set(at, tools);
     }
     return tools;
   }
@@ -200,7 +201,7 @@ export class VmGateway {
       return {};
     });
     this.route("POST", "/v1/work/tools/:tool", async ({ record, params, body }) => {
-      const tool = this.toolset(record.ticketId).find((item) => item.name === params.tool);
+      const tool = this.toolset(record.ticketId, record.assignmentId).find((item) => item.name === params.tool);
       if (!tool) throw new HttpError(404, `No ticket tool ${params.tool}`);
       const args = (body.args ?? {}) as Record<string, unknown>;
       // The patch of a local ticket's ready report comes from the guest's directory, not from its model: see `withPatch`.
@@ -212,7 +213,7 @@ export class VmGateway {
       const stderr = String(body.stderr ?? "");
       if (code !== 0) this.work.host.log(`superagent: the worker of ticket ${record.ticketId.slice(0, 8)} in ticket VM ${slot} exited with ${code}: ${stderr.trim().split("\n").slice(-3).join(" | ")}`);
       workerExited(client, record.ticketId, record.assignmentId, code, stderr, `ticket VM ${slot}`);
-      this.toolsets.delete(record.ticketId);
+      this.toolsets.delete(`${record.ticketId}/${record.assignmentId}`);
       // The guest powers off next; the slot boots the ticket again on a follow-up.
       await this.work.release(slot);
       return {};

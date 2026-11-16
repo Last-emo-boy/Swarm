@@ -29,6 +29,7 @@ export function ticketCard(ticket: Ticket) {
   return { ticket_id: ticket.id, title: ticket.title, state: cardState(ticket), strength: ticket.mandate.strength,
     ...(pullOf(ticket) ? { pr_number: pullOf(ticket) } : {}), ...(ended ? { ended } : {}),
     ...(attention ? { attention: { question: attention.question, ...attention.triggerId ? { trigger_id: attention.triggerId } : {} } } : {}),
+    ...(ticket.checkBack ? { check_back: ticket.checkBack } : {}),
     preview: preview(latestReport(ticket)?.summary ?? ''), read: `ticket/${ticket.id}` }
 }
 /** Strips `policyVersion`, an internal hash that callers never query by. */

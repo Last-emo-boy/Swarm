@@ -73,6 +73,13 @@ function waitingNotice(question: string | undefined, request: string): string {
     : fitted(question, (quote) => say(`This ticket is still waiting for your answer: ${quote} ${closes}`, `这张工单还在等你的回答：${quote} ${closes}`));
 }
 
+/** The reminder that a ticket kept waking itself without finishing, in the language of its request. */
+function workingAloneNotice(request: string): string {
+  const say = wording(request);
+  return say("This ticket is still working on its own, without a result. Without anything from you within a day I'll close it; a reply here after that reopens it.",
+    "这张工单还在自己继续，没有出结果。一天内没有你的消息的话，我会关闭它；之后回复这条消息可以重新打开。");
+}
+
 /** The notice that a ticket nobody answered was closed, in the language of its request. */
 const expiredNotice = (request: string): string => wording(request)(
   "There was no reply in two days, so I closed this ticket. Reply here and I'll pick it up again.", "两天没有收到回复，我把这张工单关闭了。回复这条消息，我会接着做。");
@@ -86,6 +93,8 @@ const expiredNotice = (request: string): string => wording(request)(
  * retry or a host restart.
  */
 function personWait(ticket: Ticket): { since: string; working: boolean } | undefined {
+  const idle = idleWait(ticket);
+  if (idle) return idle;
   const stage = ticketStage(ticket);
   const report = latestReport(ticket);
   const latest = latestAssignment(ticket);
@@ -103,8 +112,30 @@ function personWait(ticket: Ticket): { since: string; working: boolean } | undef
 }
 
 /**
+ * An open ticket between turns whose worker said it was still working and that waits on no person: a progress report with
+ * its turn ended, no running turn and nothing undelivered, as after a check-back woke it and it ended its turn with another.
+ * Without a clock such a ticket holds itself open by waking itself: it never waits on a person, so the wait below never
+ * counts it, and each wake is a paid turn. It counts from its latest progress report, or a later retry or person's message;
+ * a person's message after the report hands it back to the wait below, and a check-back does not restart it.
+ */
+function idleWait(ticket: Ticket): { since: string; working: false } | undefined {
+  // A progress report after the turn ended reads as `working` in `ticketStage`, which only counts queued work as waiting;
+  // the ended turn is what makes it idle here.
+  const stage = ticketStage(ticket).stage;
+  if (stage !== "idle" && stage !== "working") return undefined;
+  const latest = latestAssignment(ticket), report = latestReport(ticket);
+  // A turn that is still running, or an Input not yet handed to it, is work under way, not a ticket waiting on itself.
+  if (!latest || stage === "working" && latest.state !== "running" || latest.state === "ended" || report?.state !== "progress"
+    || latest.idleAt === undefined || ticket.undelivered.length) return undefined;
+  if (ticket.inputs.some((input) => input.kind === "trigger" && input.human && input.at > report.at)) return undefined;
+  const retried = ticket.assignments.filter((assignment) => assignment.endedReason === "retried").at(-1)?.endedAt;
+  return { since: retried && retried > report.at ? retried : report.at, working: false };
+}
+
+/**
  * Since when an open ticket waits on a person who has said nothing, while its worker is not at work on it (see
- * `personWait`): the time of its latest report, or of a later retry. Undefined for any other ticket.
+ * `personWait`): the time of its latest report, or of a later retry, or, for one that waits on its own check-backs, of its
+ * latest progress report. Undefined for any other ticket.
  */
 export function waitingSince(ticket: Ticket): string | undefined {
   const wait = personWait(ticket);
@@ -141,7 +172,9 @@ export function sweepStale(client: SuperagentClient, now = Date.now()): void {
         if (channel) outbox.send({ id: key("expired", ticket.id, since), channel, text: expiredNotice(request), kind: "reply", ticketId: ticket.id });
         store.delete(KV.notices.nudged(ticket.id));
       } else if (channel && !reminder && waited >= REMIND_MS) {
-        outbox.send({ id: key("nudge", ticket.id, since), channel, text: waitingNotice(ticket.attention?.question, request), kind: "reply", ticketId: ticket.id });
+        // A ticket waiting on itself is told so, since its worker asked no question and a person owes it nothing.
+        const text = idleWait(ticket) ? workingAloneNotice(request) : waitingNotice(ticket.attention?.question, request);
+        outbox.send({ id: key("nudge", ticket.id, since), channel, text, kind: "reply", ticketId: ticket.id });
         store.set(KV.notices.nudged(ticket.id), { since, at: new Date(now).toISOString() });
       }
     }

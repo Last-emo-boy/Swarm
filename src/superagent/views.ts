@@ -15,6 +15,7 @@ import { chatName, senderOf } from "./people.js";
 import { feishuAttachments, type Attachment } from "./sources/feishu-attachment.js";
 import type { Receipt } from "./store.js";
 import { Journal, type JournalKind, type JournalRun } from "./journal.js";
+import { wording } from "./text.js";
 import type { LedgerEntry } from "../usage/ledger.js";
 import { costText, formatTokens } from "../usage/report.js";
 import { thisDevice } from "../usage/cli.js";
@@ -34,6 +35,8 @@ export interface TicketRow {
   url?: string;
   pr?: number;
   question?: string;
+  /** A check-back the worker left: when the ticket wakes itself, with why, so a listing shows a ticket that waits on its own. */
+  checkBack?: string;
   summary?: string;
   /** The paired node its worker runs on, ran on last, or is placed on to start; unset when that is the node that owns it. */
   runsOn?: string;
@@ -105,6 +108,7 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
     ...(origin?.url ? { url: origin.url } : {}),
     ...(pr ? { pr } : {}),
     ...(ticket.attention ? { question: ticket.attention.question } : {}),
+    ...(ticket.checkBack ? { checkBack: `${wording(origin?.text ?? "")("check-back", "定时唤醒")} ${ticket.checkBack.at}: ${ticket.checkBack.note}` } : {}),
     ...(report?.summary ? { summary: report.summary } : {}),
     ...runsOn,
     ...reach,
@@ -426,6 +430,7 @@ export function whyText(client: SuperagentClient, report: WhyReport): string {
     // Why it stays local, and what the person could do about it, for the ones a person can act on.
     const notice = localNoticeOf(client, report.ticketId, ticket.local, ticket.short, "terminal")
     if (notice) lines.push(`    ${notice}`)
+    if (ticket.checkBack) lines.push(`    ${ticket.checkBack}`)
   }
   if (report.work?.assignments.length) {
     lines.push("", "  work")

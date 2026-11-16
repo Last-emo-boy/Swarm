@@ -39,6 +39,8 @@ export interface EffectPayloads {
   promise: { noteId: string }
   /** Tidy a subject's notes into fewer; the key is the subject. */
   consolidate: { about: string }
+  /** Wake a ticket whose check-back fell due; the key is the Ticket ID, and the ticket row keeps what is due. */
+  checkback: { ticketId: string }
 }
 export type EffectKind = keyof EffectPayloads
 interface Handler<K extends EffectKind> {

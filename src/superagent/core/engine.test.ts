@@ -1713,3 +1713,81 @@ describe('steering and capabilities', () => {
     expect(h.repo.tickets.list()).toHaveLength(1)
   })
 })
+
+describe('check-backs', () => {
+  it('wakes a ticket once, with the note its worker left, and drops the check-back when it ends', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    expect(h.engine.checkBack(ticketId, 30, 'waiting for CI')).toEqual({ at: '2026-09-23T00:30:00.000Z', rescheduled: false })
+    expect(h.repo.tickets.get(ticketId)!.checkBack).toEqual({ at: '2026-09-23T00:30:00.000Z', note: 'waiting for CI',
+      requestedAt: '2026-09-23T00:00:00.000Z' })
+    // Nothing fires before the time the owner set, even by a second.
+    h.tick(29 * 60 + 59)
+    expect(h.engine.fireCheckBack(ticketId)).toBe(false)
+    h.tick(1)
+    expect(h.engine.fireCheckBack(ticketId)).toBe(true)
+    const woken = h.repo.tickets.get(ticketId)!
+    expect(woken.checkBack).toBeUndefined()
+    const checkBacks = woken.inputs.filter(input => input.kind === 'check-back')
+    expect(checkBacks).toEqual([{ id: key('input', ticketId, 'check-back', '2026-09-23T00:30:00.000Z'), kind: 'check-back',
+      text: 'waiting for CI', at: '2026-09-23T00:30:00.000Z' }])
+    expect(h.executor.deliver).toHaveBeenCalledWith(expect.objectContaining({ id: ticketId }), expect.anything())
+    // A second fire finds no check-back: one wake per request.
+    expect(h.engine.fireCheckBack(ticketId)).toBe(false)
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'check-back')).toHaveLength(1)
+  })
+  it('keeps one check-back per ticket: a later request replaces the earlier time and note', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.checkBack(ticketId, 5, 'waiting for a review')
+    h.tick(60)
+    expect(h.engine.checkBack(ticketId, 60, 'waiting for the merge')).toEqual({ at: '2026-09-23T00:01:00.000Z'.replace('00:01', '01:01'),
+      rescheduled: true })
+    expect(h.repo.tickets.get(ticketId)!.checkBack).toMatchObject({ note: 'waiting for the merge' })
+    // The earlier time passes, and nothing fires; the check-back is the later one.
+    h.tick(60)
+    expect(h.engine.fireCheckBack(ticketId)).toBe(false)
+    h.tick(60 * 60)
+    expect(h.engine.fireCheckBack(ticketId)).toBe(true)
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'check-back')).toEqual([
+      expect.objectContaining({ text: 'waiting for the merge' })])
+  })
+  it('drops a check-back with its ticket: an end takes no wake, and a person\'s message does not bring it back', () => {
+    const h = harness()
+    const events: { type: string }[] = []
+    const h2 = harness({}, { emit: event => events.push(event) })
+    const ticketId = accepted(h2).ticketId!
+    h2.engine.checkBack(ticketId, 1, 'waiting for CI')
+    h2.engine.stopTicket(ticketId)
+    expect(h2.repo.tickets.get(ticketId)!.checkBack).toBeUndefined()
+    h2.tick(600)
+    expect(h2.engine.fireCheckBack(ticketId)).toBe(false)
+    expect(h2.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'check-back')).toHaveLength(0)
+    expect(events.map(event => event.type)).not.toContain('ticket.resumed')
+    // A ticket that never asked for one is left alone.
+    h.tick(600)
+    const other = accepted(h).ticketId!
+    expect(h.engine.fireCheckBack(other)).toBe(false)
+  })
+  it('keeps a due check-back on a ticket that waits for a person, and wakes it once they reply', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'blocked', summary: 'needs a decision' })
+    h.engine.checkBack(ticketId, 1, 'waiting for CI')
+    h.tick(600)
+    // A held Input would never be delivered: the ticket keeps the request and fires it when the wait lifts.
+    expect(h.engine.fireCheckBack(ticketId)).toBe(false)
+    const kept = h.repo.tickets.get(ticketId)!.checkBack!
+    expect(kept).toMatchObject({ at: '2026-09-23T00:01:00.000Z', note: 'waiting for CI', requestedAt: '2026-09-23T00:00:00.000Z' })
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'check-back')).toEqual([])
+    expect(h.executor.deliver).not.toHaveBeenCalled()
+    // The person answers: the worker goes on, and the check-back fires as it would have.
+    h.tick(1); h.engine.receive(trigger('2')); h.settle()
+    h.tick(1)
+    expect(h.engine.fireCheckBack(ticketId)).toBe(true)
+    const ticket = h.repo.tickets.get(ticketId)!
+    expect(ticket.checkBack).toBeUndefined()
+    expect(ticket.undelivered).toContain(ticket.inputs.find(input => input.kind === 'check-back')!.id)
+    expect(h.executor.deliver).toHaveBeenCalledWith(expect.objectContaining({ id: ticketId }), expect.anything())
+  })
+})

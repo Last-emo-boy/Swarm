@@ -189,7 +189,7 @@ export class MeshWork implements RemoteWork {
   private saveLease(ticketId: string, lease: Lease): void { this.client.store.set(KV.mesh.lease(ticketId), lease); }
   private dropLease(ticketId: string): void {
     this.client.store.delete(KV.mesh.lease(ticketId));
-    this.toolsets.delete(ticketId);
+    for (const at of this.toolsets.keys()) if (at.startsWith(`${ticketId}/`)) this.toolsets.delete(at);
   }
 
   holds(ticketId: string, assignmentId: string): boolean {
@@ -406,11 +406,12 @@ export class MeshWork implements RemoteWork {
   }
 
   /** The ticket tools a remote worker calls, kept per ticket so a resource's later pages read the same snapshot. */
-  private toolset(ticketId: string): TicketTool[] {
-    let tools = this.toolsets.get(ticketId);
+  private toolset(ticketId: string, assignmentId: string): TicketTool[] {
+    const at = `${ticketId}/${assignmentId}`;
+    let tools = this.toolsets.get(at);
     if (!tools) {
-      tools = ticketTools(this.client, ticketId);
-      this.toolsets.set(ticketId, tools);
+      tools = ticketTools(this.client, ticketId, assignmentId);
+      this.toolsets.set(at, tools);
     }
     return tools;
   }
@@ -476,8 +477,8 @@ export class MeshWork implements RemoteWork {
       return {};
     }));
     server.route("POST", `${ticket}/tools/:tool`, forWorkers(async (request) => {
-      const { ticketId } = this.leased(request);
-      const tool = this.toolset(ticketId).find((item) => item.name === request.params.tool);
+      const { ticketId, assignmentId } = this.leased(request);
+      const tool = this.toolset(ticketId, assignmentId).find((item) => item.name === request.params.tool);
       if (!tool) throw new HttpError(404, `No ticket tool ${request.params.tool}`);
       const args = (request.body.args ?? {}) as Record<string, unknown>;
       // The patch of a local ticket's ready report comes from the worker's directory, not from its model: see `withPatch`.

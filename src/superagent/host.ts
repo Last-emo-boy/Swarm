@@ -6,7 +6,7 @@
  */
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { key, liveTicket, type Ticket } from "./core/index.js";
+import { key, liveTicket, waitsForPerson, type Ticket } from "./core/index.js";
 import { ModelAssessor, type Complete } from "./assessor.js";
 import { Journal, journaled } from "./journal.js";
 import { BotCommands } from "./bot-commands.js";
@@ -92,6 +92,24 @@ function acquireLock(stateDir: string): () => void {
 const setupFields = (settings: Settings) =>
   JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => [settings.sources[id]?.enabled, ...keys.map((key) => settings.sources[id]?.config[key] ?? "")]));
 
+/**
+ * Queues a `checkback` effect for every open ticket whose worker asked to be woken by now. Runs on the host's pass, so a
+ * check-back that fell due while the host was down fires on the first pass after it starts; the ticket row keeps what is
+ * due, so the effect row is only a timer. A ticket that waits for a person keeps its check-back until they reply, since a
+ * blocked or failed ticket takes no automatic Input meanwhile; if they never do, the stale clock ends it and the end drops it.
+ * The handler makes the same call again, on a ticket read later, so a waiting ticket it finds keeps its request too.
+ */
+export function dueCheckBacks(client: Pick<SuperagentClient, "store" | "effects">, now = new Date().toISOString()): number {
+  let queued = 0;
+  for (const ticket of client.store.tickets.open()) {
+    const due = ticket.checkBack;
+    if (!due || due.at > now || waitsForPerson(ticket) || client.effects.pending("checkback", ticket.id)) continue;
+    client.store.atomic(() => client.effects.enqueue("checkback", ticket.id, { ticketId: ticket.id }));
+    queued++;
+  }
+  return queued;
+}
+
 export class SuperagentHost {
   readonly stateDir: string;
   readonly client: SuperagentClient;
@@ -144,6 +162,10 @@ export class SuperagentHost {
         remote: () => this.remote,
         credential: (ticket) => this.credential(ticket)
       });
+      // A ticket waking itself when its worker asked to be is a ticket command, not a launch: the row is only a timer, and
+      // the pass re-queues a due one from the ticket row after a restart.
+      this.client.effects.handle("checkback", async ({ ticketId }) => { this.client.engine.fireCheckBack(ticketId); },
+        { limit: () => this.client.settings().paused ? 0 : 4, retry: [15_000, 300_000] });
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log, devices: () => this.devices() });
       this.assessor = new ModelAssessor({ client: this.client, complete, configured: () => !!this.deployment, commands: this.botCommands,
         mesh: () => this.mesh(), devices: () => this.devices(), log: this.log });
@@ -250,6 +272,7 @@ export class SuperagentHost {
       if (Date.now() - this.journalPrunedAt > JOURNAL_PRUNE_MS) { this.journal.prune(); this.journalPrunedAt = Date.now(); }
       this.client.engine.evaluateDue();
       if (!settings.paused) {
+        dueCheckBacks(this.client);
         this.chatter.pass();
         this.memories.pass();
         if (Date.now() - this.sweptAt > SWEEP_MS) { this.sweptAt = Date.now(); sweepStale(this.client); }

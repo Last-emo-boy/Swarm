@@ -294,6 +294,8 @@ export type TicketInput =
   | { id: string; kind: 'text'; text: string; at: string }
   /** A fact the main Session gave the ticket from other work: context, which asks for nothing and grants nothing. */
   | { id: string; kind: 'note'; text: string; at: string }
+  /** A check-back the ticket asked for fell due: its worker's own note, from `at`, which wakes it as a person's message would. */
+  | { id: string; kind: 'check-back'; text: string; at: string }
 
 /**
  * How a Policy change bears on a ticket: the rules it was accepted under that changed, with their instruction now, or no
@@ -312,6 +314,8 @@ export type TicketEndBy = 'executor' | 'human'
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
 /** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
 export interface Attention { id: string; question: string; triggerId?: string }
+/** A worker's request to be woken at `at`, with the reason it gave; the ticket owns it and its end drops it. */
+export interface CheckBack { at: string; note: string; requestedAt: string }
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
@@ -324,6 +328,8 @@ export interface Ticket {
   ended?: { at: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
   /** Open question for a person; cleared by the executor or when the ticket ends. */
   attention?: Attention
+  /** When to wake the worker again, if it asked to be; at most one, which a later request replaces and an end drops. */
+  checkBack?: CheckBack
   assignments: Assignment[]
   inputs: TicketInput[]
   /** Inputs not yet handed to a running assignment. */
