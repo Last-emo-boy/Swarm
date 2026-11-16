@@ -2,10 +2,12 @@
  * Ticket and host views shared by the CLI and the TUI: one row per ticket with the stage it waits in (docs/003 of
  * dsh-superagent: whom the ticket waits for and what it needs), and the list of what needs a person, first.
  */
-import { latestReport, reasonText, threadKey, ticketOutcome, ticketStage, type Decision, type Ticket, type Trigger } from "./core/index.js";
+import { latestReport, reasonText, threadKey, ticketOutcome, ticketStage, type Decision, type LocalWhy, type Ticket, type Trigger, type WriteLevel } from "./core/index.js";
 import { unroutedRequest, type SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
 import { EXPIRED_REASON, expiredWhy } from "./notices.js";
+import { githubApp, linkOf } from "./github-link.js";
+import { localNotice } from "./policy.js";
 import type { Health } from "./health.js";
 import { pulledBy, workerNode } from "./placement.js";
 import { pullOf } from "./sources/github-pull.js";
@@ -39,6 +41,9 @@ export interface TicketRow {
   pulledBy?: string;
   /** The agent harness profile its worker runs on; unset for Swarm's own coding loop. */
   harness?: string;
+  /** How far its work may write, and why it stays local when it does. */
+  write: WriteLevel;
+  local?: LocalWhy;
   updatedAt: string;
 }
 
@@ -78,13 +83,17 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
   const puller = pulledBy(client, ticket);
   const harness = ticket.execution?.harness;
   const runsOn = { ...(node ? { runsOn: node } : {}), ...(puller ? { pulledBy: puller } : {}), ...(harness ? { harness } : {}) };
+  // A ticket accepted before the access model, or without it, has no capability and writes as tickets always did.
+  const write = ticket.mandate.capability?.write ?? "local";
+  const local = ticket.mandate.capability?.local;
+  const reach = { write, ...(local ? { local } : {}) };
   // A question the person already answered waits for the worker, not for the person: it leaves "needs you".
   const answered = !!ticket.attention && !ticket.ended && ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context
     && input.at > (report?.at ?? ""));
   if (answered && group === "person" && STAGE_LABELS[key] === "Awaiting answer") {
     return { id: ticket.id, short: ticket.id.slice(0, 8), title: ticket.title, group: "working", label: "Working on your answer",
       source: origin?.source ?? "unknown", ...(origin?.url ? { url: origin.url } : {}), ...(pr ? { pr } : {}),
-      ...(report?.summary ? { summary: report.summary } : {}), ...runsOn, updatedAt: ticket.updatedAt ?? ticket.createdAt };
+      ...(report?.summary ? { summary: report.summary } : {}), ...runsOn, ...reach, updatedAt: ticket.updatedAt ?? ticket.createdAt };
   }
   return {
     id: ticket.id,
@@ -98,9 +107,42 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
     ...(ticket.attention ? { question: ticket.attention.question } : {}),
     ...(report?.summary ? { summary: report.summary } : {}),
     ...runsOn,
+    ...reach,
     updatedAt: ticket.updatedAt ?? ticket.createdAt
   };
 }
+
+/**
+ * The reason a ticket stays local, read now: one accepted before its requester linked keeps `unlinked` in its mandate, but
+ * a link since then means linking is done and only a take-over is left, so the notice must not ask for it again.
+ */
+export function localWhyOf(client: SuperagentClient, ticketId: string | undefined, stored: LocalWhy | undefined): { local: LocalWhy | undefined; note?: string } {
+  const ticket = ticketId === undefined ? undefined : client.store.tickets.get(ticketId)
+  const link = ticket ? linkOf(client.store, ticket.mandate.actor) : undefined
+  const live = !!link && !link.broken
+  if (stored !== "unlinked" || !ticket) return { local: stored }
+  return live ? { local: undefined, note: "This ticket stays local because it was accepted before your GitHub account was linked; it is linked now, so take it over once it is ready." }
+    : { local: stored }
+}
+/** The local notice for a ticket's row, and what is new since its mandate was written; the note replaces the notice. */
+export function localNoticeOf(client: SuperagentClient, ticketId: string | undefined, stored: LocalWhy | undefined, short: string,
+  place: Parameters<typeof localNotice>[1]): string | undefined {
+  const { local, note } = localWhyOf(client, ticketId, stored)
+  // In the language of what the person wrote: the ticket keeps the message it was asked for in.
+  const ticket = ticketId ? client.store.tickets.get(ticketId) : undefined
+  const written = (ticket && client.store.triggers.get(ticket.origin.triggerId)?.text) || ""
+  return note ?? localNotice(local, place, short, githubApp(client.settings()), written)
+}
+
+/** Why a ticket stays local, in a few words for a list row. */
+export const localPhrase = (local: LocalWhy): string => ({
+  unlinked: "link needed",
+  "link-broken": "link broken",
+  uninstalled: "app installed nowhere to push to",
+  "not-served": "not a repository the app may push to",
+  inferred: "inferred, no one asked",
+  ceiling: "lowered by this scope's ceiling"
+})[local];
 
 const ORDER: Record<TicketGroup, number> = { person: 0, working: 1, queued: 2, idle: 3, ended: 4 };
 /** Every ticket as a row, what waits for a person first, then working, queued, idle and ended, newest first within each. */
@@ -335,7 +377,7 @@ export async function whyReport(client: SuperagentClient, handle: string): Promi
     ...(origin?.id ? { triggerId: origin.id } : {}), ...(ticket && chat ? { chatId: chat, chatSince: new Date(origin?.at ?? new Date().toISOString()) } : {}), since });
   return {
     handle: ticket ? `ticket ${ticket.id}` : `message ${trigger!.id}`,
-    ...(full ? { ticket: ticketRow(client, full) } : {}),
+    ...(full ? { ticketId: full.id, ticket: ticketRow(client, full) } : {}),
     ...(routing ? { routing } : {}),
     ...(full ? { work: workOf(client, full) } : {}),
     messages,
@@ -379,7 +421,12 @@ export function whyText(client: SuperagentClient, report: WhyReport): string {
     }
   }
   const ticket = report.ticket
-  if (ticket) lines.push("", `  ticket ${ticket.short}  ${ticket.label}  ${ticket.title}`)
+  if (ticket) {
+    lines.push("", `  ticket ${ticket.short}  ${ticket.label}  ${ticket.title}`)
+    // Why it stays local, and what the person could do about it, for the ones a person can act on.
+    const notice = localNoticeOf(client, report.ticketId, ticket.local, ticket.short, "terminal")
+    if (notice) lines.push(`    ${notice}`)
+  }
   if (report.work?.assignments.length) {
     lines.push("", "  work")
     for (const assignment of report.work.assignments) {
@@ -430,6 +477,8 @@ export function whyText(client: SuperagentClient, report: WhyReport): string {
 /** The report `why` prints, as text or JSON. */
 export interface WhyReport {
   handle: string;
+  /** The ticket the handle names, through its routing when the handle is a message. */
+  ticketId?: string;
   ticket?: TicketRow;
   routing?: WhyRouting;
   work?: WhyWork;

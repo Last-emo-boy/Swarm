@@ -141,11 +141,21 @@ export type Role = 'owner' | 'maintainer' | 'everyone'
 /** How far a ticket's work may reach: it only reads, keeps its change in its directory and sends it as a patch, or writes to GitHub. */
 export type WriteLevel = 'read-only' | 'local' | 'github'
 /**
+ * Why work that could have written to GitHub stays local, so a person can be told what would let it act on GitHub and a ticket
+ * keeps the answer: no link yet, a link GitHub stopped accepting, a link with no repository they may push to, work nobody asked
+ * for, or a receiving scope whose ceiling lowers it.
+ */
+/**
+ * Why a ticket's work stays local: no link, a broken one, an app installed nowhere, an app not on the repository this work
+ * is about, work nobody asked for, or a scope's ceiling.
+ */
+export type LocalWhy = 'unlinked' | 'link-broken' | 'uninstalled' | 'not-served' | 'inferred' | 'ceiling'
+/**
  * What a ticket's work may do, fixed when it is accepted: its requester's role then, how far it may write, and the ticket it
  * took over. Work that writes to GitHub under the access model does so as its requester's linked account (`credential`), on
- * one repository (`repository`, owner/name).
+ * one repository (`repository`, owner/name). Work that stays local says why (`local`), except work that never could write.
  */
-export interface Capability { role: Role; write: WriteLevel; from?: string; credential?: { login: string; id: number }; repository?: string }
+export interface Capability { role: Role; write: WriteLevel; from?: string; credential?: { login: string; id: number }; repository?: string; local?: LocalWhy }
 
 /** Immutable authorization produced by an accept decision; execution is bounded by it and it never changes. */
 export interface Mandate {

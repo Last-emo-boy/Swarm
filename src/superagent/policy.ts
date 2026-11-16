@@ -4,10 +4,10 @@
  */
 import { z } from "zod/v4";
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell } from "./admission.js";
-import type { AssessmentOutcome, Capability, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
+import type { AssessmentOutcome, Capability, LocalWhy, Mandate, Policy, PolicyEffect, Role, SourceScope, Strength, Thread, Ticket, Trigger, ActorRef,
   GateResult, WriteLevel } from "./core/index.js";
-import type { LinkView } from "./github-link.js";
-import { sameActor, sameName } from "./text.js";
+import { installUrl, type GithubApp, type LinkView } from "./github-link.js";
+import { sameActor, sameName, inChinese, sayIn, type Say } from "./text.js";
 import { AllowedSchema, RuleIdSchema, policyVersion, type Settings } from "./settings.js";
 
 export const RuleMatchSchema = z.object({ rule_id: RuleIdSchema, reason: z.string().trim().min(1).max(500) }).strict()
@@ -129,19 +129,69 @@ export function allowedWrite(settings: Settings, mandate: Pick<Mandate, 'strengt
 }
 /**
  * The capability of work about to be accepted, while the access model is on: what `allowedWrite` allows, where work that may
- * write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one.
+ * write to GitHub does so as its requester's linked account on one of their repositories, and stays local without one, saying
+ * why. Work nobody asked for or a scope's ceiling lowered is local by the policy, without a person to tell.
  */
 export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>, link?: LinkView,
   requested: { repository?: string } = {}): Capability | undefined {
   if (!settings.access) return undefined
   const role = roleOf(settings, mandate.actor)
   const write = allowedWrite(settings, mandate)
-  if (write !== 'github') return { role, write }
+  // `allowedWrite` already decided how far work may write; only the reason it stopped short is added here.
+  if (write !== 'github') return { role, write, local: mandate.strength === 'inferred' || mandate.basis.via === 'bot' ? 'inferred' : 'ceiling' }
   const watched = watchedRepository(settings)
   const repository = link && !link.broken
     ? repositoryFor(link, watched, mandate.basis.source === 'github' ? watched : requested.repository) : undefined
-  if (!link || !repository) return { role, write: 'local' }
+  if (!link) return { role, write: 'local', local: 'unlinked' }
+  if (link.broken) return { role, write: 'local', local: 'link-broken' }
+  // Two different things: an app installed nowhere, and one installed on repositories that do not include the one this work is about.
+  if (!repository) return { role, write: 'local', local: link.repos.length ? 'not-served' : 'uninstalled' }
   return { role, write, credential: { login: link.login, id: link.id }, repository }
+}
+/**
+ * Where the person who reads a local notice wrote: in this chat, at this terminal, or elsewhere, which is a GitHub issue
+ * comment: the two commands a notice names run in a chat or a terminal, and nowhere a GitHub commenter can reach them.
+ */
+export type NoticePlace = 'chat' | 'terminal' | 'elsewhere'
+/** How a notice names the way out when its reader is not in a chat: the command to run, or where to run it. */
+const wayOut = (place: NoticePlace, chat: string, terminal: string, elsewhere = 'from a chat or the host terminal'): string =>
+  place === 'chat' ? chat : place === 'terminal' ? terminal : elsewhere
+/**
+ * What a person can do to let their work act on GitHub, where they wrote it, in the language they wrote in; undefined when
+ * no person can. A ticket that works locally for a person is the same message to a Chinese speaker as to an English one,
+ * so both wordings live here, side by side, and never drift apart.
+ */
+export function localNotice(local: LocalWhy | undefined, place: NoticePlace, short: string, app?: GithubApp, written = ""): string | undefined {
+  const say: Say = sayIn(inChinese(written))
+  const link = wayOut(place, 'send /link here', 'run swarm superagent link', 'link it from a chat or the host terminal')
+  const linkZh = wayOut(place, '在这里发 /link', '运行 swarm superagent link', '在聊天里或主机终端绑定')
+  const takeover = wayOut(place, `/takeover ${short}`, `swarm superagent takeover ${short}`, 'take it over from a chat or the host terminal')
+  const takeoverZh = wayOut(place, `/takeover ${short}`, `swarm superagent takeover ${short}`, '在聊天里或主机终端接手')
+  const again = wayOut(place, '(send /link)', '(run swarm superagent link)')
+  const againZh = wayOut(place, '（发 /link）', '（运行 swarm superagent link）')
+  const repo = wayOut(place, '(/repo)', '(swarm superagent repo)')
+  const repoZh = wayOut(place, '（/repo）', '（swarm superagent repo）')
+  switch (local) {
+    case 'unlinked':
+      // The short id is the ticket this accept makes, so the person can name it to take it over once it is ready.
+      return say(`Your GitHub account isn't linked yet, so this stays local: ${link}, then ${takeover} once it is ready.`,
+        `你的 GitHub 账号还没绑定，所以这项工作先留在本地：${linkZh}，完成后发 ${takeoverZh}。`)
+    case 'link-broken':
+      return say(`Your GitHub link stopped working, so this stays local: link again ${again}, then take it over once it is ready.`,
+        `你的 GitHub 绑定失效了，所以这项工作先留在本地：重新绑定 ${againZh}，完成后在聊天里或终端接手。`)
+    case 'uninstalled':
+      return app
+        ? say(`Your GitHub account is linked, but the app is not installed on a repository you can push to, so this stays local: install it at ${installUrl(app)}, set one ${repo}, then take it over once it is ready.`,
+          `你的 GitHub 账号已绑定，但这个应用没有安装在你可推送的仓库上，所以这项工作先留在本地：在 ${installUrl(app)} 安装，设置一个仓库 ${repoZh}，完成后在聊天里或终端接手。`)
+        : say(`Your GitHub account is linked, but no repository you can push to is set, so this stays local: set one ${repo}, then take it over once it is ready.`,
+          `你的 GitHub 账号已绑定，但还没设置你可推送的仓库，所以这项工作先留在本地：设置一个仓库 ${repoZh}，完成后在聊天里或终端接手。`)
+    case 'not-served':
+      return say(`Your GitHub account is linked, but the repository this work is about is not one you can push to through the app, so this stays local${app ? `: install it there at ${installUrl(app)}` : ''}, then take it over once it is ready.`,
+        `你的 GitHub 账号已绑定，但这项工作涉及的仓库不在应用的可推送范围里，所以这项工作先留在本地${app ? `：在 ${installUrl(app)} 安装该仓库` : ''}，完成后在聊天里或终端接手。`)
+    default:
+      // Work nobody asked for, or a receiving scope's ceiling: there is no person to tell, and linking would change nothing.
+      return undefined
+  }
 }
 /**
  * Whether `actor` may choose the agent harness their work runs on, which the owner's harness accounts pay for: anyone

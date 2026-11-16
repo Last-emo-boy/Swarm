@@ -19,7 +19,7 @@ import { newPairKey, savePeer } from "../../mesh/state.js";
 
 const row = (overrides: Partial<TicketRow>): TicketRow => ({
   id: "a1b2c3d4e5f6a7b8", short: "a1b2c3d4", title: "Fix the flaky retry test", group: "working", label: "Working", source: "github",
-  updatedAt: "2026-11-01T00:00:00.000Z", ...overrides
+  write: "github", updatedAt: "2026-11-01T00:00:00.000Z", ...overrides
 });
 const rows: TicketRow[] = [
   row({ id: "1".repeat(32), short: "11111111", group: "working", label: "Working", title: "Add retry jitter" }),

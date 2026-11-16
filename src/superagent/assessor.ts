@@ -14,7 +14,7 @@ import { harnessIds } from "./harness.js";
 import { KV } from "./kv.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
 import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
-import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, repositoryFor, roleOf,
+import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, localNotice, repositoryFor, roleOf,
   seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
 import { addressee, channelTo, chatName, conversation, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
@@ -23,7 +23,7 @@ import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, perso
 import { admissionContext } from "./sources/admission-context.js";
 import { metaOf } from "./sources/meta.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
-import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, noAnswer, orNull, parseJsonObject, sameName, wordCount } from "./text.js";
+import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, cutToFit, noAnswer, orNull, parseJsonObject, sameName, wordCount } from "./text.js";
 import type { JournalTarget } from "./journal.js";
 import { GIVE_UP_ATTEMPTS, MODEL_CALL_RETRY } from "./effects.js";
 
@@ -417,16 +417,31 @@ export class ModelAssessor {
         case "accept": {
           const { client } = this.host;
           const repository = this.chosenRepository(candidate, route.repository);
-          const checked = route.harness && !harnesses.filed ? checkedHarness(route.harness, harnesses, this.capability(candidate, repository)) : undefined;
+          const trigger = client.store.triggers.get(triggerId);
+          const capability = this.capability(candidate, repository);
+          const checked = route.harness && !harnesses.filed ? checkedHarness(route.harness, harnesses, capability) : undefined;
           if (checked && "problem" in checked) return checked.problem;
           const harness = checked?.id;
+          // An explicit request from a person whose work stays local learns what would let it act on GitHub, naming the ticket
+          // it will be: the same id the accept stamps. Bots and inferred work have no person to tell, and their local is honest.
+          // The way out is worded for where the person wrote: a chat, this terminal, or elsewhere (a GitHub comment thread),
+          // where neither command runs and the notice names the chat and host terminal instead.
+          const place = !trigger ? "terminal" as const : client.sources.chatKind(trigger.source) ? "chat" as const
+            : trigger.source === "local" ? "terminal" as const : "elsewhere" as const;
+          const notice = candidate.thread.evaluating?.strength === "explicit" && trigger?.human
+            ? localNotice(capability?.local, place, key("ticket", candidate.evalId).slice(0, 8), githubApp(client.settings()), trigger.text)
+            : undefined;
+          // The acknowledgement is cut to leave the notice room inside the chat limit, which would otherwise refuse the message.
+          const room = IM_WORDS - wordCount(notice ?? "");
+          const said = notice && wordCount(route.acknowledgement!) > room ? cutToFit(route.acknowledgement!, room) : route.acknowledgement!;
+          const acknowledgement = notice ? `${said} ${notice}` : said;
           const decision = client.store.atomic(() => {
             // Recorded with the request, as `--harness` records it, so the ticket's execution takes it when it is created.
             if (harness) client.store.set(KV.harness.chosen(triggerId), harness);
             if (route.reply_as) this.answerAs(candidate, route.reply_as as ReplyStyle);
             const decided = engine.decide(triggerId, {
               kind: "accept", title: route.title!, scope: route.title!, reason: { code: "explicitRouted" },
-              acknowledgement: route.acknowledgement!, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}),
+              acknowledgement, name: route.worktree_name!, ...(route.note ? { note: route.note } : {}),
               ...(repository ? { repository } : {}), evalId: candidate.evalId
             });
             // Recorded with the ticket, before its worker launches, so a mesh node places the worker where the work can run.
@@ -435,7 +450,6 @@ export class ModelAssessor {
             return decided;
           });
           if (decision.kind !== "accept" || !decision.ticketId) return `Ticket was not created: ${reasonText(decision.reason)}`;
-          const trigger = client.store.triggers.get(triggerId);
           if (route.link && trigger) this.host.commands?.wantPullRequest(trigger, decision.ticketId);
           return undefined;
         }
