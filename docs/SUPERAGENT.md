@@ -317,6 +317,14 @@ Every model call here runs as an effect in the background: `superagent_memory` r
 { "memory": { "enabled": true, "lullSeconds": 300, "reflectMinutes": 30, "minMessages": 4, "perSubject": 40, "dmPerDay": 3 } }
 ```
 
+### Effects, retries and what spends money
+
+Talking paths run as effects in a durable queue. A parse failure has its own cap in the path that asked; a call that
+keeps throwing for another reason is tried about five times over roughly an hour, with backoff, and then left quiet with
+a give-up row in the journal (`swarm superagent why` shows it) rather than billing one full call a minute through an
+outage. Web searches are billed and now recorded in the usage ledger like any prose call, so `assertBudget` and
+`swarm usage` count them; a provider that reports only zeros records no row.
+
 ## Ticket VMs
 
 With `"isolation": "vm"` in `executor`, each ticket's worker runs in a VM of its own instead of as a process of the host's
