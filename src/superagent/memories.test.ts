@@ -519,4 +519,21 @@ test("notes each answer it could not use with its purpose, and a usable one with
   await memories.keep(promise.id);
   assert.deepEqual(logs, ["superagent: no usable answer for superagent_promise after 2 tries: still not json"]);
   assert.equal(typeof client.store.memory.get(promise.id)!.done, "string");
+
+  // Reading a ticket that ended, and tidying a crowded subject, are noted under the same purpose.
+  const asked = say("ou_alice", "@w33d fix the README typo", 60, { mentions: [{ id: "ou_bot", key: "@_user_1", name: "w33d" }] });
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(asked.id)!;
+  const { ticketId } = client.engine.decide(asked.id, { kind: "accept", title: "Fix the README typo", scope: "x", reason: "asked", name: "fix-typo", evalId: candidate.evalId });
+  client.engine.stopTicket(ticketId!, "done");
+  logs = [];
+  answers.push("not json", "still not json");
+  await memories.reflectTicket(ticketId!);
+  assert.deepEqual(logs, ["superagent: no usable answer for superagent_memory after 2 tries: still not json"]);
+  write({ perSubject: 5 });
+  for (let index = 0; index < 6; index++) client.store.memory.save(note({ about: personSubject("ou_alice"), text: `Alice note ${index}` }));
+  logs = [];
+  answers.push("not json", "still not json");
+  await memories.tidy(personSubject("ou_alice"));
+  assert.deepEqual(logs, ["superagent: no usable answer for superagent_memory after 2 tries: still not json"]);
 });

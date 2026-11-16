@@ -17,7 +17,16 @@ function decision(id: string, patch: Partial<Decision> = {}): Decision {
   return { id, evalId: "eval", threadKey: "local:t", triggerIds: ["t"], policyVersion: "1", at: "2026-11-16T00:00:00Z",
     kind: "unavailable", reason: [{ code: "timeout" }], strength: "explicit", ...patch };
 }
-const plan = (store: Store, sql: string): string[] => store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map((row) => String(row.detail));
+const plan = (store: Store, sql: string, ...parameters: (string | number)[]): string[] =>
+  store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters).map((row) => String(row.detail));
+/** The statement `unroutedDecisions` runs, caught as the Store prepares it, so the plan below is its own query's. */
+function caughtUnrouted(store: Store): string {
+  const prepare = store.db.prepare.bind(store.db);
+  let caught = "";
+  store.db.prepare = (sql: string) => { if (sql.includes("decision_unrouted")) caught = sql; return prepare(sql); };
+  try { store.read.unroutedDecisions(50); } finally { store.db.prepare = prepare; }
+  return caught;
+}
 
 test("a database created before the column gains it on open, and lists the same requests", () => {
   const path = join(directory, "superagent.db");
@@ -50,7 +59,10 @@ test("the list reads the partial index instead of the whole decision table, and 
   store.decisions.save(decision("one"));
   store.decisions.save(decision("two"));
   assert.deepEqual(store.read.unroutedDecisions().map((item) => item.id), ["two", "one"], "newest first, and only those");
-  const details = plan(store, "SELECT value FROM decision INDEXED BY decision_unrouted WHERE unrouted = 1 ORDER BY rowid DESC LIMIT 50");
+  // The very statement `unroutedDecisions` ran above, so dropping its column or `INDEXED BY` hint fails here.
+  const caught = caughtUnrouted(store);
+  assert.match(caught, /INDEXED BY decision_unrouted/, caught);
+  const details = plan(store, caught, 50);
   assert.ok(details.some((detail) => detail.includes("decision_unrouted")), details.join(" | "));
   assert.ok(details.every((detail) => !detail.includes("SCAN decision")), "no table scan");
 

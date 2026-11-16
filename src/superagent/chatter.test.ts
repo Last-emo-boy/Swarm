@@ -456,6 +456,8 @@ describe("when messages call for the agent that its router does not answer", () 
     const [relay] = posts();
     expect(wordCount(relay!.text) <= 100 && relay!.text.endsWith("。…") && relay!.text.startsWith("规范基本定完了")).toBe(true);
     expect(openAsks(client.store, now)).toEqual([]);
+    // The retry that gave no usable answer is noted as its own purpose, with one try.
+    expect(logs).toEqual(["superagent: no usable answer for superagent_attend again after 1 try: not json"]);
   });
 
   it("asks the model three times at most: twice for an answer it can use, once for a shorter one", async () => {
@@ -534,6 +536,17 @@ describe("when messages call for the agent that its router does not answer", () 
     await room.attend(CHAT, [reply.id]);
     expect(calls.length).toBe(1);
     expect(posts().map((post) => post.text)).toEqual(["收到，我转告 Alice"]);
+    expect(logs).toEqual([]);
+  });
+
+  it("takes a considered answer whose reason is null, saying it in a single call", async () => {
+    room.pass();
+    message("ou_alice", "anyone tried the new tea place?", 30);
+    now += 61_000;
+    answers.push(JSON.stringify({ say: "The oolong there is worth the queue.", reply_to: null, mention: null, reason: null }));
+    await room.consider(CHAT);
+    expect(calls.length).toBe(1);
+    expect(posts().map((post) => post.text)).toEqual(["The oolong there is worth the queue."]);
     expect(logs).toEqual([]);
   });
 

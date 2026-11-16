@@ -12,7 +12,8 @@
  * so on stderr and exit 97, and lark-cli's configuration directory names an empty directory, so an absolute path to the
  * real one finds no signed-in profile either. A test that needs a working fake CLI writes its own and names it by path,
  * which still runs. This guard is not exhaustive: a program launched with an absolute path that does not read
- * LARKSUITE_CLI_CONFIG_DIR could still reach the network.
+ * LARKSUITE_CLI_CONFIG_DIR, or a copy of the CLI started with LARKSUITE_CLI_CONFIG_DIR set back to the developer's
+ * own, could still reach the network.
  */
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,4 +33,5 @@ for (const name of ["lark-cli", "lark-bot", "gh"]) {
   chmodSync(file, 0o755);
 }
 process.env.PATH = [bin, process.env.PATH ?? ""].filter(Boolean).join(delimiter);
-process.env.LARKSUITE_CLI_CONFIG_DIR ??= config;
+// An inherited value is the developer's own profile, so it is replaced too, as SWARM_HOME is.
+process.env.LARKSUITE_CLI_CONFIG_DIR = config;
