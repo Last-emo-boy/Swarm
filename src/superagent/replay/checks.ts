@@ -181,7 +181,8 @@ export function ownLinesMarked(kase: ReplayCase, rec: RunRecord): CheckResult {
   }
   for (const scene of talkLines) {
     const line = lines.find((item) => item.you === true && item.text === scene.text);
-    if (line && line.from_ticket !== undefined) return { name: "own-lines-marked", pass: false, why: `"${scene.text.slice(0, 40)}" is its talk but marked from_ticket` };
+    if (!line) return { name: "own-lines-marked", pass: false, why: `the card left out its talk "${scene.text.slice(0, 40)}"` };
+    if (line.from_ticket !== undefined) return { name: "own-lines-marked", pass: false, why: `"${scene.text.slice(0, 40)}" is its talk but marked from_ticket` };
   }
   return { name: "own-lines-marked", pass: true,
     why: ticketLines.length ? `its talk and ${ticketLines.length} ticket line(s) marked apart` : "no ticket line in the scene" };

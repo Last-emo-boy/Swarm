@@ -152,11 +152,11 @@ test("a tidy records its run and its outcome under one key, the short subject th
 test("a note the code refuses is named in the reflection's reason, and only the notes it can keep are kept", async () => {
   const trigger = say("ou_alice", "the release is on Friday", 400);
   client.store.set(KV.memory.reflected(CHAT), { at: new Date(now - 3_600_000).toISOString(), from: new Date(now - 86_400_000).toISOString(), upTo: new Date(now - 400_000).toISOString() });
-  answers.push(JSON.stringify({ notes: [{ op: "add", about: trigger.actor.id, kind: "fact", text: "Alice 水平一般" },
+  answers.push(JSON.stringify({ notes: [{ op: "add", about: "ou_stranger", kind: "fact", text: "works on the API" },
     { op: "add", about: trigger.actor.id, kind: "event", text: "the release is on Friday" }] }));
   await memories.reflect(CHAT);
   const [run] = runs(`chat:${CHAT}`);
   assert.equal(run!.outcome, "silent");
-  assert.equal(run!.reason, "1 notes kept; remember: about a person keep what they did or said, or how they like things, never a judgement of them");
+  assert.equal(run!.reason, "1 notes kept; remember: about: ou_stranger is not someone or something here; use an id from the card, chat or self");
   assert.deepEqual(client.store.memory.about(personSubject(trigger.actor.id)).map((item) => item.text), ["the release is on Friday"]);
 });
