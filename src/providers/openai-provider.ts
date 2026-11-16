@@ -230,15 +230,17 @@ export class OpenAIProvider {
       baseURL: resolved.provider.baseURL,
       defaultHeaders: resolved.provider.headers
     });
+    const prompt = preparePrompt({ system: webSearchSystemPrompt(action), user: `Search the web for: ${action.query}` });
     const response = await client.responses.create({
       model: resolved.model,
       max_output_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, WEB_SEARCH_MAX_OUTPUT_TOKENS),
       tools: [{ type: "web_search_preview" }],
       input: [
-        { role: "system", content: webSearchSystemPrompt(action) },
-        { role: "user", content: `Search the web for: ${action.query}` }
+        { role: "system", content: prompt.systemText },
+        { role: "user", content: prompt.userText }
       ]
     } as never);
+    this.emitWebSearchUsage(resolved, response, prompt, startedAt);
     const text = extractOutputText(response);
     const links = uniqueLinks(collectLinksFromUnknown(response));
     return makeServerWebSearchResult(action, resolved, "openai-responses", text, links, startedAt);
@@ -246,6 +248,7 @@ export class OpenAIProvider {
 
   private async webSearchWithAnthropic(resolved: ResolvedModel, action: WebSearchAction): Promise<ToolResult> {
     const startedAt = Date.now();
+    const prompt = preparePrompt({ system: webSearchSystemPrompt(action), user: `Perform a web search for the query: ${action.query}` });
     const headers: Record<string, string> = {
       "content-type": "application/json",
       ...resolved.provider.headers,
@@ -271,8 +274,8 @@ export class OpenAIProvider {
       body: JSON.stringify({
         model: resolved.model,
         max_tokens: maxOutputTokensForResolvedModel(resolved, this.settings, WEB_SEARCH_MAX_OUTPUT_TOKENS),
-        system: webSearchSystemPrompt(action),
-        messages: [{ role: "user", content: `Perform a web search for the query: ${action.query}` }],
+        system: prompt.systemText,
+        messages: [{ role: "user", content: prompt.userText }],
         tools: [tool]
       })
     });
@@ -280,6 +283,7 @@ export class OpenAIProvider {
       throw new Error(`Anthropic web search failed with HTTP ${response.status}: ${await response.text()}`);
     }
     const json = await response.json();
+    this.emitWebSearchUsage(resolved, json, prompt, startedAt);
     const contentBlocks = isRecord(json) && Array.isArray(json.content) ? json.content : [];
     const text = contentBlocks
       .map((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "")
@@ -382,6 +386,26 @@ export class OpenAIProvider {
       ...usage,
       ...cacheStats
     });
+  }
+
+  /**
+   * A provider-native search is billed like any other call, so it writes one usage row with the purpose `web_search`.
+   * A response whose usage object is missing or carries no token counts records nothing: a row of zeros would hide the
+   * search from token caps without proving it cost nothing.
+   */
+  private emitWebSearchUsage(resolved: ResolvedModel, response: unknown, prompt: PreparedPrompt, startedAt: number): void {
+    if (!isRecord(response) || !isRecord(response.usage)) {
+      return;
+    }
+    const usage = resolved.provider.protocol === "anthropic-messages"
+      ? usageFromAnthropic(response)
+      : usageFromOpenAIResponse(response);
+    // A usage object that carries only zeros is no proof the search cost nothing: it comes back on refused tool calls, and
+    // a row of zeros would hide the search from token caps exactly as a missing row would.
+    if ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + (usage.totalTokens ?? 0) === 0) {
+      return;
+    }
+    this.emitUsage(resolved, "web_search", undefined, usage, prompt, startedAt);
   }
 
   private async getGeminiExplicitCache(

@@ -6,6 +6,13 @@
 export class Later extends Error {}
 /** Consecutive failures before an effect kind reports an error, matching the Sources poll failure threshold. */
 export const FAILURES_BEFORE_ERROR = 3
+/**
+ * Consecutive thrown failures after which a kind drops its effect, for kinds whose attempts cost money: a provider that
+ * keeps failing otherwise bills one call a minute without end. Five tries with the model retry delays below span an hour.
+ */
+export const GIVE_UP_ATTEMPTS = 5
+/** Retry delays for kinds that call the model: 4, 8, 16 and 32 minutes, about an hour over GIVE_UP_ATTEMPTS. */
+export const MODEL_CALL_RETRY = [240_000, 3_600_000] as const
 import type { HealthBoard, HealthEntry } from './health.js'
 import type { Store } from './store.js'
 
@@ -44,8 +51,12 @@ interface Handler<K extends EffectKind> {
   ordered: boolean
   /** When true, repeated failures do not mark the effect kind's health entry as `error` (used when failures are already surfaced on a ticket). */
   quiet: boolean
+  /** Thrown failures after which the row is dropped rather than retried; 0 retries forever, as for work a ticket waits on. */
+  giveUp: number
+  /** Told the dropped row's key, payload and last error, so the kind can journal why it stopped. */
+  onGiveUp?: (key: string, payload: unknown, error: unknown) => void
 }
-type Options<K extends EffectKind> = Partial<Pick<Handler<K>, 'limit' | 'retry' | 'ordered' | 'quiet'>>
+type Options<K extends EffectKind> = Partial<Pick<Handler<K>, 'limit' | 'retry' | 'ordered' | 'quiet' | 'giveUp' | 'onGiveUp'>>
 /** `seq` preserves the row's queue position; `generation` increments on payload updates so a running attempt does not delete a newer payload. */
 interface Row { key: string; value: string; seq: number; generation: number; attempts: number; due: number }
 type Task = { kind: EffectKind; key: string; done: Promise<void> }
@@ -83,8 +94,9 @@ export class Effects {
   handle<K extends EffectKind>(kind: K, run: Handler<K>['run'], options: Options<K> = {}): void {
     if (this.handlers.has(kind)) throw new Error(`The ${kind} effects already have a handler`)
     this.health.set(kind, this.board.claim(kind))
-    const { limit = () => 1, retry = [2000, 60_000], ordered = false, quiet = false } = options
-    this.handlers.set(kind, { run, limit: ordered ? () => Math.min(1, limit()) : limit, retry, ordered, quiet } as unknown as Handler<never>)
+    const { limit = () => 1, retry = [2000, 60_000], ordered = false, quiet = false, giveUp = 0, onGiveUp } = options
+    this.handlers.set(kind, { run, limit: ordered ? () => Math.min(1, limit()) : limit, retry, ordered, quiet,
+      giveUp: giveUp > 0 ? giveUp : Number.POSITIVE_INFINITY, ...(onGiveUp ? { onGiveUp } : {}) } as unknown as Handler<never>)
     this.report(kind)
     this.kick()
   }
@@ -158,9 +170,16 @@ export class Effects {
     else if (failure.error instanceof Later) {
       this.store.db.prepare(`UPDATE effect SET due = ? WHERE ${own}`).run(this.now() + handler.retry[0], ...ownRow)
     } else {
-      const delay = Math.min(handler.retry[1], handler.retry[0] * 2 ** Math.min(row.attempts, 16))
-      this.store.db.prepare(`UPDATE effect SET attempts = attempts + 1, error = ?, due = ? WHERE ${own}`)
-        .run(String(failure.error).slice(0, 1000), this.now() + delay, ...ownRow)
+      const attempts = row.attempts + 1
+      // A kind that gives up drops the row: no further paid call, and nothing waiting that a later pass would still count.
+      if (attempts >= handler.giveUp) {
+        const dropped = this.store.db.prepare(`DELETE FROM effect WHERE ${own}`).run(...ownRow)
+        if (dropped.changes && handler.onGiveUp) handler.onGiveUp(row.key, JSON.parse(row.value), failure.error)
+      } else {
+        const delay = Math.min(handler.retry[1], handler.retry[0] * 2 ** Math.min(row.attempts, 16))
+        this.store.db.prepare(`UPDATE effect SET attempts = attempts + 1, error = ?, due = ? WHERE ${own}`)
+          .run(String(failure.error).slice(0, 1000), this.now() + delay, ...ownRow)
+      }
     }
     if (!this.stopped) this.report(kind)
   }

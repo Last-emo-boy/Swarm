@@ -25,6 +25,7 @@ import { metaOf } from "./sources/meta.js";
 import { REPLY_STYLES, replyChannel, type ReplyStyle } from "./sources/feishu-trigger.js";
 import { IM_WORDS, NOTE_WORDS, answerOf, checkedImText, noAnswer, orNull, parseJsonObject, sameName, wordCount } from "./text.js";
 import type { JournalTarget } from "./journal.js";
+import { GIVE_UP_ATTEMPTS, MODEL_CALL_RETRY } from "./effects.js";
 
 /** One structured model call: the host's provider with a JSON response format. */
 export type Complete = (input: { purpose: string; system: string; user: string; model?: string
@@ -190,10 +191,18 @@ export class ModelAssessor {
   /** Registers the host's handlers for the assessment and follow-up effects. */
   install(): void {
     const { client } = this.host;
+    // A router call that keeps throwing is paid for every retry: give up after a handful, and journal why.
+    // The assessment row is keyed by the Eval, not the trigger: the journal key must come from the payload, or `why`
+    // scans a prefix the drop never appears under.
+    const giveUp = (kind: "assess" | "followup") => ({
+      retry: MODEL_CALL_RETRY, giveUp: GIVE_UP_ATTEMPTS,
+      onGiveUp: (_key: string, payload: unknown, error: unknown) =>
+        client.journal?.outcome(kind, `trigger:${(payload as { triggerId: string }).triggerId}`, "dropped", { reason: `gave up after ${GIVE_UP_ATTEMPTS} tries: ${String(error)}` })
+    });
     client.effects.handle("assessment", async ({ triggerId }, evalId) => { await this.judge(triggerId, evalId); },
-      { limit: () => client.settings().paused ? 0 : 4 });
+      { ...giveUp("assess"), limit: () => client.settings().paused ? 0 : 4 });
     client.effects.handle("followup", async ({ triggerId }) => { await this.followup(triggerId); },
-      { limit: () => client.settings().paused ? 0 : 2 });
+      { ...giveUp("followup"), limit: () => client.settings().paused ? 0 : 2 });
   }
 
   /** Decides the Eval that holds `triggerId`, unless a later Eval replaced it or it already ended. */

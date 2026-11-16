@@ -21,6 +21,7 @@ import { ask as openAsk, closeAsks, openAsks, recentAsks, type Ask } from "./ask
 import { chatSubject, memoryOf, notesCard, personSubject } from "./memories.js";
 import type { Chatter, Settings } from "./settings.js";
 import { answerOf, checkedImText, cutToFit, noAnswer, orNull, wordCount } from "./text.js";
+import { GIVE_UP_ATTEMPTS, MODEL_CALL_RETRY } from "./effects.js";
 
 const HOUR_MS = 3_600_000;
 /** How far back, and how many, of a chat's messages a consideration reads. */
@@ -146,8 +147,14 @@ export class ChatterRoom {
   /** Registers the effect that considers a chat. */
   install(): void {
     const { client } = this.host;
-    client.effects.handle("chatter", async ({ chatId, source }) => { await this.consider(chatId, source); }, { limit: () => client.settings().paused ? 0 : 1 });
-    client.effects.handle("attend", async ({ chatId, source, ids }) => { await this.attend(chatId, ids, source); }, { limit: () => client.settings().paused ? 0 : 1 });
+    // A call that keeps throwing is paid for every retry: give up after a handful, and say why in the journal.
+    const giveUp = { retry: MODEL_CALL_RETRY, giveUp: GIVE_UP_ATTEMPTS } as const;
+    client.effects.handle("chatter", async ({ chatId, source }) => { await this.consider(chatId, source); },
+      { ...giveUp, limit: () => client.settings().paused ? 0 : 1, onGiveUp: (chatId, _payload, error) => client.journal?.outcome("chatter", `chat:${chatId}`, "dropped", { reason: `gave up after ${GIVE_UP_ATTEMPTS} tries: ${String(error)}` }) });
+    client.effects.handle("attend", async ({ chatId, source, ids }) => { await this.attend(chatId, ids, source); },
+      // The row's key is a hash of the chat and the messages read, not the chat id: the journal row must go under the chat,
+      // or `why` and the task card, which scan `chat:<chatId>`, never see the drop.
+      { ...giveUp, limit: () => client.settings().paused ? 0 : 1, onGiveUp: (_key, payload, error) => client.journal?.outcome("attend", `chat:${(payload as { chatId: string }).chatId}`, "dropped", { reason: `gave up after ${GIVE_UP_ATTEMPTS} tries: ${String(error)}` }) });
   }
 
   /** Whether the agent may not speak in a chat now: its budget for the hour is spent, or it is quiet hours. */
