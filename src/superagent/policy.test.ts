@@ -516,6 +516,13 @@ describe('access model', () => {
     // An app installed on other repositories than this work's says so, rather than claiming it is installed nowhere.
     expect(localNotice('not-served', 'chat', 'a1b2c3d4', app)).toBe(
       "Your GitHub account is linked, but the repository this work is about is not one you can push to through the app, so this stays local: install it there at https://github.com/apps/swarm-oauth/installations/new, then take it over once it is ready.")
+    // In the language the person wrote in: a Chinese request gets the Chinese notice, naming the same ticket.
+    expect(localNotice('unlinked', 'chat', 'a1b2c3d4', undefined, '修一下 README 的错别字')).toBe(
+      '你的 GitHub 账号还没绑定，所以这项工作先留在本地：在这里发 /link，完成后发 /takeover a1b2c3d4。')
+    expect(localNotice('unlinked', 'terminal', 'a1b2c3d4', undefined, '修一下 README 的错别字')).toBe(
+      '你的 GitHub 账号还没绑定，所以这项工作先留在本地：运行 swarm superagent link，完成后发 swarm superagent takeover a1b2c3d4。')
+    expect(localNotice('link-broken', 'chat', 'a1b2c3d4', undefined, '把日期格式改一下')).toContain('你的 GitHub 绑定失效了')
+    expect(localNotice('uninstalled', 'chat', 'a1b2c3d4', app, '把日期格式改一下')).toContain('https://github.com/apps/swarm-oauth/installations/new')
     // A bot's candidate is work nobody asked for, as an inferred one is.
     const bot = { strength: 'inferred' as const, actor: { source: 'feishu', id: 'cli_alerts' }, basis: { via: 'bot' as const, source: 'feishu', observation: { mode: 'auto' as const } } }
     expect(capabilityOf(withAccess({ bots: [{ id: 'cli_alerts' }] }), bot, linked)).toEqual({ role: 'everyone', write: 'local', local: 'inferred' })

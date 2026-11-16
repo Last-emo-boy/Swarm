@@ -128,7 +128,10 @@ export function localWhyOf(client: SuperagentClient, ticketId: string | undefine
 export function localNoticeOf(client: SuperagentClient, ticketId: string | undefined, stored: LocalWhy | undefined, short: string,
   place: Parameters<typeof localNotice>[1]): string | undefined {
   const { local, note } = localWhyOf(client, ticketId, stored)
-  return note ?? localNotice(local, place, short, githubApp(client.settings()))
+  // In the language of what the person wrote: the ticket keeps the message it was asked for in.
+  const ticket = ticketId ? client.store.tickets.get(ticketId) : undefined
+  const written = (ticket && client.store.triggers.get(ticket.origin.triggerId)?.text) || ""
+  return note ?? localNotice(local, place, short, githubApp(client.settings()), written)
 }
 
 /** Why a ticket stays local, in a few words for a list row. */

@@ -420,7 +420,7 @@ export class ModelAssessor {
           const place = !trigger ? "terminal" as const : client.sources.chatKind(trigger.source) ? "chat" as const
             : trigger.source === "local" ? "terminal" as const : "elsewhere" as const;
           const notice = candidate.thread.evaluating?.strength === "explicit" && trigger?.human
-            ? localNotice(capability?.local, place, key("ticket", candidate.evalId).slice(0, 8), githubApp(client.settings()))
+            ? localNotice(capability?.local, place, key("ticket", candidate.evalId).slice(0, 8), githubApp(client.settings()), trigger.text)
             : undefined;
           // The acknowledgement is cut to leave the notice room inside the chat limit, which would otherwise refuse the message.
           const room = IM_WORDS - wordCount(notice ?? "");
