@@ -18,6 +18,7 @@ import { Memories, chatSubject, notesCard, personSubject } from '../memories.js'
 import { KV } from '../kv.js'
 import { writeSettings, settingsPath } from '../settings.js'
 import { metaOf } from '../sources/meta.js'
+import { localOperator } from '../sources/local.js'
 import { fakeChatKind, fakeChatSource, fakeSink, fakeTrigger, FAKE_SOURCE } from './fake-chat.js'
 import { testDeployment } from './fixtures.js'
 import { expect } from './expect.js'
@@ -226,8 +227,10 @@ test('a person is addressed by id and by name through the ticket\'s own kind, wi
   await client.effects.idle()
   // The people tool reads the fake chat's directory too.
   expect(await run('people', { name: 'ann' })).toEqual({ people: [{ id: 'fk_ann', name: 'Ann', chats: ['room1'] }] })
-  // Two chat kinds are installed, so each chat says which kind it is: the fake one's, while Feishu's records are empty.
-  expect(await run('people', {})).toEqual({ chats: [{ source: FAKE_SOURCE, chat_id: 'room1', name: 'room1', people: 2 }] })
+  // Several chat kinds are installed, so each chat says which kind it is: the fake one's, and the terminal's own, while
+  // Feishu's records are empty.
+  expect(await run('people', {})).toEqual({ chats: [{ source: FAKE_SOURCE, chat_id: 'room1', name: 'room1', people: 2 },
+    { source: 'local', chat_id: 'tui', name: localOperator(), direct: true, people: 1 }] })
 })
 
 test("a promise made in a fake-chat ticket is kept through that chat's own kind", async () => {
