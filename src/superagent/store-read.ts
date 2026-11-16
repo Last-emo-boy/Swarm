@@ -101,9 +101,12 @@ export function storeReads(db: DatabaseSync, sources: () => Pick<SourceRegistry,
     LEFT JOIN disposition d ON d.id = t.id WHERE t.at >= ? AND t.at < ? AND t.value ->> '$.actor.source' = ? AND t.value ->> '$.actor.id' = ?
     AND t.value ->> '$.addressed' IS NOT NULL AND d.value ->> '$.filtered' IS NULL AND IFNULL(d.value ->> '$.command', '') <> 'limit'`)
     .get(from, to, actor.source, actor.id)?.n ?? 0),
-  /** The latest `limit` messages people (and with `bots`, other bots too) wrote in a chat of `chat`'s Source at or after `since`, newest first. */
-  chatMessages: (chat: ChatRef, since: string, limit: number, bots = false): Trigger[] => values<Trigger>(`SELECT value FROM trigger WHERE at >= ?
-    AND value ->> '$.source' = ? AND value ->> '$.meta.chatId' = ? AND (? OR value ->> '$.human' = 1) ORDER BY at DESC, rowid DESC LIMIT ?`,
+  /**
+   * The latest `limit` messages people (and with `bots`, other bots too) wrote in a chat of `chat`'s Source at or after `since`,
+   * newest first; with `oldest`, the earliest `limit` of them instead, which a reflection pages through a long backlog with.
+   */
+  chatMessages: (chat: ChatRef, since: string, limit: number, bots = false, oldest = false): Trigger[] => values<Trigger>(`SELECT value FROM trigger WHERE at >= ?
+    AND value ->> '$.source' = ? AND value ->> '$.meta.chatId' = ? AND (? OR value ->> '$.human' = 1) ORDER BY at ${oldest ? 'ASC, rowid ASC' : 'DESC, rowid DESC'} LIMIT ?`,
     since, chat.source, chat.chatId, bots ? 1 : 0, limit),
   /**
    * The chat of a person's latest direct message to the agent, if they ever wrote one. Without a Source named, the one whose

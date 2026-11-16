@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CASE_VERSION, type ReplayCase } from "./case.js";
-import { answersAddressed, noCommit, noImageClaim, noTicketClaims, noTokenAsk, noToolInvention, routeOutcome, runChecks, silentWhenIdle, spoke } from "./checks.js";
+import { answersAddressed, noCommit, noImageClaim, noTicketClaims, noTokenAsk, noToolInvention, ownLinesMarked, routeOutcome, runChecks, silentWhenIdle, spoke } from "./checks.js";
 import type { RunRecord } from "./run.js";
 import { AT, CHAT, scene } from "./_testing.js";
 
@@ -117,4 +117,20 @@ test("a mute run fails the kind-match, so answering nothing is never a clean pas
   assert.equal(checks.find((check) => check.name === "expect-kind")?.pass, false);
   assert.equal(spoke(saidCase, rec({ outcome: { kind: "silent" } })).pass, false);
   assert.equal(spoke(saidCase, rec({ outcome: { kind: "said", text: "我这边看不到" } })).pass, true);
+});
+
+test("own-lines-marked reads the card: a ticket's words carry from_ticket, its own talk does not", () => {
+  const ticket = "ticket f4df52f8: 最小请求已发出，返回 403";
+  const talk = "我先去问问予谦";
+  const withOwn = scene({ own: [{ at: "2026-11-11T10:44:30.000Z", text: ticket, from_ticket: "f4df52f8" }, { at: "2026-11-11T10:45:00.000Z", text: talk }] });
+  const card = (messages: unknown[]) => rec({ call: { purpose: "superagent_chatter", system: "s", user: JSON.stringify({ messages }), systemHash: "x", userHash: "y", sectionHashes: {} },
+    outcome: { kind: "said", text: "好" } });
+  const good = card([{ text: ticket, from: "w33d", you: true, from_ticket: "f4df52f8" }, { text: talk, from: "w33d", you: true }]);
+  assert.equal(ownLinesMarked(kase({ scene: withOwn }), good).pass, true);
+  // The same ticket line without its marker, and its own talk wearing one, both fail.
+  assert.equal(ownLinesMarked(kase({ scene: withOwn }), card([{ text: ticket, from: "w33d", you: true }, { text: talk, from: "w33d", you: true }])).pass, false);
+  assert.equal(ownLinesMarked(kase({ scene: withOwn }), card([{ text: ticket, from: "w33d", you: true, from_ticket: "f4df52f8" },
+    { text: talk, from: "w33d", you: true, from_ticket: "f4df52f8" }])).pass, false);
+  // No recorded card is not a pass.
+  assert.equal(ownLinesMarked(kase({ scene: withOwn }), rec()).pass, false);
 });

@@ -404,7 +404,8 @@ export class ModelAssessor {
     const chatId = meta.chatId !== undefined && !meta.direct ? meta.chatId : undefined;
     const known = (id: string) => id === primary.actor.id || personName(store, { source: primary.source, id }) !== undefined;
     const scope = { subjects: (name: string) => name === SELF ? SELF : (name === "chat" || name === chatId) && chatId ? chatSubject(chatId, primary.source)
-      : kind.directory.personKey(name) && known(name) ? personSubject(name, primary.source) : undefined, shown: new Set<string>() };
+      : kind.directory.personKey(name) && known(name) ? personSubject(name, primary.source) : undefined, shown: new Set<string>(),
+      agent: this.host.client.sources.agent(primary.source, this.host.client.resolvedDeployment())?.name ?? "" };
     return planOps(store, route.remember.map((item) => ({ op: "add" as const, ...item })), scope,
       { ...(meta.chatId !== undefined ? { chatId: meta.chatId } : {}), ...(meta.direct ? { direct: true } : {}), triggerId: primary.id, source: primary.source });
   }
