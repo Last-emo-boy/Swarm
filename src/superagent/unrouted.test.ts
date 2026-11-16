@@ -277,6 +277,15 @@ test("tells the person who asked, where they asked, when someone else wrote on t
   assert.deepEqual(client.store.threads.get("github:7")?.pending, [ask.id, aside.id]);
 });
 
+test("says nothing to a Source that is off, which could post nothing, and the status still lists the request", () => {
+  const { triggerId } = client.request("fix the typo in README");
+  writeSettings({ sources: { local: { enabled: false, config: {} } } }, settingsPath(stateDir));
+  const decision = timeOut(triggerId);
+  assert.equal(decision.kind, "unavailable");
+  assert.deepEqual(outbox(), [], "the notice waits rather than sitting in the outbox undeliverable");
+  assert.deepEqual(hostStatus(client).unrouted.map((item) => item.decisionId), [decision.id]);
+});
+
 test("status lists the newest fifty requests that could not be routed, whatever else was decided since, and the rest once those are seen to", () => {
   const requests = Array.from({ length: 60 }, (_, index) => client.request(`request ${index}`).triggerId);
   const decisions = requests.map((triggerId) => timeOut(triggerId));

@@ -275,6 +275,25 @@ test("a promise whose message cannot go out stays due, with no model call, until
   assert.deepEqual(client.store.memory.due(new Date(now).toISOString()), []);
 });
 
+test("a promise whose effect is still queued or running is not queued again by a pass, so its retries back off", async () => {
+  const due = new Date(now + 60_000).toISOString();
+  const promise = note({ about: personSubject("ou_alice"), kind: "promise", text: "Remind Alice to send the release notes", due });
+  client.store.memory.save(promise);
+  now += 120_000;
+  memories.pass();
+  assert.deepEqual(queued("promise"), [promise.id], "queued once");
+  // Its message cannot be written yet: the effect stays queued, and each pass leaves its attempts to its own backoff.
+  answers.push(new Error("the model is unreachable"));
+  await assert.rejects(memories.keep(promise.id), /the model is unreachable/);
+  const row = () => client.store.db.prepare("SELECT attempts, generation FROM effect WHERE kind = 'promise' AND key = ?").get(promise.id) as { attempts: number; generation: number };
+  const before = row();
+  now += 60_000;
+  memories.pass();
+  memories.pass();
+  assert.deepEqual(row(), before, "not re-queued, so its attempts and generation stand");
+  assert.equal(client.store.memory.get(promise.id)!.done, undefined);
+});
+
 test("writes to nobody on its own, and spends none of the day's messages, while a direct message cannot go out", async () => {
   for (const [sender, text, ago] of [["ou_alice", "I lead the 2048 project", 900], ["ou_bob", "anyone know how to train it faster?", 800],
     ["ou_alice", "not me", 700], ["ou_alice", "call me Ali", 600]] as const) say(sender, text, ago);

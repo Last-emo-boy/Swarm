@@ -108,12 +108,17 @@ test("a ticket waits on its person since its latest report, while they said noth
   client.message(id, "use main");
   assert.equal(waitingSince(ticket(id)), undefined, "the person wrote");
 
-  // A person's message in the very millisecond of the report counts as written since.
+  // A person's message in the very millisecond of the report does not answer it, as `waitsForPerson` decides; one a
+  // millisecond later does.
   tick();
   client.engine.report(id, { state: "failed", summary: "The build broke." });
-  assert.equal(waitingSince(ticket(id)), iso(now));
+  const broke = iso(now);
+  assert.equal(waitingSince(ticket(id)), broke);
   client.message(id, "try again with main");
-  assert.equal(waitingSince(ticket(id)), undefined, "the person wrote as it reported");
+  assert.equal(waitingSince(ticket(id)), broke, "written before the report it would answer");
+  tick();
+  client.message(id, "still try again with main");
+  assert.equal(waitingSince(ticket(id)), undefined, "the person wrote after it");
   tick();
   client.engine.report(id, { state: "failed", summary: "The build broke again." });
   assert.equal(waitingSince(ticket(id)), iso(now));
@@ -323,7 +328,7 @@ test("a ticket that waits on its person reminds them once after a day and is clo
   assert.deepEqual([expired(again)?.kind, expired(again)?.ticketId], ["reply", id]);
   assert.equal(receipts().length, sent + 2, "one closing notice");
   assert.equal(client.store.get(KV.notices.nudged(id)), undefined);
-  assert.deepEqual([ticketRow(client, ticket(id)).group, ticketRow(client, ticket(id)).label], ["ended", EXPIRED_REASON]);
+  assert.deepEqual([ticketRow(client, ticket(id)).group, ticketRow(client, ticket(id)).label], ["ended", "两天没有收到回复"]);
   sweep(now + 72 * HOUR);
   assert.equal(receipts().length, sent + 2, "a closed ticket hears nothing more");
 
@@ -410,7 +415,7 @@ test("a ticket the host closed shows why in its row, one its worker dropped show
   tick();
   const ended = client.engine.expireTicket(closed, EXPIRED_REASON);
   assert.deepEqual(ended.ended, { at: iso(now), by: "executor", outcome: "dropped", reason: EXPIRED_REASON });
-  assert.equal(ticketRow(client, ended).label, "No reply in two days");
+  assert.equal(ticketRow(client, ended).label, "No reply in two days", "worded for its English request");
   tick();
   assert.deepEqual(client.engine.expireTicket(closed, "Another reason").ended, ended.ended);
 
@@ -538,4 +543,26 @@ test("an error thrown by a follow-up after a commit is reported to the client's 
     reporting.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a ticket whose Inputs did not reach its worker waits from the failed delivery, and is reminded and closed like any other", () => {
+  const id = started("choose a separator");
+  const assignment = ticket(id).assignments[0]!.id;
+  client.engine.deliveryFailed(id, assignment, "Session busy");
+  const failed = iso(now);
+  assert.deepEqual(ticketStage(ticket(id)), { stage: "person", action: "delivery" });
+  assert.equal(waitingSince(ticket(id)), failed, "the ticket has a clock though it reported nothing");
+  // Its person's retry starts a worker, which puts it to work until that turn ends.
+  tick();
+  client.retry(id);
+  assert.equal(waitingSince(ticket(id)), undefined, "the retried work runs");
+  client.engine.assignmentStarted(id, ticket(id).assignments.at(-1)!.id);
+  client.engine.deliveryFailed(id, ticket(id).assignments.at(-1)!.id, "Session busy");
+  const retried = iso(now);
+  assert.equal(waitingSince(ticket(id)), retried, "a retry that fails to deliver starts its own wait");
+  sweep(now + REMIND_MS);
+  assert.ok(receipts().some((receipt) => receipt.id === key("nudge", id, retried)), "its person hears a reminder");
+  sweep(now + CLOSE_MS);
+  assert.equal(ticket(id).ended?.reason, EXPIRED_REASON);
+  assert.ok(receipts().some((receipt) => receipt.id === key("expired", id, retried)), "and hears it closed");
 });

@@ -5,6 +5,7 @@
 import { latestReport, ticketOutcome, ticketStage, type Decision, type Ticket, type Trigger } from "./core/index.js";
 import { unroutedRequest, type SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
+import { EXPIRED_REASON, expiredWhy } from "./notices.js";
 import type { Health } from "./health.js";
 import { pulledBy, workerNode } from "./placement.js";
 import { pullOf } from "./sources/github-pull.js";
@@ -58,8 +59,10 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
   const action = "action" in stage ? stage.action : undefined;
   const key = stage.stage === "ended" ? "" : action ? `${stage.stage}/${action}` : stage.stage;
   const outcome = ticket.ended ? ticketOutcome(ticket) ?? ticket.ended.outcome : undefined;
-  // A ticket the host closed with nothing done, such as one nobody answered, says why; a worker's dropped report has no reason.
-  const why = outcome === "dropped" ? ticket.ended?.reason : undefined;
+  // A ticket the host closed with nothing done, such as one nobody answered, says why, in the language of its request; a
+  // worker's dropped report has no reason.
+  const reason = outcome === "dropped" ? ticket.ended?.reason : undefined;
+  const why = reason === EXPIRED_REASON ? expiredWhy(origin?.text ?? "") : reason;
   const group: TicketGroup = stage.stage === "ended" ? "ended" : stage.stage === "person" ? "person"
     : stage.stage === "idle" ? "idle" : action === "queued" ? "queued" : "working";
   const pr = pullOf(ticket);
@@ -70,7 +73,7 @@ export function ticketRow(client: SuperagentClient, ticket: Ticket): TicketRow {
   const runsOn = { ...(node ? { runsOn: node } : {}), ...(puller ? { pulledBy: puller } : {}), ...(harness ? { harness } : {}) };
   // A question the person already answered waits for the worker, not for the person: it leaves "needs you".
   const answered = !!ticket.attention && !ticket.ended && ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context
-    && input.at >= (report?.at ?? ""));
+    && input.at > (report?.at ?? ""));
   if (answered && group === "person" && STAGE_LABELS[key] === "Awaiting answer") {
     return { id: ticket.id, short: ticket.id.slice(0, 8), title: ticket.title, group: "working", label: "Working on your answer",
       source: origin?.source ?? "unknown", ...(origin?.url ? { url: origin.url } : {}), ...(pr ? { pr } : {}),

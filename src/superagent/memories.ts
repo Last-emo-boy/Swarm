@@ -236,6 +236,8 @@ export class Memories {
     }
     for (const note of client.store.memory.due(new Date(now).toISOString())) {
       const { channel } = this.recipient(note);
+      // One whose message is being written or failed is left to its effect's retries, which back off between attempts.
+      if (client.effects.pending("promise", note.id)) continue;
       if (!channel || client.sources.channelAllowed(channel)) client.effects.enqueue("promise", note.id, { noteId: note.id });
     }
   }

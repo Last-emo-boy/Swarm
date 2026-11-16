@@ -16,8 +16,13 @@ export const FIRST_PROGRESS_MS = 2 * 60_000, PROGRESS_MS = 5 * 60_000;
 const REASON_CHARS = 240;
 /** A ticket that waits on a person reminds them after this long with nothing from them, and is closed this long after the reminder. */
 export const REMIND_MS = 24 * 3_600_000, CLOSE_MS = 24 * 3_600_000;
-/** Why a ticket that waited on a person was closed, which its row shows in place of its outcome (views.ts). */
-export const EXPIRED_REASON = "No reply in two days";
+/**
+ * The reason a ticket that waited on a person was closed stores: a code, worded where a person reads it (views.ts) in the
+ * language of their request (`expiredWhy`).
+ */
+export const EXPIRED_REASON = "expired";
+/** What a ticket closed for silence says in place of its outcome, in the language of what its person wrote. */
+export const expiredWhy = (request: string): string => wording(request)("No reply in two days", "两天没有收到回复");
 
 /** Where a ticket's notices go: the conversation a person asked for it in, unless that is GitHub. */
 export function noticeChannel(store: Pick<Store, "triggers">, ticket: Ticket): ChannelRef | undefined {
@@ -84,8 +89,12 @@ function personWait(ticket: Ticket): { since: string; working: boolean } | undef
   const stage = ticketStage(ticket);
   const report = latestReport(ticket);
   const latest = latestAssignment(ticket);
-  if (!report || !latest || stage.stage !== "person" || !["answer", "blocked", "failed"].includes(stage.action)) return undefined;
-  if (ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context && input.at >= report.at)) return undefined;
+  if (stage.stage !== "person") return undefined;
+  // Inputs that did not reach the person's worker wait from their last failed delivery, which a person's retry restarts.
+  if (stage.action === "delivery") return { since: ticket.delivery?.at ?? latest?.createdAt ?? ticket.createdAt, working: false };
+  if (!report || !latest || !["answer", "blocked", "failed"].includes(stage.action)) return undefined;
+  // The busy comparison of `waitsForPerson`: a person's message before the report does not answer it.
+  if (ticket.inputs.some((input) => input.kind === "trigger" && input.human && !input.context && input.at > report.at)) return undefined;
   // Since when its worker has had something to work on, if it has: no turn of it ended since.
   const begun = !latest.report ? latest.deliveredAt ?? latest.createdAt
     : latest.deliveredAt && latest.deliveredAt >= report.at ? latest.deliveredAt : report.state === "progress" ? report.at : undefined;

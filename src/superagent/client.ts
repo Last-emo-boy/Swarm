@@ -207,7 +207,8 @@ export class SuperagentClient {
   private unrouted(decisionId: string): void {
     const decision = this.store.decisions.get(decisionId);
     const request = decision && unroutedRequest(this.store, decision);
-    if (request?.channel) this.outbox.send({ id: key("unavailable", decisionId), channel: request.channel, text: unroutedNotice(request.text), kind: "reply" });
+    // A source that is off can deliver nothing now: the notice waits rather than filling the outbox with a dead row.
+    if (request?.channel && this.sources.channelAllowed(request.channel)) this.outbox.send({ id: key("unavailable", decisionId), channel: request.channel, text: unroutedNotice(request.text), kind: "reply" });
   }
   /** A ticket that ended with its pull request tells its chat conversations once; GitHub shows the outcome itself. */
   private pullEnded(ticketId: string): void {
