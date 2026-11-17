@@ -36,7 +36,7 @@ before(async () => {
   updateMesh((state) => ({ ...state, node: { ...state.node, name: "ovh", listen: "127.0.0.1:0" } }), ovhMesh);
   const ovhClient = new SuperagentClient({ stateDir: join(root, "ovh-superagent") });
   const server = new MeshServer({ home: ovhMesh, card: () => nodeCard(readMesh(ovhMesh).node, { abilities: ["linux"] }) });
-  registerTicketRoutes(server, ovhClient, { commandText: (trigger, name, args) => `ran ${name} ${args.join(" ")} as ${trigger.actor.id}` });
+  registerTicketRoutes(server, ovhClient, { commandText: async (trigger, name, args) => `ran ${name} ${args.join(" ")} as ${trigger.actor.id}` });
   const { address: url } = await server.start();
   updateMesh((state) => ({ ...state, node: { ...state.node, advertise: url } }), ovhMesh);
   ovh = { client: ovhClient, server };

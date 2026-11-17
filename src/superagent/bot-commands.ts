@@ -24,9 +24,9 @@ import { hostStatus, ticketRows, whyReport, whyText, usageSummary } from "./view
 import { inChinese, sayIn, wordCount, type Say } from "./text.js";
 
 const HOUR_MS = 3_600_000;
-import { COMMANDS } from "./command-table.js";
+import { COMMANDS, type CommandName } from "./command-table.js";
 export { COMMANDS, FORWARDED } from "./command-table.js";
-export type CommandName = typeof COMMANDS[number];
+export type { CommandName } from "./command-table.js";
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 
 const MentionsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
@@ -110,21 +110,23 @@ export class BotCommands {
     if (!command) return engine.receive(trigger);
     const result = engine.receiveCommand(trigger, command.name);
     if (result !== "stored") return result;
-    let text: string | undefined;
+    let answer: string | (() => Promise<string>) | undefined;
     try {
-      text = this.run(command, trigger, settings);
+      answer = this.run(command, trigger, settings);
     } catch (error) {
-      text = failure(say, error);
+      answer = failure(say, error);
     }
-    if (text) this.answer(trigger, text, key("command", trigger.id));
+    if (typeof answer === "function") this.later(trigger, answer);
+    else if (answer) this.answer(trigger, answer, key("command", trigger.id));
     return result;
   }
   /**
    * The answer to a command run for someone who asked it directly, such as a paired node reading this one's state: one
    * string, or undefined when the command answers later through the person's own channel.
    */
-  commandText(trigger: Trigger, name: CommandName, args: readonly string[]): string | undefined {
-    return this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, this.client.settings());
+  async commandText(trigger: Trigger, name: CommandName, args: readonly string[]): Promise<string | undefined> {
+    const answer = this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, this.client.settings());
+    return typeof answer === "function" ? await answer() : answer;
   }
   /**
    * Runs a command the router chose for a person's message as if they had typed it, which answers in the conversation as
@@ -133,15 +135,16 @@ export class BotCommands {
   perform(trigger: Trigger, name: AgentCommand, args: readonly string[]): void {
     const settings = this.client.settings();
     const say = this.say(trigger);
-    let text: string | undefined;
+    let answer: string | (() => Promise<string>) | undefined;
     try {
       const kind = this.kind(trigger);
-      text = !kind ? say("Bot commands work only in a chat.", "机器人命令只在聊天里能用。")
+      answer = !kind ? say("Bot commands work only in a chat.", "机器人命令只在聊天里能用。")
         : this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, settings);
     } catch (error) {
-      text = failure(say, error);
+      answer = failure(say, error);
     }
-    if (text) this.answer(trigger, text, key("command", trigger.id));
+    if (typeof answer === "function") this.later(trigger, answer);
+    else if (answer) this.answer(trigger, answer, key("command", trigger.id));
   }
 
   /**
@@ -193,7 +196,7 @@ export class BotCommands {
   }
 
   /** A command's answer, or undefined for one that answers later. */
-  private run(command: Command, trigger: Trigger, settings: Settings): string | undefined {
+  private run(command: Command, trigger: Trigger, settings: Settings): string | (() => Promise<string>) | undefined {
     switch (command.name) {
       case "help": return help(this.say(trigger));
       case "me": return this.me(trigger, settings);
@@ -204,14 +207,15 @@ export class BotCommands {
       case "ceiling": return this.ceiling(command, trigger, settings);
       case "chatter": return this.chatter(command, trigger, settings);
       case "takeover": return this.takeover(command, trigger, settings);
-      case "devices": return this.devices(trigger, settings);
+      // No devices source answers at once; with one, the read is async and answers when it has them.
+      case "devices": return this.devicesAnswer(trigger, settings);
       case "memory": return this.memory(command, trigger, settings);
       case "forget": return this.forget(command, trigger, settings);
       case "status": return this.status(trigger, settings);
       case "tickets": return this.tickets(command, trigger);
-      case "usage": return this.later(trigger, () => this.usage(trigger));
-      case "why": return this.later(trigger, () => this.why(command, trigger, settings));
-      case "mesh": return this.later(trigger, () => this.mesh(trigger, settings));
+      case "usage": return () => this.usage(trigger);
+      case "why": return () => this.why(command, trigger, settings);
+      case "mesh": return () => this.mesh(trigger, settings);
     }
   }
 
@@ -286,12 +290,17 @@ export class BotCommands {
   }
 
   /** `/devices`: what the agent runs work on now; which nodes these are only for maintainers and owners, counts for everyone. */
-  private devices(trigger: Trigger, settings: Settings): string | undefined {
+  private devices(trigger: Trigger, settings: Settings): string | Promise<string> {
     const say = this.say(trigger);
     const { devices } = this.options;
     if (!devices) return say("This host does not tell what it runs work on.", "这台主机不提供设备信息。");
     const names = seesNodes(settings, trigger.actor);
-    return this.later(trigger, async () => devicesText(await devices(), names, say));
+    return devices().then((value) => devicesText(value, names, say));
+  }
+  /** `/devices` as the table returns it: the no-source answer at once, the read as a thunk the caller may await. */
+  private devicesAnswer(trigger: Trigger, settings: Settings): string | (() => Promise<string>) {
+    const answer = this.devices(trigger, settings);
+    return typeof answer === "string" ? answer : async () => answer;
   }
 
   private me(trigger: Trigger, settings: Settings): string {

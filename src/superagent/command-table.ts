@@ -12,7 +12,7 @@ export interface CommandSpec {
   tui: boolean;
 }
 
-export const COMMAND_TABLE: readonly CommandSpec[] = [
+export const COMMAND_TABLE = [
   { name: "help", router: true, tui: true },
   { name: "me", router: true, tui: false },
   { name: "link", router: true, tui: false },
@@ -31,10 +31,12 @@ export const COMMAND_TABLE: readonly CommandSpec[] = [
   { name: "usage", router: true, tui: true },
   { name: "why", router: false, tui: true },
   { name: "mesh", router: false, tui: true }
-] as const;
+] as const satisfies readonly CommandSpec[];
 
-export const COMMANDS = COMMAND_TABLE.map((command) => command.name);
+/** A command's name, as the table's literal union: a name added to the table is a type error until it is handled. */
+export type CommandName = (typeof COMMAND_TABLE)[number]["name"];
+export const COMMANDS: readonly CommandName[] = COMMAND_TABLE.map((command) => command.name);
 /** The commands the router may run by itself (`AGENT_COMMANDS` in prompts). */
-export const ROUTER_COMMANDS = COMMAND_TABLE.filter((command) => command.router).map((command) => command.name);
+export const ROUTER_COMMANDS: readonly CommandName[] = COMMAND_TABLE.filter((command) => command.router).map((command) => command.name);
 /** The commands a terminal hands to the host when its own slash commands have no such name. */
-export const FORWARDED = COMMAND_TABLE.filter((command) => !command.tui).map((command) => command.name);
+export const FORWARDED: readonly CommandName[] = COMMAND_TABLE.filter((command) => !command.tui).map((command) => command.name);

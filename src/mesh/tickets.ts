@@ -29,14 +29,14 @@ const text = (body: Record<string, unknown>): string => {
 
 /** Serves this node's tickets on its mesh server. */
 export function registerTicketRoutes(server: MeshServer, client: SuperagentClient,
-  commands?: { commandText(trigger: import("../superagent/core/index.js").Trigger, name: never, args: readonly string[]): string | undefined }): void {
-  if (commands) server.route("POST", "/mesh/v1/command", ({ body, peer }) => {
+  commands?: { commandText(trigger: import("../superagent/core/index.js").Trigger, name: import("../superagent/command-table.js").CommandName, args: readonly string[]): Promise<string | undefined> }): void {
+  if (commands) server.route("POST", "/mesh/v1/command", async ({ body, peer }) => {
     const name = typeof body.name === "string" ? body.name : "";
     if (!(PEER_READS as readonly string[]).includes(name)) throw new HttpError(403, `A paired node may read only: ${PEER_READS.join(", ")}`);
     const args = Array.isArray(body.args) ? body.args.map(String) : [];
     // The peer speaks as this node's operator, the trust pairing already grants it; the command's own role gates still apply.
     const trigger = localTrigger({ id: `mesh-${peer?.id ?? "peer"}-${Date.now()}`, text: `/${name}${args.length ? ` ${args.join(" ")}` : ""}`, actor: localOperator() });
-    const text = commands.commandText(trigger, name as never, args);
+    const text = await commands.commandText(trigger, name as import("../superagent/command-table.js").CommandName, args);
     return { text: text ?? "" };
   });
   const ticket = (handle: string) => {

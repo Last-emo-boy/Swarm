@@ -122,9 +122,9 @@ function routingLines(): string {
 }
 
 /** The bot commands the router may run for a person whose message asks for what one does; the others only people type. */
-import { ROUTER_COMMANDS } from "./command-table.js";
-export const AGENT_COMMANDS: readonly ["help", "me", "link", "repo", "takeover", "devices", "memory", "forget"] = ROUTER_COMMANDS as never;
-export type AgentCommand = typeof AGENT_COMMANDS[number];
+import { ROUTER_COMMANDS, type CommandName } from "./command-table.js";
+export const AGENT_COMMANDS: readonly CommandName[] = ROUTER_COMMANDS;
+export type AgentCommand = CommandName;
 /** The router's output contract; `platform` names the chat product a reply targets. */
 export const routeContract = (platform = "Feishu"): string => [
   "Return exactly one JSON object for the candidate, with these fields:",
