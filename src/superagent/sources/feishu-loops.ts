@@ -19,7 +19,15 @@ import type { FeishuConfig } from './feishu.js'
 import { feishuChatKind } from './feishu-chat.js'
 import { ChatHealth, PROBE_MS } from './chat.js'
 
-export const runFeishu = (ctx: SourceContext, signal: AbortSignal, probeMs = PROBE_MS): Promise<unknown> => {
+/**
+ * How often the Feishu API is probed. The host already asks the same question every `CHECK_MS` (5 min), so the probe loop
+ * runs at the same pace instead of every minute: a Source that stops answering still turns `error` within three probes,
+ * and the two loops together ask 288 times a day instead of 1,728.
+ */
+export const FEISHU_PROBE_MS = 300_000;
+/** How often the joined chats are listed again. A newly joined chat is a display aid, not work: ten minutes is enough. */
+export const CHAT_NAMES_MS = 600_000;
+export const runFeishu = (ctx: SourceContext, signal: AbortSignal, probeMs = Math.min(PROBE_MS, FEISHU_PROBE_MS)): Promise<unknown> => {
   // The live stream wakes the history sweep each time it becomes ready: at start and after every reconnect.
   const streamReady = wakeup()
   // Whether Feishu's API answers decides what "ready" may say: a stream that stays up while every call fails reads error.
@@ -170,7 +178,7 @@ export async function refreshChatNames(ctx: SourceContext, signal?: AbortSignal)
   ctx.state.set(KV.sources.labels(SOURCE), names)
   return names
 }
-/** Rereads the chat list every minute independently of history backfill (whose rounds can take much longer), so newly joined chats appear within a minute. */
+/** Rereads the chat list every ten minutes independently of history backfill, so a newly joined chat appears within ten minutes. */
 async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   if (!available(ctx)) return
@@ -179,7 +187,7 @@ async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<v
       try { await refreshChatNames(ctx, signal) }
       catch { /* Names are a display aid; the stored list stays until a later read succeeds. */ }
     }
-    await delay(60_000, undefined, { signal }).catch(() => {})
+    await delay(CHAT_NAMES_MS, undefined, { signal }).catch(() => {})
   }
 }
 /**
