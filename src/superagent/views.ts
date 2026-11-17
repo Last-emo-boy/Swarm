@@ -537,6 +537,26 @@ function workOf(client: SuperagentClient, ticket: Ticket): WhyWork {
 }
 
 /** What the talking paths used for a ticket, a message or a chat: its calls, their tokens, and their cost from this device's prices. */
+/**
+ * What this device's model calls cost today and over the 30 days before, for `/usage`: calls, tokens and money per
+ * currency, or undefined when the ledger cannot be read here at all.
+ */
+export async function usageSummary(now = Date.now()): Promise<{ today: { calls: number; input: number; output: number; cost: number }; month: { calls: number; input: number; output: number; cost: number } } | undefined> {
+  const { readLedgerAt, priceLedger, totalOf } = await import("../usage/ledger.js")
+  const { mergedPrices } = await import("../usage/prices.js")
+  const { loadSwarmSettings } = await import("../config/settings.js")
+  const settings = loadSwarmSettings()
+  let entries: LedgerEntry[]
+  try { entries = readLedgerAt(settings.runtime.databasePath, thisDevice(), { since: new Date(now - 30 * 24 * 3_600_000) }) } catch { return undefined }
+  const priced = priceLedger(entries, mergedPrices(settings.usage.prices))
+  const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0)
+  const sum = (from: number) => {
+    const total = totalOf(priced.filter((entry) => Date.parse(entry.at) >= from))
+    return { calls: total.calls, input: total.input, output: total.output, cost: Object.values(total.cost).reduce((all, amount) => all + amount, 0) }
+  }
+  return { today: sum(startOfToday.getTime()), month: sum(now - 30 * 24 * 3_600_000) }
+}
+
 async function usageOf(client: SuperagentClient, about: { ticketId?: string; triggerId?: string; chatId?: string; since: Date; chatSince?: Date }): Promise<WhyReport["usage"]> {
   // The ledger lives in the whole Swarm's database, not the superagent store's, and is read without writing to it.
   const { readLedgerAt, priceLedger, totalOf } = await import("../usage/ledger.js")

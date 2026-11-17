@@ -471,7 +471,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     };
     stopHost = () => host.stop();
     const { registerTicketRoutes } = await import("./tickets.js");
-    serveHost = (server) => { registerTicketRoutes(server, host.client); work.serve(server); };
+    serveHost = (server) => { registerTicketRoutes(server, host.client, host.commands); work.serve(server); };
   }
   const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts() }), log: (message) => process.stderr.write(`${message}\n`) });
   serveHost(server);

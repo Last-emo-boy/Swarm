@@ -20,16 +20,13 @@ import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
 import { metaOf } from "./sources/meta.js";
 import type { ChatKind } from "./sources/chat.js";
+import { hostStatus, ticketRows, whyReport, whyText, usageSummary } from "./views.js";
 import { inChinese, sayIn, wordCount, type Say } from "./text.js";
 
 const HOUR_MS = 3_600_000;
-export const COMMANDS = ["help", "me", "link", "unlink", "repo", "role", "ceiling", "chatter", "takeover", "devices", "memory", "forget"] as const;
-/**
- * The bot commands a terminal hands to the host when its own slash commands have no such name: the TUI keeps the ones it
- * defines itself (help, memory), and `/chat /…` reaches everything.
- */
-export const FORWARDED = COMMANDS.filter((name) => !["help", "memory"].includes(name));
-export type CommandName = typeof COMMANDS[number];
+import { COMMANDS, type CommandName } from "./command-table.js";
+export { COMMANDS, FORWARDED } from "./command-table.js";
+export type { CommandName } from "./command-table.js";
 export interface Command { name: CommandName; args: string[]; mentions: { id: string; name: string }[] }
 
 const MentionsSchema = z.array(z.object({ id: z.string(), name: z.string() }));
@@ -113,14 +110,23 @@ export class BotCommands {
     if (!command) return engine.receive(trigger);
     const result = engine.receiveCommand(trigger, command.name);
     if (result !== "stored") return result;
-    let text: string | undefined;
+    let answer: string | (() => Promise<string>) | undefined;
     try {
-      text = this.run(command, trigger, settings);
+      answer = this.run(command, trigger, settings);
     } catch (error) {
-      text = failure(say, error);
+      answer = failure(say, error);
     }
-    if (text) this.answer(trigger, text, key("command", trigger.id));
+    if (typeof answer === "function") this.later(trigger, answer);
+    else if (answer) this.answer(trigger, answer, key("command", trigger.id));
     return result;
+  }
+  /**
+   * The answer to a command run for someone who asked it directly, such as a paired node reading this one's state: one
+   * string, or undefined when the command answers later through the person's own channel.
+   */
+  async commandText(trigger: Trigger, name: CommandName, args: readonly string[]): Promise<string | undefined> {
+    const answer = this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, this.client.settings());
+    return typeof answer === "function" ? await answer() : answer;
   }
   /**
    * Runs a command the router chose for a person's message as if they had typed it, which answers in the conversation as
@@ -129,15 +135,16 @@ export class BotCommands {
   perform(trigger: Trigger, name: AgentCommand, args: readonly string[]): void {
     const settings = this.client.settings();
     const say = this.say(trigger);
-    let text: string | undefined;
+    let answer: string | (() => Promise<string>) | undefined;
     try {
       const kind = this.kind(trigger);
-      text = !kind ? say("Bot commands work only in a chat.", "机器人命令只在聊天里能用。")
+      answer = !kind ? say("Bot commands work only in a chat.", "机器人命令只在聊天里能用。")
         : this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, settings);
     } catch (error) {
-      text = failure(say, error);
+      answer = failure(say, error);
     }
-    if (text) this.answer(trigger, text, key("command", trigger.id));
+    if (typeof answer === "function") this.later(trigger, answer);
+    else if (answer) this.answer(trigger, answer, key("command", trigger.id));
   }
 
   /**
@@ -189,7 +196,7 @@ export class BotCommands {
   }
 
   /** A command's answer, or undefined for one that answers later. */
-  private run(command: Command, trigger: Trigger, settings: Settings): string | undefined {
+  private run(command: Command, trigger: Trigger, settings: Settings): string | (() => Promise<string>) | undefined {
     switch (command.name) {
       case "help": return help(this.say(trigger));
       case "me": return this.me(trigger, settings);
@@ -200,19 +207,100 @@ export class BotCommands {
       case "ceiling": return this.ceiling(command, trigger, settings);
       case "chatter": return this.chatter(command, trigger, settings);
       case "takeover": return this.takeover(command, trigger, settings);
-      case "devices": return this.devices(trigger, settings);
+      // No devices source answers at once; with one, the read is async and answers when it has them.
+      case "devices": return this.devicesAnswer(trigger, settings);
       case "memory": return this.memory(command, trigger, settings);
       case "forget": return this.forget(command, trigger, settings);
+      case "status": return this.status(trigger, settings);
+      case "tickets": return this.tickets(command, trigger);
+      case "usage": return () => this.usage(trigger);
+      case "why": return () => this.why(command, trigger, settings);
+      case "mesh": return () => this.mesh(trigger, settings);
     }
   }
 
+  /**
+   * `/status`: the host as it last reported itself: whether it runs, how many tickets wait in each group, what is not
+   * healthy, and replies that failed, were dropped, or wait on a Source that is off.
+   */
+  private status(trigger: Trigger, settings: Settings): string {
+    const say = this.say(trigger);
+    const status = hostStatus(this.client);
+    const counts = Object.entries(status.counts).filter(([, count]) => count > 0).map(([group, count]) => `${group} ${count}`);
+    const unhealthy = Object.entries(status.health).filter(([, entry]) => entry.state !== 'ready')
+      .map(([name, entry]) => `${name}: ${entry.state}${entry.detail ? ` (${entry.detail})` : ''}`);
+    const lines = [say(`${status.running ? 'Running' : 'Not running here'}; tickets: ${counts.join(', ') || 'none'}.`,
+      `${status.running ? '运行中' : '这里没有运行'}；工单：${counts.join('、') || '无'}。`)];
+    if (unhealthy.length) lines.push(say(`Not healthy: ${unhealthy.join('; ')}`, `不健康：${unhealthy.join('；')}`));
+    const { failing, dropped } = status.replies;
+    if (failing.length) lines.push(say(`${failing.length} repl${failing.length === 1 ? 'y' : 'ies'} failing to deliver.`, `${failing.length} 条回复发送失败。`));
+    if (dropped.length) lines.push(say(`${dropped.length} repl${dropped.length === 1 ? 'y' : 'ies'} dropped.`, `${dropped.length} 条回复被丢弃。`));
+    if (status.waitingOnOff.length) lines.push(say(`${status.waitingOnOff.length} waiting on a Source that is off.`, `${status.waitingOnOff.length} 条回复在等一个关闭的 Source。`));
+    if (status.unrouted.length) lines.push(say(`${status.unrouted.length} request${status.unrouted.length === 1 ? '' : 's'} could not be routed.`, `${status.unrouted.length} 条请求没能路由。`));
+    if (seesNodes(settings, trigger.actor) && status.pid) lines.push(say(`Host pid ${status.pid}.`, `Host 进程 ${status.pid}。`));
+    return lines.join('\n');
+  }
+
+  /** `/tickets [page]`: the tickets that are not ended, what each waits for first, a page at a time. */
+  private tickets(command: Command, trigger: Trigger): string {
+    const say = this.say(trigger);
+    const rows = ticketRows(this.client).filter((row) => row.group !== 'ended');
+    if (!rows.length) return say('No tickets are open.', '没有未结的工单。');
+    const pages: string[][] = [[]];
+    for (const row of rows) {
+      const line = `${row.short}  ${row.label}  ${row.title}`;
+      if (wordCount([...pages.at(-1)!, line].join('\n')) > MEMORY_PAGE_WORDS && pages.at(-1)!.length) pages.push([]);
+      pages.at(-1)!.push(line);
+    }
+    const page = Math.min(pages.length, Math.max(1, Number(command.args.find((arg) => /^\d+$/.test(arg)) ?? 1)));
+    const more = page < pages.length ? say(` (page ${page} of ${pages.length}: /tickets ${page + 1})`, `（第 ${page}/${pages.length} 页，发 /tickets ${page + 1}）`) : '';
+    return `${say('Open tickets:', '未结工单：')}\n${pages[page - 1]!.join('\n')}${more}`;
+  }
+
+  /** `/usage`: what this device's model calls cost today and over the 30 days before. */
+  private async usage(trigger: Trigger): Promise<string> {
+    const say = this.say(trigger);
+    const summary = await usageSummary();
+    if (summary === undefined) return say('The usage ledger cannot be read here.', '这里读不到用量账本。');
+    const line = (label: string, labelZh: string, item: { calls: number; input: number; output: number; cost: number }) =>
+      say(`${label}: ${item.calls} calls, ${item.input + item.output} tokens, $${item.cost.toFixed(4)}`,
+        `${labelZh}：${item.calls} 次调用，${item.input + item.output} tokens，$${item.cost.toFixed(4)}`);
+    return [line('Today', '今天', summary.today), line('Last 30 days', '最近 30 天', summary.month)].join('\n');
+  }
+
+  /** `/why <ticket|message>`: what happened to it, routing, work, talking-path runs and what they cost. For maintainers. */
+  private async why(command: Command, trigger: Trigger, settings: Settings): Promise<string> {
+    const say = this.say(trigger);
+    if (!atLeast(roleOf(settings, trigger.actor), 'maintainer')) return say('Explaining a ticket is for maintainers.', '解释工单只对 maintainer 开放。');
+    const handle = command.args[0];
+    if (!handle) return say('Usage: /why <ticket or message>', '用法：/why <工单或消息>');
+    const report = await whyReport(this.client, handle);
+    const text = whyText(this.client, report);
+    return text.length > 1500 ? `${text.slice(0, 1500)}\n…` : text;
+  }
+
+  /** `/mesh`: the paired nodes and where each is reached. For maintainers. */
+  private async mesh(trigger: Trigger, settings: Settings): Promise<string> {
+    const say = this.say(trigger);
+    if (!atLeast(roleOf(settings, trigger.actor), 'maintainer')) return say('The paired nodes are for maintainers.', '配对节点只对 maintainer 可见。');
+    const { meshPeers } = await import('../mesh/state.js');
+    const peers = meshPeers();
+    if (!peers.length) return say('No devices are paired.', '还没有配对设备。');
+    return [say('Paired:', '已配对：'), ...peers.map((peer) => `${peer.name}  ${peer.addresses.join(', ') || 'relay'}`)].join('\n');
+  }
+
   /** `/devices`: what the agent runs work on now; which nodes these are only for maintainers and owners, counts for everyone. */
-  private devices(trigger: Trigger, settings: Settings): string | undefined {
+  private devices(trigger: Trigger, settings: Settings): string | Promise<string> {
     const say = this.say(trigger);
     const { devices } = this.options;
     if (!devices) return say("This host does not tell what it runs work on.", "这台主机不提供设备信息。");
     const names = seesNodes(settings, trigger.actor);
-    return this.later(trigger, async () => devicesText(await devices(), names, say));
+    return devices().then((value) => devicesText(value, names, say));
+  }
+  /** `/devices` as the table returns it: the no-source answer at once, the read as a thunk the caller may await. */
+  private devicesAnswer(trigger: Trigger, settings: Settings): string | (() => Promise<string>) {
+    const answer = this.devices(trigger, settings);
+    return typeof answer === "string" ? answer : async () => answer;
   }
 
   private me(trigger: Trigger, settings: Settings): string {

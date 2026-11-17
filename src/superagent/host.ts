@@ -113,6 +113,8 @@ export function dueCheckBacks(client: Pick<SuperagentClient, "store" | "effects"
 export class SuperagentHost {
   readonly stateDir: string;
   readonly client: SuperagentClient;
+  /** The same command implementation every surface reaches, for a paired node that answers a read from this one. */
+  get commands(): BotCommands { return this.botCommands; }
   private readonly executor: SwarmExecutor;
   private readonly assessor: ModelAssessor;
   private readonly botCommands: BotCommands;

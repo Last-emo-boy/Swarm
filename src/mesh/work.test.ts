@@ -247,14 +247,39 @@ test("a person's message wakes the idle worker on the node that holds the ticket
 
 test("a node that stops renewing its lease loses the work: the owner restarts the Assignment and places it again", { timeout: 60_000 }, async () => {
   const { client } = ovh.host;
-  const { id, name } = findPeer(readMesh(ovh.mesh), "ghost");
+  // A ghost of this test's own, paired a moment ago: the shared one has already vanished (it stops its server on its one
+  // offer), and whether it is still there when this test files its work is exactly the race the shared setup introduced.
+  const mesh = join(root, "lease-ghost-mesh");
+  updateMesh((current) => ({ ...current, node: { ...current.node, name: "lease-ghost", listen: "127.0.0.1:0" } }), mesh);
+  const offers: Record<string, unknown>[] = [];
+  const server = new MeshServer({ home: mesh, card: () => nodeCard(readMesh(mesh).node, { abilities: ["linux"] }) });
+  server.route("POST", "/mesh/v1/work/offers", ({ peer, body }) => {
+    offers.push(body);
+    setTimeout(() => {
+      void callPeer(peer!, "POST", `${workPath(String(body.ticketId))}/started`, { assignmentId: body.assignmentId, directory: "/lease-ghost/work" })
+        .finally(() => server.stop());
+    }, 100);
+    return { accepted: true };
+  });
+  const { address } = await server.start();
+  updateMesh((current) => ({ ...current, node: { ...current.node, advertise: address } }), mesh);
+  await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
+  // The owner knows the ghost only once its record carries the address it listens at, and the ghost answers there.
+  await until(() => {
+    const record = readMesh(ovh.mesh).peers.find((item) => item.name === "lease-ghost");
+    if (!record) return undefined;
+    assert.ok(record.addresses.length > 0, "the owner saved the ghost with no address to reach it at");
+    return true;
+  });
+  await callPeer(readMesh(ovh.mesh).peers.find((item) => item.name === "lease-ghost")!, "GET", "/mesh/v1/node");
+  const { id, name } = findPeer(readMesh(ovh.mesh), "lease-ghost");
   requestOn(client, "train the model on the new data", { id, name });
   // The ghost takes exactly one offer and then goes away; wait for that offer to have arrived before reading the ticket,
   // so a slow first placement fails here with what it waited for rather than at the report assertion.
-  await until(() => ghost.offers.length >= 1 ? true : undefined, 30_000);
+  await until(() => offers.length >= 1 ? true : undefined, 30_000);
   const find = () => client.store.tickets.list().find((ticket) => ticket.title === "Train the model");
   const ticket: Ticket = await until(() => find()?.assignments.at(-1)?.report?.state === "failed" ? find() : undefined, 50_000);
-  assert.equal(ghost.offers.length, 1, "the ghost took the first Assignment");
+  assert.equal(offers.length, 1, "the ghost took the first Assignment");
   const [first, second] = ticket.assignments;
   assert.ok(first?.startedAt, "it ran on the ghost");
   assert.equal(first?.endedReason, "hostRestarted", "the lapsed lease interrupted it like a lost worker");
