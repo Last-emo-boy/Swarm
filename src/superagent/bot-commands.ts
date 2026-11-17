@@ -120,6 +120,13 @@ export class BotCommands {
     return result;
   }
   /**
+   * The answer to a command run for someone who asked it directly, such as a paired node reading this one's state: one
+   * string, or undefined when the command answers later through the person's own channel.
+   */
+  commandText(trigger: Trigger, name: CommandName, args: readonly string[]): string | undefined {
+    return this.run({ name, args: [...args], mentions: metaOf(trigger).mentions ?? [] }, trigger, this.client.settings());
+  }
+  /**
    * Runs a command the router chose for a person's message as if they had typed it, which answers in the conversation as
    * the command does; a take-over decides the message.
    */

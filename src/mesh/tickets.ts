@@ -8,6 +8,10 @@ import { HttpError } from "../server/gateway-http.js";
 import type { SuperagentClient } from "../superagent/client.js";
 import { findTicket, hostStatus, localReplies, ticketMessages, ticketRow, ticketRows, type HostStatus, type TicketMessage, type TicketRow } from "../superagent/views.js";
 import { callPeer } from "./client.js";
+import { localOperator, localTrigger } from "../superagent/sources/local.js";
+
+/** The commands a paired node may run on this one: reads only, a positive list, so a write added later cannot leak. */
+export const PEER_READS = ["status", "tickets", "usage", "devices", "mesh", "me"] as const;
 import type { MeshServer } from "./server.js";
 import type { Peer } from "./state.js";
 
@@ -24,7 +28,17 @@ const text = (body: Record<string, unknown>): string => {
 };
 
 /** Serves this node's tickets on its mesh server. */
-export function registerTicketRoutes(server: MeshServer, client: SuperagentClient): void {
+export function registerTicketRoutes(server: MeshServer, client: SuperagentClient,
+  commands?: { commandText(trigger: import("../superagent/core/index.js").Trigger, name: never, args: readonly string[]): string | undefined }): void {
+  if (commands) server.route("POST", "/mesh/v1/command", ({ body, peer }) => {
+    const name = typeof body.name === "string" ? body.name : "";
+    if (!(PEER_READS as readonly string[]).includes(name)) throw new HttpError(403, `A paired node may read only: ${PEER_READS.join(", ")}`);
+    const args = Array.isArray(body.args) ? body.args.map(String) : [];
+    // The peer speaks as this node's operator, the trust pairing already grants it; the command's own role gates still apply.
+    const trigger = localTrigger({ id: `mesh-${peer?.id ?? "peer"}-${Date.now()}`, text: `/${name}${args.length ? ` ${args.join(" ")}` : ""}`, actor: localOperator() });
+    const text = commands.commandText(trigger, name as never, args);
+    return { text: text ?? "" };
+  });
   const ticket = (handle: string) => {
     let found: ReturnType<typeof findTicket>;
     try { found = findTicket(client, handle); } catch (error) { throw new HttpError(409, error instanceof Error ? error.message : String(error)); }
@@ -84,3 +98,7 @@ export async function peerAct(peer: Peer, id: string, action: "messages" | "stop
 
 export const peerRequest = (peer: Peer, request: string): Promise<{ triggerId: string }> =>
   callPeer<{ triggerId: string }>(peer, "POST", "/mesh/v1/requests", { text: request });
+
+/** Runs one read command on a paired node, which answers from its own store through the same command table. */
+export const peerCommand = async (peer: Peer, name: string, args: readonly string[] = []): Promise<string> =>
+  (await callPeer<{ text: string }>(peer, "POST", "/mesh/v1/command", { name, args })).text;

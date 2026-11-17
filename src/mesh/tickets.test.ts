@@ -7,7 +7,9 @@ import { SuperagentClient } from "../superagent/client.js";
 import { TuiTickets } from "../tui/tickets/controller.js";
 import { needsYouItems } from "../tui/tickets/view-model.js";
 import { nodeCard } from "./card.js";
-import { joinMesh } from "./client.js";
+import { callPeer, joinMesh } from "./client.js";
+import { findPeer } from "./state.js";
+import { localOperator } from "../superagent/sources/local.js";
 import { MeshServer } from "./server.js";
 import { createInvite, readMesh, updateMesh } from "./state.js";
 import { registerTicketRoutes, splitHandle } from "./tickets.js";
@@ -34,7 +36,7 @@ before(async () => {
   updateMesh((state) => ({ ...state, node: { ...state.node, name: "ovh", listen: "127.0.0.1:0" } }), ovhMesh);
   const ovhClient = new SuperagentClient({ stateDir: join(root, "ovh-superagent") });
   const server = new MeshServer({ home: ovhMesh, card: () => nodeCard(readMesh(ovhMesh).node, { abilities: ["linux"] }) });
-  registerTicketRoutes(server, ovhClient);
+  registerTicketRoutes(server, ovhClient, { commandText: (trigger, name, args) => `ran ${name} ${args.join(" ")} as ${trigger.actor.id}` });
   const { address: url } = await server.start();
   updateMesh((state) => ({ ...state, node: { ...state.node, advertise: url } }), ovhMesh);
   ovh = { client: ovhClient, server };
@@ -104,6 +106,14 @@ test("replies posted on a paired device reach the TUI once, after its first read
   assert.deepEqual(await mac.tickets.newReplies(), [], "shown once");
   const messages = await mac.tickets.messages(`ovh:${ticketId.slice(0, 8)}`);
   assert.ok(messages.some((message) => message.text === "The changelog is written."));
+});
+
+test("a paired node runs a read command on the other through the same table, and nothing else", async () => {
+  const peer = findPeer(readMesh(mac.meshHome), "ovh");
+  const answered = await callPeer<{ text: string }>(peer, "POST", "/mesh/v1/command", { name: "status", args: ["1"] });
+  assert.equal(answered.text, `ran status 1 as ${localOperator()}`);
+  const refused = await callPeer<{ error?: string }>(peer, "POST", "/mesh/v1/command", { name: "link", args: [] }).then(() => undefined, (error: unknown) => error);
+  assert.match(String(refused), /read only: status, tickets, usage, devices, mesh, me/);
 });
 
 test("a paired device that stops answering is named, and its tickets leave the view", async () => {
