@@ -37,7 +37,8 @@ export const feishuChatKind: ChatKind = {
   },
   // A Feishu message is one bubble: a reply longer than the limit is rewritten, then cut.
   imWords: true,
-  // One cheap authenticated call: an app that is not installed, a bot outside its availability or a signed-out CLI fails it.
-  probe: async (commands, deployment, _config) => { await commands.lark(['auth', 'status']) },
+  // One cheap authenticated call that takes the CLI's own flags: an app not installed, a bot outside its availability or a
+  // signed-out CLI fails it. `auth status` is not it: the CLI's status command takes neither `--as` nor `--format`.
+  probe: async commands => { await commands.larkProbe() },
 }
 
