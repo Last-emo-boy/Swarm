@@ -101,9 +101,8 @@ describe('a chat kind', () => {
       .toMatchObject({ state: 'error', detail: 'The deployment has no Feishu bot' })
   })
   it('is probed with one API call the CLI takes with --as and --format, which throws the platform\'s own message', async () => {
-    const lark = vi.fn(async (_args: string[]) => { throw new Error('20009 The specified app is not installed') })
-    const larkProbe = async () => { await lark(['api', 'GET', '/open-apis/bot/v3/info']) }
-    await expect(feishuChatKind.probe!({ larkProbe } as never, deployment, {})).rejects.toThrow('20009')
+    const lark = vi.fn(async () => { throw new Error('20009 The specified app is not installed') })
+    await expect(feishuChatKind.probe!({ lark } as never, deployment, {})).rejects.toThrow('20009')
     expect(lark.mock.calls[0]).toEqual([['api', 'GET', '/open-apis/bot/v3/info']])
   })
 })

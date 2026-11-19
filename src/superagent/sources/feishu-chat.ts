@@ -39,6 +39,6 @@ export const feishuChatKind: ChatKind = {
   imWords: true,
   // One cheap authenticated call that takes the CLI's own flags: an app not installed, a bot outside its availability or a
   // signed-out CLI fails it. `auth status` is not it: the CLI's status command takes neither `--as` nor `--format`.
-  probe: async commands => { await commands.larkProbe() },
+  probe: async commands => { await commands.lark(['api', 'GET', '/open-apis/bot/v3/info']) },
 }
 

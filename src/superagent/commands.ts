@@ -114,12 +114,6 @@ export class Commands {
     if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
     return result.data
   }
-  /**
-   * Whether the bot's CLI is signed in and the app is reachable, as a health probe. It asks through the raw API rather than
-   * `auth status`, which takes neither `--as` nor `--format`, and reads the bot's own identity: `auth status` answers a
-   * signed-out CLI with a non-zero exit, which the generic call reports as its own message.
-   */
-  async larkProbe(): Promise<void> { await this.lark(['api', 'GET', '/open-apis/bot/v3/info']) }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }
 }

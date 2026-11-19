@@ -52,13 +52,13 @@ chatAcceptance('feishu', (stateDir): ChatKindUnderTest => {
   let statusReads = 0
   let signedOut: string | undefined
   lark.mockImplementation(async (args: string[], cwd?: string) => {
-    if (args[0] === 'auth') {
-      if (args[1] !== 'status') throw new Error(`unexpected lark ${args.join(' ')}`)
-      // A signed-out CLI answers `auth status` with an error, as lark-cli does.
+    // The sign-in check and the health probe both ask the bot's own identity; a signed-out CLI answers with an error.
+    if (args[0] === 'api' && args[2] === '/open-apis/bot/v3/info') {
       if (signedOut) throw new Error(signedOut)
       statusReads += 1
-      return { status: 'ready' }
+      return { app_name: 'Widgets Bot', activate_status: 2 }
     }
+    if (args[0] === 'auth') throw new Error(`unexpected lark ${args.join(' ')}`)
     const markdown = args.indexOf('--markdown')
     const text = markdown === -1 ? args[args.indexOf('--text') + 1] ?? '' : args[markdown + 1] ?? ''
     const file = args.indexOf('--file')
