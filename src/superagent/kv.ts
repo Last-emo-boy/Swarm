@@ -101,6 +101,8 @@ export const KV = {
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
    */
+  /** What the host read of a message's attachment, by message and file key: its text and size, kept so a chat card shows it without a download. */
+  files: { excerpt: family<{ at: string; bytes: number; text?: string; note?: string }, [message: string, file: string]>('files-excerpt:', (...parts) => `${parts[0]}#${parts[1]}`) },
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },

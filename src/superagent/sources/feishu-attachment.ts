@@ -24,9 +24,9 @@ const DOWNLOAD_MS = 60_000, PDF_MS = 30_000
 const exec = promisify(execFile)
 
 const KEY = /^(img|file)_[A-Za-z0-9_-]+$/
-/** A file, voice or video message as lark-cli renders it: `<file key="file_v3_…" name="a.docx"/>`, `<audio key=… />`, `<video key=… name=…/>`. */
-const TAG = /<(?:file|audio|video|media)\s([^<>]*?)\/?>/g
-const ATTRIBUTE = /\b(key|name)="([^"]*)"/g
+/** A file, voice, video or folder message as lark-cli renders it: `<file key="file_v3_…" name="a.docx"/>`, `<audio key=… />`, `<video key=… name=…/>`, `<folder key=… name=… count=… has_more=…/>`. */
+const TAG = /<(?:file|audio|video|media|folder)\s([^<>]*?)\/?>/g
+const ATTRIBUTE = /\b(key|name|count|has_more)="([^"]*)"/g
 /** An image as lark-cli renders it, alone or in a post: `![Image](img_…)` or `[Image: img_…]`. */
 const IMAGE = /!\[Image\]\((img_[A-Za-z0-9_-]+)\)|\[Image: (img_[A-Za-z0-9_-]+)\]/g
 
@@ -34,9 +34,12 @@ const IMAGE = /!\[Image\]\((img_[A-Za-z0-9_-]+)\)|\[Image: (img_[A-Za-z0-9_-]+)\
 export function feishuAttachments(text: string): Attachment[] {
   const found = new Map<string, Attachment>()
   const add = (item: Attachment) => { if (KEY.test(item.file_key) && !found.has(item.file_key)) found.set(item.file_key, item) }
-  for (const [, attributes] of text.matchAll(TAG)) {
+  for (const [tag, attributes] of text.matchAll(TAG)) {
     const values = Object.fromEntries([...attributes!.matchAll(ATTRIBUTE)].map(([, name, value]) => [name!, value!]))
-    if (values.key) add({ file_key: values.key, type: 'file', ...values.name ? { name: values.name } : {} })
+    // A folder is one archive holding more than the message itself shows; its count and whether more files sit in it are said in the folder's own name.
+    const name = /^<(?:file|folder)/.test(tag) && values.count !== undefined
+      ? `${values.name ?? 'folder'}${values.has_more === 'true' ? ' (a folder: more files than shown)' : ` (a folder: ${values.count} files)`}` : values.name
+    if (values.key) add({ file_key: values.key, type: 'file', ...name ? { name } : {} })
   }
   for (const [, inPost, alone] of text.matchAll(IMAGE)) add({ file_key: (inPost ?? alone)!, type: 'image' })
   // A message read from the chat's history keeps Feishu's own content: `{"file_key", "file_name"}`, `{"image_key"}` or a post's elements.
@@ -49,23 +52,26 @@ function fromContent(value: unknown, add: (item: Attachment) => void): void {
   if (Array.isArray(value)) { for (const item of value) fromContent(item, add); return }
   if (!value || typeof value !== 'object') return
   const item = value as Record<string, unknown>
-  // A video's `image_key` is its cover, not an attachment of its own.
+  // A video's `image_key` is its cover: it comes along with the video as an image of its own, so a model that takes images sees a frame.
   if (typeof item.file_key === 'string') add({ file_key: item.file_key, type: 'file', ...typeof item.file_name === 'string' ? { name: item.file_name } : {} })
-  else if (typeof item.image_key === 'string') add({ file_key: item.image_key, type: 'image' })
+  if (typeof item.image_key === 'string') add({ file_key: item.image_key, type: 'image' })
   for (const child of Object.values(item)) fromContent(child, add)
 }
 
 const megabytes = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`
+/** The read's `temp_path`, marking the file to outlive the call: the caller owns it then, and deletes it after saving or reading it. */
+function explicitKept(path: string, mark: () => void): { temp_path: string } { mark(); return { temp_path: path } }
 /**
  * Downloads one attachment of message `messageId` with the bot's CLI into a temporary directory and reads it: its size and
  * format, its text where it can be extracted (cut to `TEXT_CHARS`), and its bytes up to `INLINE_BYTES`. The file is deleted after.
  */
 export async function readAttachment(commands: Commands, messageId: string, attachment: Attachment): Promise<AttachmentRead> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'swarm-attachment-')))
+  let kept = false
   try {
     const saved = await commands.withSignal(AbortSignal.timeout(DOWNLOAD_MS))
       .lark<unknown>(['im', '+messages-resources-download', '--message-id', messageId, '--file-key', attachment.file_key, '--type', attachment.type], dir)
-      .catch((error: unknown) => { throw downloadError(error) })
+      .catch((error: unknown) => { throw downloadError(error, messageId) })
     const path = savedIn(dir, saved)
     const bytes = statSync(path).size
     if (bytes > ATTACHMENT_BYTES) throw new Error(`This attachment is ${megabytes(bytes)}, more than the ${megabytes(ATTACHMENT_BYTES)} the host downloads: ask its sender for a smaller file or a link`)
@@ -76,17 +82,30 @@ export async function readAttachment(commands: Commands, messageId: string, atta
     const text = attachment.type === 'image' ? {} : await textOf(data, format, path)
     if (text.note) notes.push(text.note)
     if (attachment.type === 'image') notes.push('An image: you see it only if your model takes images; otherwise ask its sender what it shows, or work on the file with tools.')
-    if (bytes > INLINE_BYTES) notes.push(`At ${megabytes(bytes)} it is larger than the ${megabytes(INLINE_BYTES)} the host passes on, so the file itself is not saved for you.`)
+    // A file too big to pass to the worker stays on disk for the caller to save where the worker's own tools reach it.
+    if (bytes > INLINE_BYTES) notes.push(`At ${megabytes(bytes)} it is larger than the ${megabytes(INLINE_BYTES)} passed on as bytes: the file itself is saved where your tools reach it.`)
     return { file_key: attachment.file_key, type: attachment.type, name, format, bytes, ...text.text === undefined ? {} : cut(text.text),
-      ...bytes <= INLINE_BYTES ? { base64: data.toString('base64') } : {}, ...notes.length ? { note: notes.join(' ') } : {} }
+      ...bytes <= INLINE_BYTES ? { base64: data.toString('base64') } : explicitKept(path, () => { kept = true }), ...notes.length ? { note: notes.join(' ') } : {} }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    if (!kept) rmSync(dir, { recursive: true, force: true })
   }
 }
-function downloadError(error: unknown): Error {
-  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) return new Error(`Downloading this attachment took longer than ${DOWNLOAD_MS / 1000} s`)
+/** What a failed download most likely was, said so the reader knows whether to ask its sender, an admin or to try again. */
+function downloadError(error: unknown, messageId: string): Error {
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) return new Error(`Downloading this attachment took longer than ${DOWNLOAD_MS / 1000} s: try again`)
   if (!(error instanceof CliError)) return error instanceof Error ? error : new Error(String(error))
-  return new CliError(`Feishu refused the download: ${error.message}. If it is a permission error, the Feishu app needs the permission to read messages' resources (im:message:readonly), which an admin grants in its developer console.`, error.code, error.exitCode)
+  const said = error.message
+  // Narrower first: a refused scope and a dead credential read alike, so the specific one decides.
+  if (/\b(?:scope|no_permission|permission denied|forbidden|privilege|no auth|unauthori[sz]ed)\b/i.test(said) && !/token/i.test(said)) {
+    return new CliError(`Feishu refused the download: the app has no permission to read message resources (im:resource), which an admin grants in its developer console. ${said}`, error.code, error.exitCode)
+  }
+  if (/token|credential|app_secret|login|sign ?in|authenticat/i.test(said)) {
+    return new CliError(`The bot could not sign in to Feishu for the download: its credential may have expired. ${said}`, error.code, error.exitCode)
+  }
+  if (/\bnot ?found\b|\bdeleted\b|\brecalled\b|\bexpired\b|message_id/i.test(said)) {
+    return new CliError(`Feishu no longer has this attachment: message ${messageId} may have been recalled or its file expired. Ask its sender to send it again. ${said}`, error.code, error.exitCode)
+  }
+  return new CliError(`Feishu refused the download: ${said}`, error.code, error.exitCode)
 }
 /** The file the CLI saved in `dir`, as its `saved_path` names it, else the one file there. */
 function savedIn(dir: string, result: unknown): string {

@@ -45,11 +45,11 @@ export type Rule = z.infer<typeof RuleSchema>;
 const ModelRefSchema = z.string().trim().min(1).nullable().default(null);
 
 export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(100).optional() }).strict();
-const Weak = z.enum(["inferred", "ignore"]);
+const Cell = z.enum(["explicit", "inferred", "ignore"]);
 export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({
-  listedUnaddressed: Weak.optional(),
-  unlistedAddressed: z.enum(["explicit", "inferred", "ignore"]).optional(),
-  unlistedUnaddressed: Weak.optional()
+  listedUnaddressed: Cell.optional(),
+  unlistedAddressed: Cell.optional(),
+  unlistedUnaddressed: Cell.optional()
 }).strict();
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema);
 export const RoleSchema = z.enum(["owner", "maintainer", "everyone"]);
