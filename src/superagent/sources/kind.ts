@@ -71,6 +71,8 @@ export interface AttachmentRef { file_key: string; type: 'file' | 'image'; name?
 /** What a worker reads of one attachment; `base64` is for the worker's own tools to save, never for its model. */
 export interface AttachmentRead extends AttachmentRef {
   name: string; format: string; bytes: number; text?: string; text_note?: string; base64?: string; note?: string
+  /** For a file too big to pass on as bytes: where the host that read it kept the file, for the caller to save into the worker's directory. */
+  temp_path?: string
 }
 /**
  * A kind's attachments and the chat reads a ticket's worker may ask for: the Feishu-shaped paths the core once spelled

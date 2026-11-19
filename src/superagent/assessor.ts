@@ -20,7 +20,7 @@ const localChatSource = (source: string): boolean => source === LOCAL;
 import { AdmissionDirectionSchema, RuleAssessmentSchema, allowedWrite, assessmentOutcome, capabilityOf, choosesHarness, directionAllowed, localNotice, repositoryFor, roleOf,
   seesNodes, watchedRepository } from "./policy.js";
 import { AGENT_COMMANDS, assessmentPrompt, followupPrompt, routerPrompt, type AgentCommand } from "./prompts.js";
-import { addressee, channelTo, chatName, conversation, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
+import { addressee, channelTo, chatName, conversation, excerptsFor, mentionsFor, peopleIn, personName, senderOf } from "./people.js";
 import { ask } from "./asks.js";
 import { RememberSchema, SELF, chatSubject, localNow, memoryOf, notesCard, personSubject, planOps, subjectsOf } from "./memories.js";
 import { admissionContext } from "./sources/admission-context.js";
@@ -220,7 +220,7 @@ export class ModelAssessor {
   }
 
   /** The candidate card the router reads: the request as a worker would read it, its batch, and the tickets around it. */
-  card(candidate: Candidate): Record<string, unknown> {
+  async card(candidate: Candidate): Promise<Record<string, unknown>> {
     const { store, sources } = this.host.client;
     const primary = candidate.triggers.at(-1)!;
     const disposition = store.triggers.disposition(primary.id);
@@ -240,7 +240,7 @@ export class ModelAssessor {
       text: cut(primary.text, TRIGGER_CHARS).text,
       // A terminal chat is a direct conversation, whatever its flat address says: the operator is the only one in it.
       ...(this.host.client.sources.chatKind(primary.source) ? { posted_in: metaOf(primary).topic ? "a topic" : metaOf(primary).direct || localChatSource(primary.source) ? "a direct message" : "a group chat" } : {}),
-      ...this.people(candidate, primary),
+      ...await this.people(candidate, primary),
       strength: candidate.strength,
       ...(others.length ? { batch: others.map((trigger) => triggerCard(trigger)) } : {}),
       ...(handedBack.length ? { handed_back: handedBack } : {}),
@@ -255,8 +255,8 @@ export class ModelAssessor {
    * Who is who around a chat message: its sender's and chat's names, the people it mentions, the conversation it is
    * part of (without the candidate's own messages, which the card has), and who else is in the chat.
    */
-  private people(candidate: Candidate, primary: Trigger): Record<string, unknown> {
-    const { store, sources } = this.host.client;
+  private async people(candidate: Candidate, primary: Trigger): Promise<Record<string, unknown>> {
+    const { store, sources, commands } = this.host.client;
     const kind = sources.chatKind(primary.source);
     if (!kind) return {};
     const meta = metaOf(primary);
@@ -272,9 +272,15 @@ export class ModelAssessor {
       .filter((item) => !item.direct).map(({ source, chatId, name }) => chatKinds.length > 1 ? { source, chat_id: chatId, name } : { chat_id: chatId, name });
     const settings = this.host.client.settings();
     const memory = memoryOf(settings) ? notesCard(store, subjectsOf(primary)) : undefined;
+    // What the host read of the files the conversation and the request itself carry, so the model judges a request about a file from its text.
+    const fileTriggers = [...new Map([...lines.flatMap((line) => line.trigger_id ? [store.triggers.get(line.trigger_id)].filter((item): item is Trigger => !!item) : []),
+      ...candidate.triggers].map((trigger) => [trigger.id, trigger])).values()];
+    // Each source's own kinds read its attachments; that is the primary's here, and a batch never mixes chat sources.
+    const excerpts = await excerptsFor(store, commands, fileTriggers.filter((trigger) => trigger.source === primary.source), sources.files(primary.source));
     return {
       ...(sender !== primary.actor.id ? { from_name: sender } : {}), ...(chat ? { chat_name: chat } : {}),
       ...(mentioned.length ? { mentioned } : {}), ...(lines.length ? { conversation: lines } : {}), ...(here.length ? { people_here: here } : {}),
+      ...(excerpts.size ? { media_excerpt: Object.fromEntries([...excerpts]) } : {}),
       ...(groups.length ? { your_chats: groups } : {}),
       ...(memory ? { ...localNow(settings, this.now()), memory } : {})
     };
@@ -359,7 +365,7 @@ export class ModelAssessor {
   private async route(candidate: Candidate): Promise<void> {
     const { client, complete } = this.host;
     const harnesses = await this.harnesses(candidate);
-    const card = { ...this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...await this.devices(candidate) };
+    const card = { ...await this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...await this.devices(candidate) };
     const triggerId = candidate.triggers.at(-1)!.id;
     // The platform word the prompt uses for where it answers: the request's own chat kind, Feishu's when it has none.
     const platform = client.sources.chatKind(candidate.triggers.at(-1)!.source)?.platform;

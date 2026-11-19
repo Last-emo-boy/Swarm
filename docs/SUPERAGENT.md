@@ -251,6 +251,12 @@ the requester it did. A name that fits several people is asked about. A worker's
 ticket, at most ten times an hour. Chat answers, messages and the agent's own remarks can @ people for real: the text names
 them as `@name`, and the Feishu sender turns each into a mention (`all` for everyone, only when asked).
 
+Files and images ride on the message that carries them: a ticket's worker lists them, downloads one with the bot's CLI and
+reads its text (plain text, Markdown, JSON, CSV, HTML, .docx, PDF) — so a request about a file does not depend on the @ being
+on the file's own message, and a reply that carries no file shows the ones on the message it answers. Every chat card also
+carries `media_excerpt`: what the host read of the attachment on each message with media, kept for 14 days and at most 500
+reads, so the chatter and the router speak about a file from its text rather than from a placeholder.
+
 `/chatter on` in a group lets the agent join the conversation there on its own, reading the room (読空気). With
 `everywhere`, it does so in every group it is in, except those an owner turned off with `/chatter off`. Once a chat has
 been quiet for `lullSeconds`, one model call reads its latest messages, with what the agent said there, and decides
@@ -259,7 +265,9 @@ a reply that quotes the one message it answers and may @ its writer. It speaks o
 (answers it was asked for do not count), never in `quiet` hours, and considers a chat at most every `considerMinutes`.
 It reads the chat from the messages it keeps. The Feishu Source hears every group the bot is in (`otherChats` is `mentions` by
 default): it keeps every message, answers when someone @s it, and fills in from each group's history what the live stream
-missed. `otherChats: "none"` limits it to the groups in `chats`.
+missed. `otherChats: "all"` reads every message there, so a file someone posts without an @ is fetched too; with the
+admission table's `listedUnaddressed`/`unlistedUnaddressed` set to `explicit`, such a message is also taken as the request it
+plainly is, rather than only a candidate. `otherChats: "none"` limits it to the groups in `chats`.
 
 ```json
 { "chatter": { "everywhere": true, "off": ["oc_..."], "chats": ["oc_..."], "persona": "Who the agent is in conversation",

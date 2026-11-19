@@ -4,8 +4,8 @@
  * and follow or drop a Thread (from dsh-superagent's app/tools/executor.ts). Each runs as an Engine command, which checks it.
  */
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod/v4";
 import { CHECK_BACK_MAX_MINUTES, CHECK_BACK_MIN_MINUTES, UserError, key, latestAssignment, latestReport, liveTicket, reached, runningAssignment, threadKey, ticketStage, type Ticket, type TicketInput, type Trigger } from "./core/index.js";
@@ -90,10 +90,19 @@ export const ATTACHMENTS_DIR = ".swarm-attachments";
 export const withAttachments = (tools: readonly TicketTool[], directory: string): TicketTool[] => tools.map((tool) => tool.name !== "attachment" ? tool : {
   ...tool,
   run: async (args) => {
-    const result = await tool.run(args) as { base64?: unknown; file_key?: unknown; name?: unknown };
-    if (typeof result?.base64 !== "string") return result;
-    const { base64, ...read } = result;
-    return { ...read, saved_to: saveAttachment(directory, String(read.file_key), String(read.name), Buffer.from(base64, "base64")) };
+    const result = await tool.run(args) as { base64?: unknown; temp_path?: unknown; file_key?: unknown; name?: unknown };
+    if (typeof result?.base64 === "string") {
+      const { base64, ...read } = result;
+      return { ...read, saved_to: saveAttachment(directory, String(read.file_key), String(read.name), Buffer.from(base64, "base64")) };
+    }
+    // A file too big to pass on as bytes is still saved where the worker's own tools reach it.
+    if (typeof result?.temp_path === "string") {
+      const { temp_path, ...read } = result;
+      const saved = saveAttachment(directory, String(read.file_key), String(read.name), readFileSync(temp_path));
+      rmSync(dirname(temp_path), { recursive: true, force: true });
+      return { ...read, saved_to: saved };
+    }
+    return result;
   }
 });
 /** Writes an attachment as `<directory>/.swarm-attachments/<file key>/<its name>`, and returns its path. */
@@ -112,11 +121,20 @@ function saveAttachment(directory: string, fileKey: string, name: string, data: 
 const AcknowledgementSchema = z.string().trim().min(1)
   .refine((text) => wordCount(text) <= IM_WORDS, `At most ${IM_WORDS} words; write one short sentence.`);
 
-/** Whether a ticket's worker may read a Trigger: one that reached it, started it, or is on a Thread it follows. */
+/**
+ * Whether a ticket's worker may read a Trigger: one that reached it, started it, is on a Thread it follows, or was said in a
+ * chat the ticket already answers in — a ticket about a chat reads what people put there, mention or not.
+ */
 const readable = (client: SuperagentClient, ticket: Ticket, trigger: Trigger): boolean =>
   reached(ticket, trigger, (thread) => client.store.threads.get(thread))
   || ticket.origin.triggerIds.includes(trigger.id)
-  || trigger.threads.some((ref) => ticket.follows?.some((follow) => follow.thread === threadKey(ref)));
+  || trigger.threads.some((ref) => ticket.follows?.some((follow) => follow.thread === threadKey(ref)))
+  || sameChat(ticket, trigger);
+/** Whether `trigger` was said in a chat one of the ticket's channels answers in. */
+const sameChat = (ticket: Ticket, trigger: Trigger): boolean => {
+  const chatId = typeof trigger.meta.chatId === "string" ? trigger.meta.chatId : undefined;
+  return chatId !== undefined && ticket.channels.some((channel) => channel.source === trigger.source && channel.address.chatId === chatId);
+};
 
 /** How far back, and how many messages, a worker's chat/<chat-id> read goes. */
 const CHAT_DAYS = 7, CHAT_MESSAGES = 50;
@@ -347,13 +365,20 @@ export function ticketTools(client: SuperagentClient, ticketId: string, assignme
       return page(resource, offset, limit, () => found);
     },
     attachment: async (args) => {
-      const source = trigger(String(args.trigger_id));
-      const files = client.sources.files(source.source);
-      if (!files) throw new Error(`${client.sources.chatKind(source.source)?.platform ?? source.source} messages have no attachments this worker can read`);
+      const named = trigger(String(args.trigger_id));
+      const files = client.sources.files(named.source);
+      if (!files) throw new Error(`${client.sources.chatKind(named.source)?.platform ?? named.source} messages have no attachments this worker can read`);
+      // A reply often carries no file itself: the file is on the message it answers, when this worker may read that one too.
+      const replied = client.sources.repliesTo(named);
+      const parent = replied === undefined ? undefined : client.store.triggers.get(replied);
+      const onParent = !files.attachments(named).length && !!parent && readable(client, ticket(), parent);
+      const source = onParent ? parent! : named;
       const attachments = files.attachments(source);
-      if (typeof args.file_key !== "string") return { trigger_id: source.id, attachments, ...(attachments.length ? {} : { note: "This message has no file or image" }) };
+      const fromParent = source.id !== named.id;
+      if (typeof args.file_key !== "string") return { trigger_id: named.id, ...(fromParent ? { read_from: source.id, note: "This message carries no file of its own: these are the ones on the message it replies to." } : {}),
+        attachments, ...(attachments.length || fromParent ? {} : { note: "This message has no file or image" }) };
       const attachment = attachments.find((item) => item.file_key === args.file_key);
-      if (!attachment) throw new Error(`${args.file_key} is not attached to this message: list its attachments without file_key`);
+      if (!attachment) throw new Error(`${args.file_key} is not attached to ${fromParent ? `the message it replies to (${source.id})` : "this message"}: list its attachments without file_key`);
       return { trigger_id: source.id, ...await files.read(client.commands, source, attachment) };
     },
     devices: async () => {

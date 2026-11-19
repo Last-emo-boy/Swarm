@@ -12,7 +12,7 @@ import type { Thread, Ticket, Trigger } from './core/index.js'
 const MEMBER = 'ou_alice'
 const CHAT = 'oc_team'
 const OBSERVED = 'oc_1111111111111111111111111111'
-const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean; otherChats?: 'none' | 'mentions' }, enabled = true) => ({ enabled, config })
+const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean; otherChats?: 'none' | 'mentions' | 'all' }, enabled = true) => ({ enabled, config })
 const base = SettingsSchema.parse({
   policy: { sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'Alice' }] } } },
   eval: { mode: 'auto' },
@@ -122,6 +122,17 @@ describe('admission table', () => {
     // An @-only chat receives no unaddressed message, so even an inferred cell does not admit one.
     expect(setup(withTable({ [CHAT]: { listedUnaddressed: 'inferred' } })).policy.gate(inChat(CHAT, MEMBER, false), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
     expect(setup(withTable({ [CHAT]: { unlistedUnaddressed: 'inferred' } })).policy.gate(inChat(CHAT, STRANGER, false), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
+  })
+  it('reads every message in every group it is in when other chats are all, so a file sent without an @ is admitted', () => {
+    const all = setup(withTable({ other: { listedUnaddressed: 'explicit', unlistedUnaddressed: 'explicit' } }, { otherChats: 'all' }))
+    expect(all.sources.scope(inChat('oc_elsewhere', STRANGER, false))).toEqual({ listened: true, observed: true, row: 'other' })
+    expect(all.policy.gate(inChat('oc_elsewhere', STRANGER, false), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { row: 'other', cell: 'unlistedUnaddressed' } })
+    expect(all.policy.gate(inChat('oc_elsewhere', MEMBER, false), thread(), [])).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { row: 'other', cell: 'listedUnaddressed' } })
+    // Without a cell that says so, an unaddressed message from someone off the list is still ignored.
+    expect(setup({ ...base, sources: { feishu: { enabled: true, config: { chats: [], directMessages: true, otherChats: 'all' } } } })
+      .policy.gate(inChat('oc_elsewhere', STRANGER, false), thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
   })
   it('hears every group it is in, as the row other, unless other chats are set to none', () => {
     expect(sources.scope(inChat('oc_elsewhere'))).toEqual({ listened: true, observed: false, row: 'other' })
@@ -264,14 +275,18 @@ describe('assessment outcomes', () => {
 })
 
 describe('admission table settings', () => {
-  it('refuses an explicit cell for messages that do not address the agent, in the settings and in a submitted Policy', () => {
-    for (const cell of ['listedUnaddressed', 'unlistedUnaddressed']) {
+  it('takes an explicit cell in every column, so a chat read without @ mentions can admit its messages as requests', () => {
+    // A chat set to read every message admits an unaddressed one as the request it plainly is; a settings editor may say so.
+    for (const cell of ['listedUnaddressed', 'unlistedAddressed', 'unlistedUnaddressed']) {
       const part = { allowed: [], admission: { [CHAT]: { [cell]: 'explicit' } } }
-      expect(() => SettingsSchema.parse({ policy: { sources: { feishu: part } } })).toThrow()
-      expect(() => sources.validatePolicy({ feishu: part })).toThrow()
+      expect(SettingsSchema.parse({ policy: { sources: { feishu: part } } }).policy.sources.feishu!.admission).toMatchObject({ [CHAT]: { [cell]: 'explicit' } })
+      expect(sources.validatePolicy({ feishu: part }).feishu).toMatchObject({ admission: { [CHAT]: { [cell]: 'explicit' } } })
     }
-    expect(sources.validatePolicy({ feishu: { allowed: [], admission: { [CHAT]: { unlistedAddressed: 'explicit' } } } }).feishu)
-      .toMatchObject({ admission: { [CHAT]: { unlistedAddressed: 'explicit' } } })
+    // The cell counts only where the chat reads every message: an @-only chat receives no unaddressed message to admit.
+    const settings = SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { sources: { feishu: { allowed: [{ id: MEMBER }], admission: { [CHAT]: { listedUnaddressed: 'explicit' } } } } },
+      sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }], directMessages: true }) } })
+    const quiet = (sender: string): Trigger => { const { addressed: _addressed, ...rest } = feishu({ actor: { source: 'feishu', id: sender }, meta: { chatId: CHAT, direct: false, mentioned: false } }); return rest }
+    expect(setup(settings).policy.gate(quiet(MEMBER), thread(), [])).toEqual({ admissible: false, reason: 'no_mention' })
   })
   it('accepts an explicit candidate whatever the accept mode, which bears only on inferred ones', () => {
     const rules = SettingsSchema.parse({}).policy.rules.filter(rule => rule.enabled)

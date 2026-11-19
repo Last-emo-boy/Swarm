@@ -89,18 +89,30 @@ test("finds the files and images a message holds, as lark-cli renders them and a
     { file_key: "file_v3_a", type: "file", name: "a b.pdf" }, { file_key: "img_v3_x", type: "image" }, { file_key: "img_v3_y", type: "image" }]);
   assert.deepEqual(feishuAttachments('<audio key="file_v3_voice" duration="3s"/><video key="file_v3_clip" name="clip.mp4"/>'), [
     { file_key: "file_v3_voice", type: "file" }, { file_key: "file_v3_clip", type: "file", name: "clip.mp4" }]);
-  // The chat's history keeps Feishu's JSON content: a file, an image, and a post's elements (a video's image_key is its cover).
+  // The chat's history keeps Feishu's JSON content: a file, an image, and a post's elements (a video's image_key is its cover image).
   assert.deepEqual(feishuAttachments('{"file_key":"file_v3_b","file_name":"b.csv"}'), [{ file_key: "file_v3_b", type: "file", name: "b.csv" }]);
   assert.deepEqual(feishuAttachments('{"image_key":"img_v3_c"}'), [{ file_key: "img_v3_c", type: "image" }]);
   assert.deepEqual(feishuAttachments(JSON.stringify({ title: "", content: [[{ tag: "text", text: "图" }, { tag: "img", image_key: "img_v3_d" }],
-    [{ tag: "media", file_key: "file_v3_e", image_key: "img_v3_cover" }]] })), [{ file_key: "img_v3_d", type: "image" }, { file_key: "file_v3_e", type: "file" }]);
+    [{ tag: "media", file_key: "file_v3_e", image_key: "img_v3_cover" }]] })), [{ file_key: "img_v3_d", type: "image" }, { file_key: "file_v3_e", type: "file" },
+    { file_key: "img_v3_cover", type: "image" }]);
+  // A folder's own count and whether it holds more files than the message shows ride along in its name.
+  assert.deepEqual(feishuAttachments('<folder key="file_v3_dir" name="资料" count="3" has_more="false"/>'),
+    [{ file_key: "file_v3_dir", type: "file", name: "资料 (a folder: 3 files)" }]);
+  assert.deepEqual(feishuAttachments('<folder key="file_v3_big" name="全部" count="20" has_more="true"/>'),
+    [{ file_key: "file_v3_big", type: "file", name: "全部 (a folder: more files than shown)" }]);
   assert.deepEqual(feishuAttachments("no attachment, just text about img_v3 keys"), []);
+  // The history's newer post shape repeats a post's body under content_v2: each key is named once.
+  assert.deepEqual(feishuAttachments(JSON.stringify({ title: "周报", content: [[{ tag: "img", image_key: "img_v3_d" }, { tag: "text", text: "图" }]],
+    content_v2: [[{ tag: "img", image_key: "img_v3_d" }, { tag: "text", text: "图" }]] })), [{ file_key: "img_v3_d", type: "image" }]);
 });
 
 test("a worker lists a message's attachments and reads a .docx's text, which its own tools save into its directory", async () => {
   const { posted, asked, run, tools } = docxTicket();
   assert.deepEqual(await run({ trigger_id: posted.id }), { trigger_id: posted.id, attachments: [{ file_key: "file_v3_doc", type: "file", name: "周报.docx" }] });
-  assert.deepEqual(await run({ trigger_id: asked.id }), { trigger_id: asked.id, attachments: [], note: "This message has no file or image" });
+  // A reply that carries no file itself shows the ones on the message it answers: the file people mean by "你看看".
+  assert.deepEqual(await run({ trigger_id: asked.id }), { trigger_id: asked.id, read_from: posted.id,
+    note: "This message carries no file of its own: these are the ones on the message it replies to.",
+    attachments: [{ file_key: "file_v3_doc", type: "file", name: "周报.docx" }] });
   assert.equal(downloads.length, 0, "listing reads the stored message only");
   const docx = zip({ "[Content_Types].xml": "<Types/>", "word/document.xml": DOCUMENT });
   files.set("file_v3_doc", { name: "周报.docx", data: docx });
@@ -135,14 +147,18 @@ test("a worker reads an image's bytes and long text cut with what was left out",
   assert.equal(log.text_note, `The first ${TEXT_CHARS} of ${TEXT_CHARS + 5} characters: 5 were left out.`);
 });
 
-test("a worker reads only keys in a message its ticket can read, and nothing larger than the host downloads", async () => {
+test("a worker reads keys of a message in its chat, and nothing larger than the host downloads", async () => {
   const { posted, run } = docxTicket();
-  await assert.rejects(run({ trigger_id: posted.id, file_key: "file_v3_other" }), /file_v3_other is not attached to this message/);
-  // Another conversation's file never reached this ticket.
+  await assert.rejects(run({ trigger_id: posted.id, file_key: "file_v3_other" }), /file_v3_other is not attached to/);
+  // A message in the same chat reached the ticket even with no @: a ticket about a chat reads what people post there.
   const elsewhere = say("ou_wang", '<file key="file_v3_secret" name="salaries.xlsx"/>');
   files.set("file_v3_secret", { name: "salaries.xlsx", data: Buffer.from("x") });
-  await assert.rejects(run({ trigger_id: elsewhere.id }), /did not reach this ticket/);
-  await assert.rejects(run({ trigger_id: elsewhere.id, file_key: "file_v3_secret" }), /did not reach this ticket/);
+  assert.deepEqual(await run({ trigger_id: elsewhere.id }), { trigger_id: elsewhere.id, attachments: [{ file_key: "file_v3_secret", type: "file", name: "salaries.xlsx" }] });
+  // Another chat's message still never reaches it.
+  const otherChat = feishuTrigger({ message_id: "om_other_chat", chat_id: "oc_elsewhere", chat_type: "group", sender_id: "ou_wang", sender_type: "user",
+    content: '<file key="file_v3_stray" name="a.txt"/>', create_time: String(Date.now()), mentions: [] }, "ou_bot", "cli_app")!;
+  client.engine.receive(otherChat);
+  await assert.rejects(run({ trigger_id: otherChat.id }), /did not reach this ticket/);
   assert.equal(downloads.length, 0);
   files.set("file_v3_doc", { name: "周报.docx", data: Buffer.alloc(ATTACHMENT_BYTES + 1024 * 1024) });
   await assert.rejects(run({ trigger_id: posted.id, file_key: "file_v3_doc" }), /is 21\.0 MB, more than the 20\.0 MB the host downloads/);

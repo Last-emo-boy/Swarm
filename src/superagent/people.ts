@@ -4,13 +4,17 @@
  * (sources/feishu-loops.ts calls `readMembers`, the Feishu writers below); the router, chatter and workers read them from the
  * store through the kind's directory, so naming someone never waits on the platform.
  */
+import { rmSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod/v4";
 import { threadKey, type ChannelRef, type Trigger } from "./core/index.js";
 import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
 import { feishuChatKind } from "./sources/feishu-chat.js";
-import { KV, type Key } from "./kv.js";
+import { KV, type Family, type Key } from "./kv.js";
 import { metaOf } from "./sources/meta.js";
 import type { ChatKind } from "./sources/chat.js";
+import type { Commands } from "./commands.js";
+import type { BoundSourceFiles } from "./sources/kind.js";
 import type { Store } from "./store.js";
 
 /** A chat's members by open_id (bots also by app id), the bots among them, and whether to read the list again soon. */
@@ -18,7 +22,7 @@ export interface Members { at: string; names: Record<string, string>; bots?: str
 /** Something the agent said in a chat: the message it answered, if any, whether it went in that message's topic, and the ticket that said it. */
 export interface Said { at: string; text: string; to?: string; topic?: boolean; ticket?: string }
 
-interface State { get<V>(key: Key<V>): V | undefined; set<V>(key: Key<V>, value: V | undefined): void }
+interface State { get<V>(key: Key<V>): V | undefined; set<V>(key: Key<V>, value: V): void; keys?<V>(family: Family<V, never>): Key<V>[]; delete?(key: string): void }
 
 /** How long a chat's member list stays fresh; one with a stranger in it, or whose read failed, is read again after a while. */
 export const MEMBERS_MS = 6 * 3_600_000, AGAIN_MS = 10 * 60_000;
@@ -146,11 +150,74 @@ export function conversation(store: Pick<Store, "get" | "read">, trigger: Trigge
 export const chatLog = (store: Pick<Store, "get" | "read">, chatId: string, options: LineOptions, source = FEISHU): Line[] =>
   lines(store, store.read.chatMessages({ source, chatId }, options.since, options.limit, true, options.oldest === true), saidIn(store, chatId, options.since), options);
 /**
- * The media placeholders in a message's text: lark-cli's live forms ("[Image: img_…]", "![Image](img_…)", "[Sticker]", "<file …/>")
- * and a backfilled message's history form ("image_key" / "file_key"). The models read text only, so a count is all a card can say.
+ * The media placeholders in a message's text: lark-cli's live forms ("[Image: img_…]", "![Image](img_…)", "[Sticker]", "[Chat card: …]",
+ * "<file …/>" and "<folder …/>") and a backfilled message's history form ("image_key" / "file_key"). The models read text only, so a
+ * count is all a card can say; the count is what a card's `media` carries, and it only needs to say that something is there.
  */
 export function mediaCount(text: string): number {
-  return (text.match(/\[(?:Image|Sticker)[:\]]|!\[Image\]\(|<file\b|"(?:image|file)_key"/g) ?? []).length;
+  return (text.match(/\[(?:Image|Sticker)[:\]]|\[Chat card:|!\[Image\]\(|<(?:file|folder|audio|video|media|task|hongbao)\b|"(?:image|file)_key"/g) ?? []).length;
+}
+/** How much of an attachment's text a chat card carries, how many attachments one card looks at, and how long a card waits for them. */
+const EXCERPT_CHARS = 400, EXCERPT_FILES = 4, EXCERPT_MS = 8_000;
+/**
+ * What the host read of one attachment, as a card line: its name and size, and the start of its text where the host could extract
+ * it. The first read is kept under the message and file key, so a card that shows the same message again costs no download.
+ */
+export async function mediaExcerpt(state: State, commands: Commands, trigger: Trigger, files: BoundSourceFiles):
+  Promise<{ file_key: string; name?: string; bytes?: number; text?: string; note?: string } | undefined> {
+  const messageId = String(metaOf(trigger).messageId ?? trigger.id);
+  const attachment = files.attachments(trigger)[0];
+  if (!attachment) return undefined;
+  const cached = state.get(KV.files.excerpt(messageId, attachment.file_key));
+  if (cached) return { file_key: attachment.file_key, ...attachment.name ? { name: attachment.name } : {}, bytes: cached.bytes,
+    ...cached.text === undefined ? {} : { text: cached.text }, ...cached.note === undefined ? {} : { note: cached.note } };
+  const read = await Promise.race([files.read(commands, trigger, attachment),
+    new Promise<{ note: string }>((resolve) => setTimeout(() => resolve({ note: "Reading it failed: it took longer than the card waits" }), EXCERPT_READ_MS).unref())])
+    .catch((error: unknown) => ({ note: `Reading it failed: ${error instanceof Error ? error.message : String(error)}` }));
+  // A card keeps only the text; a file too big to pass on is read and dropped here rather than left on disk for a ticket.
+  if ("temp_path" in read && typeof read.temp_path === "string") rmSync(dirname(read.temp_path), { recursive: true, force: true });
+  const text = "text" in read && typeof read.text === "string" ? read.text.slice(0, EXCERPT_CHARS) : undefined;
+  const kept = { at: new Date().toISOString(), bytes: "bytes" in read && typeof read.bytes === "number" ? read.bytes : 0,
+    ...(text ? { text } : {}), ...("note" in read && typeof read.note === "string" ? { note: read.note.slice(0, 300) } : {}) };
+  // A download that failed is not kept: the next card tries again.
+  if (!kept.note?.startsWith("Reading it failed")) state.set(KV.files.excerpt(messageId, attachment.file_key), kept);
+  return { file_key: attachment.file_key, ...attachment.name ? { name: attachment.name } : {}, bytes: kept.bytes,
+    ...kept.text === undefined ? {} : { text: kept.text }, ...kept.note === undefined ? {} : { note: kept.note } };
+}
+/** How long a kept excerpt stays, and how many are kept at most: a chat card reads recent messages, so old ones are not worth the space. */
+const EXCERPT_DAYS = 14, EXCERPT_KEPT = 500;
+/** Drops excerpts past their time, and all but the newest when too many are kept. */
+function pruneExcerpts(state: State): void {
+  const keys = state.keys?.(KV.files.excerpt) ?? [];
+  if (!keys.length) return;
+  const fresh = Date.now() - EXCERPT_DAYS * 86_400_000;
+  const kept = keys.filter((key) => (state.get(key)?.at ? Date.parse(state.get(key)!.at) >= fresh : false));
+  const drop = new Set(keys.filter((key) => !kept.includes(key)));
+  if (kept.length > EXCERPT_KEPT) {
+    kept.sort((a, b) => String(state.get(a)?.at).localeCompare(String(state.get(b)?.at)));
+    for (const key of kept.slice(0, kept.length - EXCERPT_KEPT)) drop.add(key);
+  }
+  for (const key of drop) state.delete?.(key);
+}
+/** How long a card's excerpt wait may run: one read is bounded too, so a huge or slow file cannot hold it. */
+const EXCERPT_READ_MS = 6_000;
+/** The excerpts of the messages on a card that carry media, read in order within one budget, so a card never waits long. */
+export async function excerptsFor(state: State, commands: Commands, triggers: readonly Trigger[], files: BoundSourceFiles | undefined):
+  Promise<Map<string, { file_key: string; name?: string; bytes?: number; text?: string; note?: string }[]>> {
+  const found = new Map<string, { file_key: string; name?: string; bytes?: number; text?: string; note?: string }[]>();
+  if (!files) return found;
+  const withMedia = triggers.filter((trigger) => mediaCount(trigger.text) > 0).slice(-EXCERPT_FILES);
+  // Nothing on the card needs a read, and nothing was read: no prune, no cost.
+  if (!withMedia.length) return found;
+  pruneExcerpts(state);
+  const deadline = Date.now() + EXCERPT_MS;
+  for (const trigger of withMedia) {
+    if (Date.now() > deadline) break;
+    const excerpt = await mediaExcerpt(state, commands, trigger, files);
+    // Keyed as a card names a message: its platform id, which a Feishu trigger's own id is a hash of.
+    if (excerpt) found.set(String(metaOf(trigger).messageId ?? trigger.id), [excerpt]);
+  }
+  return found;
 }
 const saidIn = (state: Pick<State, "get">, chatId: string, since: string): Said[] =>
   (state.get(KV.chatter.chat(chatId))?.said ?? []).filter((entry) => entry.at >= since);

@@ -32,8 +32,11 @@ export const BUILT_IN = {
 export const talkOnly = (noun: "answer" | "reply"): string =>
   `Here you can only post this one message: you have no tools in it, cannot run, check, test, read, send, open a ticket or attach a file, and there is no later turn of yours. Work starts only when a person @-mentions you with it. Never say you did, ran, tested, checked or sent something, and never say you will, are about to or will shortly do anything — saying it is not doing it. When someone asks you for work, say in one line that they should @ you with it. Never promise anything you do not do in this ${noun}.`;
 
-/** A message's media is a placeholder on the card, not its content: the models read text only. */
-export const UNSEEN_MEDIA = "A message with media: 1 or more holds an image, sticker or file you cannot see — you get a placeholder, not the content. Never describe, judge or summarise what one shows, and never claim to have looked; go by what people write about it, and when you need what it shows, say plainly that you cannot see images and ask for it in words.";
+/**
+ * A message's media is a placeholder on the card, not its content: the models read text only. A card line with `media_excerpt` carries
+ * what the host read of its attachment, which is the one thing here about a file that may be talked about.
+ */
+export const UNSEEN_MEDIA = "A message with media: it holds an image, sticker, file or folder, and you get a placeholder, not the content. A line with media_excerpt carries what the host read of its file — its name, size and the start of its text: that text you may use. Never describe, judge or summarise an image or what a file shows beyond that text, and never claim to have looked: a ticket's worker can read the file itself, so when the content matters, @-mention it with the request rather than answering from the placeholder.";
 
 /** The credentials sentence alone, which the promise keeper also carries: the chat prompts and it all ask for access the same way. */
 export const CHAT_CREDENTIALS = "Never ask for a password, token, key or login in a group: name who can grant access, and say it goes by direct message, /link for GitHub, or a paired node that lends the tool.";

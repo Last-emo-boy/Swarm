@@ -27,8 +27,11 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
     .refine(chats => new Set(chats.map(chat => chat.chatId)).size === chats.length, 'Duplicate chat IDs')
     .default([]),
   directMessages: z.boolean().default(true),
-  /** Groups not in `chats`: every group the bot is in is heard and answers when someone @s it, unless set to none. */
-  otherChats: z.enum(['none', 'mentions']).default('mentions'),
+  /**
+   * Groups not in `chats`. `mentions`: every group the bot is in is heard, and it answers when someone @s it. `all`: every message
+   * there is read, so attached files are fetched even when nobody @s the bot. `none`: only the groups in `chats`.
+   */
+  otherChats: z.enum(['none', 'mentions', 'all']).default('mentions'),
 }).strict()
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 export const feishuKind: SourceKind<FeishuConfig> = {
@@ -41,7 +44,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const chat = config.chats.find(item => item.chatId === meta.chatId)
     if (chat) return { listened: true, observed: chat.listen === 'all', row: chat.chatId }
-    return config.otherChats === 'mentions' ? { listened: true, observed: false, row: 'other' } : { listened: false, reason: 'chat_not_allowed' }
+    if (config.otherChats === 'none') return { listened: false, reason: 'chat_not_allowed' }
+    return { listened: true, observed: config.otherChats === 'all', row: 'other' }
   },
   // A reply goes only to a chat the Source still receives.
   channel: {
@@ -67,8 +71,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
       return [
         ...config.chats.map(chat => ({ id: chat.chatId, label: chat.name || chat.chatId, note: chat.listen === 'all' ? 'All' : '@ only',
           cells: { listedUnaddressed: chat.listen === 'all', unlistedAddressed: true, unlistedUnaddressed: chat.listen === 'all' } })),
-        { id: 'other', label: 'Other chats', note: config.otherChats === 'mentions' ? '@ only' : 'Not received',
-          cells: { listedUnaddressed: false, unlistedAddressed: config.otherChats === 'mentions', unlistedUnaddressed: false } },
+        { id: 'other', label: 'Other chats', note: config.otherChats === 'all' ? 'All' : config.otherChats === 'mentions' ? '@ only' : 'Not received',
+          cells: { listedUnaddressed: config.otherChats === 'all', unlistedAddressed: config.otherChats !== 'none', unlistedUnaddressed: config.otherChats === 'all' } },
         { id: 'direct', label: 'Direct messages', note: config.directMessages ? 'Received' : 'Not received',
           cells: { listedUnaddressed: false, unlistedAddressed: config.directMessages, unlistedUnaddressed: false } },
       ]

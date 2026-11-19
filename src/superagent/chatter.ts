@@ -12,7 +12,7 @@ import { key, type ChannelRef, type Trigger } from "./core/index.js";
 import type { Complete } from "./assessor.js";
 import type { SuperagentClient } from "./client.js";
 import { KV } from "./kv.js";
-import { chatName, chatsOf, isOwn, mediaCount, senderOf, type ChatGroup } from "./people.js";
+import { chatName, chatsOf, excerptsFor, isOwn, mediaCount, senderOf, type ChatGroup } from "./people.js";
 import { feishuChatKind } from "./sources/feishu-chat.js";
 import type { ChatKind } from "./sources/chat.js";
 import { SOURCE as FEISHU } from "./sources/feishu-trigger.js";
@@ -189,6 +189,19 @@ export function chatterPrompt(name: string, persona: string, platform = "Feishu"
   ].join("\n");
 }
 
+/**
+ * Adds to each card line with media what the host read of its attachment: its name, size and the start of its text, so the model
+ * speaks about a file from what it says. Reading happens once per message and file key, and one card waits only a few seconds.
+ */
+async function withExcerpts(client: SuperagentClient, messages: readonly Trigger[], timeline: Record<string, unknown>[]): Promise<void> {
+  const files = messages.length ? client.sources.files(messages[0]!.source) : undefined;
+  const found = await excerptsFor(client.store, client.commands, messages, files);
+  for (const line of timeline) {
+    const excerpt = found.get(String(line.id));
+    if (excerpt) line.media_excerpt = excerpt;
+  }
+}
+
 export interface ChatterHost {
   readonly client: SuperagentClient;
   readonly complete: Complete;
@@ -353,6 +366,7 @@ export class ChatterRoom {
         ...(metaOf(message).parentId !== undefined ? { reply_to: metaOf(message).parentId } : {}), ...(why.has(message.id) ? { for_you: why.get(message.id) } : {}) })),
       ...own.map((item) => ({ at: item.at, from: name || "you", you: true, ...(item.ticket ? { from_ticket: item.ticket } : {}), text: item.text }))
     ].sort((a, b) => a.at.localeCompare(b.at));
+    await withExcerpts(client, messages, timeline);
     const memoryOn = !!memoryOf(settings);
     const memory = memoryOn ? notesCard(client.store, [chatSubject(chatId, source), ...new Set(messages.map((message) => personSubject(message.actor.id, source)))], 4, 16) : [];
     const tickets = chatTickets(client.store, chatId, source, now);
@@ -504,6 +518,7 @@ export class ChatterRoom {
         ...(metaOf(message).parentId !== undefined ? { reply_to: metaOf(message).parentId } : {}) })),
       ...own.map((item) => ({ at: item.at, from: bot || "you", you: true, ...(item.ticket ? { from_ticket: item.ticket } : {}), text: item.text }))
     ].sort((a, b) => a.at.localeCompare(b.at));
+    await withExcerpts(client, messages, timeline);
     // What it remembers of the chat and of the people talking there, when its memory is on.
     const memoryOn = !!memoryOf(settings);
     const memory = memoryOn ? notesCard(client.store, [chatSubject(chatId, source), ...new Set(messages.map((message) => personSubject(message.actor.id, source)))], 4, 16) : [];

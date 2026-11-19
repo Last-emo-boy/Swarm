@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -15,6 +15,8 @@ import { settingsPath, writeSettings } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import { feishuTrigger } from "./sources/feishu.js";
 import { feishuUserChannel } from "./sources/feishu-trigger.js";
+import { Commands } from "./commands.js";
+import { vi } from "./testing/expect.js";
 
 const CHAT = "oc_team", BOT = "ou_bot";
 let stateDir: string;
@@ -240,6 +242,31 @@ describe("a consideration", () => {
     expect([calls.length, waiting()]).toEqual([4, [[CHAT, 1, "Error: network down"]]]);
     await client.effects.drain();
   });
+});
+
+it("shows on the card what the host read of a file a message carries, and keeps the read for the next card", async () => {
+  const downloads: string[] = [];
+  vi.spyOn(Commands.prototype, "lark").mockImplementation(async (args: string[], cwd?: string) => {
+    downloads.push(args.join(" "));
+    if (!cwd) throw new Error(`unexpected lark ${args.join(" ")}`);
+    writeFileSync(join(cwd, "周报.csv"), "本周进展,完成 A & B\n");
+    return { saved_path: "周报.csv" };
+  });
+  const doc = message("ou_alice", '<file key="file_v3_doc" name="周报.csv"/> 这周的进展', 300);
+  answers.push(JSON.stringify({ say: null, reason: "nothing to add" }));
+  await room.consider(CHAT);
+  const card = JSON.parse(calls[0]!.user) as { messages: { id: string; media?: number; media_excerpt?: { text?: string }[] }[] };
+  const line = card.messages.find((item) => item.id === String(doc.meta.messageId))!;
+  expect(line.media).toBe(1);
+  expect(line.media_excerpt?.[0]?.text).toBe("本周进展,完成 A & B\n");
+  expect(downloads.length).toBe(1);
+  // The read is kept under the message and file key: the next card costs no download.
+  answers.push(JSON.stringify({ say: null, reason: "nothing to add" }));
+  await room.consider(CHAT);
+  expect(downloads.length).toBe(1);
+  const again = JSON.parse(calls[1]!.user) as { messages: { id: string; media_excerpt?: { text?: string }[] }[] };
+  expect(again.messages.find((item) => item.id === String(doc.meta.messageId))?.media_excerpt?.[0]?.text).toBe("本周进展,完成 A & B\n");
+  vi.restoreAllMocks();
 });
 
 it("says in its instructions who it is, and that silence is the usual answer", () => {
