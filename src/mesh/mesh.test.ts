@@ -128,6 +128,19 @@ test("peer health reads each peer's card and marks a stopped peer unreachable", 
   assert.match(byName.gpu?.error ?? "", /unreachable/);
 });
 
+test("a call after a link sat idle until the peer's server closes it goes out on a new link", { timeout: 20_000 }, async () => {
+  const mac = await startNode("mac");
+  const ovh = await startNode("ovh");
+  await joinMesh(createInvite(ovh.url, 15, ovh.home), mac.home);
+  const peer = () => findPeer(readMesh(mac.home), "ovh");
+  await callPeer(peer(), "GET", "/mesh/v1/node");
+  // Node's server closes an idle link 5 s after its last answer, plus a second's grace: as a call that waits for a free
+  // slot on a busy peer retries.
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  const card = await callPeer<NodeCard>(peer(), "GET", "/mesh/v1/node");
+  assert.equal(card.name, "ovh");
+});
+
 test("parses listen addresses with hosts, IPv6 brackets and bare ports", () => {
   assert.deepEqual(parseListen("100.64.0.7:38172"), { host: "100.64.0.7", port: 38172 });
   assert.deepEqual(parseListen("[::]:38172"), { host: "::", port: 38172 });
