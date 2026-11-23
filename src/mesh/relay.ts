@@ -448,17 +448,18 @@ export class RelayListener {
   listening = false;
   lastError?: string;
 
-  constructor(private readonly relay: string, private readonly keys: MeshNode["keys"],
+  constructor(private readonly relayUrl: string, private readonly keys: MeshNode["keys"],
     private readonly onStream: (stream: Duplex) => void, private readonly log: (message: string) => void = () => {}) {}
 
   get name(): string { return relayName(this.keys.publicKey); }
+  get relay(): string { return this.relayUrl; }
 
   start(): void {
     if (this.closed) return;
     const name = this.name;
     // Why this connection failed, when it says more than the close that follows.
     let failure: string | undefined;
-    const ws = openSocket(this.relay, `/v1/listen?name=${encodeURIComponent(name)}`, 15_000, (error) => { failure = error.message; });
+    const ws = openSocket(this.relayUrl, `/v1/listen?name=${encodeURIComponent(name)}`, 15_000, (error) => { failure = error.message; });
     this.ws = ws;
     ws.once("message", (data) => {
       const { challenge } = JSON.parse(String(data)) as { challenge: string };

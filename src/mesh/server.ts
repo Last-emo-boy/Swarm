@@ -13,7 +13,7 @@ import { LinkServer } from "./link.js";
 import { parseListen } from "./listen.js";
 import { acceptVoucher, answerDirectInvite, brokerPeer } from "./pair.js";
 import { RelayListener } from "./relay.js";
-import { meshHome, readMesh, removePeer, type Peer } from "./state.js";
+import { forgetDevice, meshHome, readMesh, removePeer, tombstones, type Peer } from "./state.js";
 
 export interface MeshRequest {
   method: string;
@@ -28,7 +28,10 @@ export type MeshHandler = (request: MeshRequest) => unknown;
 export type MeshEndpoint = (request: IncomingMessage, response: ServerResponse, peer: Peer) => Promise<void>;
 interface Route { method: string; parts: string[]; handler: MeshHandler }
 
-const ForgetSchema = z.object({ id: z.string().min(1), name: z.string().max(64).optional() });
+const ForgetSchema = z.object({ id: z.string().min(1), name: z.string().max(64).optional(), at: z.iso.datetime().optional() });
+
+/** The most removal records one answer carries; a swarm that removed more carries the rest on a later pass. */
+const TOMBSTONES_MAX = 500;
 
 export interface MeshServerOptions {
   home?: string;
@@ -45,7 +48,7 @@ export class MeshServer {
   private readonly link: LinkServer;
   private readonly sockets = new Set<Socket>();
   private tcp?: TcpServer;
-  private relay?: RelayListener;
+  private relays: RelayListener[] = [];
 
   constructor(private readonly options: MeshServerOptions) {
     this.home = options.home ?? meshHome();
@@ -62,10 +65,20 @@ export class MeshServer {
     // A peer asks to be introduced to another of this node's peers: any common peer can bring two devices together,
     // so joining never depends on one particular node being online when the others are.
     this.route("POST", "/mesh/v1/broker", (request) => brokerPeer(request.body, request.peer.id, this.home));
+    // A device removed from the swarm, told by the node that removed it: this node forgets it too and keeps the record under
+    // its author, so a member that was offline learns of the removal from whichever peer it reaches first.
     this.route("POST", "/mesh/v1/forget", (request) => {
-      const { id, name } = ForgetSchema.parse(request.body);
-      if (id !== request.peer.id) removePeer(id, this.home, name ? { name } : {});
+      const { id, name, at } = ForgetSchema.parse(request.body);
+      if (id === request.peer.id) { removePeer(id, this.home); return { forgotten: true }; }
+      const state = readMesh(this.home);
+      forgetDevice({ id, name: name ?? state.peers.find((peer) => peer.id === id)?.name ?? id, at: at ?? new Date().toISOString(),
+        by: request.peer.id }, this.home);
       return { forgotten: true };
+    });
+    // Every device this node refuses, each with its author: a peer converges its own refusals from here.
+    this.route("GET", "/mesh/v1/removed", () => {
+      const all = tombstones(readMesh(this.home));
+      return all.length > TOMBSTONES_MAX ? { removed: all.slice(0, TOMBSTONES_MAX), truncated: true } : { removed: all };
     });
   }
 
@@ -79,16 +92,18 @@ export class MeshServer {
     this.endpoints.set(path, handler);
   }
 
-  /** Whether this node listens at its relay now, and why not when it does not. */
-  relayStatus(): { relay?: string; listening: boolean; error?: string } | undefined {
-    return this.relay ? { listening: this.relay.listening, ...(this.relay.lastError ? { error: this.relay.lastError } : {}) } : undefined;
+  /** Each relay this node listens at now, and why not where one does not; undefined when it listens at none. */
+  relayStatus(): { relay: string; listening: boolean; error?: string }[] | undefined {
+    return this.relays.length
+      ? this.relays.map((listener) => ({ relay: listener.relay, listening: listener.listening, ...(listener.lastError ? { error: listener.lastError } : {}) }))
+      : undefined;
   }
 
   /**
    * Takes links on `listen` (`tailnet:<port>` binds the Tailscale address) and, given a relay, listens there too. Returns
    * the address this machine reaches the node at.
    */
-  async start(listen = readMesh(this.home).node.listen, options: { relay?: string } = {}): Promise<{ address: string; port: number }> {
+  async start(listen = readMesh(this.home).node.listen, options: { relay?: string; relays?: string[] } = {}): Promise<{ address: string; port: number }> {
     const parsed = parseListen(listen);
     const host = parsed.host === "tailnet" ? await tailnetAddress() : parsed.host;
     if (!host) throw new Error("Tailscale is not running here, so there is no tailnet address to bind; start Tailscale or run swarm mesh listen <ip>:<port>");
@@ -102,9 +117,12 @@ export class MeshServer {
       tcp.listen(parsed.port, host, () => { tcp.off("error", reject); resolve(); });
     });
     this.tcp = tcp;
-    if (options.relay) {
-      this.relay = new RelayListener(options.relay, readMesh(this.home).node.keys, (stream) => this.link.accept(stream), this.options.log);
-      this.relay.start();
+    // One listener per relay: each reconnects on its own, so one dead relay never holds another back.
+    const keys = readMesh(this.home).node.keys;
+    for (const relay of [...new Set(options.relays ?? (options.relay ? [options.relay] : []))]) {
+      const listener = new RelayListener(relay, keys, (stream) => this.link.accept(stream), this.options.log);
+      listener.start();
+      this.relays.push(listener);
     }
     const port = (tcp.address() as AddressInfo).port;
     const reach = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
@@ -112,8 +130,8 @@ export class MeshServer {
   }
 
   async stop(): Promise<void> {
-    this.relay?.close();
-    this.relay = undefined;
+    for (const listener of this.relays) listener.close();
+    this.relays = [];
     const tcp = this.tcp;
     this.tcp = undefined;
     for (const socket of this.sockets) socket.destroy();

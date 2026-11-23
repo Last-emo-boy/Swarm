@@ -41,8 +41,10 @@ const NodeSchema = z.object({
   listen: z.string().default(`0.0.0.0:${DEFAULT_MESH_PORT}`),
   /** An address peers try first, as host:port, such as a forwarded port; the node also offers what it detects. */
   advertise: z.string().optional(),
-  /** The relay's WebSocket URL, or `off`; unset means SWARM_MESH_RELAY or the default relay. */
+  /** The relay's WebSocket URL, or `off`; unset means SWARM_MESH_RELAY or the default relay. Kept as relays[0] for older Swarms. */
   relay: z.string().optional(),
+  /** Every relay this node listens at, primary first; wins over `relay` when present. */
+  relays: z.array(z.string().trim().min(1).max(512)).max(8).optional(),
   lend: LendSchema.default({}),
   pull: PullSchema.default({ enabled: false, repositories: [], offer: true })
 });
@@ -51,8 +53,9 @@ const PeerSchema = z.object({
   name: z.string().min(1),
   /** The secret this node and the peer share (32 bytes, base64url). */
   key: z.string().min(43),
-  /** The relay the peer listens at, and its name there. */
+  /** The relay the peer listens at, and its name there; `relays` carries them all when its card names several. */
   relay: z.string().optional(),
+  relays: z.array(z.string().trim().min(1).max(512)).max(8).optional(),
   relayName: z.string().min(1).optional(),
   /** host:port addresses that may reach the peer directly, as its card last gave them. */
   addresses: z.array(z.string()).default([]),
@@ -67,12 +70,15 @@ const PeersSchema = z.array(z.unknown()).default([])
   .transform((items) => items.flatMap((item) => { const peer = PeerSchema.safeParse(item); return peer.success ? [peer.data] : []; }));
 /** A device removed from the swarm: its introductions are refused. */
 const RemovedSchema = z.object({ id: z.string().min(1), name: z.string(), at: z.string() });
+/** A removal heard from its author: this node refuses `id` too, and carries the record so an offline member can learn it. */
+const TombstoneSchema = z.object({ id: z.string().min(1), name: z.string(), at: z.string(), by: z.string().min(1) });
 /** A direct invite this node answers itself, by its id: one pairing, until it expires. */
 const InviteSchema = z.object({ id: z.string().min(1), secret: z.string().min(16), expiresAt: z.string() });
 const StateSchema = z.object({
   node: NodeSchema,
   peers: PeersSchema,
   removed: z.array(RemovedSchema).default([]),
+  forgotten: z.array(TombstoneSchema).default([]),
   invites: z.array(z.unknown()).default([])
     .transform((items) => items.flatMap((item) => { const invite = InviteSchema.safeParse(item); return invite.success ? [invite.data] : []; }))
 });
@@ -85,6 +91,9 @@ export type Peer = z.infer<typeof PeerSchema> & {
 };
 export type MeshState = Omit<z.infer<typeof StateSchema>, "peers"> & { peers: Peer[] };
 export type Removed = z.infer<typeof RemovedSchema>;
+export type Tombstone = z.infer<typeof TombstoneSchema>;
+/** How a node's membership looks in one line: a digest over who is in and who is refused, and the counts. */
+export interface MembersSummary { digest: string; peers: number; removed: number }
 
 /** A direct invite: the addresses of the node that answers it, which invite, and its secret. */
 const InviteCodeSchema = z.object({
@@ -106,10 +115,24 @@ export const newPairKey = (): string => randomBytes(32).toString("base64url");
 /** The name both ends of a pair give TLS for their shared key; it reveals neither node. */
 export const pskIdentity = (key: string): string => createHmac("sha256", Buffer.from(key, "base64url")).update("swarm-mesh/psk-identity").digest("hex").slice(0, 32);
 
-/** The relay this node uses, or undefined when it is off. */
-export function relayOf(node: MeshNode): string | undefined {
-  const relay = node.relay ?? process.env.SWARM_MESH_RELAY ?? DEFAULT_RELAY;
-  return relay && relay !== "off" ? relay.replace(/\/$/, "") : undefined;
+const normalizeRelay = (relay: string): string => relay.trim().replace(/\/$/, "");
+
+/**
+ * The relays a node listens at, primary first; empty when off. `relays` wins over `relay`, which wins over the environment,
+ * and a comma-separated value is a list, so one variable can name several.
+ */
+export function relaysOf(node: Pick<MeshNode, "relay" | "relays">, env = process.env.SWARM_MESH_RELAY): string[] {
+  const raw = node.relays?.length ? node.relays : [node.relay ?? env ?? DEFAULT_RELAY];
+  return [...new Set(raw.flatMap((item) => item.split(",")).map(normalizeRelay).filter((item) => item && item !== "off"))].slice(0, 8);
+}
+
+/** The relay this node uses first, or undefined when it is off. */
+export const relayOf = (node: MeshNode): string | undefined => relaysOf(node)[0];
+
+/** The relays a peer record names, best first; no environment fallback, which says where this node listens, not the peer. */
+export function peerRelays(peer: Pick<Peer, "relay" | "relays">): string[] {
+  const raw = peer.relays?.length ? peer.relays : peer.relay ? [peer.relay] : [];
+  return [...new Set(raw.map(normalizeRelay).filter((item) => item && item !== "off"))];
 }
 
 const statePath = (home: string): string => join(home, "state.json");
@@ -197,23 +220,75 @@ export function dropInvite(id: string, home = meshHome(), now = new Date()): voi
   updateMesh((state) => ({ ...state, invites: state.invites.filter((invite) => invite.id !== id && invite.expiresAt > now.toISOString()) }), home);
 }
 
-/** Adds or replaces a peer: pairing again with the same node renews its key and addresses. A removed device comes back. */
+/**
+ * Adds or replaces a peer: pairing again with the same node renews its key and addresses. A removed device comes back,
+ * and so does one this node only heard was removed: a fresh pairing is the re-admission.
+ */
 export function savePeer(peer: Peer, home = meshHome()): MeshState {
   return updateMesh((state) => ({ ...state, peers: [...state.peers.filter((item) => item.id !== peer.id), peer],
-    removed: state.removed.filter((item) => item.id !== peer.id) }), home);
+    removed: state.removed.filter((item) => item.id !== peer.id),
+    forgotten: state.forgotten.filter((item) => item.id !== peer.id) }), home);
 }
 
 /**
  * Forgets a peer; `tombstone` also refuses later introductions of it, for a device removed from the swarm, under the name
  * the remover gave when this node never met it.
  */
-export function removePeer(id: string, home = meshHome(), tombstone: false | { name?: string } = false): MeshState {
+export function removePeer(id: string, home = meshHome(), tombstone: false | { name?: string; at?: string } = false): MeshState {
   return updateMesh((state) => {
     const peer = state.peers.find((item) => item.id === id);
     const name = peer?.name ?? (tombstone ? tombstone.name : undefined) ?? id;
+    // The remover's own clock stamps it once, so every member stores the one time the removal happened.
+    const at = tombstone ? tombstone.at ?? new Date().toISOString() : "";
     return { ...state, peers: state.peers.filter((item) => item.id !== id),
-      removed: tombstone ? [...state.removed.filter((item) => item.id !== id), { id, name, at: new Date().toISOString() }] : state.removed };
+      removed: tombstone ? [...state.removed.filter((item) => item.id !== id), { id, name, at }] : state.removed };
   }, home);
+}
+
+/** Every device this node refuses, each with the node that removed it: this node's own removals and the ones it carries. */
+export function tombstones(state: MeshState): Tombstone[] {
+  return [...state.removed.map((item) => ({ ...item, by: state.node.id })), ...state.forgotten];
+}
+
+/** Whether this node refuses `id`, whoever removed it. */
+export function refuses(state: MeshState, id: string): boolean {
+  return state.removed.some((item) => item.id === id) || state.forgotten.some((item) => item.id === id);
+}
+
+/**
+ * The digest over the membership this node acts on: every device in the swarm, this one included, and who is refused by
+ * whom. It is symmetric — two nodes that agree draw the same lines — so a difference means one of them is behind.
+ */
+export function membersDigest(state: MeshState): string {
+  const lines = [state.node.id, ...state.peers.map((peer) => peer.id)].map((id) => `member:${id}`)
+    .concat(tombstones(state).map((item) => `gone:${item.id}:${item.by}`)).sort();
+  return createHash("sha256").update(lines.join("\n")).digest("base64url").slice(0, 22);
+}
+
+export function membersSummary(state: MeshState): MembersSummary {
+  return { digest: membersDigest(state), peers: state.peers.length, removed: new Set(tombstones(state).map((item) => item.id)).size };
+}
+
+/**
+ * Takes a removal heard from its author: this node refuses the device too, and keeps the record so an offline member can
+ * learn it from here. A record about this node, or one claiming this node as author, is never taken. Replays change nothing.
+ */
+export function forgetDevice(record: Tombstone, home = meshHome()): boolean {
+  if (record.id === readMesh(home).node.id || record.by === readMesh(home).node.id) return false;
+  let changed = false;
+  updateMesh((state) => {
+    const held = state.forgotten.find((item) => item.id === record.id && item.by === record.by);
+    if (held && state.removed.every((item) => item.id !== record.id)) return state;
+    changed = true;
+    return { ...state, peers: state.peers.filter((peer) => peer.id !== record.id),
+      forgotten: held ? state.forgotten : [...state.forgotten, record] };
+  }, home);
+  return changed;
+}
+
+/** Drops the records this node carried from `author` about devices `author` no longer refuses, as a re-admitted device is. */
+export function withdrawForgotten(author: string, held: ReadonlySet<string>, home = meshHome()): MeshState {
+  return updateMesh((state) => ({ ...state, forgotten: state.forgotten.filter((item) => item.by !== author || held.has(item.id)) }), home);
 }
 
 /** The peer that shares the key TLS named, if any. */

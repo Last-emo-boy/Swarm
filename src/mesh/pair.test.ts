@@ -10,7 +10,7 @@ import { describePath, pathTo } from "./link.js";
 import { formatCode, inviteWithCode, joinWithCode, parseCode } from "./pair.js";
 import { RelayServer, relayDial } from "./relay.js";
 import { MeshServer } from "./server.js";
-import { findPeer, readMesh, relayName, updateMesh } from "./state.js";
+import { findPeer, readMesh, relayName, tombstones, updateMesh } from "./state.js";
 
 // Every node here uses the relay this file starts, never a real one.
 process.env.SWARM_MESH_RELAY = "off";
@@ -174,7 +174,9 @@ test("a device removed from the swarm is forgotten by every member, which then r
   const { told, missed } = await removeFromSwarm(findPeer(readMesh(ovh), "box"), ovh);
   assert.deepEqual([told, missed], [true, []]);
   assert.deepEqual(readMesh(ovh).removed.map((item) => item.name), ["box"]);
-  assert.deepEqual(readMesh(gpu).removed.map((item) => item.name), ["box"], "gpu heard of box's removal before it ever met box");
+  // gpu did not make this removal: it carries ovh's record, with ovh named as author, and refuses box from then on.
+  assert.deepEqual(tombstones(readMesh(gpu)).filter((item) => item.id === readMesh(box).node.id).map((item) => [item.name, item.by]),
+    [["box", readMesh(ovh).node.id]], "gpu heard of box's removal before it ever met box");
   await assert.rejects(callPeer(boxSeesGpu, "GET", "/mesh/v1/node"), /no longer knows this node/);
   assert.equal(readMesh(gpu).peers.some((peer) => peer.name === "box"), false);
   assert.equal(readMesh(box).peers.some((peer) => peer.name === "ovh"), false, "box was told to forget ovh");
@@ -192,7 +194,7 @@ test("a record that leads back to its own node is refused there, not answered by
   updateMesh((state) => ({ ...state, peers: state.peers.map((peer) => peer.name === "mac"
     ? { ...peer, relayName: relayName(own.keys.publicKey), addresses: [own.advertise!] } : peer) }), ovh);
   await assert.rejects(callPeer(findPeer(readMesh(ovh), "mac"), "GET", "/mesh/v1/node"),
-    /^Error: mac is unreachable: 127\.0\.0\.1:\d+: it led back to this node itself; relay: it led back to this node itself$/);
+    /^Error: mac is unreachable: 127\.0\.0\.1:\d+: it led back to this node itself; relay wss?:\/\/[^\s]+: it led back to this node itself$/);
 });
 
 test("a health check takes a card only from the peer it names, so a record never turns into another node's", async () => {

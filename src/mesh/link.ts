@@ -15,12 +15,17 @@ import { Duplex, Readable } from "node:stream";
 import { connect as tlsConnect, createServer as createTlsServer, type TLSSocket, type Server as TlsServer } from "node:tls";
 import { parseListen } from "./listen.js";
 import { RelayError, relayDial, type RelayStream } from "./relay.js";
-import { meshHome, peerByIdentity, pskIdentity, readMesh, relayName, type Peer } from "./state.js";
+import { meshHome, peerByIdentity, peerRelays, pskIdentity, readMesh, relayName, type Peer } from "./state.js";
 
 const TLS = { ciphers: "ECDHE-PSK-CHACHA20-POLY1305", minVersion: "TLSv1.2", maxVersion: "TLSv1.2" } as const;
 export const OPENER = "SWARM/1 ";
 /** How long direct addresses get before the relay is tried as well. */
 const DIRECT_HEAD_START_MS = 700;
+/** The gap between starting one relay dial and the next, and how long one relay dial may take. */
+const RELAY_STAGGER_MS = 1_000;
+const RELAY_DIAL_MS = 6_000;
+/** The hard deadline for one connect, whatever paths it tries. */
+const CONNECT_BUDGET_MS = 15_000;
 const CONNECT_MS = 8_000;
 const HANDSHAKE_MS = 10_000;
 const OPENER_MAX = 64 * 1024;
@@ -175,20 +180,25 @@ const paths = new Map<string, LinkPath>();
 export const pathTo = (peerId: string): LinkPath | undefined => paths.get(peerId);
 
 /**
- * Connects to a peer: its direct addresses at once, the relay where it listens shortly after, and the first link whose TLS
- * handshake finishes wins. A peer that answers but refuses the handshake no longer shares this node's key. The relay dial
- * is signed with the key of the node whose mesh home the peer record came from.
+ * Connects to a peer: every direct address at once, then its relays a second apart, each dialled as soon as its turn comes,
+ * and all of it inside one deadline; the first link whose TLS handshake finishes wins. The relays are those its card last
+ * named, and a record from before a node kept a list names one. A peer that answers but refuses the handshake no longer
+ * shares this node's key. The relay dial is signed with the key of the node whose mesh home the peer record came from.
  */
 export function connectPeer(peer: Peer): Promise<TLSSocket> {
   const { keys } = readMesh(peer.home ?? meshHome()).node;
   const own = relayName(keys.publicKey);
+  const relays = peer.relayName ? peerRelays(peer) : [];
   return new Promise((resolve, reject) => {
     const open = new Set<Duplex>();
     const failures: string[] = [];
     let pending = 0;
     let settled = false;
     let refused = false;
-    let relayStarted = false;
+    // A relay that has not had its turn keeps the connect open: failing before it may still say nothing final.
+    let waitingToStart = relays.length;
+    const timers: NodeJS.Timeout[] = [];
+    const clearTimers = (): void => { for (const timer of timers) clearTimeout(timer); timers.length = 0; };
     const attempt = (path: LinkPath, dial: () => Promise<Duplex>): void => {
       pending += 1;
       void (async () => {
@@ -201,41 +211,50 @@ export function connectPeer(peer: Peer): Promise<TLSSocket> {
           if (settled) return void socket.destroy();
           if (path.kind === "relay") relayUnder.set(socket, raw as RelayStream);
           settled = true;
-          clearTimeout(relayTimer);
+          clearTimers();
+          clearTimeout(deadline);
           for (const other of open) if (other !== raw) other.destroy();
           paths.set(peer.id, path);
           resolve(socket);
         } catch (error) {
           if (raw) open.delete(raw);
           if (error instanceof HandshakeRefused) refused = true;
-          failures.push(`${path.kind === "direct" ? path.address : "relay"}: ${error instanceof RelayError || error instanceof Error ? error.message : String(error)}`);
+          const where = path.kind === "direct" ? path.address : `relay ${path.relay}`;
+          failures.push(`${where}: ${error instanceof RelayError || error instanceof Error ? error.message : String(error)}`);
         } finally {
           pending -= 1;
-          if (!settled && pending === 0) {
-            if (!relayStarted) startRelay();
-            if (pending === 0) finish();
-          }
+          if (!settled && pending === 0 && waitingToStart === 0) finish();
         }
       })();
     };
-    const startRelay = (): void => {
-      if (relayStarted || settled) return;
-      relayStarted = true;
-      if (peer.relay && peer.relayName) {
-        attempt({ kind: "relay", relay: peer.relay }, () => relayDial(peer.relay!, peer.relayName!, keys));
-      }
-    };
     const finish = (): void => {
       settled = true;
-      clearTimeout(relayTimer);
+      clearTimers();
+      clearTimeout(deadline);
       reject(new MeshError(0, refused
         ? `${peer.name} answered but no longer knows this node; pair again`
         : `${peer.name} is unreachable: ${failures.join("; ") || "no address or relay to reach it at"}`));
     };
     // Not unref'd: while it waits it may be all that keeps a command alive, as for a peer with no direct address.
-    const relayTimer = setTimeout(startRelay, peer.addresses.length ? DIRECT_HEAD_START_MS : 0);
+    const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      for (const raw of open) raw.destroy();
+      reject(new MeshError(0, refused ? `${peer.name} answered but no longer knows this node; pair again`
+        : `${peer.name} is unreachable after ${CONNECT_BUDGET_MS / 1000} s: ${failures.join("; ") || "no address or relay to reach it at"}`));
+    }, CONNECT_BUDGET_MS);
+    const base = peer.addresses.length ? DIRECT_HEAD_START_MS : 0;
+    relays.forEach((relay: string, index: number) => {
+      timers.push(setTimeout(() => {
+        waitingToStart -= 1;
+        if (settled) return;
+        attempt({ kind: "relay", relay }, () => relayDial(relay, peer.relayName!, keys, RELAY_DIAL_MS));
+        if (pending === 0 && waitingToStart === 0) finish();
+      }, base + index * RELAY_STAGGER_MS));
+    });
     for (const address of peer.addresses) attempt({ kind: "direct", address }, () => dialDirect(address));
-    if (!peer.addresses.length && !(peer.relay && peer.relayName)) finish();
+    if (!peer.addresses.length && !relays.length) finish();
   });
 }
 

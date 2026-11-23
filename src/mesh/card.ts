@@ -8,7 +8,7 @@ import { networkInterfaces } from "node:os";
 import { promisify } from "node:util";
 import { loadSwarmVersion } from "../runtime/headless-artifacts.js";
 import { swarmCommit } from "../update.js";
-import { hostPort, relayName, relayOf, type Lend, type MeshNode } from "./state.js";
+import { hostPort, relayName, relayOf, relaysOf, type Lend, type MembersSummary, type MeshNode } from "./state.js";
 import { parseListen } from "./listen.js";
 
 const exec = promisify(execFile);
@@ -34,8 +34,9 @@ export interface NodeCard {
   name: string;
   /** host:port addresses that may reach it directly, best first. */
   addresses: string[];
-  /** The relay it listens at, and its name there. */
+  /** The relay it listens at first, and its name there; `relays` names all of them when it listens at several. */
   relay?: string;
+  relays?: string[];
   relayName: string;
   /** Its mesh protocol; absent on cards from before the field existed, which speak 1. */
   protocol?: number;
@@ -53,6 +54,8 @@ export interface NodeCard {
   lend?: Lend;
   /** Set when it takes waiting work from paired nodes: only work of these repositories, or any when none. */
   pull?: { repositories: string[] };
+  /** A digest of the membership it acts on; absent on nodes from before the field, which never disagree. */
+  members?: MembersSummary;
   at: string;
 }
 
@@ -133,15 +136,23 @@ export function versionMismatch(card: Pick<NodeCard, "protocol" | "version" | "c
   return differ ? `runs Swarm at ${card.commit}, this device at ${own.commit}: update one of them with swarm update` : undefined;
 }
 
-export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[] } = {}): Promise<NodeCard> {
+/** How another node's membership sees things, or undefined when it agrees or cannot say: informational, no link blocks on it. */
+export function membersMismatch(card: Pick<NodeCard, "members">, own: MembersSummary): string | undefined {
+  if (!card.members || card.members.digest === own.digest) return undefined;
+  return `sees ${card.members.removed} removed and ${card.members.peers} peers, this device ${own.removed} and ${own.peers}: they differ, and the next pass brings them together`;
+}
+
+export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[]; members?: MembersSummary } = {}): Promise<NodeCard> {
   return {
-    id: node.id, name: node.name, addresses: await advertisedAddresses(node), ...(relayOf(node) ? { relay: relayOf(node) } : {}),
+    id: node.id, name: node.name, addresses: await advertisedAddresses(node),
+    ...(relayOf(node) ? { relay: relayOf(node), ...(relaysOf(node).length > 1 ? { relays: relaysOf(node) } : {}) } : {}),
     relayName: relayName(node.keys.publicKey), ...thisSwarm(),
     os: process.platform, arch: process.arch, abilities: extra.abilities ?? await detectAbilities(),
     ...(extra.repository ? { repository: extra.repository } : {}),
     ...(extra.load ? { load: extra.load } : {}),
     ...(Object.keys(node.lend).length ? { lend: node.lend } : {}),
     ...(node.pull.enabled ? { pull: { repositories: node.pull.repositories } } : {}),
+    ...(extra.members ? { members: extra.members } : {}),
     at: new Date().toISOString()
   };
 }
