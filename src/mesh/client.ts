@@ -1,8 +1,8 @@
 /** Calling peers over their links, pairing with a code, peer health, and leaving or removing devices. */
 import type { NodeCard } from "./card.js";
 import { MeshError, describePath, pathTo, peerRequest } from "./link.js";
-import { joinWithCode } from "./pair.js";
-import { meshHome, readMesh, removePeer, updateMesh, type Peer } from "./state.js";
+import { joinWithCode, nodeInfo, peerOf, type Member } from "./pair.js";
+import { meshHome, readMesh, removePeer, savePeer, updateMesh, type Peer } from "./state.js";
 
 export { MeshError, closePeerLinks } from "./link.js";
 
@@ -25,6 +25,47 @@ export interface PeerHealth {
   ms?: number;
   card?: NodeCard;
   error?: string;
+}
+
+/** How many introductions one pass asks for, so a large swarm cannot make a pass long. */
+const BROKERS_PER_MEET = 4;
+
+/**
+ * One pass of keeping the swarm current: read every peer's card, so an address that changed is taken up, then ask a peer
+ * that knows a member this node lacks to introduce it — any shared peer will do, so a joiner reaches everyone whether or
+ * not the device it joined through is online now. A device both sides lack lets the smaller id ask, so two nodes never mint
+ * different keys for the same pair in one pass. The introductions a peer has not accepted yet are sent again by each
+ * handshake, which is how a member that was offline at pairing time catches up.
+ */
+export async function meet(home = meshHome(), timeoutMs = 3000): Promise<PeerHealth[]> {
+  const health = await peerHealth(home, timeoutMs);
+  const reached = new Set(health.flatMap((item) => item.reachable ? [item.peer.id] : []));
+  const state = readMesh(home);
+  const known = new Set(state.peers.map((peer) => peer.id));
+  const gone = new Set(state.removed.map((item) => item.id));
+  let asked = 0;
+  let added = 0;
+  const self = await nodeInfo(state);
+  for (const broker of state.peers) {
+    if (asked >= BROKERS_PER_MEET || !reached.has(broker.id)) continue;
+    let listed: { id: string }[];
+    try { listed = await callPeer<{ id: string }[]>(broker, "GET", "/mesh/v1/peers", undefined, timeoutMs); } catch { continue }
+    for (const candidate of listed) {
+      if (asked >= BROKERS_PER_MEET) break;
+      if (candidate.id === state.node.id || known.has(candidate.id) || gone.has(candidate.id)) continue;
+      // One side asks: two devices must not mint different keys for the same pair at the same time.
+      if (state.node.id > candidate.id) continue;
+      try {
+        const member = await callPeer<Member>(broker, "POST", "/mesh/v1/broker", { id: candidate.id, node: self }, timeoutMs);
+        const { key, voucher, ...info } = member;
+        savePeer(peerOf(info, key, { introducedBy: broker.id, voucher }), home);
+        known.add(member.id);
+        asked += 1;
+        added += 1;
+      } catch { /* It may have been removed, or that peer may no longer know it. */ }
+    }
+  }
+  return added ? peerHealth(home, timeoutMs) : health;
 }
 
 /**

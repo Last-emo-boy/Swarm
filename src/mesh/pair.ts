@@ -14,6 +14,8 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, ran
 import { connect as tcpConnect } from "node:net";
 import type { Duplex } from "node:stream";
 import { ristretto255, ristretto255_hasher } from "@noble/curves/ed25519.js";
+import { z } from "zod/v4";
+import { HttpError } from "../server/gateway-http.js";
 import { advertisedAddresses } from "./card.js";
 import { OPENER } from "./link.js";
 import { parseListen } from "./listen.js";
@@ -46,17 +48,17 @@ export const formatCode = (mailbox: string, password: string, relay?: string): s
 };
 
 /** What two pairing devices tell each other about themselves. */
-interface NodeInfo { id: string; name: string; addresses: string[]; relay?: string; relayName: string }
+export interface NodeInfo { id: string; name: string; addresses: string[]; relay?: string; relayName: string }
 /** A member the inviter hands the joiner. */
-interface Member extends NodeInfo { key: string; voucher: string }
+export interface Member extends NodeInfo { key: string; voucher: string }
 
-async function nodeInfo(state: MeshState): Promise<NodeInfo> {
+export async function nodeInfo(state: MeshState): Promise<NodeInfo> {
   const relay = relayOf(state.node);
   return { id: state.node.id, name: state.node.name, addresses: await advertisedAddresses(state.node), ...(relay ? { relay } : {}),
     relayName: relayName(state.node.keys.publicKey) };
 }
 
-const peerOf = (info: NodeInfo, key: string, extra: Partial<Peer> = {}): Peer => ({
+export const peerOf = (info: NodeInfo, key: string, extra: Partial<Peer> = {}): Peer => ({
   id: info.id, name: info.name, key, addresses: info.addresses, ...(info.relay ? { relay: info.relay } : {}), relayName: info.relayName,
   pairedAt: new Date().toISOString(), ...extra
 });
@@ -262,6 +264,30 @@ export function acceptVoucher(voucher: string, home = meshHome()): boolean {
     return false;
   }
 }
+
+/**
+ * Introduces `node`, the caller, to one of this node's peers: a fresh key for the pair and a voucher sealed with the key
+ * this node shares with that peer, in the same shape the inviter hands a joiner. The caller may only introduce itself —
+ * the TLS link says who it is — and a peer this node removed is never introduced. The peer still opens the voucher and
+ * trusts this node's word; the TLS handshake that follows proves the key.
+ */
+export function brokerPeer(body: unknown, caller: string, home = meshHome()): Member {
+  const parsed = BrokerSchema.parse(body);
+  if (parsed.node.id !== caller) throw new HttpError(400, "A broker request may only introduce the device that sends it");
+  const state = readMesh(home);
+  const target = state.peers.find((peer) => peer.id === parsed.id);
+  if (!target) throw new HttpError(404, `This node has no peer ${parsed.id}`);
+  if (target.id === state.node.id) throw new HttpError(400, "A device cannot introduce itself to itself");
+  if (state.removed.some((item) => item.id === parsed.node.id)) throw new HttpError(409, "That device was removed from this swarm");
+  const key = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + VOUCHER_DAYS * 86_400_000).toISOString();
+  const voucher = b64(Buffer.from(JSON.stringify({ by: state.node.id,
+    box: seal(derive(target.key, "voucher"), { node: parsed.node, key, issuedAt: new Date().toISOString(), expiresAt }, state.node.id) })));
+  return { id: target.id, name: target.name, addresses: target.addresses, ...(target.relay ? { relay: target.relay } : {}),
+    relayName: target.relayName ?? "", key, voucher };
+}
+const BrokerSchema = z.object({ id: z.string().min(1),
+  node: z.object({ id: z.string().min(1), name: z.string().min(1), addresses: z.array(z.string()), relay: z.string().optional(), relayName: z.string() }) });
 
 /** Answers a device that uses one of this node's direct invites; a wrong secret counts against the invite. */
 const failedAttempts = new Map<string, number>();
