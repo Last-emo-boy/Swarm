@@ -8,6 +8,8 @@ export interface ActorRef {
   id: string
   /** The account's number, when the source has one and sends it: an identity that a handle never crosses. */
   accountId?: number
+  /** What the source calls the actor, when it sends a name: a label for people, never part of its identity. */
+  name?: string
 }
 /** Thread identity; the rule that derives `id` from a native event belongs to the source. */
 export interface ThreadRef { source: string; id: string }
@@ -131,6 +133,11 @@ export type MandateBasis = Received & { sender?: string; rules?: string[] } & (
   | { via: 'listed'; addressed?: 'mention' | 'direct'; observation?: { mode?: AcceptMode }; authority?: string }
   /** A message of a bot on its Source's bot list: an inferred candidate at most, never an explicit request or a stop. */
   | { via: 'bot'; addressed?: 'mention' | 'direct'; observation: { mode: AcceptMode } }
+  /**
+   * A request a paired node filed over the mesh: the mesh server checked the surface its grant reaches, so the request is
+   * explicit, and its work writes locally at most because the peer's machine holds no credential of a person here.
+   */
+  | { via: 'peer'; peer: { id: string; name: string } }
 )
 
 /**

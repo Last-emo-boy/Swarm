@@ -63,7 +63,9 @@ export function allowedSender(settings: Settings, actor: ActorRef): z.infer<type
 }
 /** Look up `actor` in the Source's `bots` policy list (validated by the Source's kind), whose messages are admitted as inferred candidates at most. */
 export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
-  const bots = z.array(AllowedSchema).catch([]).parse(settings.policy.sources[actor.source]?.bots ?? [])
+  // Each entry on its own: one malformed entry must not take the whole list down with it.
+  const listed = settings.policy.sources[actor.source]?.bots
+  const bots = (Array.isArray(listed) ? listed : []).flatMap((entry) => { const bot = AllowedSchema.safeParse(entry); return bot.success ? [bot.data] : [] })
   return bots.find(entry => sameName(entry.id, actor.id))
 }
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources)
@@ -119,11 +121,13 @@ export function repositoryFor(link: Pick<LinkView, 'repos' | 'defaultRepo'>, wat
   return usable(requested) ?? usable(link.defaultRepo) ?? usable(watched) ?? (link.repos.length === 1 ? link.repos[0] : undefined)
 }
 /**
- * How far work about to be accepted may write before its requester's GitHub link counts: work nobody asked for (inferred, or a
- * bot's) stays local, a person's request may write to GitHub, and the receiving scope's ceiling lowers either.
+ * How far work about to be accepted may write before its requester's GitHub link counts: work nobody asked for (inferred, a
+ * bot's or a paired node's) stays local, a person's request may write to GitHub, and the receiving scope's ceiling lowers
+ * either. A peer's request stays local because the peer's machine holds no credential of a person on this node, however far
+ * its surfaces reach.
  */
 export function allowedWrite(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>): WriteLevel {
-  const wanted: WriteLevel = mandate.strength === 'inferred' || mandate.basis.via === 'bot' ? 'local' : 'github'
+  const wanted: WriteLevel = mandate.strength === 'inferred' || mandate.basis.via === 'bot' || mandate.basis.via === 'peer' ? 'local' : 'github'
   const ceiling = ceilingOf(settings, mandate.basis.source ?? mandate.actor.source, mandate.basis.row)
   return WRITE[wanted] <= WRITE[ceiling] ? wanted : ceiling
 }
@@ -134,6 +138,9 @@ export function allowedWrite(settings: Settings, mandate: Pick<Mandate, 'strengt
  */
 export function capabilityOf(settings: Settings, mandate: Pick<Mandate, 'strength' | 'basis' | 'actor'>, link?: LinkView,
   requested: { repository?: string } = {}): Capability | undefined {
+  // A paired node's work is held local whether or not the access model is on: without a capability its worker would act
+  // with the agent's own accounts, which no peer is.
+  if (mandate.basis.via === 'peer') return { role: roleOf(settings, mandate.actor), write: allowedWrite(settings, mandate), local: 'ceiling' }
   if (!settings.access) return undefined
   const role = roleOf(settings, mandate.actor)
   const write = allowedWrite(settings, mandate)
@@ -205,6 +212,9 @@ export const choosesHarness = (settings: Settings, actor: ActorRef): boolean => 
 export const seesNodes = (settings: Settings, actor: ActorRef): boolean => !settings.access || atLeast(roleOf(settings, actor), 'maintainer')
 /** Whether `actor` steers a ticket under `mandate`: always without the access model, else its requester and maintainers do. */
 export function steers(settings: Settings, mandate: Pick<Mandate, 'actor'>, actor: ActorRef): boolean {
+  // A paired node steers only the work it asked for: its stop and its messages to others' tickets have their own surfaces,
+  // which the mesh server checks, so a request it files never reaches another's ticket.
+  if (actor.source === PEER_SOURCE) return sameActor(mandate.actor, actor)
   if (!settings.access) return true
   // Both sides' account numbers when they carry one, so a freed login does not steer its old holder's ticket.
   const requester = sameActor(mandate.actor, actor)
@@ -258,8 +268,23 @@ export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Se
 }
 /** Where the Policy finds a sender's linked GitHub account. */
 export interface Links { of(actor: ActorRef): LinkView | undefined }
+/** Where the Policy reads what a paired node may do now: the mesh grants of the node that serves its requests. */
+export interface PeerGrants { reaches(peerId: string, surface: string): boolean }
+/** The Source a paired node's requests come by: the mesh server files them under the peer principal (src/mesh/tickets.ts). */
+export const PEER_SOURCE = 'mesh'
+const PeerMetaSchema = z.object({ id: z.string().min(1), name: z.string().min(1) })
+/**
+ * A request a paired node filed: the mesh server has already checked the surface its grant reaches, so the gate takes it as
+ * explicit. The peer principal is what limits count against and what receipts name; its row pins its work's writes to local.
+ */
+function peerGate(trigger: Trigger): GateResult {
+  const peer = PeerMetaSchema.safeParse(trigger.meta.peer)
+  if (!peer.success) return { admissible: false, reason: 'not_a_member' }
+  return { admissible: true, strength: 'explicit',
+    basis: { source: PEER_SOURCE, row: 'ticket', via: 'peer', peer: { id: peer.data.id, name: peer.data.name } } }
+}
 /** Build the active Policy for gating incoming Triggers and revalidating existing Ticket Mandates. */
-export function settingsPolicy(settings: Settings, sources: SourceScope, links?: Links): Policy {
+export function settingsPolicy(settings: Settings, sources: SourceScope, links?: Links, peers?: PeerGrants): Policy {
   const version = policyVersion(settings)
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
@@ -284,6 +309,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope, links?:
   return {
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
     gate(trigger: Trigger, thread, tickets) {
+      if (trigger.source === PEER_SOURCE) return peerGate(trigger)
       if (!trigger.human) return machineGate(trigger)
       const allowed = listedSender(settings, trigger.actor)
       const scope = listened(sources, trigger.source, trigger.meta)
@@ -308,6 +334,9 @@ export function settingsPolicy(settings: Settings, sources: SourceScope, links?:
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
+      // A paired node's Mandate holds while that node is still paired and may still file work here; where no mesh is served,
+      // nothing says so, and it does not hold.
+      if (basis.via === 'peer') return !!peers?.reaches(basis.peer.id, 'tickets.submit')
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false

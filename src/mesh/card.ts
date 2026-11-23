@@ -56,6 +56,8 @@ export interface NodeCard {
   pull?: { repositories: string[] };
   /** A digest of the membership it acts on; absent on nodes from before the field, which never disagree. */
   members?: MembersSummary;
+  /** False on a node that takes no work put on it, such as one that runs its tickets in VMs; absent means it takes work. */
+  takesWork?: false;
   at: string;
 }
 
@@ -142,7 +144,7 @@ export function membersMismatch(card: Pick<NodeCard, "members">, own: MembersSum
   return `sees ${card.members.removed} removed and ${card.members.peers} peers, this device ${own.removed} and ${own.peers}: they differ, and the next pass brings them together`;
 }
 
-export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[]; members?: MembersSummary } = {}): Promise<NodeCard> {
+export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[]; members?: MembersSummary; takesWork?: false } = {}): Promise<NodeCard> {
   return {
     id: node.id, name: node.name, addresses: await advertisedAddresses(node),
     ...(relayOf(node) ? { relay: relayOf(node), ...(relaysOf(node).length > 1 ? { relays: relaysOf(node) } : {}) } : {}),
@@ -153,6 +155,7 @@ export async function nodeCard(node: MeshNode, extra: { repository?: string; loa
     ...(Object.keys(node.lend).length ? { lend: node.lend } : {}),
     ...(node.pull.enabled ? { pull: { repositories: node.pull.repositories } } : {}),
     ...(extra.members ? { members: extra.members } : {}),
+    ...(extra.takesWork === false ? { takesWork: false as const } : {}),
     at: new Date().toISOString()
   };
 }

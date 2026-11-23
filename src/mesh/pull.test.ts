@@ -18,9 +18,14 @@ import { ticketRow } from "../superagent/views.js";
 import { nodeCard, type NodeCard } from "./card.js";
 import { callPeer, joinMesh, type MeshError } from "./client.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, readMesh, updateMesh, type Pull } from "./state.js";
+import { createInvite, findPeer, readMesh, setGrant, updateMesh, type Pull } from "./state.js";
+import { GRANT_SURFACES } from "./surfaces.js";
 import { MeshWork, unfit, type OpenWork } from "./work.js";
 import { workPath } from "./work-link.js";
+
+/** A node runs the work `owner` puts on it only once it grants that: a member, and work.offer on top. */
+const acceptsWork = (owner: string, mesh: string): void => { setGrant(owner, { scopes: [...GRANT_SURFACES.member, "work.offer"] }, mesh); };
+
 
 // These nodes link up directly; none of them may reach out to a real relay.
 process.env.SWARM_MESH_RELAY = "off";
@@ -49,6 +54,7 @@ const reported = (request: ModelRequest) => request.user.includes("\"reported\":
  */
 async function answer(request: ModelRequest): Promise<string> {
   if (request.system.includes("You route requests for Swarm's ticket host")) {
+    if (request.user.includes("hold the member slot")) return JSON.stringify({ kind: "accept", title: "Hold the member slot", worktree_name: "hold-slot-member", acknowledgement: "On it." });
     if (request.user.includes("hold the slot")) return JSON.stringify({ kind: "accept", title: "Hold the slot", worktree_name: "hold-slot", acknowledgement: "On it: holding the slot." });
     const file = /write (\w+)\.txt/.exec(request.user)?.[1] ?? "unknown";
     return JSON.stringify({ kind: "accept", title: `Write ${file}.txt`, worktree_name: `write-${file}`, acknowledgement: `On it: writing ${file}.txt.`,
@@ -129,7 +135,9 @@ before(async () => {
   gpu = await startNode("gpu", ["linux", "gpu"]);
   mac = await startNode("mac", ["macos"]);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), gpu.mesh);
+  acceptsWork("ovh", gpu.mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mac.mesh);
+  acceptsWork("ovh", mac.mesh);
 
   // A node that takes the work it is offered, says it started, and is never heard from again.
   const mesh = join(root, "ghost-mesh");
@@ -147,6 +155,7 @@ before(async () => {
   const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
+  acceptsWork("ovh", mesh);
   ghost = { server, mesh, offers };
 
   ovh.host.client.request("hold the slot until the test is done");
@@ -192,6 +201,33 @@ test("with the owner's slots full, a node that pulls takes a queued ticket, runs
   assert.equal(find("Hold the slot")?.assignments.at(-1)?.state, "running", "the owner's only slot stayed busy");
   const replies = client.store.db.prepare("SELECT value FROM outbox ORDER BY rowid").all().map((item) => JSON.parse(String(item.value)) as { text: string });
   assert.ok(replies.some((reply) => reply.text === "one.txt is ready."));
+});
+
+test("a puller that grants its owner only a member's surfaces takes the work, and the owner can still stop it there", { timeout: 120_000 }, async () => {
+  const { client } = ovh.host;
+  // mac pulls of its own will; it gives ovh nothing beyond what a new pairing gets.
+  setGrant("ovh", "member", mac.mesh);
+  try {
+    client.request("hold the member slot");
+    const waiting = await waitingNamed("Hold the member slot");
+    setPull(mac, { enabled: true });
+    await until(() => pulled("Hold the member slot") === "mac" ? true : undefined);
+    setPull(mac, { enabled: false });
+    const ticket = find("Hold the member slot")!;
+    await until(() => ticket.assignments.length && find(ticket.title)!.assignments.at(-1)!.state === "running" ? true : undefined);
+    // The owner stops work it owns on the puller: that is its own work, whatever else the puller's grant for it reaches.
+    const macSeen = findPeer(readMesh(ovh.mesh), "mac");
+    const answer = await callPeer<{ stopped: boolean }>(macSeen, "POST", `/mesh/v1/work/offers/${encodeURIComponent(ticket.id)}/stop`,
+      { assignmentId: waiting.assignmentId });
+    assert.deepEqual(answer, { stopped: true });
+    // Another ticket's work, which mac does not run for ovh, is still refused to a member.
+    const other = await callPeer(macSeen, "POST", "/mesh/v1/work/offers/not-held/stop", { assignmentId: "x" })
+      .then((): undefined => undefined, (error: MeshError) => error);
+    assert.equal(other?.status, 403);
+    client.stop(ticket.id);
+  } finally {
+    acceptsWork("ovh", mac.mesh);
+  }
 });
 
 test("nothing is pulled while pulling is off, by a node that lacks what the work needs, or one that pulls other repositories", { timeout: 120_000 }, async () => {
@@ -302,6 +338,7 @@ test("work that needs what the owner lacks waits for a busy node that has it and
   try {
     updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
     await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
+    acceptsWork("ovh", mesh);
     setPull({ mesh }, { enabled: true });
 
     client.request("write seven.txt containing hi");

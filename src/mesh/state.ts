@@ -9,6 +9,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { z } from "zod/v4";
 import { getSwarmPaths } from "../config/settings.js";
+import { GrantSchema, type Grant, type GrantPreset } from "./surfaces.js";
 
 export const DEFAULT_MESH_PORT = 38172;
 /** How long an invite code stays valid by default. */
@@ -72,6 +73,12 @@ const PeersSchema = z.array(z.unknown()).default([])
 const RemovedSchema = z.object({ id: z.string().min(1), name: z.string(), at: z.string() });
 /** A removal heard from its author: this node refuses `id` too, and carries the record so an offline member can learn it. */
 const TombstoneSchema = z.object({ id: z.string().min(1), name: z.string(), at: z.string(), by: z.string().min(1) });
+/**
+ * A lease this node minted for a peer: one surface that cannot be undone (surfaces.ts `LEASED_SURFACES`), on one resource,
+ * until it expires. Only this node writes them; a peer asks and then names the lease on the request it covers.
+ */
+const LeaseSchema = z.object({ id: z.string().min(1), surface: z.string().min(1), resource: z.string().min(1), by: z.string().min(1),
+  at: z.string(), expiresAt: z.string(), reason: z.string().max(200).optional() });
 /** A direct invite this node answers itself, by its id: one pairing, until it expires. */
 const InviteSchema = z.object({ id: z.string().min(1), secret: z.string().min(16), expiresAt: z.string() });
 const StateSchema = z.object({
@@ -79,6 +86,8 @@ const StateSchema = z.object({
   peers: PeersSchema,
   removed: z.array(RemovedSchema).default([]),
   forgotten: z.array(TombstoneSchema).default([]),
+  leases: z.array(z.unknown()).default([])
+    .transform((items) => items.flatMap((item) => { const lease = LeaseSchema.safeParse(item); return lease.success ? [lease.data] : []; })),
   invites: z.array(z.unknown()).default([])
     .transform((items) => items.flatMap((item) => { const invite = InviteSchema.safeParse(item); return invite.success ? [invite.data] : []; }))
 });
@@ -91,7 +100,58 @@ export type Peer = z.infer<typeof PeerSchema> & {
 };
 export type MeshState = Omit<z.infer<typeof StateSchema>, "peers"> & { peers: Peer[] };
 export type Removed = z.infer<typeof RemovedSchema>;
+/**
+ * What a peer may do here lives in a file of its own beside state.json: a Swarm from before grants rewrites state.json
+ * with only the fields it knows, and would drop a grant kept there, but it never touches this file.
+ */
+const grantsPath = (home: string): string => join(home, "grants.json");
+const GrantsFileSchema = z.object({ version: z.literal(1), grants: z.record(z.string(), z.unknown()) });
+/** What a pairing from before grants keeps: pairing was then the whole trust decision. */
+export const LEGACY_GRANT: GrantPreset = "operator";
+/** What a peer the grants file does not name reads as: the grant a new pairing gets. */
+export const DEFAULT_GRANT: GrantPreset = "member";
+/** What an entry that does not parse reads as: the least, so a damaged file narrows what a peer reaches and loses no pairing. */
+const UNREADABLE_GRANT: GrantPreset = "viewer";
+
+function writeGrants(grants: Record<string, Grant>, home: string): void {
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const path = grantsPath(home);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ version: 1, grants }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+  chmodSync(path, 0o600);
+}
+
+/**
+ * Every grant this node set, by peer id. The first time a node of this version reads them, every pairing it already has is
+ * one from before grants and is written down as `operator`; after that a peer not named reads as `member`.
+ */
+export function grants(home = meshHome()): Record<string, Grant> {
+  const path = grantsPath(home);
+  if (!existsSync(path)) {
+    const legacy = existsSync(statePath(home)) ? Object.fromEntries(readMesh(home).peers.map((peer) => [peer.id, LEGACY_GRANT as Grant])) : {};
+    writeGrants(legacy, home);
+    return legacy;
+  }
+  let raw: unknown;
+  try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { raw = undefined; }
+  const parsed = GrantsFileSchema.safeParse(raw);
+  // A file that does not read at all narrows every peer, rather than handing each a new pairing's grant.
+  if (!parsed.success) return Object.fromEntries(readMesh(home).peers.map((peer) => [peer.id, UNREADABLE_GRANT as Grant]));
+  return Object.fromEntries(Object.entries(parsed.data.grants).map(([id, value]) => {
+    const grant = GrantSchema.safeParse(value);
+    return [id, grant.success ? grant.data : UNREADABLE_GRANT];
+  }));
+}
+
+/** What a peer may do here: the grant this node set for it, or a new pairing's. */
+export const grantOf = (peer: Pick<Peer, "id" | "home">, home = peer.home ?? meshHome()): Grant => grants(home)[peer.id] ?? DEFAULT_GRANT;
+
+function updateGrants(change: (current: Record<string, Grant>) => Record<string, Grant>, home: string): void {
+  writeGrants(change(grants(home)), home);
+}
 export type Tombstone = z.infer<typeof TombstoneSchema>;
+export type MeshLease = z.infer<typeof LeaseSchema>;
 /** How a node's membership looks in one line: a digest over who is in and who is refused, and the counts. */
 export interface MembersSummary { digest: string; peers: number; removed: number }
 
@@ -221,13 +281,24 @@ export function dropInvite(id: string, home = meshHome(), now = new Date()): voi
 }
 
 /**
- * Adds or replaces a peer: pairing again with the same node renews its key and addresses. A removed device comes back,
- * and so does one this node only heard was removed: a fresh pairing is the re-admission.
+ * Adds or replaces a peer: pairing again with the same node renews its key and addresses, and keeps the grant this node
+ * set for it, which belongs to this node rather than to the pairing. A removed device comes back, and so does one this
+ * node only heard was removed: a fresh pairing is the re-admission.
  */
 export function savePeer(peer: Peer, home = meshHome()): MeshState {
+  // Read first: a node's first grants read writes its pairings from before grants down as such, which this new one is not.
+  const known = grants(home);
+  if (!(peer.id in known)) updateGrants((current) => ({ ...current, [peer.id]: DEFAULT_GRANT }), home);
   return updateMesh((state) => ({ ...state, peers: [...state.peers.filter((item) => item.id !== peer.id), peer],
     removed: state.removed.filter((item) => item.id !== peer.id),
     forgotten: state.forgotten.filter((item) => item.id !== peer.id) }), home);
+}
+
+/** Sets what a peer may do here, by id, name or a unique prefix; the new grant holds from its next request. */
+export function setGrant(handle: string, grant: Grant, home = meshHome()): Peer {
+  const peer = findPeer(readMesh(home), handle);
+  updateGrants((current) => ({ ...current, [peer.id]: grant }), home);
+  return peer;
 }
 
 /**
@@ -235,12 +306,14 @@ export function savePeer(peer: Peer, home = meshHome()): MeshState {
  * the remover gave when this node never met it.
  */
 export function removePeer(id: string, home = meshHome(), tombstone: false | { name?: string; at?: string } = false): MeshState {
+  // A device that comes back is paired again, and starts again as a new pairing does.
+  updateGrants((current) => { const { [id]: _dropped, ...rest } = current; return rest; }, home);
   return updateMesh((state) => {
     const peer = state.peers.find((item) => item.id === id);
     const name = peer?.name ?? (tombstone ? tombstone.name : undefined) ?? id;
     // The remover's own clock stamps it once, so every member stores the one time the removal happened.
     const at = tombstone ? tombstone.at ?? new Date().toISOString() : "";
-    return { ...state, peers: state.peers.filter((item) => item.id !== id),
+    return { ...state, peers: state.peers.filter((item) => item.id !== id), leases: state.leases.filter((lease) => lease.by !== id),
       removed: tombstone ? [...state.removed.filter((item) => item.id !== id), { id, name, at }] : state.removed };
   }, home);
 }
@@ -274,17 +347,26 @@ export function membersSummary(state: MeshState): MembersSummary {
  * learn it from here. A record about this node, or one claiming this node as author, is never taken. Replays change nothing.
  */
 export function forgetDevice(record: Tombstone, home = meshHome()): boolean {
+  if (record.id !== readMesh(home).node.id && record.by !== readMesh(home).node.id) {
+    updateGrants((current) => { const { [record.id]: _dropped, ...rest } = current; return rest; }, home);
+  }
   if (record.id === readMesh(home).node.id || record.by === readMesh(home).node.id) return false;
   let changed = false;
+  // A removal from a clock that runs ahead would refuse the device's re-admission until that clock's time; it counts as made now.
+  const now = Date.now();
+  if (!(Date.parse(record.at) <= now + REMOVAL_SKEW_MS)) record = { ...record, at: new Date(now).toISOString() };
   updateMesh((state) => {
     const held = state.forgotten.find((item) => item.id === record.id && item.by === record.by);
     if (held && state.removed.every((item) => item.id !== record.id)) return state;
     changed = true;
-    return { ...state, peers: state.peers.filter((peer) => peer.id !== record.id),
+    return { ...state, peers: state.peers.filter((peer) => peer.id !== record.id), leases: state.leases.filter((lease) => lease.by !== record.id),
       forgotten: held ? state.forgotten : [...state.forgotten, record] };
   }, home);
   return changed;
 }
+
+/** How far ahead of this node's clock a removal heard from another may be stamped before it counts as made now. */
+const REMOVAL_SKEW_MS = 5 * 60_000;
 
 /** Drops the records this node carried from `author` about devices `author` no longer refuses, as a re-admitted device is. */
 export function withdrawForgotten(author: string, held: ReadonlySet<string>, home = meshHome()): MeshState {

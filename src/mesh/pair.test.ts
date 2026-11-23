@@ -10,7 +10,7 @@ import { describePath, pathTo } from "./link.js";
 import { formatCode, inviteWithCode, joinWithCode, parseCode } from "./pair.js";
 import { RelayServer, relayDial } from "./relay.js";
 import { MeshServer } from "./server.js";
-import { findPeer, readMesh, relayName, tombstones, updateMesh } from "./state.js";
+import { findPeer, readMesh, relayName, setGrant, tombstones, updateMesh } from "./state.js";
 
 // Every node here uses the relay this file starts, never a real one.
 process.env.SWARM_MESH_RELAY = "off";
@@ -171,6 +171,8 @@ test("a device removed from the swarm is forgotten by every member, which then r
   const boxSeesGpu = findPeer(readMesh(box), "gpu");
   assert.ok(boxSeesGpu.voucher, "box has not met gpu yet");
 
+  // Removing a device from another node's swarm is an operator's: gpu lets ovh do it.
+  setGrant("ovh", "operator", gpu);
   const { told, missed } = await removeFromSwarm(findPeer(readMesh(ovh), "box"), ovh);
   assert.deepEqual([told, missed], [true, []]);
   assert.deepEqual(readMesh(ovh).removed.map((item) => item.name), ["box"]);

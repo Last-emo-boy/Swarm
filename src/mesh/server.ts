@@ -1,8 +1,8 @@
 /**
  * A node's mesh server: JSON over HTTP inside the node's links (link.ts), which it takes directly on its listen address and
  * through the relay. Only paired peers get past a link's TLS, and the key they used tells which peer is calling, so every
- * route knows its caller. Later features add their routes with `route()`, or with `endpoint()` when they write the
- * response themselves.
+ * route knows its caller and the surface it needs (surfaces.ts), which its grant decides. Later features add their routes
+ * with `route()`, or with `endpoint()` when they write the response themselves.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createTcpServer, type AddressInfo, type Server as TcpServer, type Socket } from "node:net";
@@ -13,7 +13,9 @@ import { LinkServer } from "./link.js";
 import { parseListen } from "./listen.js";
 import { acceptVoucher, answerDirectInvite, brokerPeer } from "./pair.js";
 import { RelayListener } from "./relay.js";
-import { forgetDevice, meshHome, readMesh, removePeer, tombstones, type Peer } from "./state.js";
+import { forgetDevice, grantOf, meshHome, readMesh, removePeer, tombstones, type Peer } from "./state.js";
+import { mintLease } from "./leases.js";
+import { authorizes, describeGrant, surfaceOf, type MeshSurface } from "./surfaces.js";
 
 export interface MeshRequest {
   method: string;
@@ -22,11 +24,20 @@ export interface MeshRequest {
   body: Record<string, unknown>;
   /** The paired peer that sent the request. */
   peer: Peer;
+  /** The request's headers, where a call names its lease (leases.ts `LEASE_HEADER`). */
+  headers: IncomingMessage["headers"];
 }
 export type MeshHandler = (request: MeshRequest) => unknown;
 /** Answers a request by writing the response itself, as a protocol with its own framing does. */
 export type MeshEndpoint = (request: IncomingMessage, response: ServerResponse, peer: Peer) => Promise<void>;
-interface Route { method: string; parts: string[]; handler: MeshHandler }
+export interface MeshRouteOptions {
+  /**
+   * Takes a request the caller's grant does not reach, for a reason this node itself gave: an offer that answers a claim
+   * this node made, say. It never widens what a grant reaches for anything else.
+   */
+  admits?: (request: MeshRequest) => boolean;
+}
+export interface MeshRoute { method: string; path: string; parts: string[]; surface: MeshSurface; handler: MeshHandler; admits?: MeshRouteOptions["admits"] }
 
 const ForgetSchema = z.object({ id: z.string().min(1), name: z.string().max(64).optional(), at: z.iso.datetime().optional() });
 
@@ -42,7 +53,8 @@ export interface MeshServerOptions {
 
 export class MeshServer {
   readonly home: string;
-  private readonly routes: Route[] = [];
+  /** Every route this node serves, with the surface it needs; each was named in surfaces.ts to be registered at all. */
+  readonly routes: MeshRoute[] = [];
   private readonly endpoints = new Map<string, MeshEndpoint>();
   private readonly http: Server;
   private readonly link: LinkServer;
@@ -65,16 +77,20 @@ export class MeshServer {
     // A peer asks to be introduced to another of this node's peers: any common peer can bring two devices together,
     // so joining never depends on one particular node being online when the others are.
     this.route("POST", "/mesh/v1/broker", (request) => brokerPeer(request.body, request.peer.id, this.home));
+    // A peer asks for a lease on what cannot be undone; its grant must reach that surface, and the lease covers one resource.
+    this.route("POST", "/mesh/v1/leases", (request) => mintLease(request.peer, request.body, this.home));
     // A device removed from the swarm, told by the node that removed it: this node forgets it too and keeps the record under
     // its author, so a member that was offline learns of the removal from whichever peer it reaches first.
     this.route("POST", "/mesh/v1/forget", (request) => {
       const { id, name, at } = ForgetSchema.parse(request.body);
+      // The record a peer pushes is never about this node: nothing a peer says removes the node from its own swarm.
+      if (id === readMesh(this.home).node.id) throw new HttpError(403, "A peer cannot remove this node from its own swarm");
       if (id === request.peer.id) { removePeer(id, this.home); return { forgotten: true }; }
       const state = readMesh(this.home);
       forgetDevice({ id, name: name ?? state.peers.find((peer) => peer.id === id)?.name ?? id, at: at ?? new Date().toISOString(),
         by: request.peer.id }, this.home);
       return { forgotten: true };
-    });
+    }, { admits: ({ body, peer }) => body.id === peer.id });
     // Every device this node refuses, each with its author: a peer converges its own refusals from here.
     this.route("GET", "/mesh/v1/removed", () => {
       const all = tombstones(readMesh(this.home));
@@ -82,14 +98,28 @@ export class MeshServer {
     });
   }
 
-  /** Adds a route; `:name` segments become `params.name`. */
-  route(method: string, path: string, handler: MeshHandler): void {
-    this.routes.push({ method, parts: path.split("/").filter(Boolean), handler });
+  /**
+   * Adds a route; `:name` segments become `params.name`. The surface comes from the table in surfaces.ts, and a route the
+   * table does not name is refused here: a new route reaches a paired node only once someone wrote down what it does.
+   */
+  route(method: string, path: string, handler: MeshHandler, options: MeshRouteOptions = {}): void {
+    const surface = surfaceOf(method, path);
+    if (!surface) throw new Error(`No mesh surface for ${method.toUpperCase()} ${path}: add it to MESH_ROUTES in src/mesh/surfaces.ts`);
+    this.routes.push({ method, path, parts: path.split("/").filter(Boolean), surface, handler, ...(options.admits ? { admits: options.admits } : {}) });
   }
 
-  /** Hands every request for `path`, whatever its method, to `handler`. */
+  /**
+   * Hands every request for `path`, whatever its method, to `handler`. The endpoint writes its own response, so it checks
+   * each surface it serves itself with `authorize`.
+   */
   endpoint(path: string, handler: MeshEndpoint): void {
     this.endpoints.set(path, handler);
+  }
+
+  /** Refuses a paired node whose grant does not reach `surface`, naming both. */
+  authorize(peer: Peer, surface: MeshSurface): void {
+    const grant = grantOf(peer);
+    if (!authorizes(grant, surface)) throw new HttpError(403, `${peer.name}'s grant (${describeGrant(grant)}) does not allow ${surface}`);
   }
 
   /** Each relay this node listens at now, and why not where one does not; undefined when it listens at none. */
@@ -147,8 +177,17 @@ export class MeshServer {
       const found = this.match(request.method ?? "GET", url.pathname);
       if (!found) throw new HttpError(404, `No mesh route ${request.method} ${url.pathname}`);
       const peer = this.caller(request);
-      const body = request.method === "GET" || request.method === "HEAD" ? {} : await readJsonBody(request);
-      const result = await found.route.handler({ method: request.method ?? "GET", params: found.params, query: url.searchParams, body, peer });
+      // The body is read first only where a route may admit a request on what it says; anywhere else a refused caller's
+      // body is never read.
+      const read = async (): Promise<Record<string, unknown>> => request.method === "GET" || request.method === "HEAD" ? {} : await readJsonBody(request);
+      let body: Record<string, unknown> | undefined;
+      if (!authorizes(grantOf(peer), found.route.surface)) {
+        body = found.route.admits ? await read() : undefined;
+        const admitted = found.route.admits?.({ method: request.method ?? "GET", params: found.params, query: url.searchParams, body: body ?? {}, peer, headers: request.headers });
+        if (!admitted) this.authorize(peer, found.route.surface);
+      }
+      body ??= await read();
+      const result = await found.route.handler({ method: request.method ?? "GET", params: found.params, query: url.searchParams, body, peer, headers: request.headers });
       sendJson(response, 200, result ?? {});
     } catch (error) {
       const status = error instanceof HttpError ? error.status : error instanceof z.ZodError ? 400 : 500;
@@ -158,7 +197,7 @@ export class MeshServer {
     }
   }
 
-  private match(method: string, pathname: string): { route: Route; params: Record<string, string> } | undefined {
+  private match(method: string, pathname: string): { route: MeshRoute; params: Record<string, string> } | undefined {
     const parts = pathname.split("/").filter(Boolean);
     for (const route of this.routes) {
       if (route.method !== method || route.parts.length !== parts.length) continue;

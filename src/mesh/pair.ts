@@ -60,6 +60,7 @@ export async function nodeInfo(state: MeshState): Promise<NodeInfo> {
     relayName: relayName(state.node.keys.publicKey) };
 }
 
+/** A new pairing's record; what the peer may do here starts as a new pairing's grant (state.ts `savePeer`). */
 export const peerOf = (info: NodeInfo, key: string, extra: Partial<Peer> = {}): Peer => ({
   id: info.id, name: info.name, key, addresses: info.addresses, ...(info.relay ? { relay: info.relay } : {}),
   ...(info.relays?.length ? { relays: info.relays } : {}), relayName: info.relayName,

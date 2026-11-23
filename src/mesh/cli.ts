@@ -8,7 +8,7 @@ import { mcpToolName } from "../extensions/mcp.js";
 import type { TicketRow } from "../superagent/views.js";
 import { connect } from "node:net";
 import { MeshAdmin, askAdmin } from "./admin.js";
-import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, hostPort, membersSummary, meshHome, readMesh, relayOf, relaysOf, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
+import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, grantOf, hostPort, membersSummary, meshHome, readMesh, relayOf, relaysOf, setGrant, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
 import { advertisedAddresses, detectAbilities, membersMismatch, nodeCard, thisSwarm, versionMismatch, type NodeCard, type NodeLoad } from "./card.js";
 import { closePeerLinks, meet, peerHealth, removeFromSwarm } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
@@ -16,6 +16,7 @@ import { parseListen } from "./listen.js";
 import { inviteWithCode, joinWithCode } from "./pair.js";
 import { RelayServer } from "./relay.js";
 import { MeshServer } from "./server.js";
+import { GRANT_PRESETS, GRANT_SURFACES, describeGrant, type GrantPreset } from "./surfaces.js";
 import { LOG_CAP_BYTES, installService, keepLogCapped, serviceHost, serviceStatus, showLog, uninstallService, type LockHolder } from "./service.js";
 import { registerUsage } from "./usage.js";
 
@@ -29,6 +30,9 @@ Commands:
   join <code>                Join the swarm of the device that printed the code
   status [--json]            This node and its peers: how each is reached, version, abilities, load
   remove <peer>              Remove a device from the swarm: every member forgets it
+  grant <peer> viewer|member|operator
+                             What a paired node may do here: view (viewer); file requests and take waiting work
+                             (member, what a new pairing gets); everything (operator, what older pairings keep)
   name <name>                Rename this node
   relay [<url>|on|off]       Where devices meet when they cannot reach each other directly; alone, shows it
   relay serve [--listen <host:port>]
@@ -142,6 +146,14 @@ async function meshCommand(input: string[]): Promise<void> {
       missed.length ? `${missed.join(", ")} did not hear, so ${missed.length === 1 ? "it still accepts" : "they still accept"} ${peer.name} until you remove it there or ${missed.length === 1 ? "it hears" : "they hear"} of it.` : "Every other member forgot it too.",
       told ? "" : `${peer.name} was not reachable to be told; it still lists this swarm, but members that forgot it refuse it.`
     ].filter(Boolean).join(" "));
+    return;
+  }
+  if (command === "grant") {
+    const [handle, preset] = args;
+    if (!handle || !preset || args.length > 2) throw new Error(`Usage: swarm mesh grant <peer> ${GRANT_PRESETS.join("|")}`);
+    if (!(GRANT_PRESETS as readonly string[]).includes(preset)) throw new Error(`Unknown grant "${preset}": choose ${GRANT_PRESETS.join(", ")}`);
+    const peer = setGrant(handle, preset as GrantPreset);
+    console.log(`${peer.name} may now reach ${GRANT_SURFACES[preset as GrantPreset].join(", ")} on this node, from its next request on.`);
     return;
   }
   if (command === "relay") return relay(args);
@@ -276,9 +288,12 @@ async function status(json: boolean): Promise<void> {
   // Informational: a membership that differs is the usual state between two passes, and no link waits on it.
   const mine = membersSummary(readMesh());
   const membership = (item: (typeof peers)[number]): string | undefined => item.card && membersMismatch(item.card, mine);
+  const grants = new Map(state.peers.map((peer) => [peer.id, grantOf(peer)]));
+  const grantLine = (item: (typeof peers)[number]): string => { const grant = grants.get(item.peer.id); return grant ? `  grant ${describeGrant(grant)}` : ""; };
   if (json) {
     console.log(JSON.stringify({ node: { id: node.id, name: node.name, ...own, listen: node.listen, addresses, relay: relay ?? null, serving: running, pull: node.pull, members: mine },
-      peers: peers.map((item) => ({ ...item, ...(mismatch(item) ? { mismatch: mismatch(item) } : {}), ...(membership(item) ? { membership: membership(item) } : {}) })), pulled }, null, 2));
+      peers: peers.map((item) => ({ ...item, ...(grants.has(item.peer.id) ? { grant: describeGrant(grants.get(item.peer.id)!) } : {}),
+        ...(mismatch(item) ? { mismatch: mismatch(item) } : {}), ...(membership(item) ? { membership: membership(item) } : {}) })), pulled }, null, 2));
     return;
   }
   console.log(`${node.name}  ${running ? "running" : "not running: start swarm node run (or swarm node install) so peers can reach it"}`);
@@ -289,8 +304,8 @@ async function status(json: boolean): Promise<void> {
   if (!peers.length) console.log("No peers yet: run swarm mesh invite here and swarm mesh join <code> on the other device.");
   for (const item of peers) {
     console.log(item.reachable && item.card
-      ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${item.path}  ${cardLine(item.card)}`
-      : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}`);
+      ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${item.path}  ${cardLine(item.card)}${grantLine(item)}`
+      : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}${grantLine(item)}`);
     const differs = mismatch(item);
     if (differs) console.log(`  ${"".padEnd(16)} ! ${differs}`);
     const apart = membership(item);
@@ -448,7 +463,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   const home = meshHome();
   const abilities = await detectAbilities();
   let harnessTimer: NodeJS.Timeout | undefined;
-  let facts: () => { repository?: string; load?: NodeLoad } = () => ({});
+  let facts: () => { repository?: string; load?: NodeLoad; takesWork?: false } = () => ({});
   let stopHost = async (): Promise<void> => {};
   let serveHost = (_server: MeshServer): void => {};
   if (withHost) {
@@ -488,7 +503,8 @@ export async function runNodeCommand(input: string[]): Promise<void> {
       const settings = host.client.settings();
       const github = settings.sources.github;
       const repository = github?.enabled ? (github.config as { repository?: string }).repository : undefined;
-      return { ...(repository ? { repository } : {}), load: work.load() };
+      // A node that runs its tickets in VMs tells its peers it takes no work put on it, so none choose it for theirs.
+      return { ...(repository ? { repository } : {}), load: work.load(), ...(settings.executor.isolation === "vm" ? { takesWork: false as const } : {}) };
     };
     stopHost = () => host.stop();
     const { registerTicketRoutes } = await import("./tickets.js");

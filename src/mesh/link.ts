@@ -20,6 +20,8 @@ import { meshHome, peerByIdentity, peerRelays, pskIdentity, readMesh, relayName,
 const TLS = { ciphers: "ECDHE-PSK-CHACHA20-POLY1305", minVersion: "TLSv1.2", maxVersion: "TLSv1.2" } as const;
 export const OPENER = "SWARM/1 ";
 /** How long direct addresses get before the relay is tried as well. */
+/** The header that says a caller knows leases (leases.ts); spelled here so the link carries it without importing leases. */
+const LEASES_HEADER = "x-swarm-leases";
 const DIRECT_HEAD_START_MS = 700;
 /** The gap between starting one relay dial and the next, and how long one relay dial may take. */
 const RELAY_STAGGER_MS = 1_000;
@@ -297,12 +299,12 @@ export function closePeerLinks(): void {
 }
 
 /** One JSON request to a peer; an error answer or an unreachable peer throws a MeshError, with the peer's message when it gave one. */
-export function peerRequest<T>(peer: Peer, method: string, path: string, body?: unknown, timeoutMs = REQUEST_MS): Promise<T> {
+export function peerRequest<T>(peer: Peer, method: string, path: string, body?: unknown, timeoutMs = REQUEST_MS, headers: Record<string, string> = {}): Promise<T> {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     const request = httpRequest({
       agent: agentFor(peer), method, path, host: "mesh",
-      headers: payload ? { "content-type": "application/json", "content-length": payload.length } : {}
+      headers: { [LEASES_HEADER]: "1", ...headers, ...payload ? { "content-type": "application/json", "content-length": payload.length } : {} }
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -338,7 +340,7 @@ export function peerFetch(find: () => Peer): typeof fetch {
     const body = init?.body == null ? undefined : Buffer.from(await new Response(init.body).arrayBuffer());
     return new Promise<Response>((resolve, reject) => {
       const request = httpRequest({ agent: agentFor(peer), method, path: `${url.pathname}${url.search}`, host: "mesh",
-        headers: { ...headers, ...(body ? { "content-length": String(body.length) } : {}) } }, (response) => {
+        headers: { [LEASES_HEADER]: "1", ...headers, ...(body ? { "content-length": String(body.length) } : {}) } }, (response) => {
         const status = response.statusCode ?? 502;
         const empty = method === "HEAD" || [101, 204, 205, 304].includes(status);
         if (empty) response.resume();

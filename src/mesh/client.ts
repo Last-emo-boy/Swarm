@@ -2,12 +2,13 @@
 import type { NodeCard } from "./card.js";
 import { MeshError, describePath, pathTo, peerRequest } from "./link.js";
 import { joinWithCode, nodeInfo, peerOf, type Member } from "./pair.js";
-import { forgetDevice, membersDigest, meshHome, readMesh, removePeer, savePeer, tombstones, updateMesh, withdrawForgotten, type Peer, type Tombstone } from "./state.js";
+import { forgetDevice, grantOf, membersDigest, meshHome, readMesh, removePeer, savePeer, tombstones, updateMesh, withdrawForgotten, type Peer, type Tombstone } from "./state.js";
+import { authorizes } from "./surfaces.js";
 
 export { MeshError, closePeerLinks } from "./link.js";
 
-export const callPeer = <T>(peer: Peer, method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> =>
-  peerRequest<T>(peer, method, path, body, timeoutMs);
+export const callPeer = <T>(peer: Peer, method: string, path: string, body?: unknown, timeoutMs?: number, headers?: Record<string, string>): Promise<T> =>
+  peerRequest<T>(peer, method, path, body, timeoutMs, headers);
 
 /**
  * Pairs with the device that gave out `code`, a short pairing code or a direct invite, and stores the members of its
@@ -44,7 +45,8 @@ async function convergeTombstones(home: string, health: PeerHealth[], timeoutMs:
     let answer: { removed: Tombstone[]; truncated?: boolean };
     try { answer = await callPeer<{ removed: Tombstone[]; truncated?: boolean }>(peer, "GET", "/mesh/v1/removed", undefined, timeoutMs); }
     catch { continue; } // A peer from before removals were carried has no such route.
-    for (const record of answer.removed.slice(0, TOMBSTONES_PER_PULL)) forgetDevice(record, home);
+    // Removals of other devices count only from a peer this node lets remove them; anyone's own withdrawals count below.
+    if (authorizes(grantOf(peer), "mesh.forget")) for (const record of answer.removed.slice(0, TOMBSTONES_PER_PULL)) forgetDevice(record, home);
     if (!answer.truncated) {
       // What the peer itself refuses is what it authored; everything else it only carries.
       withdrawForgotten(peer.id, new Set(answer.removed.filter((record) => record.by === peer.id).map((record) => record.id)), home);

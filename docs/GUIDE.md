@@ -1139,13 +1139,60 @@ addresses.
 
 A device joining through a member is introduced to the others by vouchers: the member seals the new pair's key for
 each other member with the key it shares with that member, and the new device's first connection to a member shows
-it. A device removed with `swarm mesh remove` is forgotten by every member that hears of it, and its old
-introductions are refused.
+it. A running node also keeps the swarm current by itself: once a minute it reads each peer's card, taking up an
+address a peer moved to, and asks any peer for an introduction to a member it lacks, so a device that was offline
+while the swarm grew catches up on its own. `swarm mesh invite` asks the running node for the code and returns at
+once; the node keeps it open for its minutes.
+
+A device removed with `swarm mesh remove` is forgotten by every member that lets the remover take devices out of its
+swarm: an operator's power (see below). Each such member keeps the removal under the device that made it and passes
+that record on, so a member that was offline at the time refuses the removed device as soon as it reaches another
+member it takes removals from, whether or not the remover is online. Only a device's own removals are ever told on its
+behalf, a record about a member itself is refused, one stamped far ahead of the member's clock counts as made then,
+and `swarm mesh status` shows a peer whose view of the membership differs (`~`), which the next pass settles without
+blocking a link. A device without that power still unpairs itself from the removed one.
+
+A device may listen at several relays: `swarm mesh relay wss://a.example,wss://b.example` keeps a listener at each,
+each reconnecting on its own, and a peer dials them in order a second apart, within one 15-second deadline.
+
+### What a paired device may do
+
+Pairing links two devices; what one may do on the other is the other's choice. Each peer has a grant on this node:
+
+| Grant | What the peer reaches here |
+| --- | --- |
+| `viewer` | This node's card, members and tickets, and its read commands (`status`, `tickets`, `usage`, `devices`, `me`; `mesh` and `why` need a maintainer role) |
+| `member` | A viewer's, and filing requests, pulling waiting work, and working the lease it took |
+| `operator` | Every surface: answering, stopping and retrying tickets, putting work on this node, the lent tools, removing other devices from this node's swarm |
+
+A new pairing starts as `member`; a pairing from before grants keeps `operator`, as it worked then. Devices you own
+and want to run each other's work and removals should grant each other `operator`.
+`swarm mesh grant <peer> viewer|member|operator` changes it from the peer's next request, and `swarm mesh status`
+shows each peer's grant. Grants live in `~/.swarm/mesh/grants.json`, apart from the rest of the mesh state, so a Swarm
+from before grants that rewrites that state leaves them as they were; an entry that does not read narrows its peer to
+`viewer`, and a device removed and paired again starts over as `member`. Every mesh route is listed with the surface
+it needs, so a route nobody listed cannot be reached at all. A request a peer files steers only that peer's own
+tickets, and a peer that may post to a ticket but is no operator posts as itself.
+
+Three things cannot be undone once done: running a lent shell, putting work on a node, and stopping a ticket. For
+those the calling device also asks the node for a lease on the one folder, ticket or piece of work it acts on, and
+names the lease on the call. Only the node acted on mints a lease, only for what the asker's grant reaches, for 30
+minutes at most unless asked for less, at most 8 of each kind per peer; a stop or an offer uses its lease up, and
+unpairing ends them all. Swarm asks for them itself. A node of the version before leases cannot ask for one, so an
+operator's call from such a node is taken without one during an upgrade: an operator could mint any lease it named.
+Work a node pulled answers its own claim and needs no lease, but must be the very Assignment and repository it was
+shown, of a repository it pulls; the owner may wake or stop work it runs there whatever the grant. A node pulls only
+from peers it lets file work here (`member` or more). A request a paired device files is the device's own,
+not this node's operator's: it counts against the role limits a person's messages do, and its work writes locally at
+most, since no person's GitHub account here is the peer's. A node that runs its tickets in VMs takes no work put on
+it from outside, which would run on its host, says so on its card so no owner chooses it, and pulls none; offered
+work never asks a node for more autonomy than its own
+`executor.permissionMode` allows nor sets variables other than the ticket's own `SWARM_TICKET_*`.
 
 Paired devices' tickets appear beside this node's in the TUI (`/tickets`, and the status line counts those that need you) and in
 `swarm superagent tickets --all-devices`, addressed as `<device>:<id>`. Answering, stopping and retrying one goes to
 the device that owns it, and `/ticket @<device> <request>` (or `swarm superagent request --device <name>`) files
-work there. A paired device acts as that device's own operator, so pair only devices you control.
+work there, as far as that device's grant for this one reaches (see above).
 
 A device can also lend its paired peers tools, which their Swarm sessions call as MCP tools. Nothing is lent until
 you name folders: `swarm mesh lend shell ~/src/app` lends running commands that start in that folder (a shell can
@@ -1154,7 +1201,9 @@ inside it, refusing paths that lead out, symlinks included. `swarm mesh lend` sh
 `swarm mesh lend --stop shell` takes it back. On the other devices `swarm mesh tools` lists what each peer lends, and
 every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_file` and so on, served by the peer's
 `swarm node run` over Streamable HTTP on the link to that peer. Borrowed tools count as remote, so in `ask` mode each
-call waits for approval; a peer that does not answer is skipped.
+call waits for approval; a peer that does not answer is skipped. The lending node keeps every lent call in
+`~/.swarm/mesh/lend-audit.jsonl`: which peer, under which lease and for which ticket, the command or path, how long it
+took and how it ended.
 
 A ticket can also stay on this node while its worker runs on a paired one. `swarm superagent request --on <node>` (or
 `/ticket --on <node> <request>`) files it that way, `swarm superagent place <id> <node>|here` moves its next worker,
@@ -1176,8 +1225,8 @@ pull are busy (such work waits for them instead of running on the owner). It cla
 repositories fit, oldest first. The owner decides: the first claim that is still valid gets the work through the
 same offer and lease as placement, later ones are refused, and the owner never starts a claimed Assignment itself.
 Work placed with `--on` or `place`, held under a lease, or waiting for a person is never open. Owners hand their
-waiting work to paired nodes that pull by default, because pairing already lets a peer run this node's work when it
-is placed there and a puller only takes work that would otherwise wait; `swarm mesh offer off` keeps it.
+waiting work to paired nodes that pull by default, because a puller only takes work that would otherwise wait and
+asks for it itself; `swarm mesh offer off` keeps it.
 `swarm mesh status` shows whether each node pulls and the work pulled either way, and ticket rows say
 "pulled by <node>".
 

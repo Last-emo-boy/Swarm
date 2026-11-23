@@ -13,7 +13,7 @@ import { nodeCard, type NodeCard } from "./card.js";
 import { callPeer, joinMesh, type MeshError } from "./client.js";
 import { lendFolders, lentTools, registerLending, stopLending } from "./lend.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, newPairKey, readMesh, updateMesh, type Peer } from "./state.js";
+import { createInvite, findPeer, newPairKey, readMesh, setGrant, updateMesh, type Peer } from "./state.js";
 
 // These nodes link up directly; none of them may reach out to a real relay.
 process.env.SWARM_MESH_RELAY = "off";
@@ -51,7 +51,11 @@ before(async () => {
 
   const macHome = join(root, "mac-mesh");
   updateMesh((state) => ({ ...state, node: { ...state.node, name: "mac", advertise: "http://127.0.0.1:9" } }), macHome);
-  for (const peer of [node, ovh, box]) await joinMesh(createInvite(peer.url, 15, peer.home), macHome);
+  for (const peer of [node, ovh, box]) {
+    await joinMesh(createInvite(peer.url, 15, peer.home), macHome);
+    // Borrowing a lent tool is what a pairing reached before grants: the operator preset.
+    setGrant("mac", "operator", peer.home);
+  }
   await box.server.stop();
 
   process.env.SWARM_HOME = join(root, "swarm-home");
@@ -184,5 +188,5 @@ test("a ticket's worker borrows through its host: what each paired node lends, a
   const ran = await callLent("gpu", "shell", { command: "pwd" }, 10_000, process.env.SWARM_MESH_HOME) as { exit_code: number; stdout: string };
   assert.deepEqual([ran.exit_code, ran.stdout.trim()], [0, gpu.work]);
   await assert.rejects(callLent("gpu", "shell", { command: "pwd", cwd: root }, 10_000, process.env.SWARM_MESH_HOME), /gpu refused shell/);
-  await assert.rejects(callLent("nowhere", "shell", { command: "pwd" }, 10_000, process.env.SWARM_MESH_HOME), /No paired node is called nowhere: the paired nodes are gpu, ovh, box/);
+  await assert.rejects(callLent("nowhere", "shell", { command: "pwd" }, 10_000, process.env.SWARM_MESH_HOME), /No paired node is called nowhere: the paired nodes are gpu \(\w{8}\), ovh \(\w{8}\), box \(\w{8}\)/);
 });

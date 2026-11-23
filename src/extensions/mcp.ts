@@ -762,8 +762,9 @@ function decodeMcpIdPart(value: string): string {
 /** A fetch over the link to a paired mesh device, for the tools it lends (src/mesh/borrow.ts); the mesh loads only when used. */
 function meshPeerFetch(peerId: string): typeof fetch {
   return async (input, init) => {
-    const [{ peerFetch }, { findPeer, readMesh }] = await Promise.all([import("../mesh/link.js"), import("../mesh/state.js")]);
-    return peerFetch(() => findPeer(readMesh(), peerId))(input, init);
+    // A lent shell call takes its lease from the lending node first; mesh code loads only when a session borrows a tool.
+    const { lentToolFetch } = await import("../mesh/borrow.js");
+    return lentToolFetch(peerId)(input, init);
   };
 }
 
