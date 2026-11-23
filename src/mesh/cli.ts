@@ -7,9 +7,10 @@ import { getSwarmPaths } from "../config/settings.js";
 import { mcpToolName } from "../extensions/mcp.js";
 import type { TicketRow } from "../superagent/views.js";
 import { connect } from "node:net";
+import { MeshAdmin, askAdmin } from "./admin.js";
 import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, hostPort, meshHome, readMesh, relayOf, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
 import { advertisedAddresses, detectAbilities, nodeCard, thisSwarm, versionMismatch, type NodeCard, type NodeLoad } from "./card.js";
-import { closePeerLinks, peerHealth, removeFromSwarm } from "./client.js";
+import { closePeerLinks, meet, peerHealth, removeFromSwarm } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
 import { parseListen } from "./listen.js";
 import { inviteWithCode, joinWithCode } from "./pair.js";
@@ -50,6 +51,8 @@ otherwise, which passes the bytes on without reading them. State lives in ${mesh
 
 /** How often a running node checks again which harnesses are installed and signed in. */
 const HARNESS_CHECK_MS = 10 * 60_000;
+/** How often a running node refreshes what its peers say about themselves and asks for members it lacks. */
+const MEET_MS = Number(process.env.SWARM_MESH_MEET_MS) || 60_000;
 
 const NODE_USAGE = `Usage: swarm node <command>
 
@@ -301,6 +304,13 @@ async function invite(minutes: number, direct: boolean): Promise<void> {
     if (!await serving(node.listen)) console.log("No node runs here yet: start swarm node run, or the join fails.");
     return;
   }
+  // A node runs here: it opens and keeps the code, so this command can return instead of waiting for the joiners.
+  const answered = await askAdmin(meshHome(), minutes);
+  if (answered) {
+    console.log(`Pairing code: ${answered.code}`);
+    console.log(`\nOn each device to add: swarm mesh join ${answered.code}\nIt works until ${answered.expiresAt}, for any number of devices; the node keeps it open.`);
+    return;
+  }
   const invitation = await inviteWithCode({
     minutes,
     onJoin: (peer) => console.log(`${peer.name} joined.`),
@@ -315,8 +325,8 @@ async function invite(minutes: number, direct: boolean): Promise<void> {
 async function join(code: string): Promise<void> {
   const { inviter, members } = await joinWithCode(code);
   console.log(`Joined ${inviter.name}'s swarm${members.length ? `, with ${members.map((member) => member.name).join(", ")}` : ""}.`);
-  // Each member takes this node's introduction on first contact, so reach them all now.
-  for (const item of await peerHealth(undefined, 10_000)) {
+  // Each member takes this node's introduction on first contact, so meet them all now, and ask for any member a peer knows.
+  for (const item of await meet(undefined, 10_000)) {
     console.log(`  ${item.peer.name.padEnd(16)} ${item.reachable ? item.path : `not reachable now; it links up once both are online (${item.error})`}`);
   }
 }
@@ -480,6 +490,12 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   const { node } = readMesh(home);
   const relay = relayOf(node);
   await server.start(node.listen, relay ? { relay } : {});
+  const admin = new MeshAdmin({ home, log: (message) => console.log(message) });
+  await admin.start().catch((error: unknown) => console.log(`No mesh control socket: ${String(error)}`));
+  // What a node knows about its peers goes stale: an address changes, a member was offline when the swarm grew. One pass a
+  // minute keeps the membership and the addresses current, and asks a peer for any member this node is missing.
+  const meeting = setInterval(() => { void meet(home, 3000).catch(() => {}) }, MEET_MS);
+  meeting.unref();
   const addresses = await advertisedAddresses(node);
   console.log(`Swarm node "${node.name}" is up${withHost ? " with its superagent host" : ""}: direct links on ${node.listen}${addresses.length ? ` (${addresses.join(", ")})` : ""}, ${relay ? `and at the relay ${relay}` : "relay off"}. Ctrl+C stops it.`);
   if (relay) {
@@ -489,7 +505,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     }, 10_000).unref();
   }
   await new Promise<void>((resolve) => {
-    const stop = () => { clearInterval(harnessTimer); void server.stop().then(stopHost).then(resolve); };
+    const stop = () => { clearInterval(harnessTimer); clearInterval(meeting); void admin.stop().then(() => server.stop()).then(stopHost).then(resolve); };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
   });

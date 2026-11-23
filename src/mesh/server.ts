@@ -11,7 +11,7 @@ import { HttpError, errorMessage, readJsonBody, sendJson } from "../server/gatew
 import { tailnetAddress, type NodeCard } from "./card.js";
 import { LinkServer } from "./link.js";
 import { parseListen } from "./listen.js";
-import { acceptVoucher, answerDirectInvite } from "./pair.js";
+import { acceptVoucher, answerDirectInvite, brokerPeer } from "./pair.js";
 import { RelayListener } from "./relay.js";
 import { meshHome, readMesh, removePeer, type Peer } from "./state.js";
 
@@ -59,6 +59,9 @@ export class MeshServer {
     // A peer that unpairs tells this node, so both forget each other.
     this.route("POST", "/mesh/v1/unpair", (request) => { removePeer(request.peer.id, this.home); return { removed: true }; });
     // A device removed from the swarm: every member forgets it and refuses introductions of it from then on.
+    // A peer asks to be introduced to another of this node's peers: any common peer can bring two devices together,
+    // so joining never depends on one particular node being online when the others are.
+    this.route("POST", "/mesh/v1/broker", (request) => brokerPeer(request.body, request.peer.id, this.home));
     this.route("POST", "/mesh/v1/forget", (request) => {
       const { id, name } = ForgetSchema.parse(request.body);
       if (id !== request.peer.id) removePeer(id, this.home, name ? { name } : {});
