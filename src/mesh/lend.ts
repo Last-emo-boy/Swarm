@@ -4,17 +4,23 @@
  * until `swarm mesh lend` names folders: `shell` runs commands whose cwd is inside its folders, `files` lists, reads and
  * writes files inside its folders. A path that leads out of the folders, through a symlink too, is refused.
  */
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, realpathSync, renameSync, statSync } from "node:fs";
 import { lstat, mkdir, open, readdir, readlink, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod/v4";
-import { HttpError } from "../server/gateway-http.js";
+import { HttpError, readJsonBody } from "../server/gateway-http.js";
 import type { MeshServer } from "./server.js";
-import { meshHome, readMesh, updateMesh, type Lend } from "./state.js";
+import { meshHome, readMesh, updateMesh, type Lend, type Peer } from "./state.js";
+import { requireLease } from "./leases.js";
+import type { MeshSurface } from "./surfaces.js";
 
 export type LendKind = keyof Lend;
 export const LEND_KINDS: LendKind[] = ["shell", "files"];
 const KIND_TOOLS: Record<LendKind, string[]> = { shell: ["shell"], files: ["list_files", "read_file", "write_file"] };
+/** The surface each lent tool needs: running a command, reading a folder or file, writing a file. */
+const TOOL_SURFACE: Readonly<Record<string, MeshSurface>> = {
+  shell: "lend.shell", list_files: "lend.files.read", read_file: "lend.files.read", write_file: "lend.files.write"
+};
 
 const SHELL_DEFAULT_MS = 60_000;
 /** The longest a lent command runs: under the five minutes Node's fetch waits for the answer to begin. */
@@ -159,9 +165,62 @@ function toolsFor(lend: Lend, node: string): LentTool[] {
   return tools;
 }
 
+/** The header a borrower names what it borrows for in, such as a ticket; the link's key, not this header, says who calls. */
+export const BORROWER_HEADER = "x-swarm-borrower";
+/** Where a lending node keeps the calls it took, and how large the file grows before the older half moves aside. */
+export const LEND_AUDIT = "lend-audit.jsonl";
+const AUDIT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Keeps one lent call on this node's record: who called it, under which lease and for what, which tool, what it was asked
+ * in short, how long it took and how it ended. A lending node keeps this whether or not it runs a ticket host.
+ */
+function auditLent(home: string, call: { peer: { id: string; name: string }; lease?: string; borrower: string | string[] | undefined; tool: string;
+  args: Record<string, unknown>; ms: number; error?: string }): void {
+  const borrower = Array.isArray(call.borrower) ? call.borrower[0] : call.borrower;
+  const asked = call.tool === "shell" ? String(call.args.command ?? "") : String(call.args.path ?? ".");
+  const line = JSON.stringify({ at: new Date().toISOString(), peer: { id: call.peer.id, name: call.peer.name }, ...(call.lease ? { lease: call.lease } : {}),
+    ...(borrower ? { for: borrower.slice(0, 128) } : {}), tool: call.tool, asked: asked.slice(0, 200),
+    ...(call.tool === "shell" && call.args.cwd ? { cwd: String(call.args.cwd).slice(0, 200) } : {}), ms: call.ms,
+    ...(call.error ? { error: call.error.slice(0, 200) } : { ok: true }) });
+  try {
+    const file = join(home, LEND_AUDIT);
+    if (existsSync(file) && statSync(file).size > AUDIT_BYTES) renameSync(file, `${file}.1`);
+    appendFileSync(file, `${line}\n`, { mode: 0o600 });
+  } catch { /* The record is kept where it can be; a full or read-only disk must not stop the call it records. */ }
+}
+
+/** Whether `path` lies in `root`, both real paths: decided as `insideRoots` does, so a root such as `/` holds its folders. */
+function within(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+/**
+ * The lease a shell call names, checked against the lent folder its command would run in. A cwd outside every lent folder
+ * has no folder to lease: the tool itself refuses it, with its own words, so this lets it through to that refusal.
+ */
+async function shellLease(server: MeshServer, peer: Peer, headers: Record<string, string | string[] | undefined>, cwd: unknown) {
+  const roots = readMesh(server.home).node.lend.shell?.roots ?? [];
+  const path = await insideRoots(roots, typeof cwd === "string" ? cwd : undefined).catch(() => undefined);
+  if (path === undefined) return undefined;
+  return requireLease(peer, "lend.shell", headers, (resource) => roots.includes(resource) && within(resource, path), server.home);
+}
+
+/** The shell calls in a JSON-RPC body, one message or a batch: their cwd, which their lease must cover. */
+function shellCalls(body: unknown): { cwd: unknown }[] {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.flatMap((message) => {
+    const call = message as { method?: unknown; params?: { name?: unknown; arguments?: { cwd?: unknown } } } | null;
+    return call?.method === "tools/call" && call.params?.name === "shell" ? [{ cwd: call.params.arguments?.cwd }] : [];
+  });
+}
+
 /** Serves what this node lends on its mesh server, reading the lent folders afresh on every request. */
 export function registerLending(server: MeshServer): void {
-  server.endpoint("/mesh/v1/mcp", async (request, response) => {
+  // The endpoint writes every answer itself, so it authorizes each tool call's own surface; a tool lent later without a
+  // surface here fails rather than running open.
+  server.endpoint("/mesh/v1/mcp", async (request, response, peer) => {
     // Stateless: each POST is answered on its own, so there is no event stream to open and no session to end.
     if (request.method !== "POST") throw new HttpError(405, "The lent tools take POST requests only");
     const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
@@ -169,21 +228,48 @@ export function registerLending(server: MeshServer): void {
     const { node } = readMesh(server.home);
     const mcp = new McpServer({ name: `swarm-mesh-${node.name}`, version: "1.0.0" });
     for (const tool of toolsFor(node.lend, node.name)) {
+      const surface = TOOL_SURFACE[tool.name];
+      if (!surface) throw new HttpError(500, `The lent tool ${tool.name} has no surface`);
       mcp.registerTool(tool.name, {
         description: tool.description,
         inputSchema: tool.input,
         annotations: { readOnlyHint: tool.readOnly, destructiveHint: !tool.readOnly, openWorldHint: false }
       }, async (args: Record<string, unknown>) => {
+        const started = Date.now();
+        let lease: string | undefined;
         try {
-          return { content: [{ type: "text" as const, text: JSON.stringify(await tool.run(args)) }] };
+          server.authorize(peer, surface);
+          // A command run here cannot be had back, so the shell takes a lease on the lent folder the command runs in.
+          if (tool.name === "shell") lease = (await shellLease(server, peer, request.headers, args.cwd))?.id;
+          const answer = await tool.run(args);
+          auditLent(server.home, { peer, ...(lease ? { lease } : {}), borrower: request.headers[BORROWER_HEADER], tool: tool.name, args, ms: Date.now() - started });
+          return { content: [{ type: "text" as const, text: JSON.stringify(answer) }] };
         } catch (error) {
-          return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] };
+          const message = error instanceof Error ? error.message : String(error);
+          auditLent(server.home, { peer, ...(lease ? { lease } : {}), borrower: request.headers[BORROWER_HEADER], tool: tool.name, args, ms: Date.now() - started, error: message });
+          return { isError: true, content: [{ type: "text" as const, text: message }] };
         }
       });
+    }
+    // A shell call's lease is checked before the MCP layer, so a refusal is an HTTP 403 the borrower can answer by asking for
+    // a fresh lease, not a tool result it would take as the command's own failure.
+    const body = await readJsonBody(request).catch(() => undefined);
+    for (const call of shellCalls(body)) {
+      try {
+        server.authorize(peer, "lend.shell");
+        await shellLease(server, peer, request.headers, call.cwd);
+      } catch (error) {
+        const status = error instanceof HttpError ? error.status : 400;
+        const message = error instanceof Error ? error.message : String(error);
+        auditLent(server.home, { peer, borrower: request.headers[BORROWER_HEADER], tool: "shell", args: { cwd: call.cwd, command: "" }, ms: 0, error: message });
+        response.writeHead(status, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { status, message } }));
+        return;
+      }
     }
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     response.on("close", () => { void mcp.close(); });
     await mcp.connect(transport);
-    await transport.handleRequest(request, response);
+    await transport.handleRequest(request, response, body);
   });
 }

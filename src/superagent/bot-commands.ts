@@ -15,7 +15,7 @@ import { AUTHORIZATIONS_URL, githubApp, installUrl, linkOf, namedRepository, typ
 import { openTicketsOf, patchReady, takeOverTicket, ticketNamed, wantPullRequest as wantPullRequestFor, type TakeOverOutcome } from "./github-commands.js";
 import { KV } from "./kv.js";
 import { memoryOf, personSubject } from "./memories.js";
-import { addressable, allowedWrite, atLeast, ceilingOf, limitOf, roleOf, seesNodes, watchedRepository } from "./policy.js";
+import { PEER_SOURCE, addressable, allowedWrite, atLeast, ceilingOf, limitOf, roleOf, seesNodes, watchedRepository } from "./policy.js";
 import type { AgentCommand } from "./prompts.js";
 import { RoleSchema, WriteLevelSchema, settingsPath, updateSettings, type Settings } from "./settings.js";
 import { metaOf } from "./sources/meta.js";
@@ -119,6 +119,13 @@ export class BotCommands {
     if (typeof answer === "function") this.later(trigger, answer);
     else if (answer) this.answer(trigger, answer, key("command", trigger.id));
     return result;
+  }
+  /**
+   * Why a paired node's request is held back, as a person's message beyond their limits would be, or undefined to take it.
+   * The peer principal is the trigger's actor, so its role's requests per hour and open tickets apply as for a person.
+   */
+  requestHeld(trigger: Trigger): string | undefined {
+    return this.held(trigger, this.client.settings(), true, this.say(trigger));
   }
   /**
    * The answer to a command run for someone who asked it directly, such as a paired node reading this one's state: one
@@ -312,7 +319,8 @@ export class BotCommands {
     const from = new Date(Date.parse(trigger.at) - HOUR_MS).toISOString();
     const requests = this.client.store.read.requests(trigger.actor, from, trigger.at);
     const scope = this.client.sources.scope(trigger);
-    const ceiling = ceilingOf(settings, trigger.source, scope.listened ? scope.row : undefined);
+    // A paired node's work is held local, whatever this scope's ceiling (policy.ts `allowedWrite`).
+    const ceiling = trigger.source === PEER_SOURCE ? "local" : ceilingOf(settings, trigger.source, scope.listened ? scope.row : undefined);
     const link = githubApp(settings) ? linkOf(this.client.store, trigger.actor) : undefined;
     const github = !githubApp(settings) ? "" : !link ? say(" GitHub: not linked; send /link.", " GitHub：未绑定，发 /link 绑定。")
       : link.broken ? say(` GitHub: @${link.login}, but the link stopped working; send /link again.`, ` GitHub：@${link.login}，但绑定已失效，再发一次 /link。`)

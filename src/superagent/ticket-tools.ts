@@ -401,7 +401,7 @@ export function ticketTools(client: SuperagentClient, ticketId: string, assignme
         client.store.set(KV.mesh.calls(ticketId), [...calls, { ...entry, ...outcome, ms: Date.now() - started }].slice(-MESH_CALLS_KEPT));
       };
       try {
-        const result = await callLent(args.node, args.tool, call, MESH_SHELL_MS + 5000);
+        const result = await callLent(args.node, args.tool, call, MESH_SHELL_MS + 5000, undefined, `ticket ${ticketId.slice(0, 8)}`);
         record({ ok: true });
         return { node: args.node, tool: args.tool, result };
       } catch (error) {

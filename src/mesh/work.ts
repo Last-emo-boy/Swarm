@@ -30,8 +30,10 @@ import { hostStatus } from "../superagent/views.js";
 import { ReportSchema, workDelivered, workStart, workView } from "../superagent/work-link.js";
 import type { NodeCard, NodeLoad } from "./card.js";
 import { callPeer, MeshError, peerHealth } from "./client.js";
+import { requireLease, useLease, withLease } from "./leases.js";
 import type { MeshHandler, MeshRequest, MeshServer } from "./server.js";
-import { readMesh, type Peer, type Pull } from "./state.js";
+import { grantOf, readMesh, type Peer, type Pull } from "./state.js";
+import { authorizes } from "./surfaces.js";
 import { workPath } from "./work-link.js";
 
 /** How long a lease holds without a heartbeat, and how often a node renews the leases it holds. */
@@ -41,7 +43,7 @@ const STOP_GRACE_MS = 10_000;
 /** How often a node that pulls looks for waiting work; while none is open it looks less often, down to 8 times as rarely. */
 export const PULL_MS = 15_000;
 
-const OfferSchema = z.object({
+export const OfferSchema = z.object({
   ticketId: z.string().min(1).max(128),
   assignmentId: z.string().min(1).max(128),
   /** The ticket's short name, which names its directory. */
@@ -49,8 +51,11 @@ const OfferSchema = z.object({
   repository: z.string(),
   /** The agent's GitHub account the worker acts as, when the owner works on a GitHub repository. */
   github: z.object({ login: z.string().min(1) }).optional(),
-  /** The ticket's execution variables on the owner; the node that runs it names its own directory in them. */
-  variables: z.record(z.string(), z.string()),
+  /**
+   * The ticket's execution variables on the owner; the node that runs it names its own directory in them. Only the ticket's
+   * own variables pass: a name such as NODE_OPTIONS or BASH_ENV would change what the worker's shell runs.
+   */
+  variables: z.record(z.string().regex(/^SWARM_TICKET_[A-Z0-9_]+$/, "only SWARM_TICKET_ variables"), z.string()),
   blockedCommands: z.array(z.string().regex(/^[A-Za-z0-9._-]+$/).refine((name) => name !== "." && name !== "..")),
   permissionMode: z.enum(["full-auto", "yolo"]),
   leaseMs: z.number().int().min(1000).max(3_600_000),
@@ -58,6 +63,9 @@ const OfferSchema = z.object({
   write: WriteLevelSchema.optional()
 });
 type Offer = z.infer<typeof OfferSchema>;
+/** How far a worker of offered work goes on this node: the node decides for its own machine, so an offer asks for less, never more. */
+export const offeredMode = (offered: Offer["permissionMode"], own: Offer["permissionMode"]): Offer["permissionMode"] =>
+  offered === "yolo" && own !== "yolo" ? own : offered;
 const ClaimSchema = z.object({ ticketId: z.string().min(1).max(128), assignmentId: z.string().min(1).max(128) });
 
 export interface MeshWorkOptions {
@@ -111,7 +119,7 @@ const heldKey = (owner: string, ticketId: string): string => `${owner}/${ticketI
 /** The node whose abilities cover what the work needs, with the most free worker slots; a node without a ticket host has none. */
 export function fittest(needs: readonly string[], cards: readonly NodeCard[]): NodeCard | undefined {
   const free = (card: NodeCard): number => card.load ? card.load.slots - card.load.running - card.load.queued : 0;
-  return cards.filter((card) => needs.every((need) => card.abilities.includes(need)) && free(card) > 0)
+  return cards.filter((card) => card.takesWork !== false && needs.every((need) => card.abilities.includes(need)) && free(card) > 0)
     .sort((a, b) => free(b) - free(a))[0];
 }
 
@@ -123,6 +131,18 @@ export function unfit(work: Pick<OpenWork, "needs" | "repository">, abilities: r
   const missing = work.needs.filter((need) => !abilities.includes(need));
   if (missing.length) return `it lacks ${missing.join(", ")}, which the work needs`;
   if (repositories.length && !repositories.includes(work.repository)) return `it pulls only work of ${repositories.join(", ")}`;
+  return undefined;
+}
+
+/**
+ * Why an offer that answers a claim is not the work that was claimed, or undefined when it is: the Assignment and the
+ * repository this node was shown and claimed, and a repository this node pulls. An owner cannot swap other work in.
+ */
+export function claimMismatch(claim: { assignmentId: string; repository: string }, offer: Pick<Offer, "assignmentId" | "repository">,
+  pulls: readonly string[]): string | undefined {
+  if (claim.assignmentId !== offer.assignmentId) return `it claimed Assignment ${claim.assignmentId}, not ${offer.assignmentId}`;
+  if (claim.repository !== offer.repository) return `it was shown work of ${claim.repository || "no repository"}, not ${offer.repository || "no repository"}`;
+  if (pulls.length && !pulls.includes(offer.repository)) return `it pulls only work of ${pulls.join(", ")}`;
   return undefined;
 }
 
@@ -186,6 +206,15 @@ export class MeshWork implements RemoteWork {
 
   private lease(ticketId: string): Lease | undefined { return leaseOf(this.client, ticketId); }
   private live(lease: Lease | undefined): lease is Lease { return !!lease && Date.parse(lease.expiresAt) > Date.now(); }
+  /** The claims this node is making on its peers' work now: the work it was shown, and until when it waits for the offer. */
+  private readonly claims = new Map<string, { until: number; assignmentId: string; repository: string }>();
+  /** Whether an offer from `owner` of `ticketId` answers a claim this node is making now. */
+  private claimedFrom(owner: string, ticketId: string): boolean { return (this.claims.get(heldKey(owner, ticketId))?.until ?? 0) > Date.now(); }
+  /** Whether this node runs `owner`'s `ticketId` now, under that Assignment when one is named. */
+  private runsFor(owner: string, ticketId: string, assignmentId?: string): boolean {
+    const held = this.held.get(heldKey(owner, ticketId));
+    return !!held && (assignmentId === undefined || held.assignmentId === assignmentId);
+  }
   private saveLease(ticketId: string, lease: Lease): void { this.client.store.set(KV.mesh.lease(ticketId), lease); }
   private dropLease(ticketId: string): void {
     this.client.store.delete(KV.mesh.lease(ticketId));
@@ -235,13 +264,16 @@ export class MeshWork implements RemoteWork {
     if (card) return this.peer(card);
     // A paired node fit for it that pulls takes it once it has a free slot; until then it waits here, open to that node.
     const repository = this.client.deployment().repository;
-    const puller = cards.find((item) => item.pull && !unfit({ needs, repository }, item.abilities, item.pull.repositories));
+    const puller = cards.find((item) => item.pull && item.takesWork !== false && !unfit({ needs, repository }, item.abilities, item.pull.repositories));
     if (puller && this.pulls().offer) throw new Later(`The work waits for ${puller.name}, which has ${needs.join(", ")}, to pull it`);
     return undefined;
   }
 
-  /** Offers the Assignment to `node`, which takes it, or wakes its worker for new Inputs when it holds it already. */
-  private async offer(node: Peer, ticket: Ticket, assignmentId: string): Promise<void> {
+  /**
+   * Offers the Assignment to `node`, which takes it, or wakes its worker for new Inputs when it holds it already. Work this
+   * node puts there takes a lease from that node on the ticket; work answering `node`'s own claim needs none, as it asked.
+   */
+  private async offer(node: Peer, ticket: Ticket, assignmentId: string, claimed = false): Promise<void> {
     const { client } = this;
     const deployment = client.deployment();
     const settings = client.settings();
@@ -252,18 +284,29 @@ export class MeshWork implements RemoteWork {
     this.saveLease(ticket.id, { ...same ?? { assignmentId, node: { id: node.id, name: node.name }, at: new Date().toISOString() },
       expiresAt: new Date(Date.now() + this.leaseMs).toISOString() });
     const write = ticket.mandate.capability?.write;
+    const body = {
+      ticketId: ticket.id, assignmentId, name: ticket.execution!.name, repository: deployment.repository,
+      ...(deployment.github && !sealed(write) ? { github: { login: deployment.github.login } } : {}),
+      variables: variableValues(ticketVariables({ deployment, sources: client.sources, settings, ticket, ...(trigger ? { trigger } : {}) })),
+      blockedCommands: settings.executor.blockedCommands, permissionMode: settings.executor.permissionMode, leaseMs: this.leaseMs,
+      ...(write ? { write } : {})
+    };
     try {
-      await callPeer(node, "POST", "/mesh/v1/work/offers", {
-        ticketId: ticket.id, assignmentId, name: ticket.execution!.name, repository: deployment.repository,
-        ...(deployment.github && !sealed(write) ? { github: { login: deployment.github.login } } : {}),
-        variables: variableValues(ticketVariables({ deployment, sources: client.sources, settings, ticket, ...(trigger ? { trigger } : {}) })),
-        blockedCommands: settings.executor.blockedCommands, permissionMode: settings.executor.permissionMode, leaseMs: this.leaseMs,
-        ...(write ? { write } : {})
-      }, 30_000);
+      const leased = (): Promise<unknown> =>
+        withLease(node, "work.offer", ticket.id, (headers) => callPeer(node, "POST", "/mesh/v1/work/offers", body, 30_000, headers), `run ticket ${ticket.id.slice(0, 8)}`);
+      // A node that pulled takes the answer to its own claim as asked; one that does not know the claim asks for a lease, as
+      // for work put there, which its grant then decides.
+      // Waking work the node already runs needs no lease there either.
+      if (claimed || same) await callPeer(node, "POST", "/mesh/v1/work/offers", body, 30_000).catch((error: unknown) => {
+        if (error instanceof MeshError && error.status === 403 && /lease/.test(error.message)) return leased();
+        throw error;
+      });
+      else await leased();
     } catch (error) {
       if (this.live(previous)) this.saveLease(ticket.id, previous);
       else this.dropLease(ticket.id);
-      if (error instanceof MeshError && error.status === 503) throw new Later(error.message);
+      // A node that is busy, or that has handed out all the leases it gives one peer, takes work again later.
+      if (error instanceof MeshError && (error.status === 503 || error.status === 429)) throw new Later(error.message);
       throw new Error(`${node.name} did not take the work: ${errorMessage(error)}`);
     }
   }
@@ -365,7 +408,7 @@ export class MeshWork implements RemoteWork {
         this.saveLease(ticketId, { assignmentId, node: by, at, expiresAt: new Date(Date.now() + this.leaseMs).toISOString() });
         updatePlacement(this.client, ticketId, { pulled: { ...by, assignmentId } });
       });
-      await this.offer(peer, ticket, assignmentId);
+      await this.offer(peer, ticket, assignmentId, true);
     } catch (error) {
       this.client.store.atomic(() => {
         this.dropLease(ticketId);
@@ -384,7 +427,8 @@ export class MeshWork implements RemoteWork {
     const ticketId = params.ticket!;
     const assignmentId = query.get("assignment") ?? String(body.assignmentId ?? "");
     const lease = this.lease(ticketId);
-    if (!lease || lease.node.id !== peer!.id || lease.assignmentId !== assignmentId) {
+    // A lease past its time holds nothing, though the sweep that places the work again has not run yet.
+    if (!this.live(lease) || lease.node.id !== peer!.id || lease.assignmentId !== assignmentId) {
       throw new HttpError(403, `${peer!.name} does not hold the work of ticket ${ticketId.slice(0, 8)}`);
     }
     return { ticketId, assignmentId, lease };
@@ -427,13 +471,16 @@ export class MeshWork implements RemoteWork {
       return { work: this.openWork() };
     });
     server.route("POST", "/mesh/v1/work/claims", ({ peer, body }) => this.claim(peer!, body));
-    server.route("POST", "/mesh/v1/work/offers", ({ peer, body }) => this.accept(peer!, body));
+    // An offer answering this node's own claim, or waking work it already runs for that owner, needs no grant of work.offer.
+    server.route("POST", "/mesh/v1/work/offers", ({ peer, body, headers }) => this.accept(peer, body, headers), { admits: ({ peer, body }) =>
+      this.claimedFrom(peer.id, String(body.ticketId ?? "")) || this.runsFor(peer.id, String(body.ticketId ?? ""), String(body.assignmentId ?? "")) });
+    // The owner of work this node runs may always stop it: that is the owner's own work, whatever else its grant reaches.
     server.route("POST", "/mesh/v1/work/offers/:ticket/stop", async ({ peer, params, body }) => {
       const work = this.held.get(heldKey(peer!.id, params.ticket!));
       const stopped = !!work && work.assignmentId === body.assignmentId;
       if (stopped) await this.release(work);
       return { stopped };
-    });
+    }, { admits: ({ peer, params }) => this.runsFor(peer.id, params.ticket!) });
 
     const ticket = "/mesh/v1/work/tickets/:ticket";
     // A caller without the lease reads nothing, as a worker whose Assignment ended reads no ticket.
@@ -498,8 +545,23 @@ export class MeshWork implements RemoteWork {
   // A node peers place work on: running their tickets' workers
 
   /** Takes an Assignment a paired node offers, or wakes the worker of one this node holds for that node's new Inputs. */
-  private async accept(owner: Peer, body: Record<string, unknown>): Promise<{ accepted: true }> {
+  private async accept(owner: Peer, body: Record<string, unknown>, headers: MeshRequest["headers"] = {}): Promise<{ accepted: true }> {
     const offer = OfferSchema.parse(body);
+    // Work this node asked for answers its own claim, and must be the work it was shown; work it already runs for that owner
+    // is woken; work put here otherwise takes the lease this node minted for it, which the offer uses up.
+    const claim = this.claimedFrom(owner.id, offer.ticketId) ? this.claims.get(heldKey(owner.id, offer.ticketId)) : undefined;
+    if (claim) {
+      const mismatch = claimMismatch(claim, offer, readMesh(this.options.home).node.pull.repositories);
+      if (mismatch) throw new HttpError(409, `${this.name()} claimed other work of ticket ${offer.ticketId.slice(0, 8)}: ${mismatch}`);
+    } else if (!this.runsFor(owner.id, offer.ticketId, offer.assignmentId)) {
+      const lease = requireLease(owner, "work.offer", headers, (resource) => resource === offer.ticketId, this.options.home);
+      if (lease) useLease(lease.id, this.options.home);
+    }
+    const settings = this.client.settings();
+    // A node that runs its tickets in VMs runs no offered work on its host: that would step outside the isolation it chose.
+    if (settings.executor.isolation === "vm") {
+      throw new HttpError(409, `${this.name()} runs its tickets in VMs, and offered work would run on its host: place it on a node that runs workers as processes`);
+    }
     const key = heldKey(owner.id, offer.ticketId);
     const held = this.held.get(key);
     if (held?.assignmentId === offer.assignmentId) {
@@ -555,7 +617,8 @@ export class MeshWork implements RemoteWork {
     return {
       owner, ticketId: offer.ticketId, assignmentId: offer.assignmentId, directory, deployment,
       variables: { ...offer.variables, SWARM_TICKET_DIR: directory, SWARM_TICKET_BLOCKED_COMMANDS: blocked.join(" ") },
-      permissionMode: offer.permissionMode, ...(offer.write ? { write: offer.write } : {}), leaseMs: offer.leaseMs,
+      permissionMode: offeredMode(offer.permissionMode, settings.executor.permissionMode),
+      ...(offer.write ? { write: offer.write } : {}), leaseMs: offer.leaseMs,
       expires: Date.now() + offer.leaseMs, ready: false
     };
   }
@@ -672,8 +735,11 @@ export class MeshWork implements RemoteWork {
     let found = true;
     try {
       const { node, peers } = readMesh(this.options.home);
-      if (!node.pull.enabled || this.client.settings().paused || this.free() <= 0) return;
-      const offered = await Promise.all(peers.map(async (peer) => {
+      // A node that runs its tickets in VMs takes no other node's work (`accept`), so it claims none either.
+      if (!node.pull.enabled || this.client.settings().paused || this.free() <= 0 || this.client.settings().executor.isolation === "vm") return;
+      // A node takes work only from peers it lets file work here: pulling runs their work on this machine.
+      const trusted = peers.filter((peer) => authorizes(grantOf(peer), "tickets.submit"));
+      const offered = await Promise.all(trusted.map(async (peer) => {
         try {
           const { work } = await callPeer<{ work: OpenWork[] }>(peer, "GET", "/mesh/v1/work/open", undefined, 3000);
           return work.map((item) => ({ peer, work: item }));
@@ -690,7 +756,13 @@ export class MeshWork implements RemoteWork {
         if (this.closing || this.free() <= 0) break;
         const ticket = `ticket ${work.ticketId.slice(0, 8)} (${work.title})`;
         try {
-          await callPeer(peer, "POST", "/mesh/v1/work/claims", { ticketId: work.ticketId, assignmentId: work.assignmentId }, 60_000);
+          // The owner answers the claim with an offer while this call waits, which this node takes as its own asking.
+          this.claims.set(heldKey(peer.id, work.ticketId), { until: Date.now() + 60_000, assignmentId: work.assignmentId, repository: work.repository });
+          try {
+            await callPeer(peer, "POST", "/mesh/v1/work/claims", { ticketId: work.ticketId, assignmentId: work.assignmentId }, 60_000);
+          } finally {
+            this.claims.delete(heldKey(peer.id, work.ticketId));
+          }
           this.log(`pulled ${ticket} from ${peer.name}`);
         } catch (error) {
           // Another node or the owner itself took it first; the next look sees what is still open.

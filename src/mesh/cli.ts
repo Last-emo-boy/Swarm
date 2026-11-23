@@ -8,14 +8,15 @@ import { mcpToolName } from "../extensions/mcp.js";
 import type { TicketRow } from "../superagent/views.js";
 import { connect } from "node:net";
 import { MeshAdmin, askAdmin } from "./admin.js";
-import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, hostPort, meshHome, readMesh, relayOf, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
-import { advertisedAddresses, detectAbilities, nodeCard, thisSwarm, versionMismatch, type NodeCard, type NodeLoad } from "./card.js";
+import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, grantOf, hostPort, membersSummary, meshHome, readMesh, relayOf, relaysOf, setGrant, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
+import { advertisedAddresses, detectAbilities, membersMismatch, nodeCard, thisSwarm, versionMismatch, type NodeCard, type NodeLoad } from "./card.js";
 import { closePeerLinks, meet, peerHealth, removeFromSwarm } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
 import { parseListen } from "./listen.js";
 import { inviteWithCode, joinWithCode } from "./pair.js";
 import { RelayServer } from "./relay.js";
 import { MeshServer } from "./server.js";
+import { GRANT_PRESETS, GRANT_SURFACES, describeGrant, type GrantPreset } from "./surfaces.js";
 import { LOG_CAP_BYTES, installService, keepLogCapped, serviceHost, serviceStatus, showLog, uninstallService, type LockHolder } from "./service.js";
 import { registerUsage } from "./usage.js";
 
@@ -29,6 +30,9 @@ Commands:
   join <code>                Join the swarm of the device that printed the code
   status [--json]            This node and its peers: how each is reached, version, abilities, load
   remove <peer>              Remove a device from the swarm: every member forgets it
+  grant <peer> viewer|member|operator
+                             What a paired node may do here: view (viewer); file requests and take waiting work
+                             (member, what a new pairing gets); everything (operator, what older pairings keep)
   name <name>                Rename this node
   relay [<url>|on|off]       Where devices meet when they cannot reach each other directly; alone, shows it
   relay serve [--listen <host:port>]
@@ -142,6 +146,14 @@ async function meshCommand(input: string[]): Promise<void> {
       missed.length ? `${missed.join(", ")} did not hear, so ${missed.length === 1 ? "it still accepts" : "they still accept"} ${peer.name} until you remove it there or ${missed.length === 1 ? "it hears" : "they hear"} of it.` : "Every other member forgot it too.",
       told ? "" : `${peer.name} was not reachable to be told; it still lists this swarm, but members that forgot it refuse it.`
     ].filter(Boolean).join(" "));
+    return;
+  }
+  if (command === "grant") {
+    const [handle, preset] = args;
+    if (!handle || !preset || args.length > 2) throw new Error(`Usage: swarm mesh grant <peer> ${GRANT_PRESETS.join("|")}`);
+    if (!(GRANT_PRESETS as readonly string[]).includes(preset)) throw new Error(`Unknown grant "${preset}": choose ${GRANT_PRESETS.join(", ")}`);
+    const peer = setGrant(handle, preset as GrantPreset);
+    console.log(`${peer.name} may now reach ${GRANT_SURFACES[preset as GrantPreset].join(", ")} on this node, from its next request on.`);
     return;
   }
   if (command === "relay") return relay(args);
@@ -273,22 +285,31 @@ async function status(json: boolean): Promise<void> {
   const pulled = await pulledWork(node.name, hosts);
   const own = thisSwarm();
   const mismatch = (item: (typeof peers)[number]): string | undefined => item.card && versionMismatch(item.card, own);
+  // Informational: a membership that differs is the usual state between two passes, and no link waits on it.
+  const mine = membersSummary(readMesh());
+  const membership = (item: (typeof peers)[number]): string | undefined => item.card && membersMismatch(item.card, mine);
+  const grants = new Map(state.peers.map((peer) => [peer.id, grantOf(peer)]));
+  const grantLine = (item: (typeof peers)[number]): string => { const grant = grants.get(item.peer.id); return grant ? `  grant ${describeGrant(grant)}` : ""; };
   if (json) {
-    console.log(JSON.stringify({ node: { id: node.id, name: node.name, ...own, listen: node.listen, addresses, relay: relay ?? null, serving: running, pull: node.pull },
-      peers: peers.map((item) => ({ ...item, ...(mismatch(item) ? { mismatch: mismatch(item) } : {}) })), pulled }, null, 2));
+    console.log(JSON.stringify({ node: { id: node.id, name: node.name, ...own, listen: node.listen, addresses, relay: relay ?? null, serving: running, pull: node.pull, members: mine },
+      peers: peers.map((item) => ({ ...item, ...(grants.has(item.peer.id) ? { grant: describeGrant(grants.get(item.peer.id)!) } : {}),
+        ...(mismatch(item) ? { mismatch: mismatch(item) } : {}), ...(membership(item) ? { membership: membership(item) } : {}) })), pulled }, null, 2));
     return;
   }
   console.log(`${node.name}  ${running ? "running" : "not running: start swarm node run (or swarm node install) so peers can reach it"}`);
   console.log(`  swarm ${own.version}${own.commit ? ` ${own.commit}` : ""}, mesh protocol ${own.protocol}`);
-  console.log(`  direct at ${addresses.join(", ") || "no address peers can reach"}; relay ${relay ?? "off"}`);
+  const configured = relaysOf(node);
+  console.log(`  direct at ${addresses.join(", ") || "no address peers can reach"}; ${configured.length ? `relay${configured.length > 1 ? "s" : ""} ${configured.join(", ")}` : "relay off"}`);
   for (const line of pullLines(node.pull)) console.log(`  ${line}`);
   if (!peers.length) console.log("No peers yet: run swarm mesh invite here and swarm mesh join <code> on the other device.");
   for (const item of peers) {
     console.log(item.reachable && item.card
-      ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${item.path}  ${cardLine(item.card)}`
-      : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}`);
+      ? `  ${item.peer.name.padEnd(16)} ${String(item.ms).padStart(4)} ms  ${item.path}  ${cardLine(item.card)}${grantLine(item)}`
+      : `  ${item.peer.name.padEnd(16)} unreachable  ${item.error ?? ""}${grantLine(item)}`);
     const differs = mismatch(item);
     if (differs) console.log(`  ${"".padEnd(16)} ! ${differs}`);
+    const apart = membership(item);
+    if (apart) console.log(`  ${"".padEnd(16)} ~ ${apart}`);
   }
   if (pulled.length) console.log(`Pulled work:\n${pulled.map((row) => `  ${row.short}  ${row.label.padEnd(22)} ${row.title}  (pulled by ${row.pulledBy})`).join("\n")}`);
 }
@@ -346,16 +367,21 @@ async function relay(args: string[]): Promise<void> {
   }
   const setting = args[0];
   if (setting) {
-    const relay = setting === "on" ? undefined : setting === "off" ? "off" : setting.includes("://") ? setting.replace(/\/$/, "") : `wss://${setting}`;
-    if (relay && relay !== "off" && !/^wss?:\/\//.test(relay)) throw new Error("Usage: swarm mesh relay [<wss:// URL>|on|off]");
+    // `off` stops relays; `on` restores the default; anything else is one URL, or several comma-separated.
+    const urls = setting === "off" ? [] : setting === "on" ? [DEFAULT_RELAY]
+      : setting.split(",").map((item) => item.trim()).filter(Boolean).map((item) => item.includes("://") ? item.replace(/\/$/, "") : `wss://${item}`);
+    for (const url of urls) if (!/^wss?:\/\//.test(url)) throw new Error("Usage: swarm mesh relay [<wss:// URL>[,<wss:// URL>…]|on|off]");
     updateMesh((state) => {
-      const { relay: _dropped, ...node } = state.node;
-      return { ...state, node: relay ? { ...node, relay } : node };
+      const { relay: _dropped, relays: _droppedList, ...node } = state.node;
+      // `relay` mirrors the first, so a Swarm from before relays were a list still finds "the" relay.
+      return { ...state, node: urls.length ? { ...node, relay: urls[0], ...(urls.length > 1 ? { relays: urls } : {}) } : node };
     });
   }
-  const current = relayOf(readMesh().node);
-  console.log(current ? `Devices meet at ${current}${current === DEFAULT_RELAY ? " (the default relay)" : ""} when they cannot reach each other directly.` : "The relay is off: devices link up only directly, and pairing takes a direct code (swarm mesh invite --direct).");
-  if (setting) console.log("A node run with swarm node run uses it from its next start.");
+  const current = relaysOf(readMesh().node);
+  console.log(current.length
+    ? `Devices meet at ${current.join(", ")}${current.length === 1 && current[0] === DEFAULT_RELAY ? " (the default relay)" : ""} when they cannot reach each other directly${current.length > 1 ? "; a node listens at every one and dials whichever a peer names" : ""}.`
+    : "The relay is off: devices link up only directly, and pairing takes a direct code (swarm mesh invite --direct).");
+  if (setting) console.log("A node run with swarm node run uses them from its next start.");
 }
 
 const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
@@ -437,7 +463,7 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   const home = meshHome();
   const abilities = await detectAbilities();
   let harnessTimer: NodeJS.Timeout | undefined;
-  let facts: () => { repository?: string; load?: NodeLoad } = () => ({});
+  let facts: () => { repository?: string; load?: NodeLoad; takesWork?: false } = () => ({});
   let stopHost = async (): Promise<void> => {};
   let serveHost = (_server: MeshServer): void => {};
   if (withHost) {
@@ -477,31 +503,33 @@ export async function runNodeCommand(input: string[]): Promise<void> {
       const settings = host.client.settings();
       const github = settings.sources.github;
       const repository = github?.enabled ? (github.config as { repository?: string }).repository : undefined;
-      return { ...(repository ? { repository } : {}), load: work.load() };
+      // A node that runs its tickets in VMs tells its peers it takes no work put on it, so none choose it for theirs.
+      return { ...(repository ? { repository } : {}), load: work.load(), ...(settings.executor.isolation === "vm" ? { takesWork: false as const } : {}) };
     };
     stopHost = () => host.stop();
     const { registerTicketRoutes } = await import("./tickets.js");
     serveHost = (server) => { registerTicketRoutes(server, host.client, host.commands); work.serve(server); };
   }
-  const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts() }), log: (message) => process.stderr.write(`${message}\n`) });
+  const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities, ...facts(), members: membersSummary(readMesh(home)) }),
+    log: (message) => process.stderr.write(`${message}\n`) });
   serveHost(server);
   registerLending(server);
   registerUsage(server);
   const { node } = readMesh(home);
-  const relay = relayOf(node);
-  await server.start(node.listen, relay ? { relay } : {});
+  const relays = relaysOf(node);
+  await server.start(node.listen, relays.length ? { relays } : {});
   const admin = new MeshAdmin({ home, log: (message) => console.log(message) });
   await admin.start().catch((error: unknown) => console.log(`No mesh control socket: ${String(error)}`));
   // What a node knows about its peers goes stale: an address changes, a member was offline when the swarm grew. One pass a
   // minute keeps the membership and the addresses current, and asks a peer for any member this node is missing.
+  void meet(home, 3000).catch(() => {});
   const meeting = setInterval(() => { void meet(home, 3000).catch(() => {}) }, MEET_MS);
   meeting.unref();
   const addresses = await advertisedAddresses(node);
-  console.log(`Swarm node "${node.name}" is up${withHost ? " with its superagent host" : ""}: direct links on ${node.listen}${addresses.length ? ` (${addresses.join(", ")})` : ""}, ${relay ? `and at the relay ${relay}` : "relay off"}. Ctrl+C stops it.`);
-  if (relay) {
+  console.log(`Swarm node "${node.name}" is up${withHost ? " with its superagent host" : ""}: direct links on ${node.listen}${addresses.length ? ` (${addresses.join(", ")})` : ""}, ${relays.length ? `and at ${relays.length === 1 ? "the relay" : "the relays"} ${relays.join(", ")}` : "relay off"}. Ctrl+C stops it.`);
+  if (relays.length) {
     setTimeout(() => {
-      const at = server.relayStatus();
-      if (at && !at.listening) console.log(`Not listening at the relay yet: ${at.error ?? "no answer"}. It keeps trying.`);
+      for (const at of server.relayStatus() ?? []) if (!at.listening) console.log(`Not listening at ${at.relay} yet: ${at.error ?? "no answer"}. It keeps trying.`);
     }, 10_000).unref();
   }
   await new Promise<void>((resolve) => {

@@ -21,7 +21,8 @@ import { OPENER } from "./link.js";
 import { parseListen } from "./listen.js";
 import { CODE_ALPHABET, codeCharacters, openMailbox, relayDial } from "./relay.js";
 import {
-  DEFAULT_RELAY, INVITE_MINUTES, dropInvite, isInviteCode, liveInvite, meshHome, parseInvite, readMesh, relayName, relayOf, savePeer, type MeshState, type Peer
+  DEFAULT_RELAY, INVITE_MINUTES, dropInvite, isInviteCode, liveInvite, meshHome, parseInvite, readMesh, refuses, relayName, relayOf, relaysOf, savePeer, tombstones,
+  type MeshState, type Peer
 } from "./state.js";
 
 /** Wrong codes one invite takes before it is cancelled. */
@@ -48,18 +49,21 @@ export const formatCode = (mailbox: string, password: string, relay?: string): s
 };
 
 /** What two pairing devices tell each other about themselves. */
-export interface NodeInfo { id: string; name: string; addresses: string[]; relay?: string; relayName: string }
+export interface NodeInfo { id: string; name: string; addresses: string[]; relay?: string; relays?: string[]; relayName: string }
 /** A member the inviter hands the joiner. */
 export interface Member extends NodeInfo { key: string; voucher: string }
 
 export async function nodeInfo(state: MeshState): Promise<NodeInfo> {
-  const relay = relayOf(state.node);
-  return { id: state.node.id, name: state.node.name, addresses: await advertisedAddresses(state.node), ...(relay ? { relay } : {}),
+  const relays = relaysOf(state.node);
+  return { id: state.node.id, name: state.node.name, addresses: await advertisedAddresses(state.node),
+    ...(relays.length ? { relay: relays[0], ...(relays.length > 1 ? { relays } : {}) } : {}),
     relayName: relayName(state.node.keys.publicKey) };
 }
 
+/** A new pairing's record; what the peer may do here starts as a new pairing's grant (state.ts `savePeer`). */
 export const peerOf = (info: NodeInfo, key: string, extra: Partial<Peer> = {}): Peer => ({
-  id: info.id, name: info.name, key, addresses: info.addresses, ...(info.relay ? { relay: info.relay } : {}), relayName: info.relayName,
+  id: info.id, name: info.name, key, addresses: info.addresses, ...(info.relay ? { relay: info.relay } : {}),
+  ...(info.relays?.length ? { relays: info.relays } : {}), relayName: info.relayName,
   pairedAt: new Date().toISOString(), ...extra
 });
 
@@ -197,7 +201,8 @@ export async function answerPairing(stream: Duplex, password: string, mailbox: s
       const expiresAt = new Date(Date.now() + VOUCHER_DAYS * 86_400_000).toISOString();
       const voucher = b64(Buffer.from(JSON.stringify({ by: state.node.id,
         box: seal(derive(peer.key, "voucher"), { node: joiner, key: pairKey, issuedAt: new Date().toISOString(), expiresAt }, state.node.id) })));
-      return { id: peer.id, name: peer.name, addresses: peer.addresses, ...(peer.relay ? { relay: peer.relay } : {}), relayName: peer.relayName ?? "", key: pairKey, voucher };
+      return { id: peer.id, name: peer.name, addresses: peer.addresses, ...(peer.relay ? { relay: peer.relay } : {}),
+        ...(peer.relays?.length ? { relays: peer.relays } : {}), relayName: peer.relayName ?? "", key: pairKey, voucher };
     });
     // Saved before the joiner hears back, so it may call this node the moment it has stored the answer.
     const peer = peerOf(joiner, derive(key, "pair-key").toString("base64url"));
@@ -256,7 +261,10 @@ export function acceptVoucher(voucher: string, home = meshHome()): boolean {
     const introducer = state.peers.find((peer) => peer.id === by);
     if (!introducer) return false;
     const { node, key, issuedAt, expiresAt } = open<{ node: NodeInfo; key: string; issuedAt: string; expiresAt: string }>(derive(introducer.key, "voucher"), box, introducer.id);
-    if (expiresAt <= new Date().toISOString() || node.id === state.node.id || state.removed.some((item) => item.id === node.id && item.at >= issuedAt)) return false;
+    // A device is re-admitted only by a voucher newer than every removal of it, whichever member made the removal.
+    const removedAt = tombstones(state).filter((item) => item.id === node.id)
+      .reduce<string | undefined>((latest, item) => latest === undefined || item.at > latest ? item.at : latest, undefined);
+    if (expiresAt <= new Date().toISOString() || node.id === state.node.id || (removedAt !== undefined && removedAt >= issuedAt)) return false;
     if (state.peers.some((peer) => peer.id === node.id && peer.key === key)) return true;
     savePeer(peerOf(node, key, { introducedBy: introducer.id }), home);
     return true;
@@ -278,16 +286,17 @@ export function brokerPeer(body: unknown, caller: string, home = meshHome()): Me
   const target = state.peers.find((peer) => peer.id === parsed.id);
   if (!target) throw new HttpError(404, `This node has no peer ${parsed.id}`);
   if (target.id === state.node.id) throw new HttpError(400, "A device cannot introduce itself to itself");
-  if (state.removed.some((item) => item.id === parsed.node.id)) throw new HttpError(409, "That device was removed from this swarm");
+  if (refuses(state, parsed.node.id)) throw new HttpError(409, "That device was removed from this swarm");
   const key = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + VOUCHER_DAYS * 86_400_000).toISOString();
   const voucher = b64(Buffer.from(JSON.stringify({ by: state.node.id,
     box: seal(derive(target.key, "voucher"), { node: parsed.node, key, issuedAt: new Date().toISOString(), expiresAt }, state.node.id) })));
   return { id: target.id, name: target.name, addresses: target.addresses, ...(target.relay ? { relay: target.relay } : {}),
-    relayName: target.relayName ?? "", key, voucher };
+    ...(target.relays?.length ? { relays: target.relays } : {}), relayName: target.relayName ?? "", key, voucher };
 }
 const BrokerSchema = z.object({ id: z.string().min(1),
-  node: z.object({ id: z.string().min(1), name: z.string().min(1), addresses: z.array(z.string()), relay: z.string().optional(), relayName: z.string() }) });
+  node: z.object({ id: z.string().min(1), name: z.string().min(1), addresses: z.array(z.string()), relay: z.string().optional(),
+    relays: z.array(z.string()).optional(), relayName: z.string() }) });
 
 /** Answers a device that uses one of this node's direct invites; a wrong secret counts against the invite. */
 const failedAttempts = new Map<string, number>();

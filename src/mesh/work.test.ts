@@ -20,9 +20,14 @@ import { ticketRow } from "../superagent/views.js";
 import { nodeCard, type NodeCard } from "./card.js";
 import { callPeer, joinMesh, MeshError } from "./client.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, newPairKey, readMesh, updateMesh, type Peer } from "./state.js";
+import { createInvite, findPeer, newPairKey, readMesh, setGrant, updateMesh, type Peer } from "./state.js";
+import { GRANT_SURFACES } from "./surfaces.js";
 import { fittest, MeshWork } from "./work.js";
 import { workPath } from "./work-link.js";
+
+/** A node runs the work `owner` puts on it only once it grants that: a member, and work.offer on top. */
+const acceptsWork = (owner: string, mesh: string): void => { setGrant(owner, { scopes: [...GRANT_SURFACES.member, "work.offer"] }, mesh); };
+
 
 // These nodes link up directly; none of them may reach out to a real relay.
 process.env.SWARM_MESH_RELAY = "off";
@@ -129,6 +134,7 @@ before(async () => {
   ovh = await startNode("ovh", ["linux"]);
   gpu = await startNode("gpu", ["linux", "gpu", "harness:claude"]);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), gpu.mesh);
+  acceptsWork("ovh", gpu.mesh);
 
   // A node that takes the work it is offered, says it started, and is never heard from again.
   const mesh = join(root, "ghost-mesh");
@@ -148,6 +154,7 @@ before(async () => {
   const { address: url } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: url } }), mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
+  acceptsWork("ovh", mesh);
   // The ghost is offered work the moment the owner knows it, so wait on what the offer needs: the owner's record of the
   // ghost carries the address the ghost listens at, and the ghost answers there. A pairing that reached the owner before
   // the address was saved leaves the record empty, and then the first offer is refused without ever dialing: the ghost
@@ -264,6 +271,7 @@ test("a node that stops renewing its lease loses the work: the owner restarts th
   const { address } = await server.start();
   updateMesh((current) => ({ ...current, node: { ...current.node, advertise: address } }), mesh);
   await joinMesh(createInvite(ovh.url, 15, ovh.mesh), mesh);
+  acceptsWork("ovh", mesh);
   // The owner knows the ghost only once its record carries the address it listens at, and the ghost answers there.
   await until(() => {
     const record = readMesh(ovh.mesh).peers.find((item) => item.name === "lease-ghost");

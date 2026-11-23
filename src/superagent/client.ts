@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Engine, UserError, followupOwners, key, latestAssignment, latestReport, liveTicket, threadKey, type Decision, type DomainEvent, type Executor, type Ticket,
-  type Trigger } from "./core/index.js";
+  type Trigger, type ActorRef } from "./core/index.js";
 import { Commands } from "./commands.js";
 import { Effects } from "./effects.js";
 import { linkOf } from "./github-link.js";
@@ -17,7 +17,7 @@ import { KV } from "./kv.js";
 import { ticketExecution } from "./messages.js";
 import { noticeChannel, stoppedId, stoppedNotice, unroutedNotice } from "./notices.js";
 import { Outbox } from "./outbox.js";
-import { settingsPolicy } from "./policy.js";
+import { type PeerGrants, settingsPolicy } from "./policy.js";
 import { readSettings, settingsPath, superagentStateDir, type Settings, type SettingsRead } from "./settings.js";
 import type { Deployment } from "./setup.js";
 import { Store } from "./store.js";
@@ -59,6 +59,8 @@ export class SuperagentClient {
   readonly sources: SourceRegistry;
   readonly effects: Effects;
   readonly outbox: Outbox;
+  /** What paired nodes may do here, set by the mesh server that files their requests (mesh/tickets.ts); unset without one. */
+  peerGrants?: PeerGrants;
   readonly commands: Commands;
   readonly engine: Engine;
   /** The talking paths' journal (journal.ts), which the host and the tests that drive them install; processes without one record none. */
@@ -85,7 +87,7 @@ export class SuperagentClient {
     this.engine = new Engine({
       repo: this.store,
       scope: this.sources,
-      policy: () => settingsPolicy(this.settings(), this.sources, { of: (actor) => linkOf(this.store, actor) }),
+      policy: () => settingsPolicy(this.settings(), this.sources, { of: (actor) => linkOf(this.store, actor) }, this.peerGrants),
       assessor: { request: (candidate) => this.effects.enqueue("assessment", candidate.evalId, { triggerId: candidate.triggers[0]!.id }) },
       executor,
       outbox: this.outbox,
@@ -138,6 +140,15 @@ export class SuperagentClient {
   }
 
   /**
+   * Files a Trigger another adapter built, such as a paired node's request (mesh/tickets.ts), as a Thread of its own: the
+   * same intake a person's request has, under the actor that adapter set.
+   */
+  receive(trigger: Trigger): { triggerId: string; thread: string } {
+    this.store.atomic(() => this.engine.receive(trigger));
+    return { triggerId: trigger.id, thread: threadKey(trigger.threads[0]!) };
+  }
+
+  /**
    * Queues a message typed into the TUI as chat for the host to take in (local.ts `takeLocalInbox`): bot commands and the
    * router see it as a chat message in the terminal's one chat. The host must be running to take it in.
    */
@@ -158,12 +169,14 @@ export class SuperagentClient {
    * Thread, where its worker decides it; on a ticket from another Source it goes on a local Thread of the ticket's, attached
    * to it as the main Session would attach a message that points at a ticket.
    */
-  message(ticketId: string, text: string, actor = localOperator()): { triggerId: string; thread: string } {
+  message(ticketId: string, text: string, actor: string | ActorRef = localOperator()): { triggerId: string; thread: string } {
     const ticket = this.store.tickets.get(ticketId);
     if (!ticket) throw new Error(`Unknown ticket ${ticketId}`);
     const origin = this.store.triggers.get(ticket.origin.triggerId);
     const own = origin?.source === LOCAL ? origin.threads[0]!.id : undefined;
-    const trigger = localTrigger({ id: randomUUID(), text, actor, threadId: own ?? `ticket-${ticketId}`, ticketId });
+    const local = localTrigger({ id: randomUUID(), text, ...typeof actor === "string" ? { actor } : {}, threadId: own ?? `ticket-${ticketId}`, ticketId });
+    // Someone other than this node's operator, such as a paired node, speaks as itself on the terminal's thread.
+    const trigger = typeof actor === "string" ? local : { ...local, actor };
     this.store.atomic(() => {
       this.engine.receive(trigger);
       if (!own) this.engine.attach(ticketId, trigger.id);

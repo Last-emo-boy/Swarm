@@ -557,6 +557,40 @@ describe('access model', () => {
     expect(capabilityOf(settings, onGithub, { ...linked, defaultRepo: 'alice-gh/tool' }, { repository: 'alice-gh/tool' })?.repository).toBe(WATCHED)
     expect(repositoryFor(linked, '', undefined)).toBeUndefined()
   })
+  it('keeps a paired node\'s work local whatever role its principal gets here or the access model is, and holds its Mandate while the mesh lets it', () => {
+    const peer = (id = 'peer-1', name = 'netcup') => ({ source: 'mesh', id, name })
+    const request = (who = peer()): Trigger => ({ id: 'r', source: 'mesh', threads: [{ source: 'mesh', id: 'r' }], actor: who, human: true,
+      addressed: 'direct', at: '', text: 'tidy the readme', meta: { requestId: 'r', peer: { id: who.id, name: who.name } } })
+    const settings = SettingsSchema.parse({ ...base, access: {},
+      policy: { ...base.policy, sources: { ...base.policy.sources, mesh: { roles: { 'peer-1': 'maintainer' } } } } })
+    // The mesh server already checked the surface the peer's grant reaches, so the request enters as explicit, under the peer.
+    const gate = setup(settings).policy.gate(request(), thread(), [])
+    expect(gate).toMatchObject({ admissible: true, strength: 'explicit',
+      basis: { via: 'peer', source: 'mesh', row: 'ticket', peer: { id: 'peer-1', name: 'netcup' } } })
+    const mandate = { strength: 'explicit' as const, policyVersion: '', basis: (gate as { basis: MandateBasis }).basis, actor: peer(), scope: '' }
+    // The role here is this node's to give; the write level is not: the peer's machine holds no credential of a person here.
+    expect(roleOf(settings, peer())).toBe('maintainer')
+    expect(allowedWrite(settings, mandate)).toBe('local')
+    expect(capabilityOf(settings, mandate)).toMatchObject({ role: 'maintainer', write: 'local' })
+    // The Mandate holds while the mesh still lets that node file work here: unpaired or narrowed, it does not; with no mesh
+    // served, nothing vouches for it and it does not either.
+    const mesh = (reaches: boolean) => settingsPolicy(settings, setup(settings).sources, undefined, { reaches: (id, surface) => reaches && id === 'peer-1' && surface === 'tickets.submit' })
+    expect(mesh(true).revalidate(mandate)).toBe(true)
+    expect(mesh(false).revalidate(mandate)).toBe(false)
+    expect(setup(settings).policy.revalidate(mandate)).toBe(false)
+    // The access model off, the peer's work is still held local: its capability seals the worker's accounts.
+    const open = SettingsSchema.parse({ ...base })
+    expect(capabilityOf(open, mandate)).toMatchObject({ write: 'local', local: 'ceiling' })
+    // A peer steers only its own work, with the access model on or off; a person on the list steers it as before.
+    const theirs = { actor: peer() }, others = { actor: { source: 'feishu', id: MEMBER } }
+    for (const current of [settings, open]) {
+      expect(steers(current, theirs, peer())).toBe(true)
+      expect(steers(current, others, peer())).toBe(false)
+      expect(steers(current, theirs, peer('peer-2', 'gpu'))).toBe(false)
+    }
+    // A trigger with no peer in its meta is refused rather than filed under an unnamed principal.
+    expect(setup(settings).policy.gate({ ...request(), meta: {} }, thread(), [])).toEqual({ admissible: false, reason: 'not_a_member' })
+  })
   it('lets a ticket\'s requester and maintainers steer it, and nobody else', () => {
     const { policy: gated } = setup(roles)
     const mandate = { actor: person(READER) } as never
