@@ -170,6 +170,9 @@ test("a peer's grant decides what it reaches here: viewer reads, member files re
   assert.ok(ovh.client.store.tickets.get(ticket)!.ended, "an operator stops a ticket with a lease on it");
   // A stop uses its lease up: none on that ticket is left for another call.
   assert.deepEqual(readMesh(ovh.meshHome).leases.filter((lease) => lease.resource === ticket), []);
+  // An operator's request is this node's operator's, as a pairing's was before grants.
+  const asOperator = await callPeer<{ triggerId: string }>(peer(), "POST", "/mesh/v1/requests", { text: "check the logs" });
+  assert.equal(ovh.client.store.triggers.get(asOperator.triggerId)!.actor.source, "local");
   // The peer's own ticket is not left open: the next test starts from no open ticket of the peer's.
   ovh.client.stop(ticketId!);
 });

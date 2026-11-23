@@ -1,9 +1,9 @@
 /**
  * Seeing and steering tickets across the mesh. A node serves its own tickets to its paired peers: the same rows, host
  * status and local replies its TUI shows, and the same request, say, stop and retry commands. What a peer reaches is its
- * grant's (surfaces.ts), which the mesh server checks before any of these run; a request is filed under the peer principal,
- * so its work writes locally at most and its sends count against the limits a person's message does. Another node's
- * ticket is shown and addressed as `<device>:<id>`.
+ * grant's (surfaces.ts), which the mesh server checks before any of these run. An operator acts as this node's operator,
+ * as a pairing did before grants; any other grant acts as the peer principal, so its work writes locally at most and its
+ * sends count against the limits a person's message does. Another node's ticket is shown and addressed as `<device>:<id>`.
  */
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../server/gateway-http.js";
@@ -97,6 +97,9 @@ export function registerTicketRoutes(server: MeshServer, client: SuperagentClien
     return { row: ticketRow(client, found), messages: ticketMessages(client, found.id) };
   });
   server.route("POST", "/mesh/v1/requests", ({ body, peer }) => {
+    // An operator files as this node's operator, as a pairing did before grants; any other grant files as the peer, whose
+    // work writes locally at most and counts against its role's limits.
+    if (grantOf(peer) === "operator") return { triggerId: client.request(text(body)).triggerId };
     const trigger = peerTrigger(peer, text(body));
     const held = commands.requestHeld(trigger);
     if (held) throw new HttpError(429, held);

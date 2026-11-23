@@ -1182,9 +1182,10 @@ unpairing ends them all. Swarm asks for them itself. A node of the version befor
 operator's call from such a node is taken without one during an upgrade: an operator could mint any lease it named.
 Work a node pulled answers its own claim and needs no lease, but must be the very Assignment and repository it was
 shown, of a repository it pulls; the owner may wake or stop work it runs there whatever the grant. A node pulls only
-from peers it lets file work here (`member` or more). A request a paired device files is the device's own,
-not this node's operator's: it counts against the role limits a person's messages do, and its work writes locally at
-most, since no person's GitHub account here is the peer's. A node that runs its tickets in VMs takes no work put on
+from peers it lets file work here (`member` or more). A request, message or read command from an `operator` acts as
+this node's operator, as pairing did before grants. From any other grant it is the device's own: it counts against the
+role limits a person's messages do, and its work writes locally at most, since no person's GitHub account here is the
+peer's. A node that runs its tickets in VMs takes no work put on
 it from outside, which would run on its host, says so on its card so no owner chooses it, and pulls none; offered
 work never asks a node for more autonomy than its own
 `executor.permissionMode` allows nor sets variables other than the ticket's own `SWARM_TICKET_*`.
