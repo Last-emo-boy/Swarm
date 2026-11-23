@@ -292,7 +292,7 @@ test("a claim that races with the owner's executor starting the work loses, and 
   assert.equal(ticketRow(client, ticket).runsOn, undefined);
 });
 
-test("work that needs what the owner lacks waits for a busy node that has it and pulls, and runs on the owner once none does", { timeout: 120_000 }, async () => {
+test("work that needs what the owner lacks waits for a busy node that has it, pulling or not, and runs on the owner once no such node is reachable", { timeout: 120_000 }, async () => {
   const { client } = ovh.host;
   // A node with CUDA that pulls but has no free slot, so placement cannot hand it the work.
   const mesh = join(root, "busy-mesh");
@@ -312,9 +312,13 @@ test("work that needs what the owner lacks waits for a busy node that has it and
     assert.ok((await openWork()).some((work) => work.title === "Write seven.txt"));
 
     setPull({ mesh }, { enabled: false });
+    await sleep(6000);
+    assert.equal(find("Write seven.txt")!.assignments.at(-1)?.state, "pending", "with pulling off it waits for a free slot on the busy node");
+
+    await server.stop();
     const ticket = await ended("Write seven.txt");
     assert.equal(ticket.ended?.outcome, "completed", `ticket ended: ${JSON.stringify(ticket.ended)} report: ${JSON.stringify(ticket.assignments.at(-1)?.report)}`);
-    assert.equal(readFileSync(join(ticket.execution!.directory, "seven.txt"), "utf8"), "hi\n", "with no node to pull it, it ran on the owner as before");
+    assert.equal(readFileSync(join(ticket.execution!.directory, "seven.txt"), "utf8"), "hi\n", "with no node that has CUDA reachable, it ran on the owner as before");
   } finally {
     await server.stop();
   }
