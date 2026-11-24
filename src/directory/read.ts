@@ -74,7 +74,7 @@ export function workerCount(workers: Workers, queued: number): WorkerCount {
 
 /** This node's facts from its mesh state, the host's settings and devices, and the harness checks that ran here. */
 export function hereFacts(input: { node?: MeshNode; settings: Settings; devices: Devices; queued: number; host: HereFacts["host"];
-  harnessProblems?: Record<string, string>; own: { protocol: number; version: string; commit?: string } }): HereFacts {
+  harnessProblems?: Record<string, string>; unchecked?: readonly string[]; own: { protocol: number; version: string; commit?: string } }): HereFacts {
   const { node, settings, devices } = input;
   const github = settings.sources.github;
   const repository = github?.enabled ? (github.config as { repository?: string }).repository : undefined;
@@ -83,10 +83,12 @@ export function hereFacts(input: { node?: MeshNode; settings: Settings; devices:
     os: process.platform, arch: process.arch, version: input.own.commit ? `${input.own.version} ${input.own.commit}` : input.own.version, protocol: input.own.protocol,
     machine: devices.here.machine, harnesses: devices.here.harnesses,
     ...(input.harnessProblems && Object.keys(input.harnessProblems).length ? { harnessProblems: input.harnessProblems } : {}),
+    ...(input.unchecked?.length ? { unchecked: input.unchecked } : {}),
     workers: workerCount(devices.workers, input.queued),
     // A node that runs its tickets in VMs takes no work put on it, as its card tells its peers.
     takesWork: settings.executor.isolation !== "vm",
     ...(node?.pull.enabled ? { pulls: node.pull.repositories } : {}),
+    ...(node && !node.pull.offer ? { offersWork: false as const } : {}),
     ...(repository ? { repository } : {}),
     ...(node && Object.keys(node.lend).length ? { lend: node.lend } : {})
   };
@@ -136,16 +138,19 @@ export interface SignIns { at: string; harnesses: readonly string[]; problems: R
  */
 export function signInsOf(dir: Directory): SignIns | undefined {
   if (!dir.signInsAt || dir.stale.some((item) => item.section === "harnesses")) return undefined;
-  const problems = Object.fromEntries(dir.harnesses.flatMap((harness) => harness.problems.filter((item) => item.node === dir.here.name).map((item) => [harness.id, item.problem])));
+  // A harness whose sign-in these checks never covered is no finding of theirs.
+  const problems = Object.fromEntries(dir.harnesses.flatMap((harness) => dir.here.unchecked?.includes(harness.id) ? []
+    : harness.problems.filter((item) => item.node === dir.here.name).map((item) => [harness.id, item.problem])));
   return { at: dir.signInsAt, harnesses: dir.here.harnesses, problems };
 }
 
 /**
  * Which harnesses run here: with ticket VMs the ones VMs run, which the host checks nothing for; else the installs found
  * now, narrowed to what the sign-in checks found, run now (`signIn`) or the last ones (`signIns`) while they hold.
+ * `unchecked` are the installs those checks say nothing of: no host checked in the last 20 minutes, or none checked them.
  */
 export async function hereHarnesses(executor: Settings["executor"], where: string, at: string, options: ReadOptions):
-  Promise<{ harnesses: string[]; problems: Record<string, string>; checkedAt?: string }> {
+  Promise<{ harnesses: string[]; problems: Record<string, string>; unchecked?: string[]; checkedAt?: string }> {
   if (executor.isolation === "vm") {
     const { vmHarnessIds } = await import("../superagent/vm/vm-work.js");
     return { harnesses: vmHarnessIds(executor.harnesses), problems: {}, checkedAt: at };
@@ -153,10 +158,13 @@ export async function hereHarnesses(executor: Settings["executor"], where: strin
   const last = options.signIns && Date.parse(at) - Date.parse(options.signIns.at) <= PART_TTL_MS.harnesses ? options.signIns : undefined;
   const checked = await localHarnesses(executor, where, { signIn: !!options.signIn, ...(options.base ? { base: options.base } : {}) });
   if (options.signIn) return { ...checked, checkedAt: at };
-  const unchecked = (id: string) => last?.problems[id] ?? (last ? "not signed in when last checked" : "installed, but its sign-in was not checked: `swarm harness check` checks it");
+  // The last checks name every profile there was: one they name neither way was not one then, so it was never checked.
+  const notReady = checked.harnesses.filter((id) => !last?.harnesses.includes(id));
+  const unchecked = notReady.filter((id) => !last?.problems[id]);
   return {
     harnesses: checked.harnesses.filter((id) => last?.harnesses.includes(id)),
-    problems: { ...checked.problems, ...Object.fromEntries(checked.harnesses.filter((id) => !last?.harnesses.includes(id)).map((id) => [id, unchecked(id)])) },
+    problems: { ...checked.problems, ...Object.fromEntries(notReady.map((id) => [id, last?.problems[id] ?? "installed, but its sign-in was not checked: `swarm harness check` checks it"])) },
+    ...(unchecked.length ? { unchecked } : {}),
     ...(last ? { checkedAt: last.at } : {})
   };
 }
@@ -207,7 +215,8 @@ export async function readDirectory(options: ReadOptions = {}): Promise<Director
     const checked = await hereHarnesses(settings.executor, where, at, options);
     const devices = devicesOf({ settings, store, running,
       view: { here: { name: node?.name ?? "here", abilities: [...machine, ...checked.harnesses.map((id) => `harness:${id}`)] }, peers: [] } });
-    const here = hereFacts({ ...(node ? { node } : {}), settings, devices, queued, host, harnessProblems: checked.problems, own });
+    const here = hereFacts({ ...(node ? { node } : {}), settings, devices, queued, host, harnessProblems: checked.problems,
+      ...(checked.unchecked ? { unchecked: checked.unchecked } : {}), own });
     return buildDirectory({
       at, here, own,
       mesh: "error" in pass ? pass : meshPart(pass.peers, at, home),

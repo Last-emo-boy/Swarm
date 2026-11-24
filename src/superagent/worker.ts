@@ -122,9 +122,11 @@ function handedOff(ticket: Ticket): boolean {
 
 /**
  * The runtime Swarm's coding loop runs a ticket's worker on, in `directory`, with the ticket tools `command` and `tools`
- * start. It files no tickets of its own: it reads the swarm and acts on it through its ticket tools. Nor does it borrow
- * what paired nodes lend, wherever it runs: it reaches a node only through its ticket `mesh` tool, which hides nodes from a
- * requester below maintainer, holds a read-only ticket to reading, and records each call.
+ * start. It files no tickets of its own: it reads the swarm and acts on it through its ticket tools. Nor does Swarm offer
+ * it what paired nodes lend, wherever it runs, so its model reaches a node through its ticket `mesh` tool, which hides
+ * nodes from a requester below maintainer, holds a read-only ticket to reading, and records each call. That limits the
+ * tools Swarm offers, not the worker: under process isolation a worker with a shell runs as its host's user, with that
+ * user's mesh keys, and its shell can run `swarm capabilities` to reach the paired nodes. Only a ticket VM confines it.
  */
 export async function workerRuntime(directory: string, command: readonly string[], tools: ToolServer): Promise<SwarmRuntime> {
   const [node, ...entry] = command;

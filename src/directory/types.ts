@@ -13,7 +13,11 @@ export const DIRECTORY_SCHEMA = "swarm.directory.v1";
 export interface Directory {
   schema: typeof DIRECTORY_SCHEMA;
   at: string;
-  here: NodeEntry & { host: "running" | "stopped" | "none" };
+  /**
+   * `offersWork` is false when this node keeps its own waiting work from paired nodes that pull (`swarm mesh offer off`);
+   * absent, it hands that work to them, as `pull.offer` does by default.
+   */
+  here: NodeEntry & { host: "running" | "stopped" | "none"; offersWork?: false };
   peers: PeerEntry[];
   harnesses: HarnessEntry[];
   /** Local MCP servers, borrowed (lent) servers and LSP servers. */
@@ -50,6 +54,11 @@ export interface NodeEntry {
   machine: string[];
   /** The harnesses installed and signed in there. */
   harnesses: string[];
+  /**
+   * The harnesses installed there whose sign-in was never checked, so not in `harnesses` and not ready: work may still go
+   * on one, as the host checks its sign-in when it runs the work. Absent when every install was checked.
+   */
+  unchecked?: string[];
   workers?: WorkerCount;
   takesWork: boolean;
   /** The repositories whose waiting work it pulls from paired nodes; [] pulls any. Absent when it pulls none. */

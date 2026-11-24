@@ -495,9 +495,10 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     harnessTimer = setInterval(() => void checkHarnesses().catch((error: unknown) => console.log(`Could not check this node's harnesses: ${String(error)}`)), HARNESS_CHECK_MS);
     harnessTimer.unref();
     // What the router tells a person who names a harness or asks what the agent runs on: whether this node runs it, which
-    // paired nodes that answer do, and which do not answer, from the host's own pass over the paired nodes.
+    // paired nodes that answer do, and which do not answer, from the host's own pass over the paired nodes. Each peer keeps
+    // its id: a node renamed since its record was written answers under its new name, and the router matches it by id.
     host.meshView = async (health) => ({ here: { name: readMesh(home).node.name, abilities },
-      peers: health.flatMap((item) => item.card ? [{ name: item.card.name, abilities: item.card.abilities }] : []),
+      peers: health.flatMap((item) => item.card ? [{ id: item.peer.id, name: item.card.name, abilities: item.card.abilities }] : []),
       offline: health.flatMap((item) => item.card ? [] : [item.peer.name]),
       harnessChecks: { at: harnessesAt, problems: harnessProblems } });
     const { MeshWork } = await import("./work.js");

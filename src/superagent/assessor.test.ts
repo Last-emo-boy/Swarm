@@ -981,6 +981,28 @@ test("drops a paired node named from a directory older than the nodes' time limi
   assert.deepEqual(placed(mac.id).on, { id: "mac-id", name: "mac" });
 });
 
+test("matches the node the router names against the live view by id, so a node renamed since its record was written is kept", async () => {
+  start(ACCESS, undefined, true);
+  directory = directoryOf(NODES, NODE_CARDS);
+  // gpu's owner ran `swarm mesh name gpu2`: the directory still names it after its record, the live view after its card.
+  const renamed = { id: "gpu-id", name: "gpu2", abilities: ["linux", "gpu"] };
+  view = { ...NODES, peers: [renamed, ...NODES.peers.filter((peer) => peer.name !== "gpu")] };
+  const train = await fromAlice("train it on gpu", "om_renamed");
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "gpu", needs: ["gpu"] }));
+  await judge(train.id);
+  assert.deepEqual(placed(train.id).on, { id: "gpu-id", name: "gpu" });
+  assert.doesNotMatch(placed(train.id).reason, /dropped/);
+
+  // Another node that took gpu's old name while gpu does not answer is not gpu.
+  const impostor = { id: "other-id", name: "gpu", abilities: ["linux", "gpu"] };
+  view = { ...NODES, peers: [impostor, ...NODES.peers.filter((peer) => peer.name !== "gpu")] };
+  const again = await fromAlice("train it on gpu again", "om_impostor");
+  answers.push(accept({ title: "Train again", worktree_name: "train-again", on: "gpu", needs: ["gpu"] }));
+  await judge(again.id);
+  assert.equal(placed(again.id).on, undefined);
+  assert.match(placed(again.id).reason, /^on gpu dropped: gpu does not answer now; /);
+});
+
 test("keeps the node a request was filed to run on, whatever node the router names, and shows it on the card", async () => {
   start(ACCESS, undefined, true);
   view = NODES;

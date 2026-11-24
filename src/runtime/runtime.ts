@@ -251,7 +251,8 @@ export class SwarmRuntime {
     swarmTools?: boolean;
     /**
      * False loads none of the MCP servers paired nodes lend, also when a lender changes, and keeps every other MCP server:
-     * a ticket's worker reaches a node only through its ticket `mesh` tool, where the requester's gates apply.
+     * a ticket's worker sets it so its model reaches a node through its ticket `mesh` tool, where the requester's gates
+     * apply. A shell the worker runs under process isolation is still this user's and is not confined by it.
      */
     borrowMesh?: boolean; } = {}) {
     ensureSwarmHome();

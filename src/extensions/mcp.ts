@@ -78,8 +78,9 @@ export class McpClientProvider implements CapabilityProvider {
 
   /**
    * Whether this provider loads the servers paired mesh devices lend. A strict runtime MCP config takes only its own
-   * servers; `borrowMesh: false` drops only the lent ones, as a ticket's worker does, which reaches a node only through its
-   * ticket `mesh` tool, where the requester's gates apply and each call is recorded.
+   * servers; `borrowMesh: false` drops only the lent ones, as a ticket's worker does, so its model reaches a node through
+   * its ticket `mesh` tool, where the requester's gates apply and each call is recorded. This bounds the tools offered, not
+   * the process: a worker's shell under process isolation runs as this user and can borrow through `swarm` itself.
    */
   get borrowsMesh(): boolean {
     return this.input.borrowMesh !== false && !this.input.settings.extensions.mcp.runtimeConfig?.strict;

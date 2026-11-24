@@ -14,7 +14,7 @@ import type { CommandName } from "../superagent/command-table.js";
 import type { SuperagentClient } from "../superagent/client.js";
 import type { requestOn as RequestOn } from "../superagent/placement.js";
 import type { SwarmDirectoryAction, SwarmDispatchAction, SwarmReadAction, SwarmToolsContext, ToolResult } from "../tools/types.js";
-import { lendersChange, PART_TTL_MS, placeableNodes, placementProblem, withMcpServers } from "./build.js";
+import { lendersChange, PART_TTL_MS, placeableNodes, placementProblem, pullingNodes, withMcpServers } from "./build.js";
 import type { ReadOptions, SignIns } from "./read.js";
 import { mainSummary } from "./render.js";
 import { DIRECTORY_SCHEMA, type Directory, type DirectorySection, type PeerEntry } from "./types.js";
@@ -241,17 +241,23 @@ export class SessionSwarmTools implements SwarmToolsContext {
     const runsOn = action.harness ?? dir.harnesses.find((item) => item.isDefault)?.id;
     const harness = runsOn ? dir.harnesses.find((item) => item.id === runsOn) : undefined;
     const named = action.harness ?? `the default harness ${runsOn}`;
+    // Installed here with a sign-in never checked, as when no host checked in the last 20 minutes: not ready, but no known
+    // problem either, so work that may run here is filed and the host checks the sign-in when it runs it.
+    const unchecked = (!action.on || here) && !!harness && !harness.runsOn.includes("here") && !!dir.here.unchecked?.includes(harness.id);
     let node: PeerEntry | undefined;
     let onPeers: string[] = [];
+    let pullers: string[] = [];
     if (action.on && !here) {
       const problem = placementProblem(dir, action.on, runsOn ? { harness: runsOn } : {});
       if (problem) throw new Error(`Dispatch refused: ${problem}. SwarmDirectory section nodes lists where work can go.`);
       node = dir.peers.find((item) => item.name === action.on || item.id === action.on)!;
-    } else if (harness && !harness.runsOn.includes("here")) {
+    } else if (harness && !harness.runsOn.includes("here") && !unchecked) {
       // With no node named, the host puts work on a harness this node lacks on a paired node that runs it, takes work put
-      // on it and has a free worker (`fittest`, mesh/work.ts); it runs any other here, where that harness fails.
+      // on it and has a free worker (`fittest`, mesh/work.ts); with none free, it waits for one that pulls such work; it
+      // runs any other here, where that harness fails.
       onPeers = here ? [] : placeableNodes(dir, { harness: harness.id }, { free: true });
-      if (!onPeers.length) {
+      pullers = here || onPeers.length ? [] : pullingNodes(dir, { harness: harness.id });
+      if (!onPeers.length && !pullers.length) {
         const why = harness.problems.map((item) => `${item.node}: ${item.problem}`).join("; ");
         const elsewhere = harness.runsOn.filter((item) => item !== "here");
         const full = here ? [] : placeableNodes(dir, { harness: harness.id });
@@ -261,7 +267,12 @@ export class SessionSwarmTools implements SwarmToolsContext {
       }
     }
     // Work for a paired node needs a host that places work on paired nodes: a mesh node's. Any other runs it here.
-    const forPeer = node ? `the work is for ${node.name}` : onPeers.length ? `${named} runs only on ${onPeers.join(", ")}` : undefined;
+    // Pullers are asked only when no node is free, so the work is for one list of the two at most.
+    const peers = [...onPeers, ...pullers];
+    // A harness unchecked here may turn out signed out when the host checks it; a mesh node's host then puts the work on a
+    // paired node that runs it, so name those, and the host that can.
+    const alsoOn = unchecked && !here ? placeableNodes(dir, { harness: harness!.id }, { free: true }) : [];
+    const forPeer = node ? `the work is for ${node.name}` : peers.length ? `${named} runs only on ${peers.join(", ")}` : undefined;
     const options = action.harness ? { harness: action.harness } : {};
     const [{ requestOn, updatePlacement }, { hostStatus }] = await Promise.all([import("../superagent/placement.js"), import("../superagent/views.js")]);
     return this.source.withClient((client) => {
@@ -283,13 +294,16 @@ export class SessionSwarmTools implements SwarmToolsContext {
         filed = client.request(action.text, undefined, options);
       }
       const on = node ? node.name : here ? "here" : undefined;
-      const hint = !status.running ? (forPeer ? " No host runs yet: start this device's node with `swarm node run`."
+      const hint = !status.running ? (forPeer || alsoOn.length ? " No host runs yet: start this device's node with `swarm node run`."
         : " No host runs yet: start one with `swarm superagent run`, or `swarm node run` on a mesh node.")
         : node?.grant.received === "unknown" ? ` ${node.name} does not say its grant to this node, as an older Swarm does not, so it may refuse the work.` : "";
+      // What the work waits for that the directory cannot vouch for now.
+      const note = unchecked ? ` The sign-in of ${named} here was not checked: the host checks it when it runs the work${alsoOn.length ? `, and a mesh node's host puts it on ${alsoOn.join(" or ")} if it does not run here` : ""}.`
+        : pullers.length ? ` It waits for ${pullers.join(" or ")} to pull it: no worker is free there now.` : "";
       const short = filed.triggerId.slice(0, 8);
       return { action: "swarm.dispatch", status: "success",
-        summary: `Filed request ${short}; its worker runs${action.harness ? ` on ${action.harness}` : ""}${on === "here" ? " here" : on ? ` on ${on}` : ""}.${hint}`,
-        content: `Filed request ${short} as this terminal's operator.${hint} Watch it with SwarmRead tickets.`,
+        summary: `Filed request ${short}; its worker runs${action.harness ? ` on ${action.harness}` : ""}${on === "here" ? " here" : on ? ` on ${on}` : ""}.${note}${hint}`,
+        content: `Filed request ${short} as this terminal's operator.${note}${hint} Watch it with SwarmRead tickets.`,
         data: { triggerId: filed.triggerId, ...(on ? { on } : {}), ...(action.harness ? { harness: action.harness } : {}) } };
     });
   }

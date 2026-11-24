@@ -13,7 +13,7 @@ import { SuperagentHost } from "../superagent/host.js";
 import { KV } from "../superagent/kv.js";
 import { routerPrompt } from "../superagent/prompts.js";
 import { settingsPath, writeSettings } from "../superagent/settings.js";
-import { PERSON_COMMANDS, buildDirectory, placementProblem, type DirectoryParts } from "./build.js";
+import { PERSON_COMMANDS, buildDirectory, placementProblem, pullingNodes, type DirectoryParts } from "./build.js";
 import { directoryText, runDirectoryCommand } from "./cli.js";
 import { DIRECTORY_MS, freshDirectory, readDirectory, signInsOf } from "./read.js";
 import { SUMMARY_CHARS, mainSummary, routerCard, workerView } from "./render.js";
@@ -233,11 +233,45 @@ test("however large the swarm, the summary keeps every line the session chooses 
   const summary = large();
   assert.ok(summary.length <= SUMMARY_CHARS + 40, `${summary.length} characters`);
   for (const line of [/^This node mac: /m, /^Can place work on: (workstation-\d+, ){6}\+24 more\.$/m,
-    /^Harnesses ready: claude \(default\) on here, (workstation-\d+, ){5}\+25 more; codex on (workstation-\d+, ){6}\+24 more\.$/m,
-    /^Harnesses on no node: opencode\.$/m, /^Not ready: mcp docs-0: failed, 401 Unauthorized\.$/m, /^Not ready: \+3 more\.$/m,
+    /^Harnesses ready: claude \(default\) on here, workstation-\d+, \+29 more; codex on (workstation-\d+, ){2}\+28 more\.$/m,
+    /^Harnesses on no node: opencode\.$/m, /^Not ready: mcp docs-0: failed, 401 Unauthorized\.$/m, /^Not ready: \+6 more\.$/m,
     /^Stale nodes: the paired nodes were read over 30 s before\.$/m, /^Reads: /m, /^Offline: (gone-\d, ){6}\+3 more\.$/m, /^- workstation-\d+: /m]) assert.match(summary, line);
   assert.ok(summary.endsWith("\n... (SwarmDirectory has the rest)"));
   assert.equal(large((peers) => [...peers].reverse()), summary, "the same state gives the same block");
+});
+
+test("the ready line names six harnesses then how many more, so however many harnesses the nodes run, node lines keep room", () => {
+  const lines = (summary: string) => summary.split("\n");
+  const nodeLines = (summary: string) => lines(summary).filter((line) => line.startsWith("- ")).length;
+  // Each node runs a profile of its own, as a swarm whose nodes each name theirs does.
+  const own = (order: (peers: PeerHealth[]) => PeerHealth[] = (peers) => peers) => {
+    const part = parts();
+    if (!("error" in part.mesh)) part.mesh = { ...part.mesh, peers: order(Array.from({ length: 60 }, (_, index) => online(`w${index}-id`, `ws-${index}`, { yourGrant: "operator",
+      abilities: ["linux", `harness:claude-ws${index}`], load: { slots: 2, running: 0, queued: 0 } }))) };
+    return mainSummary(buildDirectory(part));
+  };
+  const summary = own();
+  assert.match(summary, /^Harnesses ready: claude \(default\) on here; claude-ws0 on ws-0; claude-ws1 on ws-1; claude-ws10 on ws-10; claude-ws11 on ws-11; claude-ws12 on ws-12; \+55 more\.$/m);
+  assert.ok(summary.length <= SUMMARY_CHARS + 40 && nodeLines(summary) > 0, `${summary.length} characters, ${nodeLines(summary)} node lines`);
+  assert.equal(own((peers) => [...peers].reverse()), summary, "the same state gives the same block");
+  // Every node runs all six built-in profiles, and eight servers fail with a long error each.
+  const error = "MCP error -32000: Connection closed: spawn npx ENOENT while starting the server process; check that the command exists on PATH and that its arguments are right, then retry";
+  const failing = Array.from({ length: 8 }, (_, index) => ({ id: `server-number-${index}`, transport: "stdio" as const, trust: "user" as const, status: "failed" as const,
+    exposeTools: true, exposeResources: false, exposePrompts: false, toolCount: 0, resourceCount: 0, promptCount: 0, diagnostics: [], lastError: error }));
+  const profiles = ["claude", "codex", "kimi", "opencode", "claude-glm", "claude-deepseek"];
+  const busy = parts({ at: "2026-11-24T10:00:31.000Z", mcp: { servers: failing } });
+  if (!("error" in busy.mesh)) busy.mesh = { ...busy.mesh, peers: Array.from({ length: 30 }, (_, index) => online(`w${index}-id`, `workstation-${index}`, { yourGrant: "operator",
+    abilities: ["linux", ...profiles.map((id) => `harness:${id}`)], load: { slots: 2, running: 0, queued: 0 } })) };
+  const crowded = mainSummary(buildDirectory(busy));
+  assert.ok(crowded.length <= SUMMARY_CHARS + 40 && nodeLines(crowded) > 0, `${crowded.length} characters, ${nodeLines(crowded)} node lines`);
+  assert.match(crowded, /^Harnesses ready: claude \(default\) on here, workstation-0, \+29 more; claude-deepseek on workstation-0, workstation-1, \+28 more; /m);
+  assert.match(crowded, /^Not ready: \+6 more\.$/m);
+  assert.ok(lines(crowded).filter((line) => line.startsWith("Not ready: mcp")).every((line) => line.length <= 120));
+  // A harness id is a paired node's word, of any length: no line of the block grows with it.
+  const odd = parts();
+  if (!("error" in odd.mesh)) odd.mesh = { ...odd.mesh, peers: [online("p-id", "p", { yourGrant: "operator", abilities: ["linux", `harness:${"x".repeat(4000)}`], load: { slots: 1, running: 0, queued: 0 } })] };
+  const long = mainSummary(buildDirectory(odd));
+  assert.ok(lines(long).every((line) => line.length <= 480) && long.length <= SUMMARY_CHARS, `${long.length} characters`);
 });
 
 test("the router's card marks a node whose grant to this node is unknown, which its prompt lets it name", () => {
@@ -339,6 +373,64 @@ test("a directory built here lists a harness as running here only once its sign-
   assert.deepEqual([opencode.runsOn, opencode.problems], [["here"], []]);
   assert.deepEqual(codex(vm).runsOn, [], "VMs do not run codex, though it is installed here");
   assert.ok(!vm.stale.some((item) => item.section === "harnesses"));
+});
+
+test("a harness installed here whose sign-in no check covers is not ready, yet work may be placed on it: the host checks it when it runs the work", async () => {
+  const bin = join(stateDir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(bin, "codex"), 0o755);
+  const now = new Date("2026-11-24T10:00:00.000Z");
+  const read = (extra: Parameters<typeof readDirectory>[0] = {}) => readDirectory({ stateDir, home, machine: ["linux"], base: { PATH: bin }, now: () => now, ...extra });
+  const codex = (dir: Directory) => dir.harnesses.find((harness) => harness.id === "codex")!;
+  // No check at all, checks past their time, and checks from before codex was a profile here.
+  for (const signIns of [undefined, { at: "2026-11-24T09:00:00.000Z", harnesses: ["codex"], problems: {} }, { at: "2026-11-24T09:55:00.000Z", harnesses: [], problems: {} }]) {
+    const dir = await read(signIns ? { signIns } : {});
+    assert.deepEqual([dir.here.unchecked, dir.here.harnesses, codex(dir).runsOn], [["codex"], [], []], JSON.stringify(signIns));
+    assert.equal(placementProblem(dir, "here", { harness: "codex" }), undefined);
+    assert.equal(placementProblem(dir, dir.here.name, { harness: "codex" }), undefined);
+    // Not ready all the same, as the summary and the router say.
+    assert.match(mainSummary(dir), /^Harnesses on no node: [^\n]*\bcodex\b/m);
+    assert.match((routerCard(dir, true).this_node as { harness_problems: Record<string, string> }).harness_problems.codex!, /sign-in was not checked/);
+  }
+  // A check that found a problem, and an install that is missing, still refuse.
+  const signedOut = await read({ signIns: { at: "2026-11-24T09:55:00.000Z", harnesses: [], problems: { codex: "not signed in: run `codex login`" } } });
+  assert.equal(signedOut.here.unchecked, undefined);
+  assert.equal(placementProblem(signedOut, "here", { harness: "codex" }), "this node does not run codex: not signed in: run `codex login`");
+  assert.match(placementProblem(signedOut, "here", { harness: "claude" }) ?? "", /^this node does not run claude: Claude Code is not installed/);
+  // The checks a directory hands on to the next reader say nothing of a harness they never checked.
+  const uncovered = await read({ signIns: { at: "2026-11-24T09:55:00.000Z", harnesses: [], problems: {} } });
+  assert.deepEqual([signInsOf(uncovered)!.problems.codex, signInsOf(signedOut)!.problems.codex], [undefined, "not signed in: run `codex login`"]);
+});
+
+test("a node that pulls work is waited for only as the host's placement waits for it, and only while this node hands its waiting work out", async () => {
+  const pulling = (extra: Partial<NodeCard> = {}, given: Grant = "member", others: PeerHealth[] = []) => {
+    const part = parts();
+    part.mesh = { at: AT, given: { "p-id": given }, peers: [online("p-id", "p", { yourGrant: "operator", abilities: ["linux", "harness:kimi"],
+      load: { slots: 1, running: 1, queued: 0 }, pull: { repositories: [] }, ...extra }), ...others] };
+    return buildDirectory(part);
+  };
+  assert.deepEqual(pullingNodes(pulling(), { harness: "kimi" }), ["p"]);
+  assert.deepEqual(pullingNodes(pulling({ pull: { repositories: ["acme/web"] } }), { harness: "kimi" }), [], "it pulls only work of another repository");
+  const ofWeb = pulling({ pull: { repositories: ["acme/web"] } });
+  assert.deepEqual(pullingNodes({ ...ofWeb, here: { ...ofWeb.here, repository: "acme/web" } }, { harness: "kimi" }), ["p"]);
+  assert.deepEqual(pullingNodes(pulling({ pull: undefined }), { harness: "kimi" }), [], "it pulls nothing");
+  assert.deepEqual(pullingNodes(pulling({}, "viewer"), { harness: "kimi" }), [], "this node's grant lets it claim no work");
+  assert.deepEqual(pullingNodes(pulling(), { harness: "codex" }), [], "it lacks the harness");
+  assert.deepEqual(pullingNodes(pulling(), { needs: ["gpu"] }), [], "it lacks what the work needs");
+  // While the work waits, the host offers it to that node once a worker there is free, so its grant must allow the offer.
+  assert.deepEqual(pullingNodes(pulling({ yourGrant: "member" }), { harness: "kimi" }), [], "its grant to this node allows no work.offer");
+  // A fit node with a free worker is offered the work first, whether or not it then takes it.
+  const free = online("q-id", "q", { yourGrant: "member", abilities: ["linux", "harness:kimi"], load: { slots: 2, running: 0, queued: 0 } });
+  assert.deepEqual(pullingNodes(pulling({}, "member", [free]), { harness: "kimi" }), []);
+  const kept = pulling();
+  assert.deepEqual(pullingNodes({ ...kept, here: { ...kept.here, offersWork: false } }, { harness: "kimi" }), [], "this node keeps its waiting work");
+  // This node's directory says when it keeps its waiting work (`swarm mesh offer off`); by default it hands it out.
+  const read = () => readDirectory({ stateDir, home, machine: ["linux"], base: { PATH: "/nowhere" } });
+  assert.equal((await read()).here.offersWork, undefined);
+  const { updateMesh } = await import("../mesh/state.js");
+  updateMesh((state) => ({ ...state, node: { ...state.node, pull: { ...state.node.pull, offer: false } } }), home);
+  assert.equal((await read()).here.offersWork, false);
 });
 
 test("a written directory keeps when its sign-ins were checked, and a reader ages the checks from then, not from when it was written", async () => {

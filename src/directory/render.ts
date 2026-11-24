@@ -30,9 +30,18 @@ const readsFor = (dir: Directory, who: CommandEntry["who"][number]): CommandEntr
 
 /** Each node's line is cut to this, so a node that runs much leaves the rest of the block room. */
 const NODE_CHARS = 320;
+/** A fixed line is cut to this: the harness ids on two of them come from the paired nodes' cards, and may be of any length. */
+const LINE_CHARS = 480;
 /** A list on one of the summary's fixed lines names this many, then how many more, so the line stays short in a large swarm. */
 const LISTED = 6;
-const few = (items: readonly string[]): string => items.length > LISTED ? `${items.slice(0, LISTED).join(", ")}, +${items.length - LISTED} more` : items.join(", ");
+/**
+ * The ready line names `LISTED` harnesses and this many nodes for each, and the block this many of what is not ready, each
+ * on its own line: in a large swarm the fixed lines then leave node lines room. SwarmDirectory has the rest.
+ */
+const HARNESS_NODES = 2;
+const NOT_READY_LINES = 3;
+const few = (items: readonly string[], listed = LISTED, separator = ", "): string =>
+  items.length > listed ? `${items.slice(0, listed).join(separator)}${separator}+${items.length - listed} more` : items.join(separator);
 
 /**
  * The main session's prompt block. What it chooses from comes first, always, each line short whatever the swarm's size:
@@ -56,14 +65,14 @@ export function mainSummary(dir: Directory): string {
   const kept = [
     `This node ${here.name}: ${free(here.workers)}, ${here.takesWork ? "takes work" : "takes no work"}, host ${here.host}.`,
     `Can place work on: ${few(placeableNodes(dir)) || "no paired node"}.`,
-    `Harnesses ready: ${ready.map((harness) => `${harness.id}${harness.isDefault ? " (default)" : ""} on ${few(harness.runsOn)}`).join("; ") || "none"}.`,
+    `Harnesses ready: ${few(ready.map((harness) => `${harness.id}${harness.isDefault ? " (default)" : ""} on ${few(harness.runsOn, HARNESS_NODES)}`), LISTED, "; ") || "none"}.`,
     ...unready.length ? [`Harnesses on no node: ${few(unready.map((harness) => harness.id))}.`] : [],
-    ...problems.slice(0, LISTED).map((line) => `Not ready: ${line}.`),
-    ...problems.length > LISTED ? [`Not ready: +${problems.length - LISTED} more.`] : [],
+    ...problems.slice(0, NOT_READY_LINES).map((line) => clip(`Not ready: ${line}.`)),
+    ...problems.length > NOT_READY_LINES ? [`Not ready: +${problems.length - NOT_READY_LINES} more.`] : [],
     ...dir.stale.map((item) => `Stale ${item.section}: ${clip(item.why)}.`),
     `Reads: ${readsFor(dir, "main").map((command) => command.name).join(", ")}.`,
     ...offline.length ? [`Offline: ${few(offline)}.`] : []
-  ];
+  ].map((line) => clip(line, LINE_CHARS));
   let size = kept.reduce((total, line) => total + line.length + 1, 0);
   for (const line of online.map(node)) {
     if (size + line.length + 1 > SUMMARY_CHARS) { kept.push("... (SwarmDirectory has the rest)"); break; }

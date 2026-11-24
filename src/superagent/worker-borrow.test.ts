@@ -61,7 +61,9 @@ test("a ticket worker's runtime on a mesh node offers none of the tools paired n
   // Ticket tools that exit at once: what the worker borrows does not depend on them.
   const worker = await workerRuntime(dir("ticket-dir"), [process.execPath, "-e", "process.exit(0)"], { args: [], env: {} });
   runtimes.push(worker);
-  assert.deepEqual(await lentTools(worker), [], "the worker reaches gpu only through its ticket mesh tool");
+  // This checks what Swarm offers the worker's model, not what its shell can reach: under process isolation a shell
+  // runs as this user, with this user's mesh home, and only a ticket VM confines it.
+  assert.deepEqual(await lentTools(worker), [], "Swarm offers the worker none of gpu's tools; its model reaches gpu through the ticket mesh tool");
   // A lender change loads the borrowed servers again, and so does a full refresh: neither brings them into the worker.
   await worker.capabilityPlane.refreshBorrowedMcp();
   await worker.capabilityPlane.refresh("mcp");

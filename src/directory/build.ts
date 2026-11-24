@@ -44,9 +44,13 @@ export interface HereFacts {
   machine: readonly string[];
   harnesses: readonly string[];
   harnessProblems?: Readonly<Record<string, string>>;
+  /** The installed harnesses among `harnessProblems` whose sign-in was never checked, which is no known problem. */
+  unchecked?: readonly string[];
   workers?: WorkerCount;
   takesWork: boolean;
   pulls?: readonly string[];
+  /** False when this node keeps its own waiting work from paired nodes that pull. */
+  offersWork?: false;
   repository?: string;
   lend?: Lend;
 }
@@ -127,9 +131,11 @@ function hereEntry(here: HereFacts): Directory["here"] {
     ...(here.os ? { os: here.os } : {}), ...(here.arch ? { arch: here.arch } : {}),
     ...(here.version ? { version: here.version } : {}), ...(here.protocol !== undefined ? { protocol: here.protocol } : {}),
     machine: sorted(here.machine), harnesses: sorted(here.harnesses),
+    ...(here.unchecked?.length ? { unchecked: sorted(here.unchecked) } : {}),
     ...(here.workers ? { workers: here.workers } : {}),
     takesWork: here.takesWork,
     ...(here.pulls ? { pulls: sorted(here.pulls) } : {}),
+    ...(here.offersWork === false ? { offersWork: false as const } : {}),
     ...(here.repository ? { repository: here.repository } : {}),
     ...(lends ? { lends } : {})
   };
@@ -257,17 +263,23 @@ export function buildDirectory(parts: DirectoryParts): Directory {
 }
 
 /**
+ * Whether `node` may run work on `harness`: it is signed in there, or installed with a sign-in never checked, which is no
+ * known problem, since the host checks it when it runs the work. Not ready all the same, as the directory lists it.
+ */
+const mayRun = (node: NodeEntry, harness: string): boolean => node.harnesses.includes(harness) || !!node.unchecked?.includes(harness);
+
+/**
  * Why work cannot be placed on `on` now, or undefined when it can: a paired node must answer, take work put on it, have
  * what the work needs of its machine and the harness it runs on, and let this node offer it work (`work.offer`). `here`
  * is the node that owns the ticket, which takes its own work whenever it has what the work needs and runs its harness:
  * a worker pinned here is never moved to a node that has them. The host's placement and the node's grant still decide;
- * this only refuses up front what would fail.
+ * this only refuses up front what would fail, so a harness installed on the node whose sign-in was never checked passes.
  */
 export function placementProblem(dir: Directory, on: string, work: { needs?: readonly string[]; harness?: string } = {}): string | undefined {
   if (on === "here" || on === dir.here.name) {
     const missing = (work.needs ?? []).filter((need) => !dir.here.machine.includes(need));
     if (missing.length) return `this node lacks ${missing.join(", ")}`;
-    if (work.harness && !dir.here.harnesses.includes(work.harness)) {
+    if (work.harness && !mayRun(dir.here, work.harness)) {
       const problem = dir.harnesses.find((harness) => harness.id === work.harness)?.problems.find((item) => item.node === dir.here.name)?.problem;
       return `this node does not run ${work.harness}${problem ? `: ${problem}` : ""}`;
     }
@@ -284,7 +296,7 @@ export function placementProblem(dir: Directory, on: string, work: { needs?: rea
   if (peer.grant.received !== "unknown" && !peer.mayThere.includes("work.offer")) return `${peer.name}'s grant to this node (${typeof peer.grant.received === "string" ? peer.grant.received : "scopes"}) does not allow work.offer`;
   const missing = (work.needs ?? []).filter((need) => !peer.machine.includes(need));
   if (missing.length) return `${peer.name} lacks ${missing.join(", ")}`;
-  if (work.harness && !peer.harnesses.includes(work.harness)) {
+  if (work.harness && !mayRun(peer, work.harness)) {
     const problem = dir.harnesses.find((harness) => harness.id === work.harness)?.problems.find((item) => item.node === peer.name)?.problem;
     return `${peer.name} does not run ${work.harness}${problem ? `: ${problem}` : ""}`;
   }
@@ -300,3 +312,21 @@ const freeSlots = (workers: WorkerCount | undefined): number => workers ? worker
  */
 export const placeableNodes = (dir: Directory, work: { needs?: readonly string[]; harness?: string } = {}, options: { free?: boolean } = {}): string[] =>
   dir.peers.filter((peer) => placementProblem(dir, peer.id, work) === undefined && (!options.free || freeSlots(peer.workers) > 0)).map((peer) => peer.name);
+
+/**
+ * The paired nodes that pull work this node needs placed elsewhere, by name, which the host's placement of work no node is
+ * named for waits for when no node fit for it has a free worker (`choose`, mesh/work.ts): one that takes work, has what it
+ * needs and the harness, and pulls work of this node's repository. None while this node keeps its waiting work from them,
+ * or while a fit node has a free worker, which the host offers the work instead; a node this node's grant lets claim no
+ * work (`work.claim`) never gets it either. It must also be one work can be placed on: while the work waits, the host
+ * offers it to that node as soon as it has a free worker, and its grant must allow that offer.
+ */
+export function pullingNodes(dir: Directory, work: { needs?: readonly string[]; harness?: string } = {}): string[] {
+  if (dir.here.offersWork === false) return [];
+  const fit = (peer: PeerEntry): boolean => peer.online && peer.takesWork && (work.needs ?? []).every((need) => peer.machine.includes(need))
+    && (!work.harness || peer.harnesses.includes(work.harness));
+  if (dir.peers.some((peer) => fit(peer) && freeSlots(peer.workers) > 0)) return [];
+  const repository = dir.here.repository ?? "";
+  return dir.peers.filter((peer) => fit(peer) && !!peer.pulls && (!peer.pulls.length || peer.pulls.includes(repository))
+    && authorizes(peer.grant.given, "work.claim") && placementProblem(dir, peer.id, work) === undefined).map((peer) => peer.name);
+}

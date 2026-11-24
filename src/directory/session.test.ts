@@ -1,6 +1,6 @@
 /** The capability directory as the main session uses it (src/directory/session.ts): held directory, SwarmRead and Dispatch. */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -9,7 +9,9 @@ import type { NodeCard } from "../mesh/card.js";
 import type { PeerHealth } from "../mesh/client.js";
 import { SuperagentClient } from "../superagent/client.js";
 import { KV } from "../superagent/kv.js";
+import { settingsPath, writeSettings } from "../superagent/settings.js";
 import { buildDirectory, lendersChange, type DirectoryParts } from "./build.js";
+import { readDirectory } from "./read.js";
 import { SUMMARY_CHARS, mainSummary } from "./render.js";
 import { HOLD_MS, REFRESH_MS, sessionSwarmTools, type SessionDirectoryOptions } from "./session.js";
 import type { Directory } from "./types.js";
@@ -249,6 +251,61 @@ test("Dispatch without a node needs a paired node with a free worker for a harne
   // Named, it waits for a free worker there.
   const { swarm } = tools(() => buildDirectory(parts(only({ slots: 1, running: 1, queued: 0 }))));
   assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "p", harness: "kimi" })).summary, /^Filed request .*; its worker runs on kimi on p\./);
+});
+
+test("Dispatch without a node files work only a full node runs when that node pulls such work, and says the work waits for it", async () => {
+  const pulling = (extra: Partial<NodeCard> = {}) => [online("p-id", "p", { yourGrant: "operator", abilities: ["linux", "harness:kimi"],
+    load: { slots: 1, running: 1, queued: 0 }, pull: { repositories: [] }, ...extra })];
+  // A node that pulls only another repository's work, or one this node keeps its waiting work from, is not waited for.
+  const kept = buildDirectory(parts(pulling()));
+  for (const dir of [buildDirectory(parts(pulling({ pull: { repositories: ["acme/web"] } }))), { ...kept, here: { ...kept.here, offersWork: false as const } }]) {
+    const { swarm } = tools(() => dir);
+    await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" }), /Dispatch refused: kimi runs only on p, where no worker is free now/);
+  }
+  assert.equal(existsSync(join(stateDir, "superagent.db")), false, "a refused dispatch files nothing");
+  // The host's placement finds no free node and waits for p to pull the work, as `choose` does.
+  const { swarm } = tools(() => buildDirectory(parts(pulling())));
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" })).summary,
+    /^Filed request [^;]+; its worker runs on kimi\. It waits for p to pull it: no worker is free there now\. No host runs yet: start this device's node with `swarm node run`\.$/);
+  // A host that is no mesh node hands no work to nodes that pull.
+  const client = new SuperagentClient({ stateDir });
+  const now = new Date().toISOString();
+  client.store.set(KV.host.owner, { pid: process.pid, startedAt: now, heartbeatAt: now });
+  client.store.set(KV.host.health, { at: now, entries: {} });
+  client.close();
+  await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" }), /Dispatch refused: kimi runs only on p, but the host here is not a mesh node/);
+});
+
+test("Dispatch files work on a harness installed here whose sign-in no host checked, and says the host checks it when it runs the work", async () => {
+  const bin = join(stateDir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(bin, "codex"), 0o755);
+  writeSettings({ sources: {}, policy: { sources: {} }, executor: { harness: "codex" } }, settingsPath(stateDir));
+  const home = mkdtempSync(join(tmpdir(), "swarm-session-mesh-"));
+  try {
+    // No host ran, so the session builds its own directory, in which nothing checked codex's sign-in.
+    const { swarm } = tools(() => assert.fail("the session reads its own"), { build: (read) => readDirectory({ ...read, home, machine: ["linux"], base: { PATH: bin } }) });
+    const dir = await swarm.source.current();
+    assert.deepEqual([dir.here.unchecked, dir.harnesses.find((harness) => harness.id === "codex")?.runsOn], [["codex"], []]);
+    assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x" })).summary,
+      /^Filed request [^;]+; its worker runs\. The sign-in of the default harness codex here was not checked: the host checks it when it runs the work\. No host runs yet: start one with `swarm superagent run`/);
+    assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "here" })).summary, /^Filed request [^;]+; its worker runs here\. The sign-in of the default harness codex here was not checked/);
+    assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "codex" })).content ?? "", /The sign-in of codex here was not checked: the host checks it when it runs the work\./);
+    // A known problem still refuses: claude is not installed here.
+    await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "claude" }), /Dispatch refused: claude runs on no node now \([^:]+: Claude Code is not installed/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+  // Work for a paired node that runs the harness says nothing of the sign-in here, which it does not use.
+  const part = parts([online("p-id", "p", { yourGrant: "operator", abilities: ["linux", "harness:claude"], load: { slots: 2, running: 0, queued: 0 } })]);
+  part.here = { ...part.here, harnesses: [], unchecked: ["claude"], harnessProblems: { claude: "installed, but its sign-in was not checked" } };
+  const { swarm } = tools(() => buildDirectory(part));
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "p" })).summary, /^Filed request [^;]+; its worker runs on p\. No host runs yet/);
+  // With no node named, a paired node with a free worker that runs it is where a mesh node's host puts the work if the
+  // sign-in here fails, so the hint names the host that can.
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "claude" })).summary,
+    /The sign-in of claude here was not checked: the host checks it when it runs the work, and a mesh node's host puts it on p if it does not run here\. No host runs yet: start this device's node with `swarm node run`\.$/);
 });
 
 test("Dispatch checks the default harness wherever the work goes: here, with no node named, and on a paired node", async () => {

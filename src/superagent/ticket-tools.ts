@@ -44,7 +44,7 @@ export interface TicketTool {
 const exec = promisify(execFile);
 /** The lent tools a read-only ticket may call on a paired node: they read, and nothing else a node lends does. */
 const MESH_READS: ReadonlySet<string> = new Set(["list_files", "read_file"]);
-/** Why a worker for a requester below maintainer gets counts of the paired nodes and reaches none of them. */
+/** Why the mesh tool gives a worker for a requester below maintainer counts of the paired nodes and reaches none of them. */
 const MESH_HIDDEN = "Only maintainers' and owners' tickets see the paired nodes and use what they lend: this ticket's requester gets counts, so do the work here";
 /** The largest patch a local ticket's ready report sends; a larger change is beyond a ticket kept local. */
 export const PATCH_BYTES = 1024 * 1024;
@@ -409,7 +409,8 @@ export function ticketTools(client: SuperagentClient, ticketId: string, assignme
     },
     mesh: async (args) => {
       // Which nodes there are and what they lend is for a requester who may see them, as for devices and directory, and
-      // a worker cannot reach a node its requester may not know of.
+      // this tool reaches no node its requester may not know of (a process-isolated worker's shell still runs as this
+      // user and is not confined by it; a worker in a ticket VM is).
       const requester = sourceTrigger(client, ticket())?.actor;
       if (!requester || !seesNodes(client.settings(), requester)) {
         if (typeof args.node === "string" && typeof args.tool === "string") throw new Error(MESH_HIDDEN);
@@ -417,8 +418,10 @@ export function ticketTools(client: SuperagentClient, ticketId: string, assignme
         return { paired_nodes: { total: nodes.length, online: nodes.filter((node) => node.online).length }, node_names: MESH_HIDDEN };
       }
       if (typeof args.node !== "string" || typeof args.tool !== "string") return { nodes: await lentByPeers() };
-      // This is the one place every harness and every place a worker runs reaches a peer through, so a read-only
-      // ticket's ceiling is kept here: harnesses let their MCP servers act outside their own read-only turns.
+      // This is the one place the tools Swarm offers any harness or worker reach a peer through, so a read-only ticket's
+      // ceiling is kept here: harnesses let their MCP servers act outside their own read-only turns. A process-isolated
+      // worker with a shell runs as this user and can reach peers with `swarm capabilities` outside it, which only VM
+      // isolation stops.
       if (ticket().mandate.capability?.write === "read-only" && !MESH_READS.has(args.tool))
         throw new Error(`This ticket's work is read-only: on a paired node it may only ${[...MESH_READS].join(" and ")}, not ${args.tool}`);
       const call = { ...(args.args && typeof args.args === "object" ? args.args as Record<string, unknown> : {}) };

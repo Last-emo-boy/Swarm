@@ -12,7 +12,7 @@ import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js
 import { harnessIds } from "./harness.js";
 import { KV } from "./kv.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
-import { harnessNodes, updatePlacement, type MeshView, type Placement } from "./placement.js";
+import { harnessNodes, updatePlacement, type MeshView, type NodeAbilities, type Placement } from "./placement.js";
 import { PART_TTL_MS, placementProblem } from "../directory/build.js";
 import { routerCard } from "../directory/render.js";
 import type { Directory } from "../directory/types.js";
@@ -410,8 +410,10 @@ export class ModelAssessor {
     const problem = placementProblem(directory, named[0]?.id ?? on, { needs: work.needs, ...(work.harness ? { harness: work.harness } : {}) });
     if (problem) return { problem };
     const peer = named[0]!;
-    // The host's live view, read once the router answered, has the last word on whether the node answers.
-    if (live && !live.peers.some((item) => sameName(item.name, peer.name))) return { problem: `${peer.name} does not answer now` };
+    // The host's live view, read once the router answered, has the last word on whether the node answers. It names a node
+    // after its card, which shows a rename before the directory's record does, so a view entry with an id is matched by id.
+    const answers = (item: NodeAbilities & { id?: string }) => item.id ? item.id === peer.id : sameName(item.name, peer.name);
+    if (live && !live.peers.some(answers)) return { problem: `${peer.name} does not answer now` };
     if (work.capability?.credential) return { problem: `work that acts as @${work.capability.credential.login} on GitHub runs only on this node, not on ${peer.name}` };
     return { node: { id: peer.id, name: peer.name } };
   }

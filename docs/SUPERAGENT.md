@@ -217,7 +217,9 @@ On an accept the router may set `on` to the node the work runs on: a paired node
 for the requesters who see nodes, when the person asks for a node or one node clearly fits the work. The host checks
 it against the directory (`placementProblem`): the node answered, takes work, has `work.offer` in `may_there` or
 `grant_unknown` (the offer then tries it, and that node's grant decides), and has what `needs` lists and the harness
-the ticket runs on (the one chosen, the one filed, else `executor.harness`). A paired node is also dropped when the
+the ticket runs on (the one chosen, the one filed, else `executor.harness`). A harness installed there whose sign-in
+was never checked (the directory's `unchecked`, with the problem "installed, but its sign-in was not checked") is not
+ready, but passes: the host checks the sign-in when it runs the work. A paired node is also dropped when the
 directory the router read was written over 30 seconds before (`PART_TTL_MS.mesh`), and when the host's live mesh
 view, read after the model answered, does not list it as answering (`<node> does not answer now`); a view that cannot
 be read leaves the directory's word. Work that acts as its requester on GitHub stays on this node. A node that passes
@@ -240,17 +242,21 @@ A ticket VM is no mesh node: its own `swarm mesh` shows only itself. A worker us
 lend`) with its `mesh` tool, which its host runs over the host's own links: without arguments it lists each paired node
 and what it lends, and with a node, a tool (`shell`, `list_files`, `read_file`, `write_file`) and its arguments it calls
 it there. A command stops after at most 100 seconds, within the time a ticket tool may take. Every ticket's worker has it;
-under the access model, a worker whose requester is below maintainer learns only how many paired nodes there are and
-reaches none of them. Every call is kept with its ticket (`mesh-calls:<ticket>`). A read-only ticket's worker
+under the access model, the tool tells a worker whose requester is below maintainer only how many paired nodes there are
+and reaches none of them. Every call is kept with its ticket (`mesh-calls:<ticket>`). On a read-only ticket the tool
 may only `list_files` and `read_file` there: the host refuses the other lent tools before they reach the node, since
 harnesses run their MCP servers outside their own read-only turns. A shell runs as the user its node lends as, with
 that user's credentials, such as a kubeconfig.
 
-Swarm's own worker reaches paired nodes only through its `mesh` tool, on any host, a mesh node included: it never
-loads the MCP servers paired nodes lend. `workerRuntime` (`worker.ts`) builds its `SwarmRuntime` with
+Swarm offers its own worker none of the tools paired nodes lend, on any host, a mesh node included, so its model
+reaches them through its `mesh` tool. `workerRuntime` (`worker.ts`) builds its `SwarmRuntime` with
 `borrowMesh: false`, which drops only the lent servers and keeps the workspace `.mcp.json` and plugin servers (a
 `strict` runtime MCP config still drops all of them). `createCapabilityPlane` takes the same option. The main session
-still borrows them as `mcp__<peer>__<tool>`.
+still borrows them as `mcp__<peer>__<tool>`. This does not confine the worker: under process isolation a worker with a
+shell runs as the host's user, with that user's mesh keys, and its shell can run `swarm capabilities list` / `invoke`
+against paired nodes. Only a ticket VM confines it (a ticket VM is no mesh node); work placed on a paired node runs
+there as a process, as that node's user, even when this host uses `executor.isolation: vm`. The `mesh` tool's gates
+bound what that tool does, not what such a worker can do.
 
 ### GitHub accounts
 
