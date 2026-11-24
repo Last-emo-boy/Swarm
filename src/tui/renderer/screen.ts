@@ -22,6 +22,11 @@ export type TuiScreen = {
   height: number;
   cells: TuiScreenCell[][];
   damage?: TuiDamageRect;
+  /**
+   * Where the terminal's own cursor belongs: the cell of a text marked as the cursor, such as the prompt's. An input method
+   * draws the text it is still composing at the terminal cursor, so the cursor has to sit where typing goes.
+   */
+  cursor?: { x: number; y: number };
 };
 
 export type TuiDamageRect = {

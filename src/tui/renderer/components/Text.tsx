@@ -16,6 +16,11 @@ export type RendererTextProps = {
   maxHeight?: number;
   wrap?: "wrap" | "truncate";
   focusable?: boolean;
+  /**
+   * Puts the terminal's cursor on this text's first cell after every frame. The renderer keeps the cursor hidden, but an
+   * input method draws the text it is composing at the cursor, so a prompt marks the character its own cursor shows.
+   */
+  cursor?: boolean;
 };
 
 export function Text({ children, ...props }: RendererTextProps): React.ReactElement {

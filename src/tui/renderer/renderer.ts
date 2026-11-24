@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { displayWidth } from "../display-width.js";
 import { parseAnsiSpans } from "./ansi.js";
-import { clearDirty, walkTuiTree, type TuiElement, type TuiNode, type TuiStyle } from "./dom.js";
+import { clearDirty, textContent, walkTuiTree, type TuiElement, type TuiNode, type TuiStyle } from "./dom.js";
 import { borderSpacing, computeLayout } from "./layout.js";
 import { createScreen, setCell } from "./screen.js";
 import type { TuiScreenCellMetadata } from "./screen.js";
@@ -31,11 +31,14 @@ export function renderDomToFrame(root: TuiElement, options: RenderDomOptions): T
       width: Math.max(0, Math.floor(options.columns)),
       height: Math.max(0, Math.floor(options.rows))
     },
-    cursor: {
-      x: 0,
-      y: Math.max(0, Math.min(screen.height, options.rows) - 1),
-      visible: screen.height === 0
-    },
+    // A text marked as the cursor places it; otherwise it rests at the bottom-left, as before.
+    cursor: screen.cursor
+      ? { x: screen.cursor.x, y: screen.cursor.y, visible: false }
+      : {
+          x: 0,
+          y: Math.max(0, Math.min(screen.height, options.rows) - 1),
+          visible: screen.height === 0
+        },
     timing: {
       startedAt,
       layoutMs: afterLayout - beforeLayout,
@@ -78,9 +81,11 @@ function paintNode(
     nodeName: node.nodeName
   };
   if (node.nodeName === "swarm-text") {
-    // A truncated text stops at its own right edge; without the clip its overflow wraps onto the rows below it.
-    const clipX = node.attributes.wrap === "truncate" ? node.layout.x + node.layout.width : undefined;
-    paintInlineChildren(node, node.layout.x, node.layout.y, screen, style, metadata, clipX);
+    // A truncated text stops at its own right edge; without the clip its overflow wraps there onto the rows below it, as
+    // layout measured it. Wrapping only at the screen's edge let a line of wide characters run past the terminal.
+    const rightX = Math.min(screen.width, node.layout.x + node.layout.width);
+    const clipX = node.attributes.wrap === "truncate" ? rightX : undefined;
+    paintInlineChildren(node, node.layout.x, node.layout.y, screen, style, metadata, clipX, rightX);
     return;
   }
   if (node.nodeName === "swarm-raw-ansi") {
@@ -168,11 +173,12 @@ function paintInlineChildren(
   screen: ReturnType<typeof createScreen>,
   style: TuiStyle,
   metadata: TuiScreenCellMetadata,
-  clipX?: number
+  clipX?: number,
+  wrapX = screen.width
 ): { x: number; y: number } {
   let cursor = { x, y };
   for (const child of node.childNodes) {
-    cursor = paintInlineNode(child, cursor.x, cursor.y, x, screen, style, metadata, clipX);
+    cursor = paintInlineNode(child, cursor.x, cursor.y, x, screen, style, metadata, clipX, wrapX);
   }
   return cursor;
 }
@@ -185,7 +191,8 @@ function paintInlineNode(
   screen: ReturnType<typeof createScreen>,
   inheritedStyle: TuiStyle,
   inheritedMetadata: TuiScreenCellMetadata,
-  clipX?: number
+  clipX?: number,
+  wrapX = screen.width
 ): { x: number; y: number } {
   if (node.hidden) {
     return { x, y };
@@ -194,7 +201,15 @@ function paintInlineNode(
     ? { ...inheritedStyle, ...node.style }
     : { ...inheritedStyle, ...node.style };
   if (node.nodeName === "#text") {
-    return paintText(node.nodeValue, x, y, screen, style, inheritedMetadata, lineStartX, clipX);
+    return paintText(node.nodeValue, x, y, screen, style, inheritedMetadata, lineStartX, clipX, wrapX);
+  }
+  // The first marked text in paint order owns the cursor. Its first character goes to the next row when it does not fit on
+  // this one, and so does the cursor.
+  if (node.attributes.cursor === true && !screen.cursor) {
+    const first = Math.max(1, displayWidth(Array.from(textContent(node))[0] ?? " "));
+    const wraps = clipX === undefined && x > lineStartX && x + first > wrapX;
+    const at = wraps ? { x: lineStartX, y: y + 1 } : { x, y };
+    if (at.y >= 0 && at.y < screen.height && at.x >= 0 && at.x < screen.width) screen.cursor = at;
   }
   const metadata: TuiScreenCellMetadata = {
     hyperlink: node.nodeName === "swarm-link" && typeof node.attributes.href === "string"
@@ -204,7 +219,7 @@ function paintInlineNode(
     ownerChain: node.debugOwnerChain.length ? node.debugOwnerChain : inheritedMetadata.ownerChain,
     nodeName: node.nodeName
   };
-  return paintInlineChildren(node, x, y, screen, style, metadata, clipX);
+  return paintInlineChildren(node, x, y, screen, style, metadata, clipX, wrapX);
 }
 
 function paintAnsiText(
@@ -232,7 +247,8 @@ function paintText(
   style: TuiStyle,
   metadata: TuiScreenCellMetadata,
   lineStartX = x,
-  clipX?: number
+  clipX?: number,
+  wrapX = screen.width
 ): { x: number; y: number } {
   let cursorX = x;
   let cursorY = y;
@@ -256,9 +272,14 @@ function paintText(
       cursorX += charWidth;
       continue;
     }
+    // A wide character that does not fit before the right edge starts the next row, as layout split it.
+    if (cursorX > lineStartX && cursorX + charWidth > wrapX) {
+      cursorX = lineStartX;
+      cursorY += 1;
+    }
     setCell(screen, cursorX, cursorY, char, style, metadata);
     cursorX += charWidth;
-    if (cursorX >= screen.width) {
+    if (cursorX >= wrapX) {
       cursorX = lineStartX;
       cursorY += 1;
     }
