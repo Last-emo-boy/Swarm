@@ -16,7 +16,7 @@
 - [本地 Gateway](#本地-gateway)
 - [Symphony](#symphony)
 - [工单](#工单)：[角色和机器人命令](#角色和机器人命令)、[harness worker](#harness-worker)、[harness 子代理](#harness-子代理)
-- [网格](#网格)：[让节点保持运行和最新](#让节点保持运行和最新)
+- [网格](#网格)：[谁能做什么：能力目录](#谁能做什么能力目录)、[让节点保持运行和最新](#让节点保持运行和最新)
 - [用量、价格和预算](#用量价格和预算)
 - [架构](#架构)
 - [记忆和恢复](#记忆和恢复)
@@ -123,6 +123,7 @@ Commands:
   harness    List the agent harness profiles here: installed, signed in, keys set
   mesh       Pair this device with other Swarm devices and see them
   node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
+  directory  Who can do what now: nodes, harnesses, tool servers, Sources and commands, with who may run each
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
@@ -504,7 +505,8 @@ swarm superagent why <工单|消息>  # 按保存下来的记录，逐步说明�
 - **群的上限**（`read-only`、`local` 或 `github`）会压低在那个群里提出的所有工作。没人列入的群是 `local`。
 - **谁能操控工单。** 提需求的人和 maintainer。其他人在工单对话里发的消息只作为上下文交给 worker，既不会让工单继续，也不能停下它。
 - **限额。** 超出发送者限额的消息会被搁下，并回复一次说明原因。`access.limits` 可以改这些数字。
-- **选择 harness。** owner 和 maintainer 可以指定自己的工作运行在哪个 agent harness 上（见 [harness worker](#harness-worker)）；它的轮次用的是 owner 的 harness 账号。`everyone` 的工作运行在默认的 harness 上。
+- **选择 harness。** owner 和 maintainer 可以指定自己的工作运行在哪个 agent harness 上（见 [harness worker](#harness-worker)），agent 也可以自己为他们的工作选一个；它的轮次用的是 owner 的 harness 账号。`everyone` 的工作运行在默认的 harness 上。
+- **选择节点。** 对 owner 和 maintainer 的工作，agent 还可以指定在哪个已配对节点上运行，前提是[能力目录](#谁能做什么能力目录)显示那个节点接得下。
 
 在飞书里 @ 机器人或私聊它，可以用这些命令：
 
@@ -534,6 +536,8 @@ swarm superagent why <工单|消息>  # 按保存下来的记录，逐步说明�
 工单的 worker 可以不用 Swarm 自己的 coding loop，而是运行在本机安装的其他 agent harness 上：Claude Code（`claude`）、Codex（`codex`）、Kimi Code（`kimi`）或 OpenCode（`opencode`），或者运行在 GLM 或 DeepSeek 上的 Claude Code（`claude-glm`、`claude-deepseek`，见下文）。superagent 设置中的 `executor.harness` 指定新工单运行在哪个 harness 上（默认值 `null` 保留 Swarm 的循环）；`swarm superagent request --harness claude "..."` 或 `/ticket --harness codex <request>` 为单个请求选择一个 harness。这个选择会和工单的执行记录一起保存，因此它的后续消息也在同一个 harness 上运行，`swarm superagent tickets`/`ticket` 和 TUI 会把它显示为 `via claude`。
 
 给机器人发消息的人也可以用自己的话指定一个，例如“用 codex 做”或 “run this on Claude Code”。开启访问模型时，owner 和 maintainer 可以这样做（见[角色](#角色和机器人命令)）；没有开启时，任何能提需求的人都可以。确认回复会说明由哪个 harness 来做、工作在哪里运行：本节点，或已登录该 harness 的已配对节点（见[网格](#网格)）。如果没有任何节点有它，或者本机没有叫这个名字的配置档，机器人会直接说明，不创建工单。以提需求者身份写到 GitHub 的工作只在接受它的节点上运行，因为那里保存着他们的 token，所以它只能使用在那里登录的 harness。
+
+机器人也可以在没人指定的情况下，为同样这些人自己选一个 harness：当某个节点上登录的 harness 明显比默认的更适合这项工作时，例如工作需要的那台节点上只登录了它。它的选择和人指定的一样要经过检查，轮次花的是那个 harness 账号的预算，并受 `usage.budgets.harnesses` 的上限约束（见[预算](#用量价格和预算)）。主会话也可以为自己的子代理和提交的工作这样做（见[能力目录](#谁能做什么能力目录)）。
 
 每一轮都是在工单目录中进行的一次无头运行：Swarm 的工单工具（`swarm superagent mcp`，对放在已配对节点上的 worker 还会加上 `--remote`）作为名为 `ticket` 的 MCP 服务器提供，Swarm 的 worker 说明会附加在 harness 自己的说明之后：
 
@@ -639,11 +643,23 @@ swarm mesh remove gpu                      # 把一台设备移出 swarm：每�
 
 已配对设备的工单会显示在 TUI 中本节点工单的旁边（`/tickets`，状态栏也会统计其中需要你处理的工单），也会出现在 `swarm superagent tickets --all-devices` 中，地址写作 `<device>:<id>`。答复、停止和重试这类工单的操作会发往拥有它的设备，而 `/ticket @<device> <request>`（或 `swarm superagent request --device <name>`）会在那台设备上提交工作，范围以那台设备给本设备的授权为准（见上文）。
 
-设备还可以把工具借给已配对的对端，对端的 Swarm 会话把它们当作 MCP 工具调用。在你指定文件夹之前，什么都不会借出：`swarm mesh lend shell ~/src/app` 借出在该文件夹中启动的命令执行（shell 仍然可以访问这个用户能访问的任何东西），`swarm mesh lend files ~/data` 借出在该文件夹内列出、读取和写入文件的能力，并拒绝通向文件夹之外的路径，包括符号链接。`swarm mesh lend` 显示借出了什么，`swarm mesh lend --stop shell` 收回借出。在其他设备上，`swarm mesh tools` 列出每个对端借出的工具，那里的每个 Swarm 会话都会把它们看作 `mcp__<peer>__shell`、`mcp__<peer>__read_file` 等工具，由对端的 `swarm node run` 在通往该对端的链路上通过 Streamable HTTP 提供。借来的工具算作远程工具，因此在 `ask` 模式下每次调用都要等待审批；不响应的对端会被跳过。借出方会把每一次借出调用记在 `~/.swarm/mesh/lend-audit.jsonl`：哪个对端、哪份租约、为哪张工单、命令或路径、耗时以及结果。
+设备还可以把工具借给已配对的对端，对端的 Swarm 会话把它们当作 MCP 工具调用。在你指定文件夹之前，什么都不会借出：`swarm mesh lend shell ~/src/app` 借出在该文件夹中启动的命令执行（shell 仍然可以访问这个用户能访问的任何东西），`swarm mesh lend files ~/data` 借出在该文件夹内列出、读取和写入文件的能力，并拒绝通向文件夹之外的路径，包括符号链接。`swarm mesh lend` 显示借出了什么，`swarm mesh lend --stop shell` 收回借出。在其他设备上，`swarm mesh tools` 列出每个对端借出的工具，那里除工单 worker 以外的每个 Swarm 会话（见下文的能力目录）都会把它们看作 `mcp__<peer>__shell`、`mcp__<peer>__read_file` 等工具，由对端的 `swarm node run` 在通往该对端的链路上通过 Streamable HTTP 提供。对端借出的东西变了，要在两份写入时间不同的目录快照里都看到这个变化，会话才会重新加载这些借来的服务器，所以时有时无的对端不会触发任何加载。这时只有借来的服务器重新连接，会话的其他 MCP 服务器在下一轮保持原有连接。借来的工具算作远程工具，因此在 `ask` 模式下每次调用都要等待审批；不响应的对端会被跳过。借出方会把每一次借出调用记在 `~/.swarm/mesh/lend-audit.jsonl`：哪个对端、哪份租约、为哪张工单、命令或路径、耗时以及结果。
 
 工单也可以留在本节点，而它的 worker 在一个已配对的节点上运行。`swarm superagent request --on <node>`（或 `/ticket --on <node> <request>`）以这种方式提交工单，`swarm superagent place <id> <node>|here` 移动它的下一个 worker；当路由器判断这项工作需要 `gpu` 或 `macos` 时，worker 会去往具备该能力且有空闲槽位的已配对节点。在 harness 上运行的工作（`--harness claude`、有人向机器人指定的 harness，或 `executor.harness`）也以同样的方式提出要求：节点会为每个在本机已安装、已登录且 key 已设置的 harness 配置档，在自己的能力中列出 `harness:<id>`，并每 10 分钟重新检查一次，这样在 Claude Code 上运行的工单就会在已登录 Claude Code 的设备上运行。接受该工单的节点始终是它的记录方，也是其存储的唯一写入者。另一个节点用自己的准备命令和凭据准备自己的工单目录（运行 GitHub 工单的节点需要在那里登录 agent 账号的 CLI），并持有一个它会续期的租约；如果租约失效，所有者会把该 worker 视为丢失，并重新放置这项工作。`swarm superagent ticket` 显示 worker 在哪里运行。放置只对以 `swarm node run` 方式运行的节点生效。
 
 有空闲 worker 槽位的节点还可以主动拉取工作，而不必等着被分配。拉取默认关闭，直到运行 `swarm mesh pull on`（加上可重复使用的 `--repo owner/name`，只接这些仓库的工作）；之后节点会每 15 秒（没有开放的工作时频率更低）向已配对的节点询问在那里等待 worker 的工作：排在 `executor.maxWorkers` 之后的工作，或者需要所有者缺少的某种能力、而具备该能力并开启了拉取的已配对节点都在忙的工作（这类工作会等待它们，而不是在所有者上运行）。它会认领符合自己能力和仓库范围的工作，最早的优先。由所有者来决定：第一个仍然有效的认领会通过与放置相同的提议和租约拿到这项工作，之后的认领会被拒绝，所有者自己永远不会启动一个已被认领的 Assignment。通过 `--on` 或 `place` 放置的工作、处于租约之下的工作，或在等待人处理的工作，永远不会开放。所有者默认会把自己等待中的工作交给开启了拉取的已配对节点，因为拉取者只会拿走原本要等待的工作，而且是它自己来要的；`swarm mesh offer off` 会把这些工作留在本地。`swarm mesh status` 显示每个节点是否在拉取，以及两个方向上被拉取的工作，工单行会显示“pulled by <node>”。
+
+### 谁能做什么：能力目录
+
+`swarm directory` 打印一份此刻谁能做什么的快照：本节点和各已配对节点（是否在线、空闲和排队的 worker、是否接受放进来的工作、按确切工具名列出借出了什么、它给本节点的授权以及这份授权允许本节点在那里做什么），各 agent harness 在哪里能运行、为什么在别处不能，没有就绪的工具服务器、来源和模型服务商，以及每条命令和谁可以执行它。`--json` 输出数据，`--refresh` 在本地重新构建而不是读取宿主写下的那份，`--check` 还会运行各 harness 的登录检查。运行中的工单宿主每分钟写一次，所以各个 agent 读它时不必再逐个询问对端；找不到两分钟内写下的目录的进程会自己构建一份。自己构建目录的主会话会沿用宿主最近一次的登录检查，只要它们还没过期；检查的年龄从检查运行的时间算起（写下的目录里的 `signInsAt`），而不是从目录写下的时间算起。没有 `signInsAt` 的目录不提供任何检查结果。数据里的 `here.unchecked` 列出本机已安装、但登录从未检查过的 harness，例如最近 20 分钟内没有宿主检查过时：它们不算就绪，所以它们的 `runsOn` 里没有 `here`，问题写作“installed, but its sign-in was not checked”。`Dispatch` 和路由器的 `on` 仍然接受它们（见下文）。本节点不把自己等待中的工作交给拉取的节点时（`swarm mesh offer off`），会出现 `here.offersWork: false`。
+
+三个 agent 各自通过自己的视图读它。每个动作仍然要经过上文的授权、租约、审批和工单授权书（mandate）：目录只说明其中哪些会成功。
+
+- **主会话** 每一轮都能看到它的一段简短摘要，并有三个工具。摘要总会显示固定的几行（本节点、能放工作的地方、各 harness、没有就绪或已过期的东西、只读命令），每个列表最多列出 6 个名字，其余写作“+K more”。“Harnesses ready”行最多列出 6 个 harness，每个最多 2 个节点，其余写作“+K more”；“Not ready”行最多 3 条，其余写作“Not ready: +K more”。本机已安装但登录从未检查过的 harness 会报告为未检查。剩下的篇幅用来给每个节点各写一行。`SwarmDirectory` 返回整个目录或其中一节（`nodes`、`harnesses`、`tools`、`sources`、`commands`），带 `refresh` 时重新构建，最多每 10 秒一次。`SwarmRead` 以本终端操作者的身份运行工单宿主的一条只读命令（`status`、`tickets`、`usage`、`devices`、`mesh`、`me`）。这两个都不需要审批。`Dispatch` 像 `swarm superagent request` 一样、以本终端操作者的身份向工单宿主提交工作，可以指定节点（`on`：一个已配对节点，或 `here`）和 harness。离线、不接受工作、缺少工作所需能力或 harness、或者授权不允许本节点放工作过去（`work.offer`）的节点会被当场拒绝。无论 `on` 是已配对节点、`here` 还是没有给，它检查的都是指定的 harness，没有指定时是默认的那个，拒绝时把后者称为“the default harness <id>”。节点上已安装、但登录从未检查过的 harness 可以通过：宿主运行这项工作时会检查登录，结果里也会说明登录没有检查过。没有给 `on`、而 harness 是本节点没有的，就需要一个运行这个 harness、接受工作、并有空闲 worker 槽位（槽位数减去运行中和排队中的工作）的已配对节点。没有哪个节点有空闲槽位时，一个运行这个 harness、接受工作、拉取本节点仓库的工作（`swarm mesh pull`）、并且本节点的授权允许它认领工作（`work.claim`）的已配对节点也可以，除非本节点把等待中的工作留在本地（`swarm mesh offer off`）；这时结果会说明工作在等那个节点来拉取。否则拒绝，并提示把节点指定为 `on` 去那里排队等待。放到已配对节点上的工作（无论是指定的节点，还是 harness 只在那里运行）需要一个作为 mesh 节点的宿主：运行中的宿主不是 mesh 节点时，`Dispatch` 会拒绝并提示改用 `swarm node run`；没有宿主在运行时，它照常提交工作，提示里只给出 `swarm node run`。`Dispatch` 在 `ask` 模式下需要审批，在 `auto`、`full-auto` 和 `yolo` 下直接运行，和 shell 命令一样；不能用 shell 的会话（`--disallowedTools Bash`，或者 deny 了 `Bash` 或 `Bash(*)`）也没有 `Dispatch`。当某个就绪的 harness 比 Swarm 自己的循环更适合任务时，会话可以自己给 Agent 或 Dispatch 传 `harness`，这会花那个 harness 账号的预算。借来的工具保持原来的风险等级：借出的 shell 或 `write_file` 除非处于 `auto`、`full-auto` 或 `yolo` 模式都要审批，并且仍要向借出节点申请租约。
+- **路由器** 在每个请求的卡片上都能看到它。对 owner 和 maintainer 的请求，它列出每个节点空闲和排队的 worker、是否接受工作、借出的工具、本节点在那里能做什么、harness 为什么在那里不能运行，还有没有就绪的东西和它替人执行的命令；其他人的卡片上只有数量。授权未知的节点（较旧的 Swarm，或本版本读不懂的授权）标有 `grant_unknown`。接受 owner 或 maintainer 的请求时，路由器可以指定工作运行的节点，也可以是 `grant_unknown` 的节点，宿主把工作提议过去时由那个节点自己的授权决定。宿主会对照目录检查这个节点：它必须有应答、接受工作、允许本节点放工作过去，并且具备工作所需的能力和工作使用的 harness（和 `Dispatch` 一样，那里已安装、但登录从未检查过的 harness 可以通过）；以提需求者身份写到 GitHub 的工作永远不离开本节点。这个节点既要在路由器读取前最多 30 秒写下的目录里有应答，也要在路由器答复之后宿主自己看到的已配对节点中有应答。没通过检查的节点会被舍弃，原因记在 `swarm superagent why` 读取的记录里，工作照常接受并照常放置。
+- **工单的 worker** 用它的 `directory` 工具读宿主的快照，在工单 VM 里或已配对节点上也一样：提需求的人能看节点时给节点名，否则只给数量。`devices` 仍然给出较短的列表。worker 没有主会话的这三个工具，所以不会自己在其他节点上提交工作，而是把消息交回给路由器。Swarm 也不向自己的 worker 提供已配对节点借出的工具，不把它们当作 MCP 服务器加载，在任何宿主上都是如此，mesh 节点也不例外，所以它的模型通过工单的 `mesh` 工具访问节点。只读工单的这个工具在已配对节点上只能列出和读取文件；提需求的人低于 maintainer 时，这个工具只给数量，也碰不到任何节点。这些限制约束的是这个工具，而不是 worker：在进程隔离下，带 shell 的 worker 以本机用户身份运行，持有本机的 mesh 密钥，仍可用 `swarm capabilities` 访问已配对节点，只有工单 VM（`executor.isolation: vm`）才能限制它；派到已配对节点上的工作在那台节点上以进程运行，身份是那台节点的用户。
+
+有些命令只留给人来执行：配对和移除设备（`swarm mesh invite`、`join`、`remove`）、授权（`swarm mesh grant`）、借出（`swarm mesh lend`）、拉取和交出工作（`swarm mesh pull`、`offer`）、放置和暂停工单（`swarm superagent place`、`pause`）、设置文件、harness 登录和 `swarm auth set-key`。目录会把它们连同确切的命令行和 `who: person` 一起列出，让 agent 能告诉人该运行什么。在任何权限模式下、即使有 allow 规则，Swarm 的权限检查都会拒绝运行其中一条的 shell 命令；agent harness 自己的工具不经过这项检查（见 [harness worker](#harness-worker)）。命令行中任何位置通过 shell 或解释器运行它们（`bash`、`sh`、`zsh`、`dash`、`ksh`、`fish`、`python`、`node`、`perl`、`ruby`、`deno`、`bun`、`eval`、`exec`、`xargs`、`source`、`.`、`su`、`ssh`、`watch`），无论带什么参数、路径或前缀，或者程序名加了引号，同样会被拒绝。`swarm superagent harness check` 和 `swarm harness check` 一样只留给人。在普通命令里用引号提到它们，例如 `grep`、`rg` 或 `git commit -m`，仍然允许，除非这一行里还有别的东西会把文本当命令运行。这是防止 agent 误运行这些命令、或照注入的指令运行它们的一道防线，而不是沙箱：藏在 shell、解释器和引号后面的命令它能拦下，但刻意的混淆、或 agent 直接修改这些命令写入的文件，它拦不住。
 
 ### 让节点保持运行和最新
 

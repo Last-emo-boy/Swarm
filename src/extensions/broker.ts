@@ -51,6 +51,8 @@ export type CapabilityBrokerInput = {
   }) => void;
   delegate?: (action: AgentDelegateAction, sessionId: string, taskId: string) => Promise<ToolResult>;
   agentControl?: LocalToolContext["agentControl"];
+  /** The main session's swarm tools; the coding loop refuses them to every other role. */
+  swarm?: LocalToolContext["swarm"];
   onWorkspaceChange?: (sessionId: string | undefined, change: WorkspaceChangeMetadata) => void;
   onFileLock?: (event: FileLockEvent) => void;
   activateSkill: (name: string, sessionId?: string, reason?: string) => {
@@ -232,6 +234,7 @@ export class CapabilityBroker {
         serverWebSearch: this.input.serverWebSearch,
         blackboard: this.input.blackboard,
         agentControl: this.input.agentControl,
+        swarm: this.input.swarm,
         onWorkspaceChange: (change) => this.input.onWorkspaceChange?.(sessionId, change),
         onFileLock: this.input.onFileLock,
         delegate: options.allowDelegate && sessionId && this.input.delegate

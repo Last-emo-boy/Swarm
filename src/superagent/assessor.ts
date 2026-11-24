@@ -8,12 +8,14 @@ import { z } from "zod/v4";
 import { UserError, followupOwners, key, reasonText, threadKey, type Candidate, type Capability, type Trigger } from "./core/index.js";
 import type { SuperagentClient } from "./client.js";
 import { relatedTickets, ticketCard, triggerCard } from "./cards.js";
-import { devicesCard, type Devices } from "./devices.js";
 import { githubApp, installUrl, linkOf, namedRepository } from "./github-link.js";
 import { harnessIds } from "./harness.js";
 import { KV } from "./kv.js";
 import { triggerMessage, WorktreeNameSchema } from "./messages.js";
-import { harnessNodes, updatePlacement, type MeshView } from "./placement.js";
+import { harnessNodes, updatePlacement, type MeshView, type NodeAbilities, type Placement } from "./placement.js";
+import { PART_TTL_MS, placementProblem } from "../directory/build.js";
+import { routerCard } from "../directory/render.js";
+import type { Directory } from "../directory/types.js";
 import { SOURCE as LOCAL } from "./sources/local.js";
 
 const localChatSource = (source: string): boolean => source === LOCAL;
@@ -52,11 +54,14 @@ export interface AssessorHost {
   readonly commands?: AgentCommands;
   /**
    * This node and its paired nodes with their abilities, on a host that is a mesh node, which say where work on a harness
-   * runs; without it every harness profile counts as this node's.
+   * runs; without it the harness profiles the directory lists here count as this node's, and every one without either.
    */
   mesh?(): Promise<MeshView | undefined>;
-  /** What the host runs its tickets' work on now, which the router answers questions about its devices from. */
-  devices?(): Promise<Devices>;
+  /**
+   * Who can do what now (src/directory): the host's shared snapshot, which the router's card shows and an accept's `on` is
+   * checked against; without it the card has no directory and `on` is dropped.
+   */
+  directory?(): Promise<Directory>;
   /** Where to note a model answer it could not use, which then stops nothing. */
   log?(message: string): void;
   /** The clock the router reads, so replay fixes it; production leaves it out and uses the wall clock. */
@@ -94,8 +99,10 @@ const RouteSchema = z.object({
   link: z.boolean().nullish(),
   /** The requester's repository the accepted work is about, as the card lists it, however the person called it. */
   repository: z.string().nullish(),
-  /** The agent harness profile the person asked the accepted work to run on, one of the card's harness choices. */
+  /** The agent harness profile the accepted work runs on, one of the card's harness choices: one the person named, or one the router chose for the work. */
   harness: z.string().trim().nullish(),
+  /** The node the accepted work runs on: a paired node the card's directory names, or here; checked against the directory, and dropped when it does not hold. */
+  on: z.string().trim().nullish(),
   /** The bot command the router runs for the person, with its arguments. */
   command: z.string().nullish(),
   args: z.array(z.string().trim().min(1).max(200)).max(4).nullish()
@@ -116,6 +123,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Route["kind"][];
   reply_as: { check: z.enum(REPLY_STYLES), reads: ["chat", "accept"], needs: [] },
   repository: { check: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/name"), reads: ["accept"], needs: [] },
   harness: { check: z.string().max(64), reads: ["accept"], needs: [] },
+  on: { check: z.string().max(64), reads: ["accept"], needs: [] },
   command: { check: z.enum(AGENT_COMMANDS), reads: ["command"], needs: ["command"] }
 };
 /** Why a routing answer cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
@@ -143,6 +151,12 @@ interface Harnesses {
   here?: string;
   /** Each profile and where its work runs: on this node, else on these paired nodes; on none when neither. */
   places: Map<string, { here: boolean; peers: string[] }>;
+}
+/** What an accept's `on` is checked against: the directory the card showed, when the router read it, and the host's live view of the paired nodes once the model answered. */
+interface Nodes {
+  directory: Directory | { problem: string } | undefined;
+  read: number;
+  live?: MeshView;
 }
 /** The profile an accept's `harness` names, when work on it can run for this request; else why not, for the router to answer. */
 function checkedHarness(chosen: string, harnesses: Harnesses, capability: Capability | undefined): { id: string } | { problem: string } {
@@ -319,13 +333,16 @@ export class ModelAssessor {
   }
 
   /** The harness profiles the candidate's requester may choose, and where each runs now. */
-  private async harnesses(candidate: Candidate): Promise<Harnesses> {
+  private async harnesses(candidate: Candidate, directory: Directory | { problem: string } | undefined): Promise<Harnesses> {
     const { client } = this.host;
     const settings = client.settings();
     const filed = candidate.triggers.map((trigger) => client.store.get(KV.harness.chosen(trigger.id))).find(Boolean);
     const mayChoose = choosesHarness(settings, candidate.thread.evaluating?.actor ?? candidate.triggers.at(-1)!.actor);
     const view = mayChoose && !filed ? await this.host.mesh?.() : undefined;
-    const places = new Map(harnessIds(settings.executor.harnesses).map((id) => [id, view ? harnessNodes(id, view) : { here: true, peers: [] }]));
+    // A host that is no mesh node runs a profile here when its own checks found it ready, as its directory says: one signed
+    // out would fail the work. Only with no directory either does every profile count as this node's.
+    const ready = !view && directory && !("problem" in directory) ? directory.here.harnesses : undefined;
+    const places = new Map(harnessIds(settings.executor.harnesses).map((id) => [id, view ? harnessNodes(id, view) : { here: ready?.includes(id) ?? true, peers: [] }]));
     return { ...(filed ? { filed } : {}), mayChoose, ...(view ? { here: view.here.name } : {}), places };
   }
   /** The card's harnesses: what a ticket runs on when the person names none, and what they may name, with where each runs for this request. */
@@ -343,19 +360,62 @@ export class ModelAssessor {
     return { default: fallback, choices: Object.fromEntries([...harnesses.places].map(([id, place]) => [id, where(place)])) };
   }
 
-  /**
-   * The card's devices: the nodes the agent runs work on with what each runs, for a requester who may see them, else how
-   * many there are; and how many workers are free.
-   */
-  private async devices(candidate: Candidate): Promise<{ devices?: Record<string, unknown> | string }> {
-    if (!this.host.devices) return {};
-    const actor = candidate.thread.evaluating?.actor ?? candidate.triggers.at(-1)!.actor;
+  /** The host's directory snapshot, or why it could not be read; undefined on a host that gives none. */
+  private async directory(): Promise<Directory | { problem: string } | undefined> {
+    if (!this.host.directory) return undefined;
     try {
-      return { devices: devicesCard(await this.host.devices(), seesNodes(this.host.client.settings(), actor)) };
+      return await this.host.directory();
     } catch (error) {
-      // Routing goes on without them; the router says it cannot tell.
-      return { devices: `unknown now: ${String(error instanceof Error ? error.message : error).slice(0, 200)}` };
+      return { problem: String(error instanceof Error ? error.message : error).slice(0, 200) };
     }
+  }
+  /**
+   * The card's directory: every node with its free workers, what it lends, what this node may ask of it and why a
+   * harness does not run there, what is not ready, and the commands the router runs, for a requester who may see the
+   * nodes; counts for anyone else. Routing goes on without it, and the card says the router cannot tell.
+   */
+  private directoryCard(candidate: Candidate, directory: Directory | { problem: string } | undefined): { directory?: Record<string, unknown> | string } {
+    if (!directory) return {};
+    if ("problem" in directory) return { directory: `unknown now: ${directory.problem}` };
+    return { directory: routerCard(directory, seesNodes(this.host.client.settings(), this.actor(candidate))) };
+  }
+  private actor(candidate: Candidate) { return candidate.thread.evaluating?.actor ?? candidate.triggers.at(-1)!.actor; }
+  /** The node the request was filed to run on (Dispatch, `request --on`, a placement before routing), which the router leaves as it is. */
+  private filedOn(candidate: Candidate): NonNullable<Placement["on"]> | undefined {
+    return candidate.triggers.map((trigger) => this.host.client.store.get(KV.mesh.placement(trigger.id))?.on).find((on) => on !== undefined);
+  }
+
+  /**
+   * Where an accept's `on` puts its work, or why it cannot: only a requester who may see the nodes names one, and the
+   * directory must say that node can take the work now (it answers, takes work put on it, lets this node offer it work,
+   * and has what the work needs and the harness it runs on). Work that acts as its requester on GitHub runs only here,
+   * which keeps their token, so a paired node is refused for it rather than ignored by the placement later.
+   */
+  private placedOn(candidate: Candidate, on: string, { directory, read, live }: Nodes,
+    work: { needs: readonly string[]; harness?: string; capability?: Capability }): { node: NonNullable<Placement["on"]> } | { problem: string } {
+    if (!seesNodes(this.host.client.settings(), this.actor(candidate))) return { problem: "only maintainers and owners name the node work runs on" };
+    if (!directory) return { problem: "this host has no directory to check the node against" };
+    if ("problem" in directory) return { problem: `the directory could not be read: ${directory.problem}` };
+    if (sameName(on, "here") || sameName(on, directory.here.name)) {
+      const problem = placementProblem(directory, "here", { needs: work.needs, ...(work.harness ? { harness: work.harness } : {}) });
+      return problem ? { problem } : { node: "here" };
+    }
+    // A directory written a while before the router read it still shows a node that has gone offline since: work pinned
+    // to that node fails, where the placement would have chosen one that answers.
+    const nodes = directory.stale.find((item) => item.section === "nodes")?.why
+      ?? (read - Date.parse(directory.at) > PART_TTL_MS.mesh ? `the paired nodes were read over ${PART_TTL_MS.mesh / 1000} s before` : undefined);
+    if (nodes) return { problem: nodes };
+    const named = directory.peers.filter((peer) => peer.id === on || sameName(peer.name, on));
+    if (named.length > 1) return { problem: `${named.length} paired nodes are called ${on}` };
+    const problem = placementProblem(directory, named[0]?.id ?? on, { needs: work.needs, ...(work.harness ? { harness: work.harness } : {}) });
+    if (problem) return { problem };
+    const peer = named[0]!;
+    // The host's live view, read once the router answered, has the last word on whether the node answers. It names a node
+    // after its card, which shows a rename before the directory's record does, so a view entry with an id is matched by id.
+    const answers = (item: NodeAbilities & { id?: string }) => item.id ? item.id === peer.id : sameName(item.name, peer.name);
+    if (live && !live.peers.some(answers)) return { problem: `${peer.name} does not answer now` };
+    if (work.capability?.credential) return { problem: `work that acts as @${work.capability.credential.login} on GitHub runs only on this node, not on ${peer.name}` };
+    return { node: { id: peer.id, name: peer.name } };
   }
 
   /**
@@ -364,8 +424,14 @@ export class ModelAssessor {
    */
   private async route(candidate: Candidate): Promise<void> {
     const { client, complete } = this.host;
-    const harnesses = await this.harnesses(candidate);
-    const card = { ...await this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...await this.devices(candidate) };
+    // The directory is read for every request, whoever sent it: the card shows it, an accept's `on` is checked against it,
+    // and on a host that is no mesh node it says which harnesses run here.
+    const directory = await this.directory();
+    const read = this.now();
+    const harnesses = await this.harnesses(candidate, directory);
+    const filedOn = this.filedOn(candidate);
+    const card = { ...await this.card(candidate), harnesses: this.harnessCard(candidate, harnesses), ...this.directoryCard(candidate, directory),
+      ...(filedOn ? { filed_on: filedOn === "here" ? "here" : filedOn.name } : {}) };
     const triggerId = candidate.triggers.at(-1)!.id;
     // The platform word the prompt uses for where it answers: the request's own chat kind, Feishu's when it has none.
     const platform = client.sources.chatKind(candidate.triggers.at(-1)!.source)?.platform;
@@ -384,12 +450,20 @@ export class ModelAssessor {
       }
       const remembered = this.remembered(candidate, route);
       if (typeof remembered === "string") { last = remembered; continue; }
+      // What the host set aside from an answer it still carried out, such as a node it could not place the work on.
+      const dropped: string[] = [];
+      // A node the answer names is checked against the paired nodes as they answer now too, not only as the card showed
+      // them; a view that cannot be read leaves the directory's word.
+      const live = route.kind === "accept" && route.on && !filedOn ? await this.host.mesh?.().catch(() => undefined) : undefined;
+      const nodes: Nodes = { directory, read, ...(live ? { live } : {}) };
       const refused = routeProblem(route) ?? client.store.atomic(() => {
-        const outcome = this.carryOut(candidate, triggerId, route, harnesses);
+        const outcome = this.carryOut(candidate, triggerId, route, harnesses, nodes, dropped, filedOn);
         // What the message asked it to remember is kept with the route it took, so its reply can say so.
         if (!outcome) remembered?.();
-        // The Decision already stores what the router decided; the journal keeps the card and the reason with it.
-        client.journal?.outcome("route", `trigger:${triggerId}`, route.kind, { reason: route.reason ?? route.acknowledgement ?? route.note ?? "" });
+        // The Decision already stores what the router decided; the journal keeps the card and the reason with it, and
+        // what was dropped first, so the reason's limit never cuts it.
+        client.journal?.outcome("route", `trigger:${triggerId}`, route.kind,
+          { reason: [...dropped, route.reason ?? route.acknowledgement ?? route.note ?? ""].filter(Boolean).join("; ") });
         return outcome;
       });
       if (!refused) return;
@@ -419,8 +493,12 @@ export class ModelAssessor {
       { ...(meta.chatId !== undefined ? { chatId: meta.chatId } : {}), ...(meta.direct ? { direct: true } : {}), triggerId: primary.id, source: primary.source });
   }
 
-  /** Carries out a routing answer as its Engine command; returns why it cannot run or the Engine refused it, if it did. */
-  private carryOut(candidate: Candidate, triggerId: string, route: Route, harnesses: Harnesses): string | undefined {
+  /**
+   * Carries out a routing answer as its Engine command; returns why it cannot run or the Engine refused it, if it did.
+   * What it leaves out of an answer it still carries out goes into `dropped`, for the journal.
+   */
+  private carryOut(candidate: Candidate, triggerId: string, route: Route, harnesses: Harnesses, nodes: Nodes,
+    dropped: string[], filedOn?: NonNullable<Placement["on"]>): string | undefined {
     const { engine } = this.host.client;
     try {
       switch (route.kind) {
@@ -432,6 +510,15 @@ export class ModelAssessor {
           const checked = route.harness && !harnesses.filed ? checkedHarness(route.harness, harnesses, capability) : undefined;
           if (checked && "problem" in checked) return checked.problem;
           const harness = checked?.id;
+          // A node the router named that cannot take the work is dropped, never the accept: the placement then chooses.
+          // The work needs the harness it runs on there: the one chosen now, the one it was filed with, else the default.
+          const runsOn = harness ?? harnesses.filed ?? client.settings().executor.harness ?? undefined;
+          // A request filed to run on a node keeps it: the router's on would override it on the ticket.
+          if (route.on && filedOn) dropped.push(`on ${route.on} dropped: the request was filed to run on ${filedOn === "here" ? "this node" : filedOn.name}`);
+          const placed = route.on && !filedOn ? this.placedOn(candidate, route.on, nodes,
+            { needs: route.needs ?? [], ...(capability ? { capability } : {}), ...(runsOn ? { harness: runsOn } : {}) }) : undefined;
+          if (placed && "problem" in placed) dropped.push(`on ${route.on} dropped: ${placed.problem}`);
+          const on = placed && "node" in placed ? placed.node : undefined;
           // An explicit request from a person whose work stays local learns what would let it act on GitHub, naming the ticket
           // it will be: the same id the accept stamps. Bots and inferred work have no person to tell, and their local is honest.
           // The way out is worded for where the person wrote: a chat, this terminal, or elsewhere (a GitHub comment thread),
@@ -459,7 +546,9 @@ export class ModelAssessor {
               ...(repository ? { repository } : {}), evalId: candidate.evalId
             });
             // Recorded with the ticket, before its worker launches, so a mesh node places the worker where the work can run.
-            if (decided.ticketId && route.needs?.length) updatePlacement(client, decided.ticketId, { needs: [...new Set(route.needs)] });
+            if (decided.ticketId && (route.needs?.length || on)) {
+              updatePlacement(client, decided.ticketId, { ...(route.needs?.length ? { needs: [...new Set(route.needs)] } : {}), ...(on ? { on } : {}) });
+            }
             if (harness && !decided.ticketId) client.store.delete(KV.harness.chosen(triggerId));
             return decided;
           });

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SuperagentClient } from "./client.js";
-import { HARNESS_KINDS, HarnessProfileSchema, HarnessSetupError, harnessAbilities, harnessIds, harnessProfiles, harnessStatus, harnessUsageRows, readOnlyProblem, resolveHarness, runTurn,
+import { HARNESS_KINDS, HarnessProfileSchema, HarnessSetupError, harnessAbilities, harnessChecks, harnessIds, harnessProfiles, harnessStatus, harnessUsageRows, readOnlyProblem, resolveHarness, runTurn,
   type TurnEvents, type TurnRequest } from "./harness.js";
 import { SettingsSchema, settingsPath, writeSettings } from "./settings.js";
 import { writeFakeHarnesses } from "./testing/fake-harness.js";
@@ -430,6 +430,13 @@ test("a node lists as abilities the harnesses it can run: installed, signed in, 
     assert.deepEqual(await harnessAbilities(signedOut, "settings.json", { PATH: bin, HOME: bin, DEEPSEEK_API_KEY: "test" }),
       ["harness:claude", "harness:codex", "harness:kimi", "harness:claude-deepseek"], "opencode is signed out and claude-glm has no ZHIPU_API_KEY");
     assert.deepEqual(await harnessAbilities({}, "settings.json", { PATH: "/nowhere" }), []);
+    // The checks keep why each other profile cannot run, for the node's card; a key's value never appears in them.
+    const checks = await harnessChecks(signedOut, "settings.json", { PATH: bin, HOME: bin, DEEPSEEK_API_KEY: "sk-test-value" });
+    assert.deepEqual(checks.abilities, ["harness:claude", "harness:codex", "harness:kimi", "harness:claude-deepseek"]);
+    assert.deepEqual(Object.keys(checks.problems).sort(), ["claude-glm", "opencode"]);
+    assert.match(checks.problems.opencode!, /not signed in/);
+    assert.match(checks.problems["claude-glm"]!, /ZHIPU_API_KEY/);
+    assert.ok(!JSON.stringify(checks.problems).includes("sk-test-value"));
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }

@@ -22,9 +22,9 @@ export class CapabilityPlane {
   readonly plugins: PluginProvider;
   readonly commands: CustomCommandProvider;
 
-  constructor(readonly settings: SwarmSettings, readonly workspace: string) {
+  constructor(readonly settings: SwarmSettings, readonly workspace: string, options: { borrowMesh?: boolean } = {}) {
     this.skills = new SkillProvider({ settings, workspace });
-    this.mcp = new McpClientProvider({ settings, workspace });
+    this.mcp = new McpClientProvider({ settings, workspace, borrowMesh: options.borrowMesh });
     this.lsp = new LspCapabilityProvider({ workspace });
     this.plugins = new PluginProvider({ settings, workspace });
     this.commands = new CustomCommandProvider({ settings, workspace });
@@ -80,6 +80,15 @@ export class CapabilityPlane {
 
   listMcpServers(): McpServerRecord[] {
     return this.mcp.listServers();
+  }
+
+  /**
+   * Loads again the MCP servers paired mesh devices lend, and only those (`McpClientProvider.refreshBorrowed`). The cache is
+   * listed again rather than dropped: a dropped one would make the next turn refresh, and so reconnect, every server.
+   */
+  async refreshBorrowedMcp(): Promise<void> {
+    await this.mcp.refreshBorrowed();
+    await this.registry.relist("mcp");
   }
 
   async refreshMcpServer(serverId: string): Promise<McpServerRecord> {
@@ -206,6 +215,8 @@ function matchesCapabilityFilter(capability: CapabilityDescriptor, filter: Capab
 export function createCapabilityPlane(input: {
   settings: SwarmSettings;
   workspace: string;
+  /** False loads none of the MCP servers paired mesh devices lend (`McpClientProvider.borrowsMesh`). */
+  borrowMesh?: boolean;
 }): CapabilityPlane {
-  return new CapabilityPlane(input.settings, input.workspace);
+  return new CapabilityPlane(input.settings, input.workspace, { borrowMesh: input.borrowMesh });
 }

@@ -7,10 +7,12 @@ import { liveTicket, type Trigger } from "./core/index.js";
 import { ModelAssessor, routeProblem, type AgentCommands, type Complete } from "./assessor.js";
 import { SuperagentClient } from "./client.js";
 import { localOperator } from "./sources/local.js";
-import { devicesOf } from "./devices.js";
+import { buildDirectory } from "../directory/build.js";
+import type { Directory } from "../directory/types.js";
+import type { NodeCard } from "../mesh/card.js";
 import { KV } from "./kv.js";
 import { Journal, journaled } from "./journal.js";
-import { placementOf, workNeeds, type MeshView } from "./placement.js";
+import { placementOf, updatePlacement, workNeeds, type MeshView } from "./placement.js";
 import { routerPrompt } from "./prompts.js";
 import { settingsPath, writeSettings } from "./settings.js";
 import { commentTrigger } from "./sources/github-trigger.js";
@@ -23,8 +25,10 @@ let calls: { purpose: string; system: string; user: string }[];
 let assessor: ModelAssessor;
 /** This node and its paired nodes as a mesh node shows them to the router; none on a host that is not a mesh node. */
 let view: MeshView | undefined;
-/** Why reading what the host runs work on fails, when it does. */
-let devicesFail: string | undefined;
+/** The host's directory when a test sets one; else the one a host with `view` writes (`directoryOf`). */
+let directory: Directory | undefined;
+/** Why reading the host's directory fails, when it does. */
+let directoryFail: string | undefined;
 let opened = false;
 /** What the assessor noted through its host's log, such as a model answer it could not use. */
 let logs: string[];
@@ -40,7 +44,8 @@ beforeEach(() => {
   calls = [];
   logs = [];
   view = undefined;
-  devicesFail = undefined;
+  directory = undefined;
+  directoryFail = undefined;
 });
 afterEach(() => {
   if (opened) client.close();
@@ -54,10 +59,28 @@ function start(settings: unknown = {}, commands?: AgentCommands, withJournal = f
   if (withJournal) client.journal = new Journal(client.store);
   assessor = new ModelAssessor({ client, complete: withJournal ? journaled(client.journal, complete) : complete, configured: () => false, mesh: async () => view, ...(commands ? { commands } : {}),
     log: (message) => { logs.push(message); },
-    devices: async () => {
-      if (devicesFail) throw new Error(devicesFail);
-      return devicesOf({ settings: client.settings(), store: client.store, ...(view ? { view } : {}), running: 1 });
+    directory: async () => {
+      if (directoryFail) throw new Error(directoryFail);
+      return directory ?? directoryOf(view ?? { here: { name: "here", abilities: [] }, peers: [] });
     } });
+}
+/**
+ * The directory a host with `view` writes: each paired node that answered gives this node an operator grant, takes work
+ * and has two free workers unless `cards` says otherwise; offline ones answered nothing; this node has 2 of 3 workers free.
+ */
+function directoryOf(view: MeshView, cards: Record<string, Partial<NodeCard>> = {}, extra: { health?: Directory["sources"] } = {}): Directory {
+  const at = new Date().toISOString();
+  const split = (abilities: readonly string[]) => ({ machine: abilities.filter((item) => !item.startsWith("harness:")),
+    harnesses: abilities.filter((item) => item.startsWith("harness:")).map((item) => item.slice("harness:".length)) });
+  const card = (name: string, abilities: readonly string[]): NodeCard => ({ id: `${name}-id`, name, addresses: [], relayName: name, protocol: 2, version: "0.1.0",
+    os: "linux", arch: "x64", abilities: [...abilities], yourGrant: "operator", load: { slots: 2, running: 0, queued: 0 }, at, ...cards[name] });
+  return buildDirectory({ at, own: { protocol: 2, version: "0.1.0" },
+    here: { id: "here-id", name: view.here.name, host: "running", ...split(view.here.abilities), workers: { slots: 3, running: 1, queued: 0, free: 2 }, takesWork: true },
+    mesh: { at, given: {}, peers: [
+      ...view.peers.map((peer) => ({ peer: { id: `${peer.name}-id`, name: peer.name, addresses: [] }, reachable: true, card: card(peer.name, peer.abilities) })),
+      ...(view.offline ?? []).map((name) => ({ peer: { id: `${name}-id`, name, addresses: [] }, reachable: false, error: "no answer within 3000 ms" }))] },
+    harnesses: { at, signIn: true, default: null, profiles: [] },
+    health: { at, entries: Object.fromEntries((extra.health ?? []).map((item) => [item.name, { state: item.state, detail: item.detail }])) } });
 }
 /** Runs the Eval the Trigger is in, as the host's assessment effect does. */
 async function judge(triggerId: string) {
@@ -751,7 +774,7 @@ test("lets only maintainers and owners choose a harness, and runs work that acts
   assert.equal(ticket.execution?.harness, "claude");
 });
 
-test("keeps the harness a request was filed with, and counts every profile as this node's on a host that is no mesh node", async () => {
+test("keeps the harness a request was filed with, and on a host that is no mesh node counts only the profiles its own checks found ready", async () => {
   start();
   const filed = client.request("fix the typo in README", undefined, { harness: "codex" });
   answers.push(accept({ harness: "claude" }));
@@ -759,41 +782,283 @@ test("keeps the harness a request was filed with, and counts every profile as th
   assert.deepEqual(JSON.parse(calls[0]!.user).candidate.harnesses, { default: "swarm (Swarm's own coding loop)", filed_with: "codex" });
   assert.equal(ticketOf(filed.triggerId).execution?.harness, "codex");
 
+  // The host's own checks found opencode ready here and claude signed out, so its directory lists opencode alone.
+  directory = directoryOf({ here: { name: "here", abilities: ["harness:opencode"] }, peers: [] });
   const named = client.request("run this on opencode: fix the CHANGELOG");
   answers.push(accept({ harness: "opencode", title: "Fix the CHANGELOG", worktree_name: "fix-changelog" }));
   await judge(named.triggerId);
-  assert.equal(JSON.parse(calls[1]!.user).candidate.harnesses.choices.opencode, "this node");
+  const { choices } = JSON.parse(calls[1]!.user).candidate.harnesses;
+  assert.equal(choices.opencode, "this node");
+  assert.equal(choices.claude, "no node: none has it installed and signed in");
   assert.equal(ticketOf(named.triggerId).execution?.harness, "opencode");
+  // A signed-out harness is refused, whether a person named it or the router chose it.
+  const signedOut = client.request("run this on claude: fix the LICENSE");
+  answers.push(accept({ harness: "claude", title: "Fix the LICENSE", worktree_name: "fix-license" }), JSON.stringify({ kind: "ignore", reason: "No node can run Claude Code now." }));
+  await judge(signedOut.triggerId);
+  assert.match(JSON.parse(calls[3]!.user).problem, /No node can run claude now: answer with chat/);
+  assert.equal(client.store.get(KV.harness.chosen(signedOut.triggerId)), undefined);
+
+  // With neither a mesh view nor a directory to read, every profile still counts as this node's.
+  directoryFail = "the store is locked";
+  const blind = client.request("run this on claude: fix the NOTICE");
+  answers.push(accept({ harness: "claude", title: "Fix the NOTICE", worktree_name: "fix-notice" }));
+  await judge(blind.triggerId);
+  assert.equal(JSON.parse(calls[4]!.user).candidate.harnesses.choices.claude, "this node");
+  assert.equal(ticketOf(blind.triggerId).execution?.harness, "claude");
 });
 
-test("tells the router what it runs work on, naming the nodes to maintainers and owners and giving everyone else counts", async () => {
+test("tells the router who can do what from the host's directory: every node to maintainers and owners, counts to everyone else", async () => {
   start({ ...ACCESS, policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }], roles: { ou_bob: "everyone" } } } } });
   view = { ...MESH, offline: ["pc"] };
+  directory = directoryOf(view, { mac: { lend: { shell: { roots: ["/srv/work"] } }, harnessProblems: { kimi: "Kimi Code is not installed: no `kimi` on PATH." },
+    load: { slots: 2, running: 1, queued: 3 } } }, { health: [{ name: "feishu", state: "error", detail: "lark-cli is signed out" }] });
   const chat = (reply: string) => JSON.stringify({ kind: "chat", reply });
   const alice = await fromAlice("你现在能调用哪些设备？", "om_1");
   answers.push(chat("我在 bot-vm 上跑，mac 在线、有 codex 和 claude，pc 离线。"));
   await judge(alice.id);
-  assert.match(calls[0]!.system, /## Devices\n\nThe card's devices says what you run work on now/);
-  assert.deepEqual(JSON.parse(calls[0]!.user).candidate.devices, {
-    this_node: { name: "bot-vm", machine: ["linux"], harnesses: [] },
-    paired_nodes: [{ name: "mac", online: true, machine: ["macos"], harnesses: ["codex", "claude"] }, { name: "pc", online: false }],
-    ticket_workers: { runs_as: "processes on this node", total: 3, busy: 1, free: 2 }
-  });
+  assert.match(calls[0]!.system, /## Directory\n\nThe card's directory says what you run work on now/);
+  assert.doesNotMatch(calls[0]!.system, /## Devices/);
+  const seen = JSON.parse(calls[0]!.user).candidate.directory;
+  assert.deepEqual(seen.this_node, { name: "bot-vm", online: true, machine: ["linux"], harnesses: [], workers: { slots: 3, running: 1, queued: 0, free: 2 }, takes_work: true });
+  assert.deepEqual(seen.paired_nodes, [
+    { name: "mac", online: true, machine: ["macos"], harnesses: ["claude", "codex"], workers: { slots: 2, running: 1, queued: 3, free: 1 }, takes_work: true,
+      lends: ["mcp__mac__shell"], may_there: ["tickets.submit", "work.offer", "lend.shell", "lend.files.read", "lend.files.write", "commands.read"],
+      harness_problems: { kimi: "Kimi Code is not installed: no `kimi` on PATH." } },
+    { name: "pc", online: false }]);
+  assert.deepEqual(seen.not_ready, ["feishu: error, lark-cli is signed out"]);
+  assert.equal(seen.commands.devices, "the list of what the agent runs work on now, for someone who asks for that list");
+  assert.equal(seen.commands.status, "whether the agent's host runs, what is not healthy, and how many tickets wait where");
   assert.equal(client.store.tickets.list().length, 0);
 
   const bob = await fromFeishu("ou_bob", "你现在能调用哪些设备？", "om_2");
   answers.push(chat("现在配了 2 个节点，1 个在线，还有 2 个空闲的 worker。"));
   await judge(bob.id);
-  const counts = JSON.parse(calls[1]!.user).candidate.devices;
+  const counts = JSON.parse(calls[1]!.user).candidate.directory;
   assert.deepEqual(counts.paired_nodes, { total: 2, online: 1 });
+  assert.deepEqual(counts.ticket_workers, { slots: 3, running: 1, queued: 0, free: 2 });
   assert.match(counts.node_names, /only maintainers and owners see which nodes these are/);
-  // The devices the card shows name no node; what the agent said in this chat before, which Bob read there, may.
-  assert.doesNotMatch(JSON.stringify(counts), /bot-vm|"mac"|"pc"/);
+  assert.equal(counts.commands.devices, seen.commands.devices);
+  // The card names no node, lends nothing and says nothing of what is not ready.
+  assert.doesNotMatch(JSON.stringify(counts), /bot-vm|"mac"|"pc"|mcp__|lark-cli/);
 
   // Routing goes on when the host cannot tell, and the card says so.
-  devicesFail = "the mesh state could not be read";
+  directoryFail = "the mesh state could not be read";
   const again = await fromAlice("还有哪些机器在线？", "om_3");
   answers.push(chat("现在查不到设备情况。"));
   await judge(again.id);
-  assert.equal(JSON.parse(calls[2]!.user).candidate.devices, "unknown now: the mesh state could not be read");
+  assert.equal(JSON.parse(calls[2]!.user).candidate.directory, "unknown now: the mesh state could not be read");
+});
+
+test("reads the directory for every request, also one filed with a harness, and says when the paired nodes could not be read", async () => {
+  start();
+  view = MESH;
+  const filed = client.request("fix the typo in README", undefined, { harness: "codex" });
+  answers.push(accept());
+  await judge(filed.triggerId);
+  const card = JSON.parse(calls[0]!.user).candidate;
+  assert.deepEqual(card.harnesses, { default: "swarm (Swarm's own coding loop)", filed_with: "codex" });
+  assert.equal(card.directory.this_node.name, "bot-vm");
+  assert.deepEqual(card.directory.paired_nodes.map((node: { name: string }) => node.name), ["mac"]);
+
+  const blind = directoryOf(MESH);
+  directory = { ...blind, peers: [], stale: [{ section: "nodes", why: "the paired nodes could not be read: relay unreachable" }] };
+  const named = client.request("fix the CHANGELOG");
+  answers.push(accept({ title: "Fix the CHANGELOG", worktree_name: "fix-changelog" }));
+  await judge(named.triggerId);
+  assert.equal(JSON.parse(calls[1]!.user).candidate.directory.nodes_unknown, "the paired nodes could not be read: relay unreachable");
+});
+
+/** A bot VM paired with a GPU box, a Mac with Codex, a VM that takes no work, a node that grants this one member, and an offline PC. */
+const NODES: MeshView = { here: { name: "bot-vm", abilities: ["linux"] }, offline: ["pc"], peers: [
+  { name: "gpu", abilities: ["linux", "gpu"] }, { name: "mac", abilities: ["macos", "harness:codex"] },
+  { name: "vms", abilities: ["linux"] }, { name: "shared", abilities: ["linux", "gpu"] }] };
+const NODE_CARDS: Record<string, Partial<NodeCard>> = { vms: { takesWork: false }, shared: { yourGrant: "member" } };
+/** The placement the router's accept of `triggerId` left on its ticket, and the reason its route was journaled with. */
+const placed = (triggerId: string) => ({
+  on: client.store.get(KV.mesh.placement(ticketOf(triggerId).id))?.on,
+  reason: client.journal!.byKey(`trigger:${triggerId}`).find((run) => run.outcome === "accept")?.reason ?? ""
+});
+
+test("runs accepted work on the node the router names, once the directory says that node can take it", async () => {
+  start(ACCESS, undefined, true);
+  view = NODES;
+  directory = directoryOf(NODES, NODE_CARDS);
+  const train = await fromAlice("train the classifier on the GPU box", "om_1");
+  answers.push(accept({ title: "Train the classifier", worktree_name: "train-classifier", on: "GPU", needs: ["gpu"] }));
+  await judge(train.id);
+  assert.match(calls[0]!.system, /"on": "accept: optional name of the node the work runs on/);
+  assert.match(calls[0]!.system, /Set on in an accept to run the work on one node/);
+  assert.deepEqual(placed(train.id).on, { id: "gpu-id", name: "gpu" });
+  assert.deepEqual(client.store.get(KV.mesh.placement(ticketOf(train.id).id))?.needs, ["gpu"]);
+  assert.doesNotMatch(placed(train.id).reason, /dropped/);
+  // A harness chosen for the work goes with it to the node that runs it.
+  const codex = await fromAlice("用 codex 在 mac 上修 README", "om_2");
+  answers.push(accept({ title: "Fix the README", worktree_name: "fix-readme", on: "mac", harness: "codex" }));
+  await judge(codex.id);
+  assert.deepEqual(placed(codex.id).on, { id: "mac-id", name: "mac" });
+  assert.equal(ticketOf(codex.id).execution?.harness, "codex");
+  // here, or this node's own name, keeps the work on this node.
+  const local = await fromAlice("就在这台机器上跑", "om_3");
+  answers.push(accept({ title: "Run here", worktree_name: "run-here", on: "bot-vm" }));
+  await judge(local.id);
+  assert.equal(placed(local.id).on, "here");
+});
+
+test("drops a node the directory says cannot take the work, with why in the journal, and still accepts the work", async () => {
+  // Every case leaves a ticket open, more than a maintainer's default limit.
+  start({ ...ACCESS, access: { limits: { maintainer: { openTickets: 20 } } },
+    policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }], roles: { ou_bob: "everyone" } } } } }, undefined, true);
+  view = NODES;
+  directory = directoryOf(NODES, NODE_CARDS);
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ["pc", {}, /^on pc dropped: pc is offline; /],
+    ["vms", {}, /^on vms dropped: vms takes no work put on it; /],
+    ["shared", {}, /^on shared dropped: shared's grant to this node \(member\) does not allow work\.offer; /],
+    ["mac", { needs: ["gpu"] }, /^on mac dropped: mac lacks gpu; /],
+    ["gpu", { harness: "codex" }, /^on gpu dropped: gpu does not run codex; /],
+    ["nowhere", {}, /^on nowhere dropped: No paired node is called nowhere: the paired nodes are gpu, mac, pc, shared, vms; /]
+  ];
+  for (const [index, [on, extra, why]] of cases.entries()) {
+    const asked = await fromAlice(`run job ${index} on ${on}`, `om_${index}`);
+    answers.push(accept({ title: `Job ${index}`, worktree_name: `job-${index}`, on, ...extra }));
+    await judge(asked.id);
+    assert.equal(placed(asked.id).on, undefined, on);
+    assert.match(placed(asked.id).reason, why);
+  }
+  assert.equal(client.store.tickets.list().length, cases.length);
+  assert.equal(calls.length, cases.length, "a dropped node never asks the router again");
+
+  // Only a requester the directory names nodes to may name one.
+  const bob = await fromFeishu("ou_bob", "train it on gpu", "om_bob");
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "gpu" }));
+  await judge(bob.id);
+  assert.equal(placed(bob.id).on, undefined);
+  assert.match(placed(bob.id).reason, /^on gpu dropped: only maintainers and owners name the node work runs on; /);
+
+  // Work that acts as its requester on GitHub runs only here, which keeps their token.
+  client.store.set(KV.links.github("feishu", "ou_alice"), { login: "alice-gh", id: 7, repos: ["owner/watched"], reposAt: "", linkedAt: "",
+    access: { iv: "", data: "", tag: "" } });
+  const pr = await fromAlice("在 gpu 上修 README 然后开个 PR", "om_pr");
+  answers.push(accept({ title: "Fix the README", worktree_name: "fix-readme", on: "gpu" }));
+  await judge(pr.id);
+  assert.equal(ticketOf(pr.id).mandate.capability?.credential?.login, "alice-gh");
+  assert.equal(placed(pr.id).on, undefined);
+  assert.match(placed(pr.id).reason, /^on gpu dropped: work that acts as @alice-gh on GitHub runs only on this node, not on gpu; /);
+
+  // Without a directory the host cannot check a node, so it places the work itself.
+  directoryFail = "the store is locked";
+  const blind = await fromAlice("run it on gpu", "om_blind");
+  answers.push(accept({ title: "Blind", worktree_name: "blind", on: "gpu" }));
+  await judge(blind.id);
+  assert.equal(placed(blind.id).on, undefined);
+  assert.match(placed(blind.id).reason, /^on gpu dropped: the directory could not be read: the store is locked; /);
+});
+
+test("drops a paired node named from a directory older than the nodes' time limit, or one that does not answer now", async () => {
+  start(ACCESS, undefined, true);
+  view = NODES;
+  // The host wrote this directory 50 s before, when gpu answered; its stale list says nothing of the nodes.
+  directory = { ...directoryOf(NODES, NODE_CARDS), at: new Date(Date.now() - 50_000).toISOString() };
+  const old = await fromAlice("train it on gpu", "om_old");
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "gpu", needs: ["gpu"] }));
+  await judge(old.id);
+  assert.equal(placed(old.id).on, undefined);
+  assert.match(placed(old.id).reason, /^on gpu dropped: the paired nodes were read over 30 s before; /);
+
+  // A fresh directory still lists gpu, but the host's live view, read once the router answered, has it offline.
+  directory = directoryOf(NODES, NODE_CARDS);
+  view = { ...NODES, offline: ["pc", "gpu"], peers: NODES.peers.filter((peer) => peer.name !== "gpu") };
+  const gone = await fromAlice("train it on gpu again", "om_gone");
+  answers.push(accept({ title: "Train again", worktree_name: "train-again", on: "gpu", needs: ["gpu"] }));
+  await judge(gone.id);
+  assert.equal(placed(gone.id).on, undefined);
+  assert.match(placed(gone.id).reason, /^on gpu dropped: gpu does not answer now; /);
+
+  // A node that answers in both is placed.
+  const mac = await fromAlice("用 codex 在 mac 上修 README", "om_mac");
+  answers.push(accept({ title: "Fix the README", worktree_name: "fix-readme", on: "mac" }));
+  await judge(mac.id);
+  assert.deepEqual(placed(mac.id).on, { id: "mac-id", name: "mac" });
+});
+
+test("matches the node the router names against the live view by id, so a node renamed since its record was written is kept", async () => {
+  start(ACCESS, undefined, true);
+  directory = directoryOf(NODES, NODE_CARDS);
+  // gpu's owner ran `swarm mesh name gpu2`: the directory still names it after its record, the live view after its card.
+  const renamed = { id: "gpu-id", name: "gpu2", abilities: ["linux", "gpu"] };
+  view = { ...NODES, peers: [renamed, ...NODES.peers.filter((peer) => peer.name !== "gpu")] };
+  const train = await fromAlice("train it on gpu", "om_renamed");
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "gpu", needs: ["gpu"] }));
+  await judge(train.id);
+  assert.deepEqual(placed(train.id).on, { id: "gpu-id", name: "gpu" });
+  assert.doesNotMatch(placed(train.id).reason, /dropped/);
+
+  // Another node that took gpu's old name while gpu does not answer is not gpu.
+  const impostor = { id: "other-id", name: "gpu", abilities: ["linux", "gpu"] };
+  view = { ...NODES, peers: [impostor, ...NODES.peers.filter((peer) => peer.name !== "gpu")] };
+  const again = await fromAlice("train it on gpu again", "om_impostor");
+  answers.push(accept({ title: "Train again", worktree_name: "train-again", on: "gpu", needs: ["gpu"] }));
+  await judge(again.id);
+  assert.equal(placed(again.id).on, undefined);
+  assert.match(placed(again.id).reason, /^on gpu dropped: gpu does not answer now; /);
+});
+
+test("keeps the node a request was filed to run on, whatever node the router names, and shows it on the card", async () => {
+  start(ACCESS, undefined, true);
+  view = NODES;
+  directory = directoryOf(NODES, NODE_CARDS);
+  const filed = await fromAlice("train the model", "om_filed");
+  updatePlacement(client, filed.id, { on: { id: "mac-id", name: "mac" } });
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "gpu", needs: ["gpu"] }));
+  await judge(filed.id);
+  assert.equal(JSON.parse(calls[0]!.user).candidate.filed_on, "mac");
+  assert.match(calls[0]!.system, /When the card has filed_on, the request already runs on that node: set none/);
+  const ticket = ticketOf(filed.id);
+  assert.deepEqual(placementOf(client, ticket)?.on, { id: "mac-id", name: "mac" });
+  assert.match(placed(filed.id).reason, /^on gpu dropped: the request was filed to run on mac; /);
+  // A request pinned here stays here too.
+  const pinned = await fromAlice("check the build", "om_pinned");
+  updatePlacement(client, pinned.id, { on: "here" });
+  answers.push(accept({ title: "Check", worktree_name: "check", on: "gpu" }));
+  await judge(pinned.id);
+  assert.equal(JSON.parse(calls[1]!.user).candidate.filed_on, "here");
+  assert.equal(placementOf(client, ticketOf(pinned.id))?.on, "here");
+});
+
+test("drops here when this node lacks what the work needs or the harness it runs on, so the host places it where they are", async () => {
+  start(ACCESS, undefined, true);
+  view = NODES;
+  directory = directoryOf(NODES, NODE_CARDS);
+  const gpu = await fromAlice("train it here", "om_here_gpu");
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "here", needs: ["gpu"] }));
+  await judge(gpu.id);
+  assert.equal(placed(gpu.id).on, undefined);
+  assert.match(placed(gpu.id).reason, /^on here dropped: this node lacks gpu; /);
+  const codex = await fromAlice("用 codex 在这台机器上修", "om_here_codex");
+  answers.push(accept({ title: "Fix", worktree_name: "fix", on: "bot-vm", harness: "codex" }));
+  await judge(codex.id);
+  assert.equal(placed(codex.id).on, undefined);
+  assert.match(placed(codex.id).reason, /^on bot-vm dropped: this node does not run codex; /);
+  assert.equal(ticketOf(codex.id).execution?.harness, "codex");
+});
+
+test("chooses a harness for the work when nobody names one, and still only for maintainers and owners", async () => {
+  start({ ...ACCESS, policy: { sources: { feishu: { allowed: [{ id: "ou_alice" }], roles: { ou_bob: "everyone" } } } } });
+  view = MESH;
+  const alice = await fromAlice("把这个 iOS 工程的崩溃修一下", "om_1");
+  answers.push(accept({ title: "Fix the iOS crash", worktree_name: "fix-ios-crash", harness: "codex", acknowledgement: "好的，用 Codex 在 mac 上修这个崩溃。" }));
+  await judge(alice.id);
+  assert.match(calls[0]!.system, /You may also choose one yourself, without being asked, when a choice that runs on a node fits the work clearly better than the default/);
+  assert.match(calls[0]!.system, /it spends that harness account's budget/);
+  assert.match(calls[0]!.system, /"harness": "accept: optional id from the card's harnesses choices, when the person asks for the work to run on that agent harness or one fits the work better than the default/);
+  const ticket = ticketOf(alice.id);
+  assert.equal(ticket.execution?.harness, "codex");
+  assert.deepEqual(workNeeds(ticket, placementOf(client, ticket)), ["harness:codex"]);
+
+  // The router's own choice is checked as a person's would be: a requester below maintainer runs on the default.
+  const bob = await fromFeishu("ou_bob", "fix the iOS crash", "om_2");
+  answers.push(accept({ harness: "codex" }), accept());
+  await judge(bob.id);
+  assert.match(JSON.parse(calls[2]!.user).problem, /Only maintainers and owners choose a harness/);
+  assert.equal(ticketOf(bob.id).execution?.harness, undefined);
 });

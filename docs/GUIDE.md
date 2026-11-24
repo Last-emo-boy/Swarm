@@ -17,7 +17,7 @@ Everything Swarm does, command by command. For what Swarm is and a first session
 - [Local Gateway](#local-gateway)
 - [Symphony](#symphony)
 - [Tickets](#tickets): [roles and bot commands](#roles-and-bot-commands), [harness workers](#harness-workers), [harness subagents](#harness-subagents)
-- [Mesh](#mesh): [keeping nodes up and current](#keeping-nodes-up-and-current)
+- [Mesh](#mesh): [who can do what: the directory](#who-can-do-what-the-directory), [keeping nodes up and current](#keeping-nodes-up-and-current)
 - [Usage, prices and budgets](#usage-prices-and-budgets)
 - [Architecture](#architecture)
 - [Memory and recovery](#memory-and-recovery)
@@ -161,6 +161,7 @@ Commands:
   harness    List the agent harness profiles here: installed, signed in, keys set
   mesh       Pair this device with other Swarm devices and see them
   node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
+  directory  Who can do what now: nodes, harnesses, tool servers, Sources and commands, with who may run each
   config     Print config paths
   auth       Manage plaintext API keys in ~/.swarm/config.json
   providers  List or add model providers
@@ -873,7 +874,10 @@ may do and how much they may ask for. Without the block, everyone on a Source's 
 - **Limits.** A message beyond its sender's limits is held back with one answer that says so. `access.limits` changes
   the numbers.
 - **Choosing a harness.** Owners and maintainers may ask for the agent harness their work runs on ([harness
-  workers](#harness-workers)); its turns use the owner's harness accounts. `everyone`'s work runs on the default.
+  workers](#harness-workers)), and the agent may choose one for their work itself; its turns use the owner's harness
+  accounts. `everyone`'s work runs on the default.
+- **Choosing a node.** For owners and maintainers the agent may also name the paired node their work runs on, once the
+  [directory](#who-can-do-what-the-directory) says that node can take it.
 
 People send these commands to the Feishu bot, after mentioning it or in a direct message:
 
@@ -924,6 +928,14 @@ has it, or no profile here is called that, the bot says so and starts no ticket.
 Work that writes to GitHub as the person who asked runs only on the node that
 accepted it, which keeps their token, so it can use only a harness signed in
 there.
+
+The bot may also choose a harness itself, without anyone naming one, for the
+same people: when a harness signed in on some node fits the work clearly better
+than the default, such as the only one on the node that has what the work
+needs. Its choice is checked as a person's would be, and its turns spend that
+harness account's budget, which `usage.budgets.harnesses` caps
+([budgets](#usage-prices-and-budgets)). The main session may do the same for
+its own subagents and the work it files ([directory](#who-can-do-what-the-directory)).
 
 Each turn is one headless run in the ticket's directory, with Swarm's ticket
 tools (`swarm superagent mcp`, plus `--remote` for a worker placed on a paired
@@ -1200,9 +1212,12 @@ you name folders: `swarm mesh lend shell ~/src/app` lends running commands that 
 still reach anything this user can), and `swarm mesh lend files ~/data` lends listing, reading and writing files
 inside it, refusing paths that lead out, symlinks included. `swarm mesh lend` shows what is lent and
 `swarm mesh lend --stop shell` takes it back. On the other devices `swarm mesh tools` lists what each peer lends, and
-every Swarm session there sees it as `mcp__<peer>__shell`, `mcp__<peer>__read_file` and so on, served by the peer's
-`swarm node run` over Streamable HTTP on the link to that peer. Borrowed tools count as remote, so in `ask` mode each
-call waits for approval; a peer that does not answer is skipped. The lending node keeps every lent call in
+every Swarm session there but a ticket's worker (see the directory below) sees it as `mcp__<peer>__shell`,
+`mcp__<peer>__read_file` and so on, served by the peer's `swarm node run` over Streamable HTTP on the link to that
+peer. A session loads these borrowed servers again once a change in what the peers lend shows in two snapshots of the
+directory written at different times, so a peer that flaps loads nothing. Only the borrowed servers reconnect then;
+the session's other MCP servers keep their connections on the next turn. Borrowed tools count as remote, so in `ask`
+mode each call waits for approval; a peer that does not answer is skipped. The lending node keeps every lent call in
 `~/.swarm/mesh/lend-audit.jsonl`: which peer, under which lease and for which ticket, the command or path, how long it
 took and how it ended.
 
@@ -1230,6 +1245,89 @@ waiting work to paired nodes that pull by default, because a puller only takes w
 asks for it itself; `swarm mesh offer off` keeps it.
 `swarm mesh status` shows whether each node pulls and the work pulled either way, and ticket rows say
 "pulled by <node>".
+
+### Who can do what: the directory
+
+`swarm directory` prints one snapshot of who can do what right now: this node and its paired nodes (online or not,
+free and queued workers, whether each takes work put on it, what each lends by its exact tool names, the grant each
+gives this node and what that lets this node ask there), the agent harnesses and where each runs or why not, tool
+servers, Sources and model providers that are not ready, and every command with who may run it. `--json` prints the
+data, `--refresh` builds it here instead of reading the host's, and `--check` also runs the harnesses' sign-in
+checks. A running ticket host writes it every minute, so the agents read it without asking each peer again; a
+process that finds none written in the last two minutes builds its own. A main session that builds its own reuses the
+host's last sign-in checks while they hold, counting their age from when they ran (`signInsAt` in the written
+directory), not from when the directory was written; a directory without `signInsAt` lends no checks. In the data,
+`here.unchecked` lists the harnesses installed here whose sign-in was never checked, as when no host checked in the
+last 20 minutes: they are not ready, so their `runsOn` leaves out `here`, and their problem reads "installed, but its
+sign-in was not checked". `Dispatch` and the router's `on` still accept them (below). `here.offersWork: false`
+appears when this node keeps its own waiting work from nodes that pull (`swarm mesh offer off`).
+
+Three agents read it, each through a view of its own. Every action still goes through the grants, leases, approvals
+and ticket mandates above: the directory only says which of them will succeed.
+
+- **The main session** has a short summary of it in every turn and three tools. The summary always shows its fixed
+  lines (this node, where work can be placed, the harnesses, what is not ready or stale, the reads); each list names
+  at most six, then "+K more". The "Harnesses ready" line names six harnesses with two nodes each, then "+K more",
+  and three "Not ready" lines appear, then "Not ready: +K more". A harness installed here whose sign-in was never
+  checked is reported as not checked. Lines for each node fill the room left.
+  `SwarmDirectory` returns the whole directory or one section (`nodes`, `harnesses`, `tools`, `sources`, `commands`),
+  and with `refresh` builds it again, at most once every 10 seconds. `SwarmRead` runs one of the ticket host's read
+  commands (`status`, `tickets`, `usage`, `devices`, `mesh`, `me`) as this terminal's operator. Neither asks for
+  approval. `Dispatch` files work with the ticket host as `swarm superagent request` does, as this terminal's
+  operator, optionally on a node (`on`: a paired node, or `here`) and a harness. It refuses at once a node that is
+  offline, takes no work, lacks what the work needs or the harness, or whose grant does not let this node offer it
+  work (`work.offer`). It checks the harness named, else the default one, whether `on` is a paired node, `here` or
+  left out; a refusal calls the default one "the default harness <id>". A harness installed on the node whose sign-in
+  was never checked passes: the host checks the sign-in when it runs the work, and the result says it was not checked.
+  With no `on` and a harness this node lacks, it needs a paired node that runs that harness, takes work and has a free
+  worker slot (its slots less its running and queued work). When none has one free, a paired node that runs it, takes
+  work, pulls work of this node's repository (`swarm mesh pull`) and may claim work by this node's grant
+  (`work.claim`) will do, unless this node keeps its waiting work (`swarm mesh offer off`); the result then says the
+  work waits for that node to pull it. Otherwise it refuses and says to name the node as `on` to wait for one. Work
+  for a paired node, named or the only place its harness runs, needs a host that is a mesh node: when the running
+  host is not one, `Dispatch` refuses and says to run `swarm node run`; when no host runs, it files the work and its
+  hint names only `swarm node run`. `Dispatch` asks for approval in `ask` mode and runs without asking in `auto`,
+  `full-auto` and `yolo`, as a shell command does; a session without shell (`--disallowedTools Bash`, or a deny of
+  `Bash` or `Bash(*)`) has no `Dispatch` either. The session may pass `harness` to Agent or Dispatch on its own when a
+  ready harness fits the task better than Swarm's loop, which spends that harness account's budget. Lent tools keep
+  their risk classes: a lent shell or `write_file` asks unless the mode is `auto`, `full-auto` or `yolo`, and still
+  takes its lease from the lending node.
+- **The router** sees it on every request's card. For owners' and maintainers' requests it lists each node's free
+  and queued workers, whether it takes work, its lent tools, what this node may ask there and why a harness does not
+  run there, with what is not ready and the commands it runs for people; anyone else's card has counts. A node whose
+  grant is unknown (an older Swarm, or a grant this version cannot read) is marked `grant_unknown`. On an accept for
+  an owner or maintainer the router may name the node the work runs on, a `grant_unknown` one included, whose own
+  grant then decides when the host offers it the work. The host checks that node against the directory: it must
+  answer, take work, let this node offer it work, and have what the work needs and the harness the work runs on (one
+  installed there whose sign-in was never checked passes, as for `Dispatch`), and work that writes to GitHub as the
+  person who asked never leaves this node. The node must answer both in a directory written at most 30 seconds before
+  the router read it and in the host's own view of the paired nodes once the router answered. A node that fails the
+  check is dropped, with why in the record `swarm superagent why` reads, and the work is still accepted and placed as
+  usual.
+- **A ticket's worker** reads it with its `directory` tool, from the host's snapshot, in a ticket VM or on a paired
+  node as well: node names for a requester who may see them, counts otherwise. `devices` still gives the shorter list.
+  A worker gets none of the main session's three tools, so it files no work of its own on other nodes; it hands a
+  message back for the router instead. Nor does Swarm offer its own worker the tools paired nodes lend as MCP
+  servers, on any host, a mesh node included, so its model reaches a node through its ticket `mesh` tool. On a
+  read-only ticket that tool may only list and read files on a paired node, and for a requester below maintainer it
+  gives counts and reaches no node. These gates bound the tool, not the worker: under process isolation a worker with
+  a shell runs as this user, with this user's mesh keys, and its shell can still reach paired nodes with
+  `swarm capabilities`. Only a ticket VM (`executor.isolation: vm`) confines it, and work placed on a paired node
+  runs there as a process, as that node's user.
+
+Some commands stay with people: pairing and removing devices (`swarm mesh invite`, `join`, `remove`), grants
+(`swarm mesh grant`), lending (`swarm mesh lend`), pulling and offering work (`swarm mesh pull`, `offer`), placing
+and pausing tickets (`swarm superagent place`, `pause`), the settings file, harness sign-ins and `swarm auth
+set-key`. The directory lists each with its exact command line and `who: person`, so an agent can tell a person what
+to run. Swarm's permission check refuses a shell command that runs one in every permission mode, allow rules included;
+an agent harness's own tools do not pass through it ([harness workers](#harness-workers)). It also refuses one run
+through a shell or interpreter anywhere in the line (`bash`, `sh`, `zsh`, `dash`, `ksh`, `fish`, `python`, `node`,
+`perl`, `ruby`, `deno`, `bun`, `eval`, `exec`, `xargs`, `source`, `.`, `su`, `ssh`, `watch`), with any flags, path or
+prefix, and one whose program name is quoted. `swarm superagent harness check` counts as `swarm harness check`. A
+quoted mention in an ordinary command, such as `grep`, `rg` or `git commit -m`, is still allowed, unless something
+else in the line runs text. This is a guard against an agent running these commands by mistake or on injected
+instructions, not a sandbox: it catches them behind shells, interpreters and quotes, but not deliberate obfuscation,
+nor an agent editing the files these commands write.
 
 ### Keeping nodes up and current
 

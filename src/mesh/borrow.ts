@@ -7,7 +7,7 @@ import { posix, win32 } from "node:path";
 import type { McpServerSettings } from "../config/settings.js";
 import type { CapabilityDiagnostic } from "../extensions/types.js";
 import type { NodeCard } from "./card.js";
-import { callPeer, MeshError, peerHealth } from "./client.js";
+import { callPeer, MeshError, peerHealth, type PeerHealth } from "./client.js";
 import { withLease } from "./leases.js";
 import { BORROWER_HEADER, LEND_CALL_MS, lentTools } from "./lend.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -18,13 +18,23 @@ import { findPeer, meshHome, meshPeers, readMesh, type Peer } from "./state.js";
 /** The URL of a peer's lent tools; the host is the peer's id, and the MCP client fetches it over the peer's link. */
 export const meshMcpUrl = (peerId: string): string => `swarm-mesh://${peerId}/mesh/v1/mcp`;
 
-/** The MCP servers for what reachable peers lend; a peer that does not answer is skipped with a diagnostic. */
-export async function borrowedMcpServers(home = meshHome(), timeoutMs = 3000): Promise<{ servers: Record<string, McpServerSettings>; diagnostics: CapabilityDiagnostic[] }> {
+/**
+ * The MCP server id a peer's lent tools go by, which names them `mcp__<id>__<tool>`: its name, and two peers that share a
+ * name keep apart under their ids, so one never answers for the other.
+ */
+export const borrowedServerId = (peer: Pick<Peer, "id" | "name">, peers: readonly Pick<Peer, "name">[]): string =>
+  peers.filter((item) => item.name === peer.name).length > 1 ? `${peer.name}-${peer.id.slice(0, 6)}` : peer.name;
+
+/**
+ * The MCP servers for what reachable peers lend; a peer that does not answer is skipped with a diagnostic. `pass` is a
+ * pass over the peers already made, so a caller that read them once does not ask each again.
+ */
+export async function borrowedMcpServers(home = meshHome(), timeoutMs = 3000, pass?: readonly PeerHealth[]): Promise<{ servers: Record<string, McpServerSettings>; diagnostics: CapabilityDiagnostic[] }> {
   const peers = meshPeers(home);
   const servers: Record<string, McpServerSettings> = {};
   const diagnostics: CapabilityDiagnostic[] = [];
   if (!peers.length) return { servers, diagnostics };
-  for (const health of await peerHealth(home, timeoutMs)) {
+  for (const health of pass ?? await peerHealth(home, timeoutMs)) {
     const peer = peers.find((item) => item.id === health.peer.id);
     if (!peer) continue;
     if (!health.reachable) {
@@ -33,9 +43,7 @@ export async function borrowedMcpServers(home = meshHome(), timeoutMs = 3000): P
     }
     if (!lentTools(health.card?.lend).length) continue;
     // The MCP client reaches a swarm-mesh: URL over the peer's link (src/extensions/mcp.ts), which its key authenticates.
-    // Two peers that share a name keep apart under their ids, so one never answers for the other.
-    const shared = peers.filter((item) => item.name === peer.name).length > 1;
-    servers[shared ? `${peer.name}-${peer.id.slice(0, 6)}` : peer.name] = { transport: "http", url: meshMcpUrl(peer.id), trust: "user", timeoutMs: LEND_CALL_MS };
+    servers[borrowedServerId(peer, peers)] = { transport: "http", url: meshMcpUrl(peer.id), trust: "user", timeoutMs: LEND_CALL_MS };
   }
   return { servers, diagnostics };
 }
@@ -43,9 +51,9 @@ export async function borrowedMcpServers(home = meshHome(), timeoutMs = 3000): P
 /** A paired node as a borrower sees it now: the folders it lends a shell and file access in and their tools, or why it cannot tell. */
 export interface Lender { node: string; online: boolean; shell?: string[]; files?: string[]; tools: string[]; error?: string }
 
-/** What each paired node lends now, read from the cards of those that answer. */
-export async function lentByPeers(home = meshHome(), timeoutMs = 5000): Promise<Lender[]> {
-  return (await peerHealth(home, timeoutMs)).map((health): Lender => {
+/** What each paired node lends now, read from the cards of those that answer, or from `pass` when one was made already. */
+export async function lentByPeers(home = meshHome(), timeoutMs = 5000, pass?: readonly PeerHealth[]): Promise<Lender[]> {
+  return (pass ?? await peerHealth(home, timeoutMs)).map((health): Lender => {
     if (!health.reachable) return { node: health.peer.name, online: false, tools: [], ...(health.error ? { error: health.error } : {}) };
     const lend = health.card?.lend;
     return { node: health.peer.name, online: true, ...(lend?.shell ? { shell: lend.shell.roots } : {}), ...(lend?.files ? { files: lend.files.roots } : {}), tools: lentTools(lend) };

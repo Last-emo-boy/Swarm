@@ -21,7 +21,7 @@ import { SwarmExecutor, type RemoteWork } from "./executor.js";
 import { KV } from "./kv.js";
 import type { MeshView } from "./placement.js";
 import { policyEffects } from "./policy.js";
-import { policyVersion, superagentStateDir, type Settings } from "./settings.js";
+import { policyVersion, settingsPath, superagentStateDir, type Settings } from "./settings.js";
 import { SETUP_FIELDS, SetupError, commandProbe, defaultMachine, resolveFeishuBot, resolveGithub, type Deployment, type SetupProblem } from "./setup.js";
 import { sourceContextOf, type SourceContextDeps } from "./sources/context.js";
 import type { SourceKind } from "./sources/kind.js";
@@ -30,6 +30,13 @@ import { prunePatches } from "./ticket-tools.js";
 import { sameName } from "./text.js";
 import { ticketVariables, variableValues } from "./variables.js";
 import type { VmControl } from "./vm/vm-work.js";
+import { buildDirectory, PART_TTL_MS } from "../directory/build.js";
+import { DIRECTORY_MS, freshDirectory, harnessPart, hereFacts, hereHarnesses, meshPart, readPeers, readProviders } from "../directory/read.js";
+import type { Directory } from "../directory/types.js";
+import { thisSwarm } from "../mesh/card.js";
+import type { PeerHealth } from "../mesh/client.js";
+import { meshHome, meshPeers, readMesh } from "../mesh/state.js";
+import { hostStatus } from "./views.js";
 
 const PASS_MS = 2000;
 /** How often the host deletes the patches it kept too long. */
@@ -40,10 +47,10 @@ const SWEEP_MS = 60_000;
 const JOURNAL_PRUNE_MS = 3_600_000;
 /** How long the router and `/devices` reuse what the paired nodes answered, rather than asking each of them again. */
 const MESH_VIEW_MS = 30_000;
-/** How old the devices snapshot its tickets' workers read may grow while any of them works. */
-const DEVICES_MS = 60_000;
 /** How often a Source's sign-in check runs; it is one cheap call, never on every pass. */
 const CHECK_MS = 5 * 60_000;
+/** How often a host that is no mesh node checks its harnesses' installs and sign-ins, as a mesh node checks its own. */
+const HARNESS_CHECK_MS = 10 * 60_000;
 
 export interface HostOptions {
   stateDir?: string;
@@ -56,6 +63,12 @@ export interface HostOptions {
   vmControl?: VmControl;
   /** Extra Source kinds to register beside the built-in ones, as `SuperagentClient` takes them. */
   kinds?: readonly SourceKind[];
+  /**
+   * Whether a host that is no mesh node runs its harnesses' sign-in checks itself, every `HARNESS_CHECK_MS`, as a mesh
+   * node runs its own; they start the harnesses' status commands. Without them only installs are checked, and the
+   * directory lists no harness as running here, since one whose sign-in lapsed would fail the work put on it.
+   */
+  checkHarnesses?: boolean;
 }
 
 /** Who holds a state directory's lock, when a live process does. */
@@ -130,9 +143,14 @@ export class SuperagentHost {
   problem?: SetupProblem;
   /** Where tickets placed on paired nodes run; a mesh node sets it before it starts the host (src/mesh/work.ts). */
   remote?: RemoteWork;
-  /** This node and its paired nodes with their abilities, which the router says work runs on; a mesh node sets it (src/mesh/cli.ts). */
-  meshView?: () => Promise<MeshView>;
+  /**
+   * This node and its paired nodes with their abilities, which the router says work runs on; a mesh node sets it
+   * (src/mesh/cli.ts). It is given the host's own pass over the paired nodes, so it asks none of them again.
+   */
+  meshView?: (pass: readonly PeerHealth[]) => Promise<MeshView>;
   private meshRead?: { at: number; view: Promise<MeshView> };
+  private peersRead?: { at: number; pass: Promise<PeerHealth[]> };
+  private harnessesRead?: { at: number; checks: ReturnType<typeof hereHarnesses> };
   private timer?: NodeJS.Timeout;
   private closing = false;
   private passing = false;
@@ -170,7 +188,7 @@ export class SuperagentHost {
         { limit: () => this.client.settings().paused ? 0 : 4, retry: [15_000, 300_000] });
       this.botCommands = new BotCommands(this.client, { links: this.links, log: this.log, devices: () => this.devices() });
       this.assessor = new ModelAssessor({ client: this.client, complete, configured: () => !!this.deployment, commands: this.botCommands,
-        mesh: () => this.mesh(), devices: () => this.devices(), log: this.log });
+        mesh: () => this.mesh(), directory: () => this.sharedDirectory(), log: this.log });
       this.assessor.install();
       this.chatter = new ChatterRoom({ client: this.client, complete, log: this.log });
       this.chatter.install();
@@ -282,10 +300,12 @@ export class SuperagentHost {
       }
       this.client.effects.kick();
       await this.checks(settings);
-      // Workers read what the host runs work on from its snapshot; while any works, it stays at most a minute old.
-      if (Date.now() - this.devicesAt > DEVICES_MS && this.client.store.tickets.active().length) {
+      // Workers and other processes read what the host runs work on and who can do what from its snapshots, which stay
+      // at most a minute old; the directory reads the devices too, from the same pass over the paired nodes.
+      // A mesh node's meetings hand it a pass a minute, after which it writes the directory; its own pass is the fallback.
+      if (Date.now() - this.devicesAt > (this.peersNoted ? 1.5 * DIRECTORY_MS : DIRECTORY_MS)) {
         this.devicesAt = Date.now();
-        void this.devices().catch((error: unknown) => { this.log(`superagent: could not read the devices: ${String(error)}`); });
+        void this.directory().catch((error: unknown) => { this.log(`superagent: could not read the directory: ${String(error)}`); });
       }
       this.client.store.set(KV.host.owner, { pid: process.pid, startedAt: this.startedAt, heartbeatAt: new Date().toISOString() });
       this.client.store.set(KV.host.health, { at: new Date().toISOString(), entries: {
@@ -303,14 +323,60 @@ export class SuperagentHost {
   private readonly startedAt = new Date().toISOString();
   private devicesAt = 0;
 
+  /** Whether a mesh node's meetings hand this host their passes over the paired nodes (`notePeers`). */
+  private peersNoted = false;
+
+  /**
+   * A pass over the paired nodes made elsewhere in this process, such as a mesh node's meeting with them: the mesh view,
+   * the devices and the directory use it as their own, and the next host pass writes the directory from it, so the
+   * paired nodes are asked for their cards once a minute rather than twice.
+   */
+  notePeers(pass: readonly PeerHealth[]): void {
+    this.peersNoted = true;
+    // A peer removed since the pass was made, by the meeting's own convergence or a member's forget, is no longer paired:
+    // the directory and the router must not show it as a node that answers.
+    const paired = new Set(meshPeers(meshHome()).map((peer) => peer.id));
+    this.peersRead = { at: Date.now(), pass: Promise.resolve(pass.filter((item) => paired.has(item.peer.id))) };
+    this.meshRead = undefined;
+    this.devicesAt = 0;
+  }
+
   /** Worker processes running here now. */
   runningWorkers(): number { return this.executor.running().length; }
 
+  /**
+   * One read of every paired node's card, at most `MESH_VIEW_MS` old, which the mesh view, the devices and the directory
+   * share, so a minute of them asks each peer once rather than once for each.
+   */
+  private peers(): Promise<PeerHealth[]> {
+    if (!this.peersRead || Date.now() - this.peersRead.at > MESH_VIEW_MS) {
+      const pass = readPeers(meshHome(), 3000);
+      this.peersRead = { at: Date.now(), pass };
+      // A read that failed is not reused.
+      pass.catch(() => { if (this.peersRead?.pass === pass) this.peersRead = undefined; });
+    }
+    return this.peersRead.pass;
+  }
+  /**
+   * The harnesses that run here and why the others do not, on a host that is no mesh node (a mesh node's own checks come
+   * with its view): read as `readDirectory` reads them, with sign-ins checked when `checkHarnesses` asks, every
+   * `HARNESS_CHECK_MS`, and installs alone otherwise.
+   */
+  private ownHarnesses(): ReturnType<typeof hereHarnesses> {
+    if (!this.harnessesRead || Date.now() - this.harnessesRead.at > (this.options.checkHarnesses ? HARNESS_CHECK_MS : MESH_VIEW_MS)) {
+      const checks = hereHarnesses(this.client.settings().executor, settingsPath(this.stateDir), new Date().toISOString(), { signIn: !!this.options.checkHarnesses });
+      this.harnessesRead = { at: Date.now(), checks };
+      // A check that failed is not reused.
+      checks.catch(() => { if (this.harnessesRead?.checks === checks) this.harnessesRead = undefined; });
+    }
+    return this.harnessesRead.checks;
+  }
   /** This node and its paired nodes, as `meshView` read them at most `MESH_VIEW_MS` ago; none on a host that is no mesh node. */
   private async mesh(): Promise<MeshView | undefined> {
     if (!this.meshView) return undefined;
     if (!this.meshRead || Date.now() - this.meshRead.at > MESH_VIEW_MS) {
-      const view = this.meshView();
+      const meshView = this.meshView;
+      const view = this.peers().then((pass) => meshView(pass));
       this.meshRead = { at: Date.now(), view };
       // A read that failed is not reused.
       view.catch(() => { if (this.meshRead?.view === view) this.meshRead = undefined; });
@@ -322,6 +388,50 @@ export class SuperagentHost {
     const devices = devicesOf({ settings: this.client.settings(), store: this.client.store, view: await this.mesh(), running: this.runningWorkers() });
     this.client.store.set(KV.host.devices, { at: new Date().toISOString(), devices });
     return devices;
+  }
+  /**
+   * Who can do what now (src/directory), from the same pass over the paired nodes as the devices, written for readers in
+   * other processes and ticket VMs. A host has no MCP servers of its own: the tools it lists are what paired nodes lend.
+   */
+  async directory(): Promise<Directory> {
+    const home = meshHome();
+    // A pass that failed leaves the nodes stale in the directory rather than leaving no directory at all.
+    const [pass, view, providers] = await Promise.all([
+      this.peers().then((peers) => ({ peers }), (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) })),
+      this.mesh().catch(() => undefined), readProviders()]);
+    const devices = view || !this.meshView ? await this.devices()
+      : devicesOf({ settings: this.client.settings(), store: this.client.store, running: this.runningWorkers() });
+    const settings = this.client.settings();
+    const at = new Date().toISOString();
+    const own = thisSwarm();
+    const node = meshPeers(home).length || view ? readMesh(home).node : undefined;
+    const health = this.client.store.get(KV.host.health);
+    // A mesh node checks its harnesses every few minutes and says so in its view. Without a view, on a host that is no mesh
+    // node or a mesh node whose view failed, the host checks its own: devices read without a view list every profile.
+    const ownChecks = view ? undefined : await this.ownHarnesses().catch(() => undefined);
+    const checks = view?.harnessChecks ?? (ownChecks?.checkedAt ? { at: ownChecks.checkedAt, problems: ownChecks.problems } : undefined);
+    const problems = view?.harnessChecks?.problems ?? ownChecks?.problems;
+    const here = hereFacts({ ...(node ? { node } : {}), settings, devices, queued: hostStatus(this.client).counts.queued, host: "running",
+      ...(problems ? { harnessProblems: { ...problems } } : {}), own });
+    const directory = buildDirectory({
+      at, own, providers,
+      // Without a view the host lists what its own check found running here: none when only installs were checked.
+      here: view ? here : { ...here, harnesses: [...ownChecks?.harnesses ?? []] },
+      mesh: "error" in pass ? pass : meshPart(pass.peers, at, home),
+      harnesses: harnessPart(settings.executor, checks?.at ?? at, !!checks),
+      ...(health ? { health } : {})
+    });
+    this.client.store.set(KV.host.directory, directory);
+    return directory;
+  }
+
+  /**
+   * The directory the router reads: the one this host wrote while its paired nodes are fresh (`PART_TTL_MS.mesh`), else
+   * one built now from the shared pass. The router refuses to pin work on a paired node from an older one.
+   */
+  private async sharedDirectory(): Promise<Directory> {
+    const written = freshDirectory(this.client.store);
+    return written && Date.now() - Date.parse(written.at) <= PART_TTL_MS.mesh ? written : this.directory();
   }
 
   /** A changed Policy version discards running Evals and tells the live tickets it bears on, as a settings save did upstream. */

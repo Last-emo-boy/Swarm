@@ -10,6 +10,7 @@ import { loadSwarmVersion } from "../runtime/headless-artifacts.js";
 import { swarmCommit } from "../update.js";
 import { hostPort, relayName, relayOf, relaysOf, type Lend, type MembersSummary, type MeshNode } from "./state.js";
 import { parseListen } from "./listen.js";
+import type { Grant } from "./surfaces.js";
 
 const exec = promisify(execFile);
 
@@ -56,8 +57,12 @@ export interface NodeCard {
   pull?: { repositories: string[] };
   /** A digest of the membership it acts on; absent on nodes from before the field, which never disagree. */
   members?: MembersSummary;
+  /** Why each harness profile it has cannot run here, by id; absent on nodes from before the field, which list none. */
+  harnessProblems?: Record<string, string>;
   /** False on a node that takes no work put on it, such as one that runs its tickets in VMs; absent means it takes work. */
   takesWork?: false;
+  /** The grant this node gives the peer that read the card; absent on nodes from before the field, so unknown. */
+  yourGrant?: Grant;
   at: string;
 }
 
@@ -144,7 +149,8 @@ export function membersMismatch(card: Pick<NodeCard, "members">, own: MembersSum
   return `sees ${card.members.removed} removed and ${card.members.peers} peers, this device ${own.removed} and ${own.peers}: they differ, and the next pass brings them together`;
 }
 
-export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[]; members?: MembersSummary; takesWork?: false } = {}): Promise<NodeCard> {
+export async function nodeCard(node: MeshNode, extra: { repository?: string; load?: NodeLoad; abilities?: string[]; members?: MembersSummary; takesWork?: false;
+  harnessProblems?: Record<string, string> } = {}): Promise<NodeCard> {
   return {
     id: node.id, name: node.name, addresses: await advertisedAddresses(node),
     ...(relayOf(node) ? { relay: relayOf(node), ...(relaysOf(node).length > 1 ? { relays: relaysOf(node) } : {}) } : {}),
@@ -156,6 +162,7 @@ export async function nodeCard(node: MeshNode, extra: { repository?: string; loa
     ...(node.pull.enabled ? { pull: { repositories: node.pull.repositories } } : {}),
     ...(extra.members ? { members: extra.members } : {}),
     ...(extra.takesWork === false ? { takesWork: false as const } : {}),
+    ...(extra.harnessProblems && Object.keys(extra.harnessProblems).length ? { harnessProblems: extra.harnessProblems } : {}),
     at: new Date().toISOString()
   };
 }

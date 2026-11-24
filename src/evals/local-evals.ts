@@ -1099,7 +1099,7 @@ import { SwarmRuntime } from "./dist/runtime/runtime.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-live-reply-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 let message = "";
 try {
   await runtime.sendUserMessage("status?");
@@ -1145,7 +1145,7 @@ import { SwarmRuntime } from "./dist/runtime/runtime.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-interrupt-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 let noActive = "";
 const stopRequests = [];
 try {
@@ -1235,7 +1235,7 @@ import { SwarmRuntime } from "./dist/runtime/runtime.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-full-stop-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 
 const plan = {
   objective: "stop the swarm run",
@@ -1370,7 +1370,7 @@ import { SwarmRuntime } from "./dist/runtime/runtime.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-planned-live-control-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 
 const plan = {
   objective: "apply a live directive to a planned swarm run",
@@ -2904,7 +2904,7 @@ writeFileSync(join(home, "config.json"), JSON.stringify({
 }, null, 2), "utf8");
 
 const { SwarmRuntime } = await import("./dist/runtime/runtime.js");
-const runtime = new SwarmRuntime({ workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, workspace });
 const policy = {
   max_agents: 2,
   max_parallel_tasks: 1,
@@ -6648,7 +6648,7 @@ writeFileSync(join(home, "config.json"), JSON.stringify({
 }, null, 2), "utf8");
 
 const { SwarmRuntime } = await import("./dist/runtime/runtime.js");
-const runtime = new SwarmRuntime({ workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, workspace });
 const policy = {
   max_agents: 2,
   max_parallel_tasks: 1,
@@ -7149,7 +7149,7 @@ import { SwarmRuntime } from "./dist/runtime/runtime.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-worker-continuation-transcript-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 
 try {
   runtime.ensureTuiChatSession("worker_cont_parent");
@@ -10360,7 +10360,7 @@ import { SwarmRuntime } from "./dist/runtime/runtime.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-review-summary-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 runtime.provider.generateText = async () => { throw new Error("force fallback"); };
 runtime.invokeAgent = async (request) => {
   if (request.capability === "code.review") {
@@ -10445,7 +10445,7 @@ writeFileSync(verifyRef, [
   "Medium Severity: remove --file data.json id misidentifies the id.",
   "Test Gaps: missing corrupted data file coverage."
 ].join("\\n"));
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 runtime.provider.generateText = async () => { throw new Error("force fallback"); };
 let calls = 0;
 runtime.invokeAgent = async (request) => {
@@ -11774,7 +11774,7 @@ import { formatRuntimeEventBrief } from "./dist/runtime/event-formatters.js";
 const dir = mkdtempSync(resolve(tmpdir(), "swarm-worker-queue-eval-"));
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
-const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
 const runtimeAny = runtime;
 runtime.settings.permissions.defaultMode = "yolo";
 runtime.settings.runtime.maxAgents = 2;
@@ -13129,7 +13129,7 @@ function checkResumeHealthPromptBehavior(root: string): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-resume-health-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     runtime.ensureTuiChatSession("resume_health_eval");
     runtime.runAttemptStore.upsert({
@@ -13260,7 +13260,7 @@ function checkResumePreflightReportBehavior(root: string): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-resume-preflight-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     runtime.ensureTuiChatSession("resume_preflight_eval");
     runtime.runAttemptStore.upsert({
@@ -13325,7 +13325,7 @@ function checkResumeLiveControlDirectiveBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-resume-live-directive-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     runtime.ensureTuiChatSession("resume_live_directive_eval");
     runtime.blackboardStore.write({
@@ -13376,7 +13376,7 @@ function checkWorkSnapshotContractBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-work-contract-snapshot-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     runtime.ensureTuiChatSession("work_contract_snapshot_eval");
     runtime.workerStateStore.create({
@@ -13891,7 +13891,7 @@ function checkSessionFamilyApprovalReplayBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-session-family-approval-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     runtime.ensureTuiChatSession("approval_family_parent");
     runtime["ensureLoopSession"]("approval_family_child", "Worker child session", "approval_family_parent", {
@@ -14189,7 +14189,7 @@ function checkTaskContractSnapshotBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-task-contract-snapshot-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     runtime.ensureTuiChatSession("task_contract_snapshot_eval");
     const row = runtime.sessionStore.get("task_contract_snapshot_eval");
@@ -14302,7 +14302,7 @@ function checkSyntheticToolContractBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-synthetic-tool-contract-eval-"));
   const workspace = resolve(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace });
   try {
     const sessionId = "synthetic_tool_contract_eval";
     runtime.ensureTuiChatSession(sessionId);
@@ -14968,7 +14968,7 @@ function checkWorkspaceScopedSessionBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-session-scope-eval-"));
   const workspaceA = resolve(dir, "workspace-a");
   const workspaceB = resolve(dir, "workspace-b");
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace: workspaceA });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace: workspaceA });
   try {
     const sessions = new SessionStore(runtime.database);
     const leases = new WorkspaceLeaseStore(runtime.database);
@@ -15023,7 +15023,7 @@ function checkWorkspaceScopedRecentKernelBehavior(): EvalCaseResult {
   const dir = mkdtempSync(resolve(tmpdir(), "swarm-kernel-scope-eval-"));
   const workspaceA = resolve(dir, "workspace-a");
   const workspaceB = resolve(dir, "workspace-b");
-  const runtime = new SwarmRuntime({ databasePath: resolve(dir, "swarm.db"), workspace: workspaceA });
+  const runtime = new SwarmRuntime({ swarmTools: false, databasePath: resolve(dir, "swarm.db"), workspace: workspaceA });
   try {
     const sessions = new SessionStore(runtime.database);
     const leases = new WorkspaceLeaseStore(runtime.database);
@@ -15998,7 +15998,7 @@ const dir = mkdtempSync(resolve(tmpdir(), "swarm-worker-permission-snapshot-eval
 const workspace = resolve(dir, "workspace");
 mkdirSync(workspace, { recursive: true });
 let approvals = 0;
-const runtime = new SwarmRuntime({
+const runtime = new SwarmRuntime({ swarmTools: false,
   databasePath: resolve(dir, "swarm.db"),
   workspace,
   approvalHandler: async () => {

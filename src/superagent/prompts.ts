@@ -122,7 +122,7 @@ function routingLines(): string {
 }
 
 /** The bot commands the router may run for a person whose message asks for what one does; the others only people type. */
-import { ROUTER_COMMANDS, type CommandName } from "./command-table.js";
+import { COMMAND_TABLE, ROUTER_COMMANDS, type CommandName } from "./command-table.js";
 export const AGENT_COMMANDS: readonly CommandName[] = ROUTER_COMMANDS;
 export type AgentCommand = CommandName;
 /** The router's output contract; `platform` names the chat product a reply targets. */
@@ -135,7 +135,8 @@ export const routeContract = (platform = "Feishu"): string => [
   ` "reply_as": "chat and accept, for a ${platform} message outside a topic: message, quote or thread, as the Where to reply section says; omit it otherwise",`,
   ' "note": "accept or attach: optional routing background or an explicit human constraint, at most 30 words",',
   ' "needs": "accept: optional list of what the work needs of the machine its worker runs on, from gpu (an NVIDIA GPU), macos, linux, windows; omit it when any machine will do",',
-  ' "harness": "accept: optional id from the card\'s harnesses choices, only when the person asks for the work to run on that agent harness, as the Harness section says; omit it otherwise",',
+  ' "harness": "accept: optional id from the card\'s harnesses choices, when the person asks for the work to run on that agent harness or one fits the work better than the default, as the Harness section says; omit it otherwise",',
+  ' "on": "accept: optional name of the node the work runs on, a paired node from the card\'s directory or here, as the Directory section says; omit it otherwise",',
   ' "link": "accept: true to send the requester a code to link their GitHub account, as the Requester section says; omit it otherwise",',
   ' "repository": "accept: owner/name of the requester\'s repository the work is about, exactly as the card lists it, as the Requester section says; omit it otherwise",',
   ` "command": "command: one of ${AGENT_COMMANDS.join(", ")}",`,
@@ -157,21 +158,23 @@ const REQUESTER_LINES = [
   "When a GitHub request's work stays local, the host appends to the acknowledgement a line on how to link GitHub and take the ticket over: do not repeat or contradict it.",
   "When accepted work is about one of the requester's GitHub repositories, set repository to its owner/name exactly as the card lists it, however the person called it (\"2048 DQN\" for owner/2048-DQN, a translated or shortened name). Without it, the work happens on when_none_is_named.",
   "Set link: true on an accept when the person wants a pull request, a push or another change on GitHub, may_write is github, and their GitHub is not linked or its link stopped working. The host then sends them a code to link their account in a direct message, and once they linked it turns the finished patch into a pull request as them; the acknowledgement says both.",
-  "Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. help: what the agent and its commands do. me: their role, limits and GitHub account. link: link their GitHub account (the code goes to a direct message). repo: the repositories they may work on, or with one argument owner/name, set their default. takeover: with the ticket's id, turn a local ticket's patch into a pull request as them. devices: the list of what the agent runs work on now, for someone who asks for that list. memory: what you remember about them, which goes to their direct messages. forget: with a number from that list, or all, forget it.",
+  `Use command, not chat or accept, when the message asks for what a bot command does; the command answers the person itself. ${COMMAND_TABLE.filter((command) => command.router).map((command) => `${command.name}: ${command.about}.`).join(" ")}`,
   "Changing roles, ceilings or whether it joins conversations on its own, and unlinking, are only for people to type themselves (/role, /ceiling, /chatter, /unlink): asked for one, answer with chat and name the command to send."
 ].join("\n");
 /** What the card's harnesses mean, and when the router sets one on accepted work. */
 const HARNESS_LINES = [
-  "The card's harnesses says what a ticket's worker runs on: default, when the person names none, and choices, the agent harnesses they may name (Claude Code is claude, Codex codex, Kimi Code kimi, OpenCode opencode, Claude Code on GLM or DeepSeek claude-glm or claude-deepseek), each with where its work runs: this node, a paired node, or no node.",
-  "Set harness on an accept only when the person asks for the work to run on one, such as codex for \"用 codex 做\" or claude for \"run this on Claude Code\". The acknowledgement then names the harness and where it runs: this node, or the paired node choices names.",
-  "When the harness they ask for runs on no node, for this request or at all, or is not among the choices, start no ticket: answer with chat, saying plainly that no node can run it now and why, and naming the choices that can run, if any.",
-  "When choices says the requester may not choose one, accept without harness and say in the acknowledgement that the work runs on the default, since only maintainers and owners choose a harness. When harnesses has filed_with, the request already runs on that harness: set none."
+  "The card's harnesses says what a ticket's worker runs on: default, when nobody chooses one, and choices, the agent harnesses that may be chosen (Claude Code is claude, Codex codex, Kimi Code kimi, OpenCode opencode, Claude Code on GLM or DeepSeek claude-glm or claude-deepseek), each with where its work runs: this node, a paired node, or no node.",
+  "Set harness on an accept when the person asks for the work to run on one, such as codex for \"用 codex 做\" or claude for \"run this on Claude Code\". You may also choose one yourself, without being asked, when a choice that runs on a node fits the work clearly better than the default, such as the only harness signed in on the node that has what the work needs; it spends that harness account's budget, so otherwise leave the default. The acknowledgement then names the harness and where it runs: this node, or the paired node choices names.",
+  "When the harness they ask for runs on no node, for this request or at all, or is not among the choices, start no ticket: answer with chat, saying plainly that no node can run it now and why, and naming the choices that can run, if any. Never choose one yourself that runs on no node for this request.",
+  "When choices says the requester may not choose one, accept without harness: the work runs on the default, since only maintainers and owners choose a harness, and when they asked for one the acknowledgement says so. When harnesses has filed_with, the request already runs on that harness: set none."
 ].join("\n");
-/** What the card's devices mean, for answers about the agent's machines and for acknowledgements. */
-const DEVICES_LINES = [
-  "The card's devices says what you run work on now. this_node is the machine you run on. paired_nodes are the other machines of your swarm: whether each answered just now, what kind of machine it is (its OS, gpu, docker) and the agent harnesses signed in there. ticket_workers says how many tickets' workers run at once, how many are busy and how many are free: as processes on this node, or each in a VM of its own on this node and, once those are busy, in the cluster.",
-  "When a person asks what devices, machines or nodes you have, which of them are online, or how busy you are, answer with chat from devices, in your own words: say only what it shows, and with only counts, give counts and never guess names. Use the devices command only when they ask for the list itself.",
-  "When every worker is busy, an acknowledgement says the work starts once one is free, rather than promising it now."
+/** What the card's directory means, for answers about the agent's machines, for acknowledgements and for the node work runs on. */
+const DIRECTORY_LINES = [
+  "The card's directory says what you run work on now and who can do what. this_node is the machine you run on; paired_nodes are the other machines of your swarm. For a requester who may see them, each node says whether it answered just now, what kind of machine it is (machine: its OS, gpu, docker), the agent harnesses signed in there, its ticket workers (slots, running, queued and free), whether it takes work put on it (takes_work), the tools it lends by their exact names (lends), what this node may ask of it (may_there; work.offer lets work be placed there), grant_unknown when its grant to this node is unknown, as on an older Swarm that does not say it (may_there is then empty), and why a harness does not run there (harness_problems). not_ready lists tool servers, Sources and model providers that are not ready, with why, and commands the bot commands you run, each with what it does. For anyone else, paired_nodes gives counts, ticket_workers this node's workers, and node_names says why; nodes_unknown, when present, says why the paired nodes could not be read.",
+  "When a person asks what devices, machines or nodes you have, which of them are online, or how busy you are, answer with chat from directory, in your own words: say only what it shows, and with only counts, give counts and never guess names. Use the devices command only when they ask for the list itself.",
+  "When every worker is busy, an acknowledgement says the work starts once one is free, rather than promising it now.",
+  "Set on in an accept to run the work on one node: the person asks for that node, or one node clearly fits the work best, such as the node with a GPU for training or the only one with free workers. Name a paired node from the directory that answered, takes work, has work.offer in may_there or grant_unknown (the host's offer tries that node, and its grant decides), and has what the work needs and the harness it runs on; or here for this node. Leave it out when any node will do: the host places the work itself. When the card has filed_on, the request already runs on that node: set none.",
+  "Only a requester the directory names nodes to may have on set; for anyone else leave it out. The host checks on against the directory and, when that node cannot take the work, drops it and places the work itself, so the acknowledgement names the node only when the person asked for it."
 ].join("\n");
 /** When the router answers a message itself instead of routing it. */
 const CHAT_LINES = [
@@ -230,7 +233,7 @@ export function routerPrompt(persona = "", memory = false, platform = "Feishu"):
     ...(persona.trim() ? [voiceSection(persona, "Titles, scopes, reasons and notes are for the record: keep them plain.")] : []),
     section("Requester", REQUESTER_LINES),
     section("Harness", HARNESS_LINES),
-    section("Devices", DEVICES_LINES),
+    section("Directory", DIRECTORY_LINES),
     section("Output", routeContract(platform))
   ].join("\n\n");
 }

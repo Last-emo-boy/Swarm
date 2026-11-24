@@ -236,3 +236,74 @@ function shellAction(command: string, overrides: Partial<Extract<ToolAction, { t
     ...overrides
   };
 }
+
+test("a shell command that runs a person-only Swarm command is refused in every mode, allow rules included", async () => {
+  const { PERSON_COMMANDS } = await import("../directory/person-commands.js");
+  // Each line as the directory lists it, with its placeholders filled in.
+  const filled = (how: string) => how.replace(/<[^>]+>(\.\.\.)?/g, "x").replace(/\[[^\]]*\]/g, "").replace(/(\S+)\|\S+/g, "$1").replace(/\(.*\)/, "").trim();
+  for (const mode of ["full-auto", "yolo", "auto-edit", "ask"] as const) {
+    const settings = settingsForMode(mode);
+    settings.permissions.allow = [...settings.permissions.allow, "Bash(*)", "Bash(swarm *)"];
+    for (const command of PERSON_COMMANDS) {
+      const decision = decideToolPermission(shellAction(filled(command.how)), settings, { workspace });
+      assert.equal(decision.decision, "deny", `${mode}: ${filled(command.how)}`);
+      assert.match(decision.reason, /for a person to run, never an agent/);
+    }
+  }
+  const settings = settingsForMode("full-auto");
+  for (const command of ["swarm superagent resume", "cd /tmp && SWARM_HOME=/x swarm mesh grant ovh operator", "sh -c 'swarm mesh lend shell ~'",
+    "/usr/local/bin/swarm auth set-key openai sk-x", "npx swarm --json mesh remove ovh", "echo ok; sudo swarm superagent pause"]) {
+    assert.equal(decideToolPermission(shellAction(command), settings, { workspace }).decision, "deny", command);
+  }
+  assert.equal(decideToolPermission({ type: "process.start", command: "swarm mesh invite" }, settings, { workspace }).decision, "deny");
+  for (const command of ["swarm superagent status", "swarm mesh status", "echo \"swarm mesh grant\"", "swarm directory --json", "swarmy mesh grant x"]) {
+    assert.equal(decideToolPermission(shellAction(command), settings, { workspace }).decision, "allow", command);
+  }
+});
+
+test("a person-only Swarm command is refused behind any launcher or quotes, while a line that only mentions one runs", () => {
+  const denied = [
+    "cd /tmp && bash -c 'swarm mesh grant ovh operator'",
+    "/bin/bash -c 'swarm mesh grant ovh operator'",
+    "/bin/sh -c \"swarm mesh grant ovh operator\"",
+    "env bash -c 'swarm mesh grant ovh operator'",
+    "timeout 30 sh -c 'swarm superagent pause'",
+    "nohup sh -c 'swarm superagent pause' &",
+    "bash -e -c 'swarm mesh grant ovh operator'",
+    "bash --login -c 'swarm mesh grant ovh operator'",
+    "time sudo -E zsh -c 'swarm mesh grant ovh operator'",
+    "nice -n 5 dash -c 'swarm mesh grant ovh operator'",
+    "eval \"swarm mesh grant ovh operator\"",
+    "echo 'swarm mesh grant ovh operator' | sh",
+    "echo \"swarm mesh grant ovh operator\" | xargs env",
+    "/usr/bin/python3 -c \"import os; os.system('swarm mesh grant ovh operator')\"",
+    "\"swarm\" mesh grant ovh operator",
+    "'swarm' mesh grant ovh operator",
+    "sw''arm mesh grant ovh operator",
+    "s\\warm mesh gr\"\"ant ovh operator",
+    "\"swarm\" mesh grant ovh \"operator\"",
+    "swarm superagent harness check",
+    "swarm superagent harness check codex",
+    "sh -c 'swarm superagent harness check codex'"
+  ];
+  const allowed = [
+    "grep -n \"swarm mesh grant\" docs/GUIDE.md",
+    "git commit -m \"doc: swarm mesh grant\"",
+    "rg 'swarm superagent pause'",
+    "rg -n \"swarm mesh (grant|lend)\" .",
+    "grep -rn 'swarm superagent pause' src; echo done",
+    "find docs -exec grep -l \"swarm mesh grant\" {} \\;",
+    "swarm harness list",
+    "swarm superagent harness list",
+    "swarm superagent harness"
+  ];
+  for (const mode of ["full-auto", "yolo"] as const) {
+    const settings = settingsForMode(mode);
+    for (const command of denied) {
+      const decision = decideToolPermission(shellAction(command), settings, { workspace });
+      assert.equal(decision.decision, "deny", `${mode}: ${command}`);
+      assert.match(decision.reason, /for a person to run, never an agent/);
+    }
+    for (const command of allowed) assert.equal(decideToolPermission(shellAction(command), settings, { workspace }).decision, "allow", `${mode}: ${command}`);
+  }
+});

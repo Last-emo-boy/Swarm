@@ -378,6 +378,31 @@ export type AgentContinueAction = {
   run_in_background?: boolean;
 };
 
+/** The capability directory, or one section of it; `refresh` builds it again now instead of using the one held. */
+export type SwarmDirectoryAction = {
+  type: "swarm.directory";
+  section?: "nodes" | "harnesses" | "tools" | "sources" | "commands";
+  refresh?: boolean;
+};
+
+/** One of the read commands a paired node may run on this one (`PEER_READS`), run here as the local operator. */
+export type SwarmReadAction = {
+  type: "swarm.read";
+  name: string;
+  args?: string[];
+};
+
+/**
+ * Files work as a new ticket, as `swarm superagent request` does from this terminal: with `on`, its worker runs on that
+ * paired node (or `here`), with `harness` on that harness profile.
+ */
+export type SwarmDispatchAction = {
+  type: "swarm.dispatch";
+  text: string;
+  on?: string;
+  harness?: string;
+};
+
 export type ToolAction =
   | FileReadAction
   | FileListAction
@@ -435,7 +460,17 @@ export type ToolAction =
   | AgentListAction
   | AgentStatusAction
   | AgentStopAction
-  | AgentContinueAction;
+  | AgentContinueAction
+  | SwarmDirectoryAction
+  | SwarmReadAction
+  | SwarmDispatchAction;
+
+/** The main session's view of the swarm and its one way to place work in it (src/directory/session.ts). */
+export type SwarmToolsContext = {
+  directory: (action: SwarmDirectoryAction) => Promise<ToolResult>;
+  read: (action: SwarmReadAction) => Promise<ToolResult>;
+  dispatch: (action: SwarmDispatchAction) => Promise<ToolResult>;
+};
 
 export type LocalToolContext = {
   workspace: string;
@@ -451,6 +486,7 @@ export type LocalToolContext = {
     continue: (action: AgentContinueAction, context: AgentControlToolContext) => Promise<ToolResult> | ToolResult;
   };
   serverWebSearch?: (action: WebSearchAction) => Promise<ToolResult>;
+  swarm?: SwarmToolsContext;
   blackboard?: {
     write: (action: BlackboardWriteAction, context: BlackboardToolContext) => Promise<BlackboardEntry> | BlackboardEntry;
     read: (action: BlackboardReadAction, context: BlackboardToolContext) => Promise<BlackboardEntry[]> | BlackboardEntry[];

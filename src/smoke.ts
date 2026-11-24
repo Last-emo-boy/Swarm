@@ -38,7 +38,8 @@ export async function runInstallSmoke(input: { swarmHome?: string } = {}): Promi
 
   const runtime = new SwarmRuntime({
     workspace: process.cwd(),
-    databasePath: join(smokeHome, "state", "swarm.db")
+    databasePath: join(smokeHome, "state", "swarm.db"),
+    swarmTools: false
   });
   const checks: InstallSmokeCheck[] = [];
   try {

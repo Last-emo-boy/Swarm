@@ -489,6 +489,42 @@ const BUILTIN_TOOLS: BuiltinToolDescriptor[] = [
     inputSchema: objectSchema({ worker_id: "worker id", message: "follow-up instruction", run_in_background: "boolean" })
   },
   {
+    name: "SwarmDirectory",
+    action: "swarm.directory",
+    aliases: ["swarm.directory"],
+    title: "Swarm Directory",
+    description: "Who can do what right now: this node and paired nodes, harnesses, tool servers, Sources and providers, and commands.",
+    riskClass: "r0",
+    permissionName: "SwarmDirectory",
+    inputSchema: objectSchema({ section: "nodes | harnesses | tools | sources | commands", refresh: "boolean" }),
+    shouldDefer: false,
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "SwarmRead",
+    action: "swarm.read",
+    aliases: ["swarm.read"],
+    title: "Swarm Read",
+    description: "Run one of the superagent host's read commands (status, tickets, usage, devices, mesh, me) as the local operator.",
+    riskClass: "r0",
+    permissionName: "SwarmRead",
+    inputSchema: objectSchema({ name: "status | tickets | usage | devices | mesh | me", args: "string[]" }),
+    shouldDefer: false,
+    readOnly: true,
+    concurrencyClass: "read_parallel"
+  },
+  {
+    name: "Dispatch",
+    action: "swarm.dispatch",
+    aliases: ["swarm.dispatch"],
+    title: "Dispatch Work",
+    description: "File work as a new superagent ticket from this terminal, optionally on a paired node and harness the directory shows ready.",
+    riskClass: "r2",
+    permissionName: "Dispatch",
+    inputSchema: objectSchema({ text: "string", on: "paired node name or id, or here", harness: "harness profile id" })
+  },
+  {
     name: "Agent",
     action: "agent.delegate",
     aliases: ["Task", "agent.delegate"],

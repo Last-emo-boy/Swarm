@@ -322,7 +322,7 @@ async function runOnDevice(command: string, args: string[], json: boolean): Prom
 async function runHost(): Promise<void> {
   const { SuperagentHost } = await import("./host.js");
   const { providerComplete } = await import("./provider.js");
-  const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete() });
+  const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete(), checkHarnesses: true });
   await host.start();
   console.log(`Superagent host running for ${host.stateDir} (pid ${process.pid}). Ctrl+C stops it.`);
   if (host.problem) console.log(`Setup: ${host.problem.detail}`);

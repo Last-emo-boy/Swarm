@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { advertisedAddresses, nodeCard, type NodeCard } from "./card.js";
-import { callPeer, joinMesh, MeshError, peerHealth, unpair } from "./client.js";
+import { callPeer, joinMesh, meet, MeshError, peerHealth, removeFromSwarm, unpair } from "./client.js";
 import { parseListen } from "./listen.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, newPairKey, parseInvite, readMesh, updateMesh, type Peer } from "./state.js";
+import { createInvite, findPeer, grantOf, membersSummary, newPairKey, parseInvite, readMesh, setGrant, updateMesh, type Peer } from "./state.js";
 
 // These nodes link up directly; none of them may reach out to a real relay.
 process.env.SWARM_MESH_RELAY = "off";
@@ -15,11 +15,10 @@ process.env.SWARM_MESH_RELAY = "off";
 interface TestNode { home: string; server: MeshServer; url: string }
 const started: TestNode[] = [];
 
-/** A node on a free localhost port, advertising that address, with its own mesh state. */
-async function startNode(name: string): Promise<TestNode> {
-  const home = mkdtempSync(join(tmpdir(), `swarm-mesh-${name}-`));
+/** A node on a free localhost port, advertising that address, with its own mesh state; `home` brings one back. */
+async function startNode(name: string, home = mkdtempSync(join(tmpdir(), `swarm-mesh-${name}-`))): Promise<TestNode> {
   updateMesh((state) => ({ ...state, node: { ...state.node, name, listen: "127.0.0.1:0" } }), home);
-  const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities: ["test"] }) });
+  const server = new MeshServer({ home, card: () => nodeCard(readMesh(home).node, { abilities: ["test"], members: membersSummary(readMesh(home)) }) });
   const { address: url } = await server.start();
   updateMesh((state) => ({ ...state, node: { ...state.node, advertise: url } }), home);
   const node = { home, server, url };
@@ -49,6 +48,30 @@ test("two nodes pair with an invite and call each other over links keyed with th
   assert.equal(macSide.key, ovhSide.key, "both ends derived the same pair key");
   assert.notEqual(macSide.key, readMesh(mac.home).node.keys.privateKey);
   assert.equal(statSync(join(mac.home, "state.json")).mode & 0o777, 0o600);
+});
+
+test("a node's card tells each caller the grant it gives that caller", async () => {
+  const mac = await startNode("mac");
+  const ovh = await startNode("ovh");
+  await joinMesh(createInvite(ovh.url, 15, ovh.home), mac.home);
+  const read = () => callPeer<NodeCard>(findPeer(readMesh(mac.home), "ovh"), "GET", "/mesh/v1/node");
+  assert.equal((await read()).yourGrant, grantOf(findPeer(readMesh(ovh.home), "mac"), ovh.home));
+  setGrant("mac", "viewer", ovh.home);
+  assert.equal((await read()).yourGrant, "viewer");
+  setGrant("mac", { scopes: ["node.read", "work.offer"] }, ovh.home);
+  assert.deepEqual((await read()).yourGrant, { scopes: ["node.read", "work.offer"] });
+});
+
+test("a node's card names why its harnesses cannot run there, and says nothing when every one can", async () => {
+  const home = mkdtempSync(join(tmpdir(), "swarm-mesh-card-"));
+  try {
+    const node = readMesh(home).node;
+    assert.equal((await nodeCard(node, { abilities: ["linux"], harnessProblems: {} })).harnessProblems, undefined);
+    assert.deepEqual((await nodeCard(node, { abilities: ["linux"], harnessProblems: { codex: "Codex is not installed" } })).harnessProblems,
+      { codex: "Codex is not installed" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("a node refuses a device it shares no key with, and answers a paired one's unknown route with 404", async () => {
@@ -126,6 +149,25 @@ test("peer health reads each peer's card and marks a stopped peer unreachable", 
   assert.equal(byName.ovh?.card?.name, "ovh");
   assert.equal(byName.gpu?.reachable, false);
   assert.match(byName.gpu?.error ?? "", /unreachable/);
+});
+
+test("a meeting hands on the pass read after it learned a removal, without the peer it dropped", async () => {
+  const mac = await startNode("mac");
+  const ovh = await startNode("ovh");
+  const pi = await startNode("pi");
+  const gpu = await startNode("gpu");
+  for (const node of [mac, pi, gpu]) await joinMesh(createInvite(ovh.url, 15, ovh.home), node.home);
+  for (let round = 0; round < 2; round += 1) for (const node of [mac, ovh, pi, gpu]) await meet(node.home, 5000);
+  // ovh takes mac's removals, and pi takes the removals both make or carry.
+  setGrant("mac", "operator", ovh.home);
+  for (const name of ["mac", "ovh"]) setGrant(name, "operator", pi.home);
+  // pi is offline while mac removes gpu, so it learns of the removal on its next meeting; gpu still answers it.
+  await pi.server.stop();
+  await removeFromSwarm(findPeer(readMesh(mac.home), "gpu"), mac.home);
+  await startNode("pi", pi.home);
+  const pass = await meet(pi.home, 5000);
+  assert.equal(readMesh(pi.home).peers.some((peer) => peer.name === "gpu"), false, "pi dropped gpu");
+  assert.deepEqual(pass.map((item) => [item.peer.name, item.reachable]).sort(), [["mac", true], ["ovh", true]]);
 });
 
 test("parses listen addresses with hosts, IPv6 brackets and bare ports", () => {

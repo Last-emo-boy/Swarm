@@ -114,6 +114,9 @@ if (!command) {
   const { runNodeCommand } = await import("./mesh/cli.js");
   await runNodeCommand(args);
 } else if (command === "harness") { await (await import("./superagent/harness-cli.js")).runHarnessCommand(args);
+} else if (command === "directory") {
+  const { runDirectoryCommand } = await import("./directory/cli.js");
+  await runDirectoryCommand(args);
 } else if (command === "update") {
   const { runUpdateCommand } = await import("./update.js");
   await runUpdateCommand(args);
@@ -3462,6 +3465,7 @@ Commands:
   superagent Run the ticket host and manage tickets from GitHub, Feishu and this terminal
   mesh       Join devices into a swarm with a pairing code, and see them
   node       Run this device's node: the ticket host and the mesh server peers call; install it as a service
+  directory  Who can do what now: nodes, harnesses, tool servers, Sources and commands, with who may run each
   tui-artifact
              Generate cc-grade TUI plain/ANSI/profile-diff visual artifacts
   tui-smoke  Run local-only TUI smoke and capture ANSI/log/checklist evidence

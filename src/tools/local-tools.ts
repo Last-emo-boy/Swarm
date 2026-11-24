@@ -20,7 +20,7 @@ import {
 } from "./permissions.js";
 import { ensureWorkspaceIndex } from "../runtime/workspace-index.js";
 import { shellAutoBackgroundMs } from "../config/settings.js";
-import type { LocalToolContext, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
+import type { LocalToolContext, SwarmDirectoryAction, ToolAction, ToolResult, WorkspaceChangeMetadata } from "./types.js";
 import {
   GREP_FALLBACK_MAX_DEPTH,
   GREP_FALLBACK_MAX_FILES,
@@ -51,6 +51,9 @@ type ReadSnapshot = {
 const readSnapshots = new Map<string, ReadSnapshot>();
 const todoStates = new Map<string, Array<{ content: string; activeForm?: string; status: "pending" | "in_progress" | "completed" }>>();
 const writeLocks = new Map<string, { holder: string; acquiredAt: string }>();
+
+/** The sections SwarmDirectory answers one of, as the directory names them (src/directory/types.ts). */
+const SWARM_DIRECTORY_SECTIONS: readonly string[] = ["nodes", "harnesses", "tools", "sources", "commands"] satisfies readonly NonNullable<SwarmDirectoryAction["section"]>[];
 
 export function normalizeToolAction(inputs: Record<string, unknown>, capability?: string): ToolAction {
   const rawAction = String(inputs.action ?? capability ?? "").trim();
@@ -458,6 +461,35 @@ export function normalizeToolAction(inputs: Record<string, unknown>, capability?
       harness: optionalStringInput(inputs.harness)
     };
   }
+  if (action === "swarm.directory") {
+    const section = optionalStringInput(inputs.section)?.trim() || undefined;
+    if (section !== undefined && !SWARM_DIRECTORY_SECTIONS.includes(section)) {
+      throw new Error(`SwarmDirectory section must be one of ${SWARM_DIRECTORY_SECTIONS.join(", ")}`);
+    }
+    return {
+      type: "swarm.directory",
+      ...(section ? { section: section as SwarmDirectoryAction["section"] } : {}),
+      ...(booleanInput(inputs.refresh) ? { refresh: true } : {})
+    };
+  }
+  if (action === "swarm.read") {
+    const args = typeof inputs.args === "string" ? inputs.args.split(/\s+/).filter(Boolean) : stringArrayInput(inputs.args);
+    return {
+      type: "swarm.read",
+      name: requiredStringInput(inputs.name ?? inputs.command, "SwarmRead requires name"),
+      ...(args?.length ? { args } : {})
+    };
+  }
+  if (action === "swarm.dispatch") {
+    const on = optionalStringInput(inputs.on)?.trim();
+    const harness = optionalStringInput(inputs.harness)?.trim();
+    return {
+      type: "swarm.dispatch",
+      text: requiredStringInput(inputs.text ?? inputs.prompt ?? inputs.task, "Dispatch requires text"),
+      ...(on ? { on } : {}),
+      ...(harness ? { harness } : {})
+    };
+  }
   throw new Error(`Unsupported tool action: ${rawAction || "(empty)"}`);
 }
 
@@ -655,6 +687,14 @@ export async function runLocalTool(action: ToolAction, context: LocalToolContext
       throw new Error("agent.continue is only available within a swarm agent process");
     }
     return context.agentControl.continue(action, agentControlToolContext(context));
+  }
+  if (action.type === "swarm.directory" || action.type === "swarm.read" || action.type === "swarm.dispatch") {
+    if (!context.swarm) {
+      throw new Error(`${action.type} is only available in the main Swarm session`);
+    }
+    if (action.type === "swarm.directory") return context.swarm.directory(action);
+    if (action.type === "swarm.read") return context.swarm.read(action);
+    return context.swarm.dispatch(action);
   }
   throw new Error(`Unsupported tool action: ${(action as ToolAction).type}`);
 }
@@ -3793,6 +3833,15 @@ function normalizeActionName(action: string): ToolAction["type"] {
   }
   if (["Agent", "Task", "agent_delegate", "agent.delegate", "delegate"].includes(action)) {
     return "agent.delegate";
+  }
+  if (["SwarmDirectory", "swarm_directory", "swarm.directory"].includes(action)) {
+    return "swarm.directory";
+  }
+  if (["SwarmRead", "swarm_read", "swarm.read"].includes(action)) {
+    return "swarm.read";
+  }
+  if (["Dispatch", "dispatch", "swarm.dispatch"].includes(action)) {
+    return "swarm.dispatch";
   }
   return action as ToolAction["type"];
 }

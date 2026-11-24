@@ -162,6 +162,50 @@ export const LOCAL_TOOL_SCHEMAS: Record<string, LocalToolSchema> = {
     inputs: { query: "search text or capability hint", limit: "optional max results", kind: "optional capability kind", provider: "optional provider id" },
     notes: "Use to discover deferred MCP tools or named skills before calling them. Deferred MCP schemas become available on the next turn."
   },
+  "SwarmDirectory": {
+    action: "SwarmDirectory",
+    inputs: { section: "optional nodes | harnesses | tools | sources | commands", refresh: "optional boolean; read it again now instead of the one held" },
+    input_schema: {
+      type: "object",
+      properties: {
+        section: { type: "string", enum: ["nodes", "harnesses", "tools", "sources", "commands"], description: "One section of the directory; all of it when omitted." },
+        refresh: { type: "boolean", description: "Read the paired nodes, harnesses and Sources again now (at most once per 10 s) instead of the directory held." }
+      },
+      additionalProperties: false
+    },
+    notes: "Who can do what right now: this node and its paired nodes (free workers, takes work, grants, lent tools), harnesses and where each runs, tool servers, Sources and providers, and the commands with who may run each."
+  },
+  "SwarmRead": {
+    action: "SwarmRead",
+    inputs: { name: "status | tickets | usage | devices | mesh | me", args: "optional string[] for the command" },
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", enum: ["status", "tickets", "usage", "devices", "mesh", "me"], description: "A read command of the superagent host here, as the local operator." },
+        args: { type: "array", items: { type: "string" }, description: "The command's arguments, as after the command in chat." }
+      },
+      required: ["name"],
+      additionalProperties: false
+    },
+    required: ["name"],
+    notes: "Read-only: the superagent host's status, its tickets (watch a dispatched one here), usage, devices, mesh or your role."
+  },
+  "Dispatch": {
+    action: "Dispatch",
+    inputs: { text: "the request, as a person would write it", on: "optional paired node name or id, or here", harness: "optional harness profile id" },
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The request the ticket is filed with, complete enough for a worker that has not seen this conversation." },
+        on: { type: "string", description: "A paired node the directory says work can be placed on, or here; the host places it when omitted." },
+        harness: { type: "string", description: "A harness profile the directory shows ready where the work runs; the default harness when omitted." }
+      },
+      required: ["text"],
+      additionalProperties: false
+    },
+    required: ["text"],
+    notes: "Files the request as a new superagent ticket from this terminal, as `swarm superagent request [--on <node>] [--harness <id>]` does; asks for approval as Bash does. Watch it with SwarmRead tickets."
+  },
   "Agent": {
     action: "Agent",
     inputs: { description: "short task description", prompt: "task for the agent", subagent_type: "optional agent type", model: "optional model", run_in_background: "optional boolean; launch without blocking the main agent", capability: "compat capability", task: "compat task", file_scope: "optional string[]" },

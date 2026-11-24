@@ -61,7 +61,13 @@ export interface NodeAbilities { name: string; abilities: readonly string[] }
  * This mesh node and the paired nodes that answered, with their abilities: where work that needs an ability can run now;
  * and the names of the paired nodes that did not answer.
  */
-export interface MeshView { here: NodeAbilities; peers: readonly NodeAbilities[]; offline?: readonly string[] }
+export interface MeshView {
+  here: NodeAbilities;
+  peers: readonly NodeAbilities[];
+  offline?: readonly string[];
+  /** When this node last checked its harnesses' sign-ins, and why each profile it does not list cannot run here. */
+  harnessChecks?: { at: string; problems: Readonly<Record<string, string>> };
+}
 
 /**
  * Where work on harness `id` runs, as a mesh node places it: here when this node lists the harness, else on a paired node

@@ -16,6 +16,8 @@ import { seesNodes, watchedRepository } from "./policy.js";
 import { fromName, inputMessage, sourceTrigger, triggerMessage } from "./messages.js";
 import { KV } from "./kv.js";
 import { devicesCard } from "./devices.js";
+import { workerView } from "../directory/render.js";
+import { DIRECTORY_SCHEMA } from "../directory/types.js";
 import { workerNode } from "./placement.js";
 import { callLent, lentByPeers } from "../mesh/borrow.js";
 import { addressee, channelTo, chatGroups, chatLog, chatName, findPeople, mentionsFor, peopleIn } from "./people.js";
@@ -40,6 +42,10 @@ export interface TicketTool {
 }
 
 const exec = promisify(execFile);
+/** The lent tools a read-only ticket may call on a paired node: they read, and nothing else a node lends does. */
+const MESH_READS: ReadonlySet<string> = new Set(["list_files", "read_file"]);
+/** Why the mesh tool gives a worker for a requester below maintainer counts of the paired nodes and reaches none of them. */
+const MESH_HIDDEN = "Only maintainers' and owners' tickets see the paired nodes and use what they lend: this ticket's requester gets counts, so do the work here";
 /** The largest patch a local ticket's ready report sends; a larger change is beyond a ticket kept local. */
 export const PATCH_BYTES = 1024 * 1024;
 /**
@@ -190,8 +196,13 @@ const TOOLS = {
     input: {},
     readOnly: true
   },
+  directory: {
+    description: "Who can do what in the agent's swarm now, from the host's records: this node and its paired nodes with their free ticket workers, whether each takes work, the tools each lends by the names mesh takes with that node's name, the grant each gives this node and what it may ask there, and why a harness does not run there; the agent harnesses and where each runs; tool servers, Sources and model providers that are not ready; and the commands people can send. Read it before using mesh, and to answer what the agent can run where; devices gives the shorter list of machines.",
+    input: {},
+    readOnly: true
+  },
   mesh: {
-    description: "Use what the agent's paired devices lend, through the host's mesh, wherever you run: without node, each paired node, whether it answers, and what it lends (a shell and file access in some folders); with node and tool, call that tool there with args: shell {command, cwd?, timeout_ms?}, list_files {path?}, read_file {path, offset?} or write_file {path, content}. A shell command stops after at most 100 seconds. What you run acts on that machine for real, as the user it lends as, and every call is recorded on this ticket.",
+    description: "Use what the agent's paired devices lend, through the host's mesh, wherever you run: without node, each paired node, whether it answers, and what it lends (a shell and file access in some folders); with node and tool, call that tool there with args: shell {command, cwd?, timeout_ms?}, list_files {path?}, read_file {path, offset?} or write_file {path, content}. A shell command stops after at most 100 seconds; a read-only ticket may only list_files and read_file, and a ticket whose requester is below maintainer only learns how many nodes there are. What you run acts on that machine for real, as the user it lends as, and every call is recorded on this ticket.",
     input: {
       node: z.string().trim().min(1).max(64).optional().describe("A paired node's name, as the list gives it"),
       tool: z.string().trim().min(1).max(64).optional().describe("A tool that node lends: shell, list_files, read_file or write_file"),
@@ -388,8 +399,31 @@ export function ticketTools(client: SuperagentClient, ticketId: string, assignme
       const requester = sourceTrigger(client, ticket())?.actor;
       return { as_of: snapshot.at, ...devicesCard(snapshot.devices, !!requester && seesNodes(client.settings(), requester)) };
     },
+    directory: async () => {
+      // The host's snapshot, which a worker in a ticket VM or on a paired node reads through the owner like every ticket tool.
+      const snapshot = client.store.get(KV.host.directory);
+      if (snapshot?.schema !== DIRECTORY_SCHEMA) throw new Error("The host has not written its directory yet: try again in a minute");
+      // Which nodes these are is for a requester who may see them, as for devices.
+      const requester = sourceTrigger(client, ticket())?.actor;
+      return workerView(snapshot, !!requester && seesNodes(client.settings(), requester));
+    },
     mesh: async (args) => {
+      // Which nodes there are and what they lend is for a requester who may see them, as for devices and directory, and
+      // this tool reaches no node its requester may not know of (a process-isolated worker's shell still runs as this
+      // user and is not confined by it; a worker in a ticket VM is).
+      const requester = sourceTrigger(client, ticket())?.actor;
+      if (!requester || !seesNodes(client.settings(), requester)) {
+        if (typeof args.node === "string" && typeof args.tool === "string") throw new Error(MESH_HIDDEN);
+        const nodes = await lentByPeers();
+        return { paired_nodes: { total: nodes.length, online: nodes.filter((node) => node.online).length }, node_names: MESH_HIDDEN };
+      }
       if (typeof args.node !== "string" || typeof args.tool !== "string") return { nodes: await lentByPeers() };
+      // This is the one place the tools Swarm offers any harness or worker reach a peer through, so a read-only ticket's
+      // ceiling is kept here: harnesses let their MCP servers act outside their own read-only turns. A process-isolated
+      // worker with a shell runs as this user and can reach peers with `swarm capabilities` outside it, which only VM
+      // isolation stops.
+      if (ticket().mandate.capability?.write === "read-only" && !MESH_READS.has(args.tool))
+        throw new Error(`This ticket's work is read-only: on a paired node it may only ${[...MESH_READS].join(" and ")}, not ${args.tool}`);
       const call = { ...(args.args && typeof args.args === "object" ? args.args as Record<string, unknown> : {}) };
       // A command runs within the time a ticket tool may take.
       if (args.tool === "shell") call.timeout_ms = Math.min(Number(call.timeout_ms) || MESH_SHELL_MS, MESH_SHELL_MS);

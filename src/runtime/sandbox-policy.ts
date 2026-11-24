@@ -225,6 +225,8 @@ export function isReadOnlySandboxAction(action: ToolAction): boolean {
     case "blackboard.list":
     case "agent.list":
     case "agent.status":
+    case "swarm.directory":
+    case "swarm.read":
     case "code.test":
     case "code.lint":
     case "code.build":

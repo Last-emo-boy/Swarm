@@ -10,7 +10,7 @@ import { connect } from "node:net";
 import { MeshAdmin, askAdmin } from "./admin.js";
 import { DEFAULT_RELAY, INVITE_MINUTES, createInvite, findPeer, grantOf, hostPort, membersSummary, meshHome, readMesh, relayOf, relaysOf, setGrant, updateMesh, type Lend, type Peer, type Pull } from "./state.js";
 import { advertisedAddresses, detectAbilities, membersMismatch, nodeCard, thisSwarm, versionMismatch, type NodeCard, type NodeLoad } from "./card.js";
-import { closePeerLinks, meet, peerHealth, removeFromSwarm } from "./client.js";
+import { closePeerLinks, meet, peerHealth, removeFromSwarm, type PeerHealth } from "./client.js";
 import { LEND_KINDS, lendFolders, lentTools, registerLending, stopLending, type LendKind } from "./lend.js";
 import { parseListen } from "./listen.js";
 import { inviteWithCode, joinWithCode } from "./pair.js";
@@ -463,8 +463,10 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   const home = meshHome();
   const abilities = await detectAbilities();
   let harnessTimer: NodeJS.Timeout | undefined;
-  let facts: () => { repository?: string; load?: NodeLoad; takesWork?: false } = () => ({});
+  let facts: () => { repository?: string; load?: NodeLoad; takesWork?: false; harnessProblems?: Record<string, string> } = () => ({});
   let stopHost = async (): Promise<void> => {};
+  // Each pass over the paired nodes that meeting them makes is handed to the host, which writes its directory from it.
+  let notePeers = (_pass: PeerHealth[]): void => {};
   let serveHost = (_server: MeshServer): void => {};
   if (withHost) {
     const { SuperagentHost } = await import("../superagent/host.js");
@@ -473,28 +475,32 @@ export async function runNodeCommand(input: string[]): Promise<void> {
     const host = new SuperagentHost({ workerCommand: selfCommand(), complete: await providerComplete() });
     // The harnesses this node can run its workers on, as abilities work on a harness needs. Sign-ins lapse and are renewed,
     // so they are checked again every few minutes; the array is updated in place for the card and the work that share it.
-    const { harnessAbilities, harnessAbility } = await import("../superagent/harness.js");
+    const { harnessChecks, harnessAbility } = await import("../superagent/harness.js");
     const { vmHarnessIds } = await import("../superagent/vm/vm-work.js");
     const { settingsPath } = await import("../superagent/settings.js");
     const machine = [...abilities];
+    // Why the other profiles cannot run here, kept with the abilities so peers see what to fix where, and when it was checked.
+    let harnessProblems: Record<string, string> = {};
+    let harnessesAt = new Date().toISOString();
     const checkHarnesses = async (): Promise<void> => {
       const executor = host.client.settings().executor;
       // With ticket VMs, harness work here runs in a VM, which has OpenCode, and calls its model through the host's gateway.
-      const found = executor.isolation === "vm" ? vmHarnessIds(executor.harnesses).map(harnessAbility)
-        : await harnessAbilities(executor.harnesses, settingsPath(host.stateDir));
-      abilities.splice(0, abilities.length, ...machine, ...found);
+      const found = executor.isolation === "vm" ? { abilities: vmHarnessIds(executor.harnesses).map(harnessAbility), problems: {} }
+        : await harnessChecks(executor.harnesses, settingsPath(host.stateDir));
+      abilities.splice(0, abilities.length, ...machine, ...found.abilities);
+      harnessProblems = found.problems;
+      harnessesAt = new Date().toISOString();
     };
     await checkHarnesses();
     harnessTimer = setInterval(() => void checkHarnesses().catch((error: unknown) => console.log(`Could not check this node's harnesses: ${String(error)}`)), HARNESS_CHECK_MS);
     harnessTimer.unref();
     // What the router tells a person who names a harness or asks what the agent runs on: whether this node runs it, which
-    // paired nodes that answer do, and which do not answer.
-    host.meshView = async () => {
-      const health = await peerHealth(home, 3000);
-      return { here: { name: readMesh(home).node.name, abilities },
-        peers: health.flatMap((item) => item.card ? [{ name: item.card.name, abilities: item.card.abilities }] : []),
-        offline: health.flatMap((item) => item.card ? [] : [item.peer.name]) };
-    };
+    // paired nodes that answer do, and which do not answer, from the host's own pass over the paired nodes. Each peer keeps
+    // its id: a node renamed since its record was written answers under its new name, and the router matches it by id.
+    host.meshView = async (health) => ({ here: { name: readMesh(home).node.name, abilities },
+      peers: health.flatMap((item) => item.card ? [{ id: item.peer.id, name: item.card.name, abilities: item.card.abilities }] : []),
+      offline: health.flatMap((item) => item.card ? [] : [item.peer.name]),
+      harnessChecks: { at: harnessesAt, problems: harnessProblems } });
     const { MeshWork } = await import("./work.js");
     const work = new MeshWork(host, { home, abilities, workerCommand: selfCommand() });
     await host.start();
@@ -504,9 +510,10 @@ export async function runNodeCommand(input: string[]): Promise<void> {
       const github = settings.sources.github;
       const repository = github?.enabled ? (github.config as { repository?: string }).repository : undefined;
       // A node that runs its tickets in VMs tells its peers it takes no work put on it, so none choose it for theirs.
-      return { ...(repository ? { repository } : {}), load: work.load(), ...(settings.executor.isolation === "vm" ? { takesWork: false as const } : {}) };
+      return { ...(repository ? { repository } : {}), load: work.load(), ...(settings.executor.isolation === "vm" ? { takesWork: false as const } : {}), harnessProblems };
     };
     stopHost = () => host.stop();
+    notePeers = (pass) => host.notePeers(pass);
     const { registerTicketRoutes } = await import("./tickets.js");
     serveHost = (server) => { registerTicketRoutes(server, host.client, host.commands); work.serve(server); };
   }
@@ -522,8 +529,8 @@ export async function runNodeCommand(input: string[]): Promise<void> {
   await admin.start().catch((error: unknown) => console.log(`No mesh control socket: ${String(error)}`));
   // What a node knows about its peers goes stale: an address changes, a member was offline when the swarm grew. One pass a
   // minute keeps the membership and the addresses current, and asks a peer for any member this node is missing.
-  void meet(home, 3000).catch(() => {});
-  const meeting = setInterval(() => { void meet(home, 3000).catch(() => {}) }, MEET_MS);
+  void meet(home, 3000).then(notePeers, () => {});
+  const meeting = setInterval(() => { void meet(home, 3000).then(notePeers, () => {}) }, MEET_MS);
   meeting.unref();
   const addresses = await advertisedAddresses(node);
   console.log(`Swarm node "${node.name}" is up${withHost ? " with its superagent host" : ""}: direct links on ${node.listen}${addresses.length ? ` (${addresses.join(", ")})` : ""}, ${relays.length ? `and at ${relays.length === 1 ? "the relay" : "the relays"} ${relays.join(", ")}` : "relay off"}. Ctrl+C stops it.`);
