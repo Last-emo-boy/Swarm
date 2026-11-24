@@ -162,7 +162,7 @@ async function runOnce(kase: ReplayCase, run: number, options: { complete: Model
       await memories.reflect(kase.scene.chatId);
     } else {
       const assessor = new (await import("../assessor.js")).ModelAssessor({ client, now: () => at, complete,
-        configured: () => false, devices: async () => ({ nodes: [] }) as never });
+        configured: () => false });
       const { triggerId } = seeded;
       if (!triggerId) throw new Error("replay: no message to route");
       client.engine.evaluateDue();

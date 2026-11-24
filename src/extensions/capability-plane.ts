@@ -82,6 +82,12 @@ export class CapabilityPlane {
     return this.mcp.listServers();
   }
 
+  /** Loads again the MCP servers paired mesh devices lend, and only those (`McpClientProvider.refreshBorrowed`). */
+  async refreshBorrowedMcp(): Promise<void> {
+    await this.mcp.refreshBorrowed();
+    this.registry.invalidate("mcp");
+  }
+
   async refreshMcpServer(serverId: string): Promise<McpServerRecord> {
     const record = await this.mcp.refreshServer(serverId);
     this.registry.invalidate("mcp");

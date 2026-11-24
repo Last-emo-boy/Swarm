@@ -130,10 +130,12 @@ async function swarmTurns(ticketId: string, link: WorkLink, begun: WorkStart, co
   const { SwarmRuntime } = await import("../runtime/runtime.js");
   const runtime = new SwarmRuntime({
     workspace: directory,
+    // A ticket's worker files no tickets of its own: it reads the swarm and acts on it through its ticket tools.
+    swarmTools: false,
     mcpConfig: { sources: [{ source: "json", bytes: 0, serverIds: ["ticket"], servers: { ticket: {
       transport: "stdio", command: node!, args: [...entry, ...link.tools.args], trust: "user", alwaysLoad: true,
       env: link.tools.env,
-      toolRiskOverrides: { read: "r0", attachment: "r1", people: "r0", devices: "r0", mesh: "r1", recall: "r0", message: "r1", remember: "r1", ack: "r1", report: "r1", handback: "r1", thread_follow: "r1", thread_unrelated: "r1" },
+      toolRiskOverrides: { read: "r0", attachment: "r1", people: "r0", devices: "r0", directory: "r0", mesh: "r1", recall: "r0", message: "r1", remember: "r1", ack: "r1", report: "r1", handback: "r1", thread_follow: "r1", thread_unrelated: "r1" },
       timeoutMs: 120_000
     } } }] },
     approvalHandler: async (request) => {

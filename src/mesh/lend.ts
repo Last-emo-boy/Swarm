@@ -18,7 +18,7 @@ export type LendKind = keyof Lend;
 export const LEND_KINDS: LendKind[] = ["shell", "files"];
 const KIND_TOOLS: Record<LendKind, string[]> = { shell: ["shell"], files: ["list_files", "read_file", "write_file"] };
 /** The surface each lent tool needs: running a command, reading a folder or file, writing a file. */
-const TOOL_SURFACE: Readonly<Record<string, MeshSurface>> = {
+export const TOOL_SURFACE: Readonly<Record<string, MeshSurface>> = {
   shell: "lend.shell", list_files: "lend.files.read", read_file: "lend.files.read", write_file: "lend.files.write"
 };
 

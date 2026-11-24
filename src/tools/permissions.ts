@@ -5,6 +5,7 @@ import { defaultSwarmSettings, type PermissionMode, type SwarmSettings } from ".
 import { attachApprovalGovernance } from "../runtime/safety-governance.js";
 import type { LocalToolContext, ToolAction, ToolApprovalRequest } from "./types.js";
 import type { RiskClass } from "../protocol/types.js";
+import { personCommandIn } from "../directory/person-commands.js";
 
 const DEFAULT_PERMISSION_ASK_RULES = new Set(defaultSwarmSettings().permissions.ask);
 
@@ -55,7 +56,9 @@ export type ToolPermissionDecision = {
 export function decideToolPermission(action: ToolAction, settings: SwarmSettings, context?: PermissionMatchContext): ToolPermissionDecision {
   const mode = normalizePermissionMode(settings.permissions.defaultMode);
   const permissionName = permissionNameForAction(action);
-  const denyRule = findMatchingPermissionRule(action, settings.permissions.deny, context);
+  // Dispatch starts a worker that runs shell commands as the owner, so a deny of every shell command denies it too.
+  const denyRule = findMatchingPermissionRule(action, settings.permissions.deny, context)
+    ?? (action.type === "swarm.dispatch" ? findMatchingPermissionRule({ type: "shell.exec", command: "" }, settings.permissions.deny, context) : undefined);
   if (denyRule) {
     return {
       decision: "deny",
@@ -63,6 +66,17 @@ export function decideToolPermission(action: ToolAction, settings: SwarmSettings
       mode,
       permission_name: permissionName,
       matched_rule: denyRule
+    };
+  }
+
+  // Pairing, grants, lending, placement, pausing, settings and keys stay with people: no mode or allow rule lets an agent run them.
+  const personOnly = personOnlyCommand(action);
+  if (personOnly) {
+    return {
+      decision: "deny",
+      reason: `\`${personOnly.how}\` is for a person to run, never an agent: name it to the person instead (${personOnly.about}).`,
+      mode,
+      permission_name: permissionName
     };
   }
 
@@ -106,7 +120,8 @@ export function decideToolPermission(action: ToolAction, settings: SwarmSettings
     };
   }
 
-  if (isShellLikeAction(action) || action.type === "package.install" || action.type === "exec") {
+  // Placing work on the swarm asks as a shell command does: it starts a worker, possibly on another node.
+  if (isShellLikeAction(action) || action.type === "package.install" || action.type === "exec" || action.type === "swarm.dispatch") {
     return skipsApproval(mode)
       ? {
           decision: "allow",
@@ -290,7 +305,7 @@ export function riskClassForAction(action: ToolAction): RiskClass {
   if (action.type === "git.branch" && action.action !== "list") {
     return "r2";
   }
-  if (action.type === "shell.exec" || action.type === "exec" || action.type === "process.start" || action.type === "process.stop") {
+  if (action.type === "shell.exec" || action.type === "exec" || action.type === "process.start" || action.type === "process.stop" || action.type === "swarm.dispatch") {
     return "r2";
   }
   if (isWriteLikeAction(action) || action.type === "json.edit" || action.type === "notebook.edit" || action.type === "code.test" || action.type === "code.lint" || action.type === "code.build" || action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
@@ -575,6 +590,15 @@ function permissionNameForAction(action: ToolAction): string {
   if (action.type === "blackboard.read" || action.type === "blackboard.search" || action.type === "blackboard.list") {
     return "BlackboardRead";
   }
+  if (action.type === "swarm.directory") {
+    return "SwarmDirectory";
+  }
+  if (action.type === "swarm.read") {
+    return "SwarmRead";
+  }
+  if (action.type === "swarm.dispatch") {
+    return "Dispatch";
+  }
   return "Read";
 }
 
@@ -799,6 +823,9 @@ function approvalSummary(action: ToolAction): string {
   if (action.type === "blackboard.list") {
     return "List blackboard entries";
   }
+  if (action.type === "swarm.dispatch") {
+    return `Dispatch work${action.on ? ` on ${action.on}` : ""}${action.harness ? ` via ${action.harness}` : ""}: ${action.text}`;
+  }
   return `${action.type}: ${permissionRuleContentForAction(action) ?? ""}`.trim();
 }
 
@@ -857,6 +884,9 @@ function approvalTarget(action: ToolAction): string {
   if (action.type === "blackboard.list") {
     return action.keyPrefix ?? action.tag ?? "blackboard";
   }
+  if (action.type === "swarm.dispatch") {
+    return action.on ?? "here";
+  }
   return permissionRuleContentForAction(action) ?? action.type;
 }
 
@@ -897,6 +927,9 @@ function predictedImpact(action: ToolAction, riskClass: RiskClass): string {
   if (action.type === "blackboard.write") {
     return "Writes shared Swarm session state visible to other agents.";
   }
+  if (action.type === "swarm.dispatch") {
+    return `Files a new ticket as this terminal's operator; the superagent host runs its worker${action.on ? ` on ${action.on}` : ""}${action.harness ? ` with ${action.harness}` : ""}, which may change files and spends that harness account's budget.`;
+  }
   return riskClass === "r0" ? "Read-only or low-risk operation." : "Changes local state or uses an external resource.";
 }
 
@@ -923,13 +956,23 @@ function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
   if (action.type === "package.install") {
     return "install";
   }
-  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue") {
+  if (action.type === "agent.delegate" || action.type === "agent.stop" || action.type === "agent.continue" || action.type === "swarm.dispatch") {
     return "delegate";
   }
   if (isShellLikeAction(action) || action.type === "exec" || action.type === "git.branch") {
     return "shell";
   }
   return "write";
+}
+
+/** The person-only Swarm command a command-running action would run, through `sh -c` and `sudo` too; undefined for any other action. */
+function personOnlyCommand(action: ToolAction) {
+  if (!("command" in action) || typeof action.command !== "string") return undefined;
+  for (const candidate of commandRiskScanCandidates(action.command)) {
+    const found = personCommandIn(candidate);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function isShellLikeAction(action: ToolAction): boolean {

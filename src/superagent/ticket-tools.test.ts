@@ -12,6 +12,7 @@ import { feishuTrigger } from "./sources/feishu.js";
 import { fileReport, proxiedTicketTools, ticketTools } from "./ticket-tools.js";
 import { latestReport } from "./core/index.js";
 import { localOperator } from "./sources/local.js";
+import { buildDirectory } from "../directory/build.js";
 
 let stateDir: string;
 let client: SuperagentClient;
@@ -118,6 +119,53 @@ test("a worker answers what the agent runs work on from the host's devices, with
   assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "devices" && tool.readOnly));
 });
 
+test("a worker reads who can do what from the host's directory, by role, and through its owner wherever it runs", async () => {
+  const { triggerId } = client.request("which node lends kubectl?");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Lenders", scope: "x", reason: "asked", name: "lenders", evalId: candidate.evalId });
+  const at = "2026-11-24T10:00:00.000Z";
+  const card = { id: "kube-id", name: "kube", addresses: [], relayName: "kube", protocol: 2, version: "0.1.0", os: "linux" as const, arch: "x64", at,
+    abilities: ["linux", "harness:codex"], yourGrant: "operator" as const, load: { slots: 2, running: 0, queued: 0 }, lend: { shell: { roots: ["/srv/kube"] } } };
+  const directory = buildDirectory({ at, own: { protocol: 2, version: "0.1.0" },
+    here: { id: "vm-id", name: "bot-vm", host: "running", machine: ["linux"], harnesses: [], harnessProblems: { codex: "Codex is not installed: no `codex` on PATH." },
+      workers: { slots: 3, running: 1, queued: 0, free: 2 }, takesWork: false },
+    mesh: { at, given: { "kube-id": "operator" }, peers: [{ peer: { id: "kube-id", name: "kube", addresses: [] }, reachable: true, card }] },
+    harnesses: { at, signIn: true, default: null, profiles: [{ id: "codex", kind: "codex", readOnly: true }] } });
+  const run = () => ticketTools(client, ticketId!).find((tool) => tool.name === "directory")!.run({});
+  await assert.rejects(run(), /has not written its directory yet/);
+  client.store.set(KV.host.directory, directory);
+  // Without an access model everyone may see the nodes.
+  const seen = await run() as { as_of: string; paired_nodes: { name: string; lends: { tools: string[] }; grant_received: string; may_there: string[] }[];
+    this_node: { harness_problems: Record<string, string> }; harnesses: { id: string; runs_on: string[] }[] };
+  assert.equal(seen.as_of, at);
+  assert.deepEqual(seen.paired_nodes.map((node) => [node.name, node.lends.tools, node.grant_received]), [["kube", ["shell"], "operator"]]);
+  // The lent tools go by the names mesh takes, with the node's name: mesh {node: "kube", tool: "shell"}.
+  assert.deepEqual((seen.paired_nodes[0]!.lends as { shell?: string[] }).shell, ["/srv/kube"]);
+  assert.ok(seen.paired_nodes[0]!.may_there.includes("lend.shell"));
+  assert.deepEqual(seen.this_node.harness_problems, { codex: "Codex is not installed: no `codex` on PATH." });
+  assert.deepEqual(seen.harnesses, [{ id: "codex", runs_on: ["kube"] }]);
+  // Under the access model, a requester below maintainer gets counts.
+  writeSettings({ access: {}, policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "everyone" } } } } }, settingsPath(stateDir));
+  utimesSync(settingsPath(stateDir), new Date(), new Date(Date.now() + 2000));
+  const counts = await run() as Record<string, unknown>;
+  assert.deepEqual(counts.paired_nodes, { total: 1, online: 1 });
+  assert.equal(counts.this_node, undefined);
+  assert.doesNotMatch(JSON.stringify(counts), /kube|bot-vm/);
+  // A worker in a ticket VM or on a paired node calls the same tool, which its owner runs on the ticket's own records.
+  const calls: string[] = [];
+  const proxied = proxiedTicketTools(async (name, args) => {
+    calls.push(name);
+    return ticketTools(client, ticketId!).find((tool) => tool.name === name)!.run(args);
+  });
+  const tool = proxied.find((item) => item.name === "directory")!;
+  assert.ok(tool.readOnly);
+  assert.deepEqual(await tool.run({}), counts);
+  assert.deepEqual(calls, ["directory"]);
+  // devices answers as before.
+  assert.ok(proxied.some((item) => item.name === "devices" && item.readOnly));
+});
+
 test("a worker uses what paired nodes lend through its host's mesh, and each call it makes is kept with its ticket", async () => {
   const { triggerId } = client.request("run kubectl get nodes on the kube node");
   client.engine.evaluateDue();
@@ -134,6 +182,59 @@ test("a worker uses what paired nodes lend through its host's mesh, and each cal
     // The call is kept once it ends, with how it went, so the ticket's report can say what failed.
     assert.deepEqual([call?.ok, typeof call?.ms, call?.error?.includes("No paired node is called kube")], [false, "number", true]);
     assert.ok(proxiedTicketTools(async () => ({})).some((tool) => tool.name === "mesh" && !tool.readOnly), "workers in VMs and on paired nodes get it too, run by the host");
+  } finally {
+    if (saved === undefined) delete process.env.SWARM_MESH_HOME;
+    else process.env.SWARM_MESH_HOME = saved;
+  }
+});
+
+test("a worker for a requester below maintainer learns how many paired nodes there are from mesh, not which, and reaches none", async () => {
+  const { triggerId } = client.request("what does the box lend?");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Lends", scope: "x", reason: "asked", name: "lends", evalId: candidate.evalId });
+  const saved = process.env.SWARM_MESH_HOME;
+  const home = join(stateDir, "mesh");
+  process.env.SWARM_MESH_HOME = home;
+  try {
+    const { newPairKey, savePeer } = await import("../mesh/state.js");
+    savePeer({ id: "box-id", name: "box", key: newPairKey(), addresses: ["http://127.0.0.1:9"], pairedAt: new Date().toISOString() }, home);
+    const run = (args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === "mesh")!.run(args);
+    // Without an access model everyone may see the nodes.
+    assert.deepEqual(((await run({})) as { nodes: { node: string }[] }).nodes.map((node) => node.node), ["box"]);
+    writeSettings({ access: {}, policy: { sources: { local: { allowed: [], roles: { [localOperator()]: "everyone" } } } } }, settingsPath(stateDir));
+    utimesSync(settingsPath(stateDir), new Date(), new Date(Date.now() + 2000));
+    const counts = await run({}) as Record<string, unknown>;
+    assert.deepEqual(counts.paired_nodes, { total: 1, online: 0 });
+    assert.doesNotMatch(JSON.stringify(counts), /box/);
+    await assert.rejects(run({ node: "box", tool: "read_file", args: { path: "/etc/hosts" } }), /Only maintainers' and owners' tickets see the paired nodes/);
+    assert.deepEqual(client.store.get(KV.mesh.calls(ticketId!)) ?? [], [], "a refused call never reaches the node");
+  } finally {
+    if (saved === undefined) delete process.env.SWARM_MESH_HOME;
+    else process.env.SWARM_MESH_HOME = saved;
+  }
+});
+
+test("a read-only ticket only lists and reads files on a paired node, whatever harness its worker runs on", async () => {
+  const { triggerId } = client.request("look at the logs on the kube node");
+  client.engine.evaluateDue();
+  const candidate = client.engine.candidate(triggerId)!;
+  const { ticketId } = client.engine.decide(triggerId, { kind: "accept", title: "Kube logs", scope: "x", reason: "asked", name: "kube-logs", evalId: candidate.evalId });
+  const ticket = client.store.tickets.get(ticketId!)!;
+  client.store.atomic(() => client.store.tickets.save({ ...ticket, mandate: { ...ticket.mandate, capability: { role: "everyone", write: "read-only" } } }));
+  const saved = process.env.SWARM_MESH_HOME;
+  process.env.SWARM_MESH_HOME = join(stateDir, "mesh");
+  try {
+    const run = (args: Record<string, unknown>) => ticketTools(client, ticketId!).find((tool) => tool.name === "mesh")!.run(args);
+    await assert.rejects(run({ node: "kube", tool: "shell", args: { command: "rm -rf /tmp/x" } }), /read-only: on a paired node it may only list_files and read_file, not shell/);
+    await assert.rejects(run({ node: "kube", tool: "write_file", args: { path: "a", content: "b" } }), /read-only.*not write_file/);
+    await assert.rejects(run({ node: "kube", tool: "http", args: {} }), /read-only.*not http/);
+    // Refused calls never reach the node, so none is recorded; reads go on to the mesh.
+    assert.deepEqual(client.store.get(KV.mesh.calls(ticketId!)) ?? [], []);
+    await assert.rejects(run({ node: "kube", tool: "read_file", args: { path: "/var/log/x" } }), /No paired node is called kube/);
+    await assert.rejects(run({ node: "kube", tool: "list_files", args: {} }), /No paired node is called kube/);
+    assert.deepEqual((client.store.get(KV.mesh.calls(ticketId!)) ?? []).map((call) => call.tool), ["read_file", "list_files"]);
+    assert.deepEqual(await run({}), { nodes: [] });
   } finally {
     if (saved === undefined) delete process.env.SWARM_MESH_HOME;
     else process.env.SWARM_MESH_HOME = saved;

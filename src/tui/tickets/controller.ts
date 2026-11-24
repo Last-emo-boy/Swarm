@@ -51,7 +51,9 @@ export class TuiTickets {
   private mesh?: MeshTickets;
   readonly stateDir: string;
 
-  constructor(private readonly options: { stateDir?: string; meshHome?: string; complete?: () => Complete | undefined; log: (message: string) => void }) {
+  constructor(private readonly options: { stateDir?: string; meshHome?: string; complete?: () => Complete | undefined; log: (message: string) => void;
+    /** Whether a host this TUI starts checks its harnesses' sign-ins itself (`HostOptions.checkHarnesses`). */
+    checkHarnesses?: boolean }) {
     this.stateDir = options.stateDir ?? process.env.SWARM_SUPERAGENT_HOME ?? join(getSwarmPaths().home, "superagent");
   }
 
@@ -152,7 +154,8 @@ export class TuiTickets {
         import("../../superagent/host.js"), import("../../superagent/cli.js"), import("../../superagent/provider.js")
       ]);
       const complete = this.options.complete?.() ?? await providerComplete();
-      const host = new SuperagentHost({ stateDir: this.stateDir, workerCommand: selfCommand(), complete, log: this.options.log });
+      const host = new SuperagentHost({ stateDir: this.stateDir, workerCommand: selfCommand(), complete, log: this.options.log,
+        ...(this.options.checkHarnesses ? { checkHarnesses: true } : {}) });
       await host.start();
       this.host = host;
       return true;

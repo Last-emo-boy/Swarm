@@ -4,7 +4,7 @@ import { extname, isAbsolute, relative, resolve } from "node:path";
 import { normalizeToolAction, renderToolResultDetail, runLocalTool } from "../tools/local-tools.js";
 import { LOCAL_TOOL_SCHEMAS, localToolSchemaForModel, validateLocalToolActionInputs } from "../tools/tool-contracts.js";
 import { createToolApprovalRequest, decideToolPermission } from "../tools/permissions.js";
-import type { AgentDelegateAction, FileLockEvent, LocalToolContext, ToolAction, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
+import type { AgentDelegateAction, FileLockEvent, LocalToolContext, SwarmToolsContext, ToolAction, ToolApprovalRequest, ToolResult, WorkspaceChangeMetadata } from "../tools/types.js";
 import { writeTaskOutput } from "../storage/task-output-store.js";
 import { ToolContentReplacementStore } from "../storage/tool-content-replacement-store.js";
 import { OpenAIProvider, type PromptBlock } from "../providers/openai-provider.js";
@@ -225,6 +225,9 @@ export type ControlDecision = {
   instruction: string;
 };
 
+/** The main session's swarm tools, and the `swarm_directory` block of its prompt. */
+export type CodingLoopSwarm = SwarmToolsContext & { summary: () => Promise<string> };
+
 type CodingLoopOptions = {
   workspace: string;
   settings: SwarmSettings;
@@ -248,6 +251,11 @@ type CodingLoopOptions = {
   workspaceIndex?: WorkspaceIndex;
   invokeAgent?: (request: AgentInvocationRequest) => Promise<ToolResult>;
   agentControl?: LocalToolContext["agentControl"];
+  /**
+   * The swarm as the main session sees it (src/directory/session.ts): its `summary` is the `swarm_directory` block of each
+   * turn's user payload, and the SwarmDirectory, SwarmRead and Dispatch tools run through it. Only the main role uses it.
+   */
+  swarm?: CodingLoopSwarm;
   listModelCapabilities?: () => Promise<CapabilityDescriptor[]>;
   invokeCapability?: (
     capabilityId: string,
@@ -300,6 +308,8 @@ const MAX_UNUSABLE_REPLIES = 3;
 const UNUSABLE_REPLY_PREVIEW_BYTES = 4_000;
 const ACTIVITY_PREVIEW_LENGTH = 80;
 const TOOL_SEARCH_TOOL_NAME = "ToolSearch";
+/** The main session's swarm tools, listed only when it has the swarm (`CodingLoopOptions.swarm`). */
+const SWARM_TOOL_NAMES = ["SwarmDirectory", "SwarmRead", "Dispatch"] as const;
 const DEFAULT_TOOL_NAMES = [
   "Read",
   "Glob",
@@ -497,14 +507,17 @@ export class CodingAgentLoop {
         modelCapabilities = await this.options.listModelCapabilities?.() ?? [];
         const durableContext = await this.options.durableContext?.(sessionId) ?? "";
         const agentMemoryContext = await this.options.agentMemoryContext?.(sessionId) ?? "";
+        const swarm = role === "main" ? this.options.swarm : undefined;
         const availableTools = allowedToolNames(
           this.options.allowedTools,
           this.options.disallowedTools,
           delegateAvailable,
           modelCapabilities,
           this.discoveredDynamicToolNames,
-          this.options.writePolicy
+          this.options.writePolicy,
+          !!swarm
         );
+        const swarmDirectory = swarm ? await swarm.summary() : undefined;
         const dynamicToolSchemas = dynamicCapabilityToolSchemas(modelCapabilities, this.discoveredDynamicToolNames);
         const deferredToolCatalog = renderDeferredToolCatalog(modelCapabilities, this.discoveredDynamicToolNames);
         const budgetedToolResults = await applyToolResultBudget(compactToolResultHistory(toolResults), {
@@ -526,7 +539,8 @@ export class CodingAgentLoop {
           availableTools,
           writePolicy: this.options.writePolicy,
           expectedSideEffects: this.options.expectedSideEffects,
-          additionalReadDirectories: this.options.settings.permissions.additionalDirectories
+          additionalReadDirectories: this.options.settings.permissions.additionalDirectories,
+          swarmDirectory: !!swarm
         });
         const userPrompt = codingLoopUserPrompt({
           objective,
@@ -539,6 +553,7 @@ export class CodingAgentLoop {
           workspace: this.options.workspace,
           durableContext,
           agentMemoryContext,
+          swarmDirectory,
           workspaceIndex: this.options.workspaceIndex,
           delegateAvailable,
           toolResults: budgetedToolResults,
@@ -1050,6 +1065,10 @@ export class CodingAgentLoop {
       if (this.options.disallowedTools && isToolDeniedByPolicy(action.type, this.options.disallowedTools)) {
         throw new Error(`Tool action denied by run tool policy: ${action.type}`);
       }
+      // The swarm tools are the main session's: a worker does not place work on other nodes or read the host for it.
+      if (action.type.startsWith("swarm.") && ((this.options.role ?? "main") !== "main" || !this.options.swarm)) {
+        throw new Error(`${action.type} is only available in the main Swarm session`);
+      }
       assertToolActionAllowedBySandbox(action, {
         writePolicy: this.options.writePolicy,
         workspace: this.options.workspace,
@@ -1120,6 +1139,7 @@ export class CodingAgentLoop {
         onWorkspaceChange: this.options.onWorkspaceChange,
         onFileLock: this.options.onFileLock,
         agentControl: this.options.agentControl,
+        swarm: this.options.swarm,
         delegate: (this.options.delegateDepth ?? MAX_DELEGATE_DEPTH) > 0
           ? (action) => this.delegateWorker(action, sessionId, id)
           : undefined
@@ -1622,6 +1642,12 @@ function describeToolAction(action: ToolAction): string {
       return `agent.stop ${previewActivityValue(action.worker_id)}`;
     case "agent.continue":
       return `agent.continue ${previewActivityValue(action.worker_id)}: ${previewActivityValue(action.message)}`;
+    case "swarm.directory":
+      return `SwarmDirectory ${action.section ?? "all"}${action.refresh ? " (refresh)" : ""}`;
+    case "swarm.read":
+      return `SwarmRead ${previewActivityValue([action.name, ...action.args ?? []].join(" "))}`;
+    case "swarm.dispatch":
+      return `Dispatch${action.on ? ` on ${previewActivityValue(action.on)}` : ""}${action.harness ? ` via ${previewActivityValue(action.harness)}` : ""}: ${previewActivityValue(action.text)}`;
   }
 }
 
@@ -1643,6 +1669,7 @@ function codingLoopSystemPrompt(input: {
   writePolicy?: "read_only" | "scoped_write" | "workspace_write";
   expectedSideEffects?: string;
   additionalReadDirectories?: string[];
+  swarmDirectory?: boolean;
 }): PromptBlock[] {
   const tools = input.availableTools.join(", ");
   const defaultBehaviorInstructions = [
@@ -1687,7 +1714,10 @@ function codingLoopSystemPrompt(input: {
       ? "You may dynamically upgrade the coding loop into an internal swarm by using Agent when the task naturally splits into independent roles, workstreams, or expert checks. The main Swarm remains responsible for user-facing synthesis and final decisions."
       : "Do not use Agent in this loop.",
     input.delegateAvailable && input.role === "main"
-      ? "When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, run_in_background, and file_scope when known. Use run_in_background=true or preferred_mode=parallel for independent side work that should not block the main agent. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns. Pass harness (an agent harness profile such as claude, codex, kimi or opencode) only when the user asks for a subagent on that agent CLI."
+      ? `When delegating, choose from available_agent_specs and pass structured inputs: capability, task, context, preferred_agent_spec_id, preferred_mode, run_in_background, and file_scope when known. Use run_in_background=true or preferred_mode=parallel for independent side work that should not block the main agent. For explicit swarm or team-role requests, spawn the relevant architect/researcher/reviewer/verifier/coder workers early instead of doing all reasoning alone. Prefer read-only researcher/reviewer/critic/verifier subagents before write delegation. Use handoff only for focused deep work across multiple turns. Pass harness (an agent harness profile such as claude, codex, kimi or opencode) to run the subagent on that agent CLI when the user asks for it, or on your own when a ready harness fits the task better than Swarm's own loop${input.swarmDirectory ? " (swarm_directory lists the harnesses ready here)" : ""}; it spends that harness account's budget.`
+      : undefined,
+    input.swarmDirectory
+      ? "swarm_directory in the user payload says which nodes, harnesses and lent tools are ready now: choose nodes for Dispatch, harnesses for Agent and Dispatch, and lent mcp__<node>__<tool> names for ToolSearch from it, and call SwarmDirectory for detail. Its commands for a person (pairing, grants, lending, placement, pause, settings, keys and sign-ins) are never yours to run: name the exact line to the person instead."
       : undefined,
     "Keep message grounded in actual tool results. Mention verification commands that were run.",
     input.role === "main"
@@ -1714,6 +1744,8 @@ function codingLoopUserPrompt(input: {
   workspace: string;
   durableContext?: string;
   agentMemoryContext?: string;
+  /** The main session's view of the swarm (src/directory/render.ts `mainSummary`); in the context block, not the cached prefix. */
+  swarmDirectory?: string;
   workspaceIndex?: WorkspaceIndex;
   delegateAvailable: boolean;
   toolResults: CodingLoopToolResult[];
@@ -1748,6 +1780,7 @@ function codingLoopUserPrompt(input: {
   const contextPayload = {
     durable_session_context: input.durableContext ? `Durable session context:\n${input.durableContext}` : undefined,
     agent_memory_context: input.agentMemoryContext ? `Agent memory continuity:\n${input.agentMemoryContext}` : undefined,
+    swarm_directory: input.swarmDirectory,
     workspace_state: input.workspaceIndex ? renderDynamicWorkspaceStateForPrompt(input.workspaceIndex) : undefined,
     semantic_evidence: semanticEvidencePrompt(input.toolResults),
     deferred_tool_catalog: input.deferredToolCatalog
@@ -2370,10 +2403,12 @@ function allowedToolNames(
   delegateAvailable: boolean,
   capabilities: CapabilityDescriptor[] = [],
   discoveredDynamicToolNames: Set<string> = new Set<string>(),
-  writePolicy?: SandboxWritePolicy
+  writePolicy?: SandboxWritePolicy,
+  swarm = false
 ): string[] {
   const hasAllowList = Boolean(allowedTools?.length);
-  const tools = hasAllowList ? [...allowedTools!] : [...DEFAULT_TOOL_NAMES];
+  const tools = (hasAllowList ? [...allowedTools!] : [...DEFAULT_TOOL_NAMES, ...swarm ? SWARM_TOOL_NAMES : []])
+    .filter((tool) => swarm || !isSwarmToolName(tool));
   const withDelegate = !hasAllowList && delegateAvailable && !tools.includes("Agent")
     ? [...tools, "Agent"]
     : tools.filter((tool) => delegateAvailable || (tool !== "Agent" && tool !== "agent.delegate"));
@@ -2394,6 +2429,10 @@ function allowedToolNames(
     result.push(TOOL_SEARCH_TOOL_NAME);
   }
   return sortToolNamesForPrompt([...new Set(result)]);
+}
+
+function isSwarmToolName(tool: string): boolean {
+  return SWARM_TOOL_NAMES.some((name) => toolNameMatches(name, tool));
 }
 
 function sortToolNamesForPrompt(tools: string[]): string[] {
@@ -2488,7 +2527,9 @@ function isToolNameAllowedByPolicy(toolName: string, allowedTools: string[]): bo
 }
 
 function isToolDeniedByPolicy(toolName: string, disallowedTools: string[] | undefined): boolean {
-  return Boolean(disallowedTools?.some((denied) => toolNameMatches(denied, toolName)));
+  // Dispatch starts a worker that runs shell commands as the owner, so a run without shell has no Dispatch either.
+  const dispatch = toolNameMatches(toolName, "Dispatch");
+  return Boolean(disallowedTools?.some((denied) => toolNameMatches(denied, toolName) || (dispatch && toolNameMatches(denied, "Bash"))));
 }
 
 function toolNameMatches(pattern: string, toolName: string): boolean {
@@ -2547,7 +2588,10 @@ function localCapabilityIdForAction(action: ToolAction["type"]): string {
     "lsp.code_actions": "lsp_code_actions",
     "lsp.rename_preview": "lsp_rename_preview",
     "lsp.format": "lsp_format",
-    "agent.delegate": "Agent"
+    "agent.delegate": "Agent",
+    "swarm.directory": "SwarmDirectory",
+    "swarm.read": "SwarmRead",
+    "swarm.dispatch": "Dispatch"
   };
   return `local_tool.${visibleNameByAction[action] ?? action}`;
 }
@@ -2687,8 +2731,11 @@ function searchDeferredCapabilities(
   search: { query?: string; limit: number; kind?: string; provider?: string },
   discoveredDynamicToolNames: Set<string>
 ): ToolSearchMatch[] {
-  const candidates = capabilities
-    .filter((capability) => shouldIncludeInToolSearch(capability, search, discoveredDynamicToolNames))
+  // An exact tool name, as the swarm directory lists a lent tool, selects that one tool in one step; already loaded, it says so.
+  const exact = search.query
+    ? capabilities.find((capability) => capability.kind === "mcp_tool" && isVisibleCapability(capability) && capability.name === search.query)
+    : undefined;
+  const candidates = (exact ? [exact] : capabilities.filter((capability) => shouldIncludeInToolSearch(capability, search, discoveredDynamicToolNames)))
     .map((capability): ToolSearchMatch | undefined => {
       const score = scoreToolSearchCapability(capability, search.query);
       if (search.query && score === undefined) {
@@ -3620,6 +3667,8 @@ function classifyToolConcurrency(action: ToolAction): ToolConcurrencyClass {
     "blackboard.list",
     "agent.list",
     "agent.status",
+    "swarm.directory",
+    "swarm.read",
     "process.status",
     "process.list",
     "process.tail",

@@ -236,3 +236,27 @@ function shellAction(command: string, overrides: Partial<Extract<ToolAction, { t
     ...overrides
   };
 }
+
+test("a shell command that runs a person-only Swarm command is refused in every mode, allow rules included", async () => {
+  const { PERSON_COMMANDS } = await import("../directory/person-commands.js");
+  // Each line as the directory lists it, with its placeholders filled in.
+  const filled = (how: string) => how.replace(/<[^>]+>(\.\.\.)?/g, "x").replace(/\[[^\]]*\]/g, "").replace(/(\S+)\|\S+/g, "$1").replace(/\(.*\)/, "").trim();
+  for (const mode of ["full-auto", "yolo", "auto-edit", "ask"] as const) {
+    const settings = settingsForMode(mode);
+    settings.permissions.allow = [...settings.permissions.allow, "Bash(*)", "Bash(swarm *)"];
+    for (const command of PERSON_COMMANDS) {
+      const decision = decideToolPermission(shellAction(filled(command.how)), settings, { workspace });
+      assert.equal(decision.decision, "deny", `${mode}: ${filled(command.how)}`);
+      assert.match(decision.reason, /for a person to run, never an agent/);
+    }
+  }
+  const settings = settingsForMode("full-auto");
+  for (const command of ["swarm superagent resume", "cd /tmp && SWARM_HOME=/x swarm mesh grant ovh operator", "sh -c 'swarm mesh lend shell ~'",
+    "/usr/local/bin/swarm auth set-key openai sk-x", "npx swarm --json mesh remove ovh", "echo ok; sudo swarm superagent pause"]) {
+    assert.equal(decideToolPermission(shellAction(command), settings, { workspace }).decision, "deny", command);
+  }
+  assert.equal(decideToolPermission({ type: "process.start", command: "swarm mesh invite" }, settings, { workspace }).decision, "deny");
+  for (const command of ["swarm superagent status", "swarm mesh status", "echo \"swarm mesh grant\"", "swarm directory --json", "swarmy mesh grant x"]) {
+    assert.equal(decideToolPermission(shellAction(command), settings, { workspace }).decision, "allow", command);
+  }
+});

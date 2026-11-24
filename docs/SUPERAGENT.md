@@ -25,6 +25,7 @@ The domain is upstream's, ported unchanged in `src/superagent/core/` with its en
 | Host: lock, setup, Source polling, passes, Policy changes, health snapshot | `host.ts`, `setup.ts`, `environment.ts` | `swarm superagent run`, or a TUI with no other host |
 | Routing, assessment, follow-up stop check | `assessor.ts`, `prompts.ts` | Host |
 | What the agent runs work on: nodes, harnesses, free workers | `devices.ts` | Host |
+| Capability directory: who can do what now, for the main session, the router and workers | `../directory/` | Host writes `host-directory` every minute; any process reads it or builds its own |
 | Executor: slots, prepare command, worker processes | `executor.ts` | Host |
 | Worker: coding loop on the ticket's session | `worker.ts` | One child process per running ticket |
 | Harness turns: Claude Code, Codex, Kimi Code or OpenCode in place of the coding loop | `harness.ts`, `harness-turns.ts` | One child of the worker per turn |
@@ -134,11 +135,12 @@ steer it. Without the block, nothing changes: everyone on a list may do everythi
   request. Attaching such a message to the ticket, or a stop from that person, is refused.
 - **Limits.** Defaults: `everyone` 1 open ticket and 10 requests an hour, `maintainer` 4 and 60, `owner` 8 and no hourly
   limit. A message beyond them is held back with one answer that says so.
-- **Harness.** Maintainers and owners may ask for the agent harness their work runs on (below), since its turns are paid
-  for by the owner's harness accounts. `everyone`'s work runs on the default (`executor.harness`), and the
-  acknowledgement says so.
-- **Devices.** Maintainers and owners learn which nodes the agent runs work on and what each runs (below); `everyone`
-  learns how many paired nodes there are, how many are online and how many workers are free.
+- **Harness.** Maintainers and owners may ask for the agent harness their work runs on, and the router may choose one
+  for their work itself (below), since its turns are paid for by the owner's harness accounts. `everyone`'s work runs on
+  the default (`executor.harness`), and the acknowledgement says so when they asked for another.
+- **Devices.** Maintainers and owners learn which nodes the agent runs work on and what each runs, and the router may
+  name the node their work runs on (below); `everyone` learns how many paired nodes there are, how many are online and
+  how many workers are free.
 
 People run these bot commands in Feishu, after mentioning the bot or in a direct message:
 
@@ -175,30 +177,65 @@ Work that acts as its requester on GitHub (`capability.credential`) runs only on
 it only a harness this node has counts: a harness only a paired node has is answered as unavailable for that request. A
 request filed with `--harness` keeps that harness whatever the router says.
 
-### Devices
+The router may also set `harness` without the person naming one, when a choice that runs on a node fits the work
+clearly better than the default, such as the only harness signed in on the node that has what the work needs. Its own
+choice goes through the same check (`checkedHarness`): only for maintainers' and owners' requests, only a profile some
+node runs for this request. The turns spend that harness account's budget, and `usage.budgets.harnesses` still stops
+them at its cap.
 
-The router's card carries `devices`, what the agent runs work on now, so it answers "你现在能调用哪些设备？" from real data
-with chat, in its persona's voice, and its acknowledgements do not promise work now when every worker is busy:
+### Devices and the directory
 
-- `this_node`: this node's name, its machine (OS, `docker`, `gpu`) and the harnesses signed in here, from its mesh card.
-- `paired_nodes`: each paired node, online when it answered the card request just now (3 seconds), with its machine and
-  harnesses; one that did not answer shows only its name.
-- `ticket_workers`: how many workers run at once, busy and free. With `process` isolation, the worker processes here
-  against `executor.maxWorkers`. With `vm`, the ticket VM slots here (`executor.vm.slots`) and in the cluster
-  (`executor.vm.kube.slots`); a slot is busy while its lease holds, so any process that opens the state reads the same.
+The router's card carries `directory`, the router's view of the capability directory (`src/directory`), so it
+answers "你现在能调用哪些设备？" from real data with chat, in its persona's voice, its acknowledgements do not promise
+work now when every worker is busy, and it can choose where work runs. The host reads the directory it writes every
+minute (`host-directory`) while that is at most two minutes old, else builds one from the same pass over the paired
+nodes, for every request, whoever sent it. For a requester who may see nodes (`seesNodes`: without the access model
+anyone, with it maintainers and owners) it holds:
 
-The host reads the paired nodes at most every 30 seconds for the router, the harness choices and `/devices` together,
-and again after a read that failed. For a requester who may not see nodes (`seesNodes`: without the access model anyone,
-with it maintainers and owners), the card holds counts alone: paired nodes, online ones and the workers. A host that is
-no mesh node counts every harness profile it would run as its own, as the harness choices do. `/devices` prints the same
-view. A ticket's worker reads the same view with its `devices` tool, wherever it runs, from what the host last read.
+- `this_node`: this node's name, its machine (OS, `docker`, `gpu`), the harnesses signed in here, its ticket workers
+  (`slots`, `running`, `queued`, `free`: the worker processes against `executor.maxWorkers` with `process` isolation,
+  or the ticket VM slots here and in the cluster with `vm`), whether it takes work put on it, and why a harness profile
+  does not run here.
+- `paired_nodes`: each paired node, online when it answered the card request just now (3 seconds), with its machine,
+  harnesses and workers, `takes_work`, the tools it lends by their exact `mcp__<node>__<tool>` names, `may_there` (what
+  its grant to this node lets this node ask there: `tickets.submit`, `work.offer`, `lend.shell`, `lend.files.write`,
+  `commands.read`; empty for a node from before grants were on cards) and `harness_problems`. One that did not answer
+  shows only its name.
+- `not_ready`: tool servers, Sources and model providers that are not ready, with why.
+- `commands`: the bot commands the router runs, each with what it does.
+- `nodes_unknown`, when the paired nodes could not be read, with why.
+
+Anyone else's card holds counts alone: paired nodes, online ones, this node's workers, and the commands. When the
+directory cannot be read the card says so and routing goes on.
+
+On an accept the router may set `on` to the node the work runs on: a paired node by its name or id, or `here`. It is
+for the requesters who see nodes, when the person asks for a node or one node clearly fits the work. The host checks
+it against the directory (`placementProblem`): the node answered, takes work, has `work.offer` in `may_there`, and has
+what `needs` lists and the harness the ticket runs on (the one chosen, the one filed, else `executor.harness`). Work
+that acts as its requester on GitHub stays on this node. A node that passes is written with the ticket's placement as
+`updatePlacement(ticket, { on })`, the field `swarm superagent request --on` and `place` write, so the placement offers
+the work there under a `work.offer` lease. A node that fails is dropped, never the accept: the journal's route row
+starts with `on <node> dropped: <why>` (`swarm superagent why`), and the work is placed as usual.
+
+`/devices` prints what the agent runs work on from the same pass over the paired nodes. A ticket's worker reads the
+host's directory with its `directory` tool, wherever it runs (in a ticket VM or on a paired node the owner runs the
+tool), node names only for a requester who sees them; its `devices` tool still answers the shorter list as before.
+Workers do not file tickets on other nodes: work beyond their ticket goes back to the router with `handback`.
+
+The main session reads the same directory and files work through `Dispatch`, as the terminal's operator, the actor
+`swarm superagent request` files as, so the host sets the ticket's mandate from that role as for any request. Those
+tools, and the commands the directory lists as a person's alone (pairing, grants, lending, placement, pausing,
+settings, sign-ins), are in [GUIDE.md](GUIDE.md#who-can-do-what-the-directory).
 
 A ticket VM is no mesh node: its own `swarm mesh` shows only itself. A worker uses what paired nodes lend (`swarm mesh
 lend`) with its `mesh` tool, which its host runs over the host's own links: without arguments it lists each paired node
 and what it lends, and with a node, a tool (`shell`, `list_files`, `read_file`, `write_file`) and its arguments it calls
-it there. A command stops after at most 100 seconds, within the time a ticket tool may take. Every ticket's worker has it,
-whoever asked for the work, and every call is kept with its ticket (`mesh-calls:<ticket>`). A shell runs as the user its
-node lends as, with that user's credentials, such as a kubeconfig.
+it there. A command stops after at most 100 seconds, within the time a ticket tool may take. Every ticket's worker has it;
+under the access model, a worker whose requester is below maintainer learns only how many paired nodes there are and
+reaches none of them. Every call is kept with its ticket (`mesh-calls:<ticket>`). A read-only ticket's worker
+may only `list_files` and `read_file` there: the host refuses the other lent tools before they reach the node, since
+harnesses run their MCP servers outside their own read-only turns. A shell runs as the user its node lends as, with
+that user's credentials, such as a kubeconfig.
 
 ### GitHub accounts
 

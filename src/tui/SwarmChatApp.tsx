@@ -658,7 +658,7 @@ export function SwarmChatApp({ forceOnboarding = false }: Props): React.ReactEle
   }
 
   function ticketsController(): TuiTickets {
-    ticketsRef.current ??= new TuiTickets({ log: (message) => runtimeRef.current?.debug?.warn("superagent", message) });
+    ticketsRef.current ??= new TuiTickets({ checkHarnesses: true, log: (message) => runtimeRef.current?.debug?.warn("superagent", message) });
     return ticketsRef.current;
   }
 

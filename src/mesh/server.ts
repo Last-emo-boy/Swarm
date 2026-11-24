@@ -69,7 +69,8 @@ export class MeshServer {
       pair: (stream, invite) => answerDirectInvite(stream, invite, this.home, (peer) => this.options.log?.(`mesh: paired with ${peer.name}`)),
       intro: (voucher) => { acceptVoucher(voucher, this.home); }
     });
-    this.route("GET", "/mesh/v1/node", () => this.options.card());
+    // Each caller also learns the grant this node gives it, so it can skip what would answer 403 before asking.
+    this.route("GET", "/mesh/v1/node", async (request) => ({ ...await this.options.card(), yourGrant: grantOf(request.peer, this.home) }));
     this.route("GET", "/mesh/v1/peers", () => readMesh(this.home).peers.map(({ id, name, addresses, pairedAt }) => ({ id, name, addresses, pairedAt })));
     // A peer that unpairs tells this node, so both forget each other.
     this.route("POST", "/mesh/v1/unpair", (request) => { removePeer(request.peer.id, this.home); return { removed: true }; });

@@ -875,14 +875,26 @@ export async function harnessStatus(id: string, configured: Readonly<Record<stri
 export const harnessAbility = (id: string): string => `harness:${id}`;
 
 /**
+ * Every profile's check on this machine: an ability for each one installed and signed in here with its keys set, and for
+ * each other one why not, which peers show so a person learns what to fix where. Problems never carry a key's value.
+ */
+export async function harnessChecks(configured: Readonly<Record<string, HarnessProfile>>, where: string,
+  base: NodeJS.ProcessEnv = process.env): Promise<{ abilities: string[]; problems: Record<string, string> }> {
+  const statuses = await Promise.all(harnessIds(configured).map((id) =>
+    harnessStatus(id, configured, where, { signIn: true, base }).catch((error: unknown) => ({ id, problem: String(error) }))));
+  return {
+    abilities: statuses.flatMap((status) => status.problem ? [] : [harnessAbility(status.id)]),
+    problems: Object.fromEntries(statuses.flatMap((status) => status.problem ? [[status.id, status.problem]] : []))
+  };
+}
+
+/**
  * The harness abilities of this machine: one per profile that is installed and signed in here, with its keys set. A
  * profile whose check fails is not listed.
  */
 export async function harnessAbilities(configured: Readonly<Record<string, HarnessProfile>>, where: string,
   base: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  const statuses = await Promise.all(harnessIds(configured).map((id) =>
-    harnessStatus(id, configured, where, { signIn: true, base }).catch((error: unknown) => ({ id, problem: String(error) }))));
-  return statuses.flatMap((status) => status.problem ? [] : [harnessAbility(status.id)]);
+  return (await harnessChecks(configured, where, base)).abilities;
 }
 
 /**

@@ -53,7 +53,7 @@ import { auditLegacyDirectPaths } from "./legacy-direct-path-audit.js";
 import { PlanGenerator } from "./plan-generator.js";
 import { Orchestrator, type ExecutionResult, type PlannedSession, type ToolApprovalHandler } from "./orchestrator.js";
 import { getDebugLogger, type DebugLogger } from "./debug-logger.js";
-import { CodingAgentLoop } from "./coding-agent-loop.js";
+import { CodingAgentLoop, type CodingLoopSwarm } from "./coding-agent-loop.js";
 import { harnessWorker } from "./harness-worker.js";
 import type { ExecutionRoute, RunOptions, RunSandboxMode } from "./execution-router.js";
 import { SwarmController, type ControllerLiveDecision } from "./swarm-controller.js";
@@ -222,6 +222,8 @@ export class SwarmRuntime {
   readonly settings: SwarmSettings;
   readonly capabilityPlane: CapabilityPlane;
   readonly capabilityBroker: CapabilityBroker;
+  /** The main session's swarm tools and directory block, absent when this runtime was made without them. */
+  private readonly swarmTools?: CodingLoopSwarm;
   readonly debug: DebugLogger | null;
   readonly debugSessionId?: string;
   private readonly provider: OpenAIProvider;
@@ -244,7 +246,9 @@ export class SwarmRuntime {
   private unsubscribeRuntimeEventLogger?: () => void;
   private disposed = false;
 
-  constructor(options: { databasePath?: string; workspace?: string; approvalHandler?: ToolApprovalHandler; debugSessionId?: string; mcpConfig?: RuntimeMcpConfigOptions } = {}) {
+  constructor(options: { databasePath?: string; workspace?: string; approvalHandler?: ToolApprovalHandler; debugSessionId?: string; mcpConfig?: RuntimeMcpConfigOptions;
+    /** Gives the main session the capability directory and its swarm tools; a ticket's worker turns it off, as it files no work. */
+    swarmTools?: boolean; } = {}) {
     ensureSwarmHome();
     const workspace = options.workspace ?? process.cwd();
     this.workspace = workspace;
@@ -252,6 +256,7 @@ export class SwarmRuntime {
     this.debugSessionId = options.debugSessionId ?? process.env.SWARM_DEBUG_SESSION_ID;
     this.settings = applyRuntimeMcpConfig(loadSwarmSettings(workspace), options.mcpConfig);
     this.capabilityPlane = createCapabilityPlane({ settings: this.settings, workspace });
+    this.swarmTools = options.swarmTools === false ? undefined : this.createSwarmTools();
     this.debug = getDebugLogger(getSwarmPaths().logsDir, { sessionId: this.debugSessionId });
     this.debug?.info("runtime", `SwarmRuntime init. workspace=${workspace} pid=${process.pid}`);
     this.database = new SwarmDatabase(options.databasePath ?? this.settings.runtime.databasePath);
@@ -312,6 +317,7 @@ export class SwarmRuntime {
         harness: action.harness
       }),
       agentControl: this.createRuntimeAgentControlTools(),
+      swarm: this.swarmTools,
       onWorkspaceChange: (sessionId, change) => this.recordWorkspaceChange(change.sessionId ?? sessionId ?? "unknown", change),
       onFileLock: (event) => this.recordFileLock(event),
       blackboard: this.createRuntimeBlackboardTools(),
@@ -690,6 +696,7 @@ export class SwarmRuntime {
       checkpoint: this.lastCheckpoint,
       invokeAgent: (request) => this.invokeAgent(request),
       agentControl: this.createRuntimeAgentControlTools(),
+      swarm: this.swarmTools,
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: () => this.renderDurableContextForSession(input.session_id),
@@ -944,6 +951,7 @@ export class SwarmRuntime {
       checkpoint: this.lastCheckpoint,
       invokeAgent: (request) => this.invokeAgent(request),
       agentControl: this.createRuntimeAgentControlTools(),
+      swarm: this.swarmTools,
       listModelCapabilities: () => this.listCapabilities({ modelVisible: true }),
       invokeCapability: (capabilityId, args, sessionId, options) => this.invokeCapability(capabilityId, args, sessionId, options),
       durableContext: (sessionId) => this.renderDurableContextForSession(sessionId),
@@ -1684,6 +1692,24 @@ export class SwarmRuntime {
       read: (action, context) => this.readBlackboardViaEnvelope(action, context),
       search: (action, context) => this.searchBlackboardViaEnvelope(action, context),
       list: (action, context) => this.listBlackboardViaEnvelope(action, context)
+    };
+  }
+
+  /**
+   * The capability directory as this runtime's main session reads it, loaded on first use: its own MCP servers in the tool
+   * section, and borrowed servers loaded again when the paired nodes that lend change. A strict MCP config borrows none.
+   */
+  private createSwarmTools(): CodingLoopSwarm {
+    let tools: Promise<import("../directory/session.js").SessionSwarmTools> | undefined;
+    const load = () => tools ??= import("../directory/session.js").then(({ sessionSwarmTools }) => sessionSwarmTools({
+      mcp: () => this.capabilityPlane.listMcpServers(),
+      ...(this.settings.extensions.mcp.runtimeConfig?.strict ? {} : { refreshMcp: () => this.capabilityPlane.refreshBorrowedMcp() })
+    }));
+    return {
+      summary: async () => (await load()).summary(),
+      directory: async (action) => (await load()).directory(action),
+      read: async (action) => (await load()).read(action),
+      dispatch: async (action) => (await load()).dispatch(action)
     };
   }
 

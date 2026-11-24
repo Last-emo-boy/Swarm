@@ -7,7 +7,7 @@ import { advertisedAddresses, nodeCard, type NodeCard } from "./card.js";
 import { callPeer, joinMesh, MeshError, peerHealth, unpair } from "./client.js";
 import { parseListen } from "./listen.js";
 import { MeshServer } from "./server.js";
-import { createInvite, findPeer, newPairKey, parseInvite, readMesh, updateMesh, type Peer } from "./state.js";
+import { createInvite, findPeer, grantOf, newPairKey, parseInvite, readMesh, setGrant, updateMesh, type Peer } from "./state.js";
 
 // These nodes link up directly; none of them may reach out to a real relay.
 process.env.SWARM_MESH_RELAY = "off";
@@ -49,6 +49,30 @@ test("two nodes pair with an invite and call each other over links keyed with th
   assert.equal(macSide.key, ovhSide.key, "both ends derived the same pair key");
   assert.notEqual(macSide.key, readMesh(mac.home).node.keys.privateKey);
   assert.equal(statSync(join(mac.home, "state.json")).mode & 0o777, 0o600);
+});
+
+test("a node's card tells each caller the grant it gives that caller", async () => {
+  const mac = await startNode("mac");
+  const ovh = await startNode("ovh");
+  await joinMesh(createInvite(ovh.url, 15, ovh.home), mac.home);
+  const read = () => callPeer<NodeCard>(findPeer(readMesh(mac.home), "ovh"), "GET", "/mesh/v1/node");
+  assert.equal((await read()).yourGrant, grantOf(findPeer(readMesh(ovh.home), "mac"), ovh.home));
+  setGrant("mac", "viewer", ovh.home);
+  assert.equal((await read()).yourGrant, "viewer");
+  setGrant("mac", { scopes: ["node.read", "work.offer"] }, ovh.home);
+  assert.deepEqual((await read()).yourGrant, { scopes: ["node.read", "work.offer"] });
+});
+
+test("a node's card names why its harnesses cannot run there, and says nothing when every one can", async () => {
+  const home = mkdtempSync(join(tmpdir(), "swarm-mesh-card-"));
+  try {
+    const node = readMesh(home).node;
+    assert.equal((await nodeCard(node, { abilities: ["linux"], harnessProblems: {} })).harnessProblems, undefined);
+    assert.deepEqual((await nodeCard(node, { abilities: ["linux"], harnessProblems: { codex: "Codex is not installed" } })).harnessProblems,
+      { codex: "Codex is not installed" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("a node refuses a device it shares no key with, and answers a paired one's unknown route with 404", async () => {

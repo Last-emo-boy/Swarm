@@ -135,9 +135,11 @@ export async function runBenchSuite(input: {
   if (!suite) {
     throw new Error(`Unknown benchmark suite: ${input.suiteName}`);
   }
+  // A benchmark runs hermetic: no directory of this machine's mesh in its prompts, and no Dispatch filing real tickets.
   const runtime = new SwarmRuntime({
     workspace: input.workspace,
-    approvalHandler: async () => true
+    approvalHandler: async () => true,
+    swarmTools: false
   });
   const runId = `bench_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const startedAt = new Date().toISOString();

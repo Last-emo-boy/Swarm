@@ -90,6 +90,19 @@ export class McpClientProvider implements CapabilityProvider {
       .map((serverId) => this.refreshServer(serverId)));
   }
 
+  /**
+   * Loads again only the servers that paired mesh devices lend: a device that began to lend gets its server, one that
+   * stopped loses it, and a borrowed server that is not connected tries again. Every other server keeps its connection.
+   */
+  async refreshBorrowed(): Promise<void> {
+    const before = new Set(this.borrowedIds);
+    await this.loadBorrowedServers();
+    this.reloadConfig();
+    await Promise.all([...this.borrowedIds]
+      .filter((serverId) => !before.has(serverId) || this.servers.get(serverId)?.status !== "connected")
+      .map((serverId) => this.refreshServer(serverId)));
+  }
+
   async refreshServer(serverId: string): Promise<McpServerRecord> {
     const server = this.servers.get(serverId);
     if (!server) {
