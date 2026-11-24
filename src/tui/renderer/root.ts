@@ -236,6 +236,10 @@ export function createTuiRoot(options: TuiRootOptions = {}): TuiRoot {
     ensureActiveFocus(reactRoot.root, focusManager);
     lastDiff = diffScreens(previousFrame?.screen, frame.screen);
     lastPatch = buildTerminalPatch(lastDiff, { capabilities: terminalCapabilities });
+    // Writing a frame leaves the cursor where its last row ended. Every frame that writes anything puts it back where a
+    // text marked as the cursor says, so text an input method is composing appears there rather than at that row's end.
+    const anchor = frame.screen.cursor;
+    if (anchor && lastPatch.length) lastPatch = [...lastPatch, { type: "moveCursor", row: anchor.y, column: anchor.x }];
     frame.metadata.output = {
       fullReset: lastDiff.fullReset,
       changedRows: lastDiff.changed.length,

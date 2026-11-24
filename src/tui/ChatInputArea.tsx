@@ -222,7 +222,7 @@ function InputLine({ value, cursor, placeholder, maxRows, textColumns, focused }
     // The cursor sits on the placeholder's first letter, so the placeholder starts where typing will.
     return (
       <Text wrap="truncate">
-        <Text inverse={focused} color={visualTokenColor("text.muted")}>{placeholder.slice(0, 1)}</Text>
+        <Text inverse={focused} cursor={focused} color={visualTokenColor("text.muted")}>{placeholder.slice(0, 1)}</Text>
         <Text color={visualTokenColor("text.muted")}>{placeholder.slice(1)}</Text>
       </Text>
     );
@@ -231,7 +231,7 @@ function InputLine({ value, cursor, placeholder, maxRows, textColumns, focused }
   return (
     <Text wrap="wrap">
       <Text>{before}</Text>
-      <Text inverse>{current}</Text>
+      <Text inverse cursor={focused}>{current}</Text>
       <Text>{after}</Text>
     </Text>
   );
