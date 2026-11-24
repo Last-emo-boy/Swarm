@@ -69,9 +69,20 @@ export class McpClientProvider implements CapabilityProvider {
   /** Servers for the tools paired mesh devices lend, by device name. */
   private borrowed: Record<string, McpServerSettings> = {};
   private borrowedIds = new Set<string>();
+  /** What the last read of the paired devices said; the next read replaces it, so a device that answers again loses its warning. */
+  private borrowDiagnostics: CapabilityDiagnostic[] = [];
 
-  constructor(private readonly input: { settings: SwarmSettings; workspace: string }) {
+  constructor(private readonly input: { settings: SwarmSettings; workspace: string; borrowMesh?: boolean }) {
     this.reloadConfig();
+  }
+
+  /**
+   * Whether this provider loads the servers paired mesh devices lend. A strict runtime MCP config takes only its own
+   * servers; `borrowMesh: false` drops only the lent ones, as a ticket's worker does, which reaches a node only through its
+   * ticket `mesh` tool, where the requester's gates apply and each call is recorded.
+   */
+  get borrowsMesh(): boolean {
+    return this.input.borrowMesh !== false && !this.input.settings.extensions.mcp.runtimeConfig?.strict;
   }
 
   async refresh(): Promise<void> {
@@ -195,7 +206,7 @@ export class McpClientProvider implements CapabilityProvider {
   }
 
   diagnostics(): CapabilityDiagnostic[] {
-    return this.providerDiagnostics;
+    return [...this.borrowDiagnostics, ...this.providerDiagnostics];
   }
 
   listServers(): McpServerRecord[] {
@@ -299,25 +310,26 @@ export class McpClientProvider implements CapabilityProvider {
 
   /**
    * Tools that paired mesh devices lend load whether or not configured MCP servers are enabled: pairing with the device
-   * and its choice to lend are the opt-in. A strict runtime MCP config takes only its own servers.
+   * and its choice to lend are the opt-in. A provider that does not borrow (`borrowsMesh`) loads none.
    */
   private async loadBorrowedServers(): Promise<void> {
-    if (this.input.settings.extensions.mcp.runtimeConfig?.strict) {
+    if (!this.borrowsMesh) {
       this.borrowed = {};
+      this.borrowDiagnostics = [];
       return;
     }
     try {
       const { borrowedMcpServers } = await import("../mesh/borrow.js");
       const { servers, diagnostics } = await borrowedMcpServers();
       this.borrowed = servers;
-      this.providerDiagnostics.push(...diagnostics);
+      this.borrowDiagnostics = diagnostics;
     } catch (error) {
       this.borrowed = {};
-      this.providerDiagnostics.push({
+      this.borrowDiagnostics = [{
         severity: "warn",
         code: "MCP_MESH_UNREADABLE",
         message: `Could not read the mesh's paired devices, so no tools are borrowed: ${error instanceof Error ? error.message : String(error)}`
-      });
+      }];
     }
   }
 

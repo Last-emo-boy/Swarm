@@ -5,7 +5,7 @@
  * Nothing here carries a timestamp or a latency, so the same state renders the same text and a prompt holding it caches.
  */
 import { placeableNodes } from "./build.js";
-import type { CommandEntry, Directory, HarnessEntry, NodeEntry, PeerEntry, WorkerCount } from "./types.js";
+import type { CommandEntry, Directory, NodeEntry, PeerEntry, WorkerCount } from "./types.js";
 
 /** About 300 tokens: the summary names what is ready and what is not; the SwarmDirectory tool has the rest. */
 export const SUMMARY_CHARS = 1400;
@@ -25,17 +25,19 @@ function notReady(dir: Directory): string[] {
 }
 const harnessProblems = (dir: Directory, node: string): Record<string, string> =>
   Object.fromEntries(dir.harnesses.flatMap((harness) => harness.problems.filter((item) => item.node === node).map((item) => [harness.id, clip(item.problem)])));
-const where = (harness: HarnessEntry): string => harness.runsOn.join(", ");
 const readsFor = (dir: Directory, who: CommandEntry["who"][number]): CommandEntry[] =>
   dir.commands.filter((command) => command.effect === "read" && command.who.includes(who));
 
 /** Each node's line is cut to this, so a node that runs much leaves the rest of the block room. */
 const NODE_CHARS = 320;
+/** A list on one of the summary's fixed lines names this many, then how many more, so the line stays short in a large swarm. */
+const LISTED = 6;
+const few = (items: readonly string[]): string => items.length > LISTED ? `${items.slice(0, LISTED).join(", ")}, +${items.length - LISTED} more` : items.join(", ");
 
 /**
- * The main session's prompt block. What it chooses from comes first and is short whatever the swarm's size: this node,
- * where work can be placed, the ready harnesses, what is not ready and stale, and the reads; then one line for each node
- * with its lent tools by their exact names, until the block is full.
+ * The main session's prompt block. What it chooses from comes first, always, each line short whatever the swarm's size:
+ * this node, where work can be placed, the ready harnesses, what is not ready and stale, and the reads; then one line for
+ * each node with its lent tools by their exact names, while the block has room.
  */
 export function mainSummary(dir: Directory): string {
   const here = dir.here;
@@ -50,20 +52,20 @@ export function mainSummary(dir: Directory): string {
   ].join("; "), NODE_CHARS);
   const ready = dir.harnesses.filter((harness) => harness.runsOn.length);
   const unready = dir.harnesses.filter((harness) => !harness.runsOn.length);
-  const lines = [
+  const problems = notReady(dir);
+  const kept = [
     `This node ${here.name}: ${free(here.workers)}, ${here.takesWork ? "takes work" : "takes no work"}, host ${here.host}.`,
-    `Can place work on: ${placeableNodes(dir).join(", ") || "no paired node"}.`,
-    `Harnesses ready: ${ready.map((harness) => `${harness.id}${harness.isDefault ? " (default)" : ""} on ${where(harness)}`).join("; ") || "none"}.`,
-    ...unready.length ? [`Harnesses on no node: ${unready.map((harness) => harness.id).join(", ")}.`] : [],
-    ...notReady(dir).map((line) => `Not ready: ${line}.`),
+    `Can place work on: ${few(placeableNodes(dir)) || "no paired node"}.`,
+    `Harnesses ready: ${ready.map((harness) => `${harness.id}${harness.isDefault ? " (default)" : ""} on ${few(harness.runsOn)}`).join("; ") || "none"}.`,
+    ...unready.length ? [`Harnesses on no node: ${few(unready.map((harness) => harness.id))}.`] : [],
+    ...problems.slice(0, LISTED).map((line) => `Not ready: ${line}.`),
+    ...problems.length > LISTED ? [`Not ready: +${problems.length - LISTED} more.`] : [],
     ...dir.stale.map((item) => `Stale ${item.section}: ${clip(item.why)}.`),
     `Reads: ${readsFor(dir, "main").map((command) => command.name).join(", ")}.`,
-    ...offline.length ? [`Offline: ${offline.join(", ")}.`] : [],
-    ...online.map(node)
+    ...offline.length ? [`Offline: ${few(offline)}.`] : []
   ];
-  const kept: string[] = [];
-  let size = 0;
-  for (const line of lines) {
+  let size = kept.reduce((total, line) => total + line.length + 1, 0);
+  for (const line of online.map(node)) {
     if (size + line.length + 1 > SUMMARY_CHARS) { kept.push("... (SwarmDirectory has the rest)"); break; }
     kept.push(line);
     size += line.length + 1;
@@ -80,9 +82,9 @@ const counts = (dir: Directory) => ({ total: dir.peers.length, online: dir.peers
 const HIDDEN = "only maintainers and owners see which nodes these are and what each runs: give this requester counts";
 
 /**
- * The router's card section: every node with free slots, lends, what it may ask there and harness problems, for
- * `seesNodes`; counts otherwise. When the paired nodes could not be read, it says why, so the router tells a person it
- * cannot see them rather than that there are none.
+ * The router's card section: every node with free slots, lends, what it may ask there, or that its grant is unknown, and
+ * harness problems, for `seesNodes`; counts otherwise. When the paired nodes could not be read, it says why, so the router
+ * tells a person it cannot see them rather than that there are none.
  */
 export function routerCard(dir: Directory, seesNodes: boolean): Record<string, unknown> {
   const commands = Object.fromEntries(dir.commands.filter((command) => command.who.includes("router")).map((command) => [command.name, command.about]));
@@ -94,7 +96,9 @@ export function routerCard(dir: Directory, seesNodes: boolean): Record<string, u
     this_node: { ...nodeCard(dir.here), ...(Object.keys(problems).length ? { harness_problems: problems } : {}) },
     paired_nodes: dir.peers.map((peer) => {
       const own = harnessProblems(dir, peer.name);
+      // A grant the node does not say leaves may_there empty, which must not read as one that forbids the work.
       return { ...nodeCard(peer), ...peer.online ? { lends: peer.lends?.tools ?? [], may_there: peer.mayThere,
+        ...(peer.grant.received === "unknown" ? { grant_unknown: true } : {}),
         ...(Object.keys(own).length ? { harness_problems: own } : {}) } : {} };
     }),
     not_ready: notReady(dir),

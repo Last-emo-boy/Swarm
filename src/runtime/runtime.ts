@@ -248,14 +248,19 @@ export class SwarmRuntime {
 
   constructor(options: { databasePath?: string; workspace?: string; approvalHandler?: ToolApprovalHandler; debugSessionId?: string; mcpConfig?: RuntimeMcpConfigOptions;
     /** Gives the main session the capability directory and its swarm tools; a ticket's worker turns it off, as it files no work. */
-    swarmTools?: boolean; } = {}) {
+    swarmTools?: boolean;
+    /**
+     * False loads none of the MCP servers paired nodes lend, also when a lender changes, and keeps every other MCP server:
+     * a ticket's worker reaches a node only through its ticket `mesh` tool, where the requester's gates apply.
+     */
+    borrowMesh?: boolean; } = {}) {
     ensureSwarmHome();
     const workspace = options.workspace ?? process.cwd();
     this.workspace = workspace;
     this.approvalHandler = options.approvalHandler;
     this.debugSessionId = options.debugSessionId ?? process.env.SWARM_DEBUG_SESSION_ID;
     this.settings = applyRuntimeMcpConfig(loadSwarmSettings(workspace), options.mcpConfig);
-    this.capabilityPlane = createCapabilityPlane({ settings: this.settings, workspace });
+    this.capabilityPlane = createCapabilityPlane({ settings: this.settings, workspace, borrowMesh: options.borrowMesh });
     this.swarmTools = options.swarmTools === false ? undefined : this.createSwarmTools();
     this.debug = getDebugLogger(getSwarmPaths().logsDir, { sessionId: this.debugSessionId });
     this.debug?.info("runtime", `SwarmRuntime init. workspace=${workspace} pid=${process.pid}`);
@@ -1697,13 +1702,14 @@ export class SwarmRuntime {
 
   /**
    * The capability directory as this runtime's main session reads it, loaded on first use: its own MCP servers in the tool
-   * section, and borrowed servers loaded again when the paired nodes that lend change. A strict MCP config borrows none.
+   * section, and borrowed servers loaded again when the paired nodes that lend change. A runtime that borrows none (a
+   * strict MCP config, or `borrowMesh: false`) has no lender to follow.
    */
   private createSwarmTools(): CodingLoopSwarm {
     let tools: Promise<import("../directory/session.js").SessionSwarmTools> | undefined;
     const load = () => tools ??= import("../directory/session.js").then(({ sessionSwarmTools }) => sessionSwarmTools({
       mcp: () => this.capabilityPlane.listMcpServers(),
-      ...(this.settings.extensions.mcp.runtimeConfig?.strict ? {} : { refreshMcp: () => this.capabilityPlane.refreshBorrowedMcp() })
+      ...(this.capabilityPlane.mcp.borrowsMesh ? { refreshMcp: () => this.capabilityPlane.refreshBorrowedMcp() } : {})
     }));
     return {
       summary: async () => (await load()).summary(),

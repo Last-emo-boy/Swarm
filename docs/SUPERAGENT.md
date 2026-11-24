@@ -171,7 +171,10 @@ and list it, else no node. On an accept the router sets `harness` to one of them
 `--harness` does, and the ticket's execution takes it; its acknowledgement names the harness and the node. A mesh node
 then places the worker on that node, since the work needs `harness:<id>` (`workNeeds`). When no node runs the harness
 named, or it is no profile here, the router starts no ticket and answers plainly with chat, naming the harnesses that
-can run. A host that is not a mesh node counts every profile as its own; one not signed in fails when the worker starts.
+can run. A host that is not a mesh node counts a profile as its own only when its own checks found it ready, as the
+directory's `this_node` lists it; with `checkHarnesses` on (`swarm superagent run`, the TUI) that means installed and
+signed in. Only a router with neither a mesh view nor a directory counts every profile as its own. A signed-out profile
+shows as on no node and is refused like any other harness no node runs.
 
 Work that acts as its requester on GitHub (`capability.credential`) runs only on the node that holds their token, so for
 it only a harness this node has counts: a harness only a paired node has is answered as unavailable for that request. A
@@ -187,20 +190,22 @@ them at its cap.
 
 The router's card carries `directory`, the router's view of the capability directory (`src/directory`), so it
 answers "你现在能调用哪些设备？" from real data with chat, in its persona's voice, its acknowledgements do not promise
-work now when every worker is busy, and it can choose where work runs. The host reads the directory it writes every
-minute (`host-directory`) while that is at most two minutes old, else builds one from the same pass over the paired
-nodes, for every request, whoever sent it. For a requester who may see nodes (`seesNodes`: without the access model
-anyone, with it maintainers and owners) it holds:
+work now when every worker is busy, and it can choose where work runs. The host hands the router the directory it
+writes every minute (`host-directory`) only while that is at most 30 seconds old (`PART_TTL_MS.mesh`), else builds one
+from the same pass over the paired nodes and writes it, for every request, whoever sent it. For a requester who may
+see nodes (`seesNodes`: without the access model anyone, with it maintainers and owners) it holds:
 
 - `this_node`: this node's name, its machine (OS, `docker`, `gpu`), the harnesses signed in here, its ticket workers
   (`slots`, `running`, `queued`, `free`: the worker processes against `executor.maxWorkers` with `process` isolation,
   or the ticket VM slots here and in the cluster with `vm`), whether it takes work put on it, and why a harness profile
-  does not run here.
+  does not run here. A host that is not a mesh node, or a mesh node whose mesh view could not be read, lists only what
+  its own check found running here: no harness when it checks installs alone, never every profile.
 - `paired_nodes`: each paired node, online when it answered the card request just now (3 seconds), with its machine,
   harnesses and workers, `takes_work`, the tools it lends by their exact `mcp__<node>__<tool>` names, `may_there` (what
   its grant to this node lets this node ask there: `tickets.submit`, `work.offer`, `lend.shell`, `lend.files.write`,
-  `commands.read`; empty for a node from before grants were on cards) and `harness_problems`. One that did not answer
-  shows only its name.
+  `commands.read`), `grant_unknown: true` when that grant is unknown (a node from before grants were on cards, or a
+  grant this version cannot read; `may_there` is then empty) and `harness_problems`. One that did not answer shows only
+  its name.
 - `not_ready`: tool servers, Sources and model providers that are not ready, with why.
 - `commands`: the bot commands the router runs, each with what it does.
 - `nodes_unknown`, when the paired nodes could not be read, with why.
@@ -210,12 +215,16 @@ directory cannot be read the card says so and routing goes on.
 
 On an accept the router may set `on` to the node the work runs on: a paired node by its name or id, or `here`. It is
 for the requesters who see nodes, when the person asks for a node or one node clearly fits the work. The host checks
-it against the directory (`placementProblem`): the node answered, takes work, has `work.offer` in `may_there`, and has
-what `needs` lists and the harness the ticket runs on (the one chosen, the one filed, else `executor.harness`). Work
-that acts as its requester on GitHub stays on this node. A node that passes is written with the ticket's placement as
-`updatePlacement(ticket, { on })`, the field `swarm superagent request --on` and `place` write, so the placement offers
-the work there under a `work.offer` lease. A node that fails is dropped, never the accept: the journal's route row
-starts with `on <node> dropped: <why>` (`swarm superagent why`), and the work is placed as usual.
+it against the directory (`placementProblem`): the node answered, takes work, has `work.offer` in `may_there` or
+`grant_unknown` (the offer then tries it, and that node's grant decides), and has what `needs` lists and the harness
+the ticket runs on (the one chosen, the one filed, else `executor.harness`). A paired node is also dropped when the
+directory the router read was written over 30 seconds before (`PART_TTL_MS.mesh`), and when the host's live mesh
+view, read after the model answered, does not list it as answering (`<node> does not answer now`); a view that cannot
+be read leaves the directory's word. Work that acts as its requester on GitHub stays on this node. A node that passes
+is written with the ticket's placement as `updatePlacement(ticket, { on })`, the field `swarm superagent request --on`
+and `place` write, so the placement offers the work there under a `work.offer` lease. A node that fails is dropped,
+never the accept: the journal's route row starts with `on <node> dropped: <why>` (`swarm superagent why`), and the
+work is placed as usual.
 
 `/devices` prints what the agent runs work on from the same pass over the paired nodes. A ticket's worker reads the
 host's directory with its `directory` tool, wherever it runs (in a ticket VM or on a paired node the owner runs the
@@ -236,6 +245,12 @@ reaches none of them. Every call is kept with its ticket (`mesh-calls:<ticket>`)
 may only `list_files` and `read_file` there: the host refuses the other lent tools before they reach the node, since
 harnesses run their MCP servers outside their own read-only turns. A shell runs as the user its node lends as, with
 that user's credentials, such as a kubeconfig.
+
+Swarm's own worker reaches paired nodes only through its `mesh` tool, on any host, a mesh node included: it never
+loads the MCP servers paired nodes lend. `workerRuntime` (`worker.ts`) builds its `SwarmRuntime` with
+`borrowMesh: false`, which drops only the lent servers and keeps the workspace `.mcp.json` and plugin servers (a
+`strict` runtime MCP config still drops all of them). `createCapabilityPlane` takes the same option. The main session
+still borrows them as `mcp__<peer>__<tool>`.
 
 ### GitHub accounts
 

@@ -968,7 +968,8 @@ function riskForAction(action: ToolAction): ToolApprovalRequest["risk"] {
 /** The person-only Swarm command a command-running action would run, through `sh -c` and `sudo` too; undefined for any other action. */
 function personOnlyCommand(action: ToolAction) {
   if (!("command" in action) || typeof action.command !== "string") return undefined;
-  for (const candidate of commandRiskScanCandidates(action.command)) {
+  // The line as written first: the candidates strip quotes around the whole line, which joins `"swarm" mesh grant x "y"` into one string.
+  for (const candidate of [action.command, ...commandRiskScanCandidates(action.command)]) {
     const found = personCommandIn(candidate);
     if (found) return found;
   }

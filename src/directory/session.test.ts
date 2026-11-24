@@ -21,12 +21,13 @@ const card = (id: string, name: string, extra: Partial<NodeCard> = {}): NodeCard
 const online = (id: string, name: string, extra: Partial<NodeCard> = {}): PeerHealth =>
   ({ peer: { id, name, addresses: [] }, reachable: true, ms: 12, card: card(id, name, extra) });
 
-function parts(peers: PeerHealth[] = defaultPeers()): DirectoryParts {
+/** The parts of a directory built at `at`, from a pass over `peers` made then. */
+function parts(peers: PeerHealth[] = defaultPeers(), at = AT): DirectoryParts {
   return {
-    at: AT, own: { protocol: 2, version: "0.1.0" },
+    at, own: { protocol: 2, version: "0.1.0" },
     here: { id: "mac-id", name: "mac", host: "running", machine: ["macos"], harnesses: ["claude"], workers: { slots: 2, running: 0, queued: 0, free: 2 }, takesWork: true },
-    mesh: { at: AT, given: {}, peers },
-    harnesses: { at: AT, signIn: true, default: "claude", profiles: [
+    mesh: { at, given: {}, peers },
+    harnesses: { at, signIn: true, default: "claude", profiles: [
       { id: "claude", kind: "claude", readOnly: true }, { id: "codex", kind: "codex", readOnly: true }, { id: "kimi", kind: "kimi", readOnly: true }] }
   };
 }
@@ -105,8 +106,10 @@ test("borrowed MCP servers are loaded again once a change of the lenders holds f
   let refreshes = 0;
   let lending = true;
   const peers = () => lending ? defaultPeers() : defaultPeers().map((health) => health.peer.id === "gpu-id" ? { peer: health.peer, reachable: false, error: "gone" } : health);
+  // Each read builds a directory of its own, as a session with no host does: a new snapshot every time.
+  let builds = 0;
   const { swarm, clock } = tools(() => dir, { mcp: () => servers, refreshMcp: async () => { refreshes += 1; },
-    build: async (read) => buildDirectory({ ...parts(peers()), mcp: { servers: read.mcp ?? [] } }) });
+    build: async (read) => buildDirectory({ ...parts(peers(), new Date(Date.parse(AT) + 1000 * ++builds).toISOString()), mcp: { servers: read.mcp ?? [] } }) });
   const read = async () => { clock.now += HOLD_MS; await swarm.source.current(); };
   await read();
   assert.equal(refreshes, 0, "one read of a change loads nothing");
@@ -131,6 +134,22 @@ test("borrowed MCP servers are loaded again once a change of the lenders holds f
   const answer = await swarm.directory({ type: "swarm.directory", section: "tools" });
   assert.equal(refreshes, 2);
   assert.deepEqual((answer.data as { tools: unknown[] }).tools, [{ id: "gpu", kind: "lent", status: "connected", tools: 2, via: "gpu" }]);
+});
+
+test("the host's written directory read twice is one look: only a newer one with the same change loads the servers again", async () => {
+  // The host writes about once a minute and a session reads every HOLD_MS, so it holds each written directory twice.
+  let written = buildDirectory(parts());
+  let refreshes = 0;
+  const { swarm, clock } = tools(() => assert.fail("the host's directory is used"), { written: async () => written, mcp: () => [],
+    refreshMcp: async () => { refreshes += 1; } });
+  await swarm.summary();
+  clock.now += HOLD_MS;
+  await swarm.source.current();
+  assert.equal(refreshes, 0, "gpu lending in one snapshot, read twice, loads nothing");
+  written = buildDirectory(parts(defaultPeers(), "2026-11-24T10:01:00.000Z"));
+  clock.now += HOLD_MS;
+  await swarm.source.current();
+  assert.equal(refreshes, 1, "the next snapshot shows it too");
 });
 
 test("the prompt block never waits for a read: the held directory now, read again in the background once it is old", async () => {
@@ -216,6 +235,61 @@ test("Dispatch without a node takes a harness this node lacks only when a paired
   const { swarm } = tools(() => buildDirectory(parts(only({ yourGrant: "operator" }))));
   const filed = await swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" });
   assert.match(filed.summary, /^Filed request .*; its worker runs on kimi\./);
+});
+
+test("Dispatch without a node needs a paired node with a free worker for a harness this node lacks, as the host's placement does", async () => {
+  const only = (load: NonNullable<NodeCard["load"]>) => [online("p-id", "p", { yourGrant: "operator", abilities: ["linux", "harness:kimi"], load })];
+  // Running and waiting work both take slots, as `fittest` counts them; the host passes a full node over and runs the work here.
+  for (const load of [{ slots: 1, running: 1, queued: 0 }, { slots: 2, running: 1, queued: 1 }]) {
+    const { swarm } = tools(() => buildDirectory(parts(only(load))));
+    await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" }),
+      /Dispatch refused: kimi runs only on p, where no worker is free now: name the node as on to wait for one/, JSON.stringify(load));
+  }
+  assert.equal(existsSync(join(stateDir, "superagent.db")), false, "a refused dispatch files nothing");
+  // Named, it waits for a free worker there.
+  const { swarm } = tools(() => buildDirectory(parts(only({ slots: 1, running: 1, queued: 0 }))));
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "p", harness: "kimi" })).summary, /^Filed request .*; its worker runs on kimi on p\./);
+});
+
+test("Dispatch checks the default harness wherever the work goes: here, with no node named, and on a paired node", async () => {
+  const signedOut = (peers: PeerHealth[] = []) => {
+    const part = parts(peers);
+    part.here = { ...part.here, harnesses: [], harnessProblems: { claude: "not signed in: run `claude auth login`" } };
+    return buildDirectory(part);
+  };
+  const { swarm } = tools(() => signedOut());
+  await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "here" }),
+    /Dispatch refused: the default harness claude runs not here now \(mac: not signed in: run `claude auth login`\)/);
+  await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "mac" }), /the default harness claude runs not here now/);
+  await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x" }), /Dispatch refused: the default harness claude runs on no node now \(mac: not signed in/);
+  assert.equal(existsSync(join(stateDir, "superagent.db")), false, "a refused dispatch files nothing");
+  // A paired node that runs it takes the work no node is named for; here still does not.
+  const claudeOnP = [online("p-id", "p", { yourGrant: "operator", abilities: ["linux", "harness:claude"], load: { slots: 2, running: 0, queued: 0 } })];
+  const { swarm: elsewhere } = tools(() => signedOut(claudeOnP));
+  await assert.rejects(elsewhere.dispatch({ type: "swarm.dispatch", text: "x", on: "here" }), /the default harness claude runs not here now/);
+  assert.match((await elsewhere.dispatch({ type: "swarm.dispatch", text: "x" })).summary, /^Filed request [^;]+; its worker runs\. No host runs yet: start this device's node with `swarm node run`\.$/);
+});
+
+test("Dispatch refuses work only a paired node can run while the host here is no mesh node, which runs every worker itself", async () => {
+  const peers = [online("p-id", "p", { yourGrant: "operator", abilities: ["linux", "harness:kimi"], load: { slots: 2, running: 0, queued: 0 } })];
+  const { swarm } = tools(() => buildDirectory(parts(peers)));
+  const host = (entries: Record<string, { state: "ready"; detail: string }>) => {
+    const client = new SuperagentClient({ stateDir });
+    const now = new Date().toISOString();
+    client.store.set(KV.host.owner, { pid: process.pid, startedAt: now, heartbeatAt: now });
+    client.store.set(KV.host.health, { at: now, entries });
+    client.close();
+  };
+  host({});
+  await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" }),
+    /Dispatch refused: kimi runs only on p, but the host here is not a mesh node, so it runs every worker itself: run it as `swarm node run` instead\./);
+  await assert.rejects(swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "p", harness: "kimi" }), /Dispatch refused: the work is for p, but the host here is not a mesh node/);
+  // Work this node runs itself is filed as before.
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x" })).summary, /^Filed request [^;]+; its worker runs\.$/);
+  // A mesh node's host places work on paired nodes.
+  host({ mesh: { state: "ready", detail: "Places tickets' workers on paired nodes and runs theirs" } });
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", harness: "kimi" })).summary, /^Filed request [^;]+; its worker runs on kimi\.$/);
+  assert.match((await swarm.dispatch({ type: "swarm.dispatch", text: "x", on: "p", harness: "kimi" })).summary, /^Filed request [^;]+; its worker runs on kimi on p\.$/);
 });
 
 test("Dispatch reaches requestOn with the node and harness, and files as the terminal does without one", async () => {

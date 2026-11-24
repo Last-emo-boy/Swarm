@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import type { NodeCard } from "../mesh/card.js";
 import type { PeerHealth } from "../mesh/client.js";
+import type { Grant } from "../mesh/surfaces.js";
 import { PEER_READS } from "../mesh/tickets.js";
 import { COMMAND_TABLE } from "../superagent/command-table.js";
 import { SuperagentHost } from "../superagent/host.js";
@@ -81,6 +82,21 @@ test("each peer's grants and what this node may ask there come from the grant it
   const scoped = parts();
   if (!("error" in scoped.mesh)) scoped.mesh = { ...scoped.mesh, peers: [online("gpu-id", "gpu", { yourGrant: { scopes: ["node.read", "work.offer"] } })] };
   assert.deepEqual(buildDirectory(scoped).peers[0]!.mayThere, ["work.offer"]);
+});
+
+test("a grant a peer's card says that this version cannot read is unknown, as a missing one is, and the directory still builds", () => {
+  // A newer Swarm's preset, a surface this version lacks, or a card that is simply wrong.
+  for (const grant of ["admin", { scopes: ["teleport"] }, { scopes: "work.offer" }, 7]) {
+    const part = parts();
+    const yourGrant = grant as unknown as Grant;
+    if (!("error" in part.mesh)) part.mesh = { ...part.mesh, peers: [
+      online("p-id", "p", { yourGrant, load: { slots: 1, running: 0, queued: 0 }, lend: { shell: { roots: ["/srv"] }, files: { roots: ["/srv"] } } }),
+      { peer: { id: "q-id", name: "q", addresses: [] }, reachable: false, card: card("q-id", "q", { yourGrant }) }] };
+    const dir = buildDirectory(part);
+    const [p, q] = dir.peers;
+    assert.deepEqual([p!.grant.received, p!.mayThere, p!.lends?.tools.length, q!.grant.received], ["unknown", [], 4, "unknown"], JSON.stringify(grant));
+    assert.equal(placementProblem(dir, "p"), undefined, "the host's offer tries it, and that node's grant decides");
+  }
 });
 
 test("a node's lends are listed by the exact tool names a session calls, and its harness problems by node", () => {
@@ -203,6 +219,37 @@ test("the summary keeps what the session chooses from ahead of the nodes, whatev
   assert.deepEqual(buildDirectory(late).stale, []);
 });
 
+test("however large the swarm, the summary keeps every line the session chooses from, each short, and fills the rest with nodes", () => {
+  const failing = Array.from({ length: 8 }, (_, index) => ({ id: `docs-${index}`, transport: "http" as const, url: "https://docs.example/mcp", trust: "user" as const,
+    status: "failed" as const, exposeTools: true, exposeResources: false, exposePrompts: false, toolCount: 0, resourceCount: 0, promptCount: 0, diagnostics: [], lastError: "401 Unauthorized" }));
+  const large = (order: (peers: PeerHealth[]) => PeerHealth[] = (peers) => peers) => {
+    const part = parts({ at: "2026-11-24T10:00:31.000Z", mcp: { servers: failing } });
+    if (!("error" in part.mesh)) part.mesh = { ...part.mesh, peers: order([
+      ...Array.from({ length: 30 }, (_, index) => online(`w${index}-id`, `workstation-${index}`, { yourGrant: "operator",
+        abilities: ["linux", "harness:claude", "harness:codex"], load: { slots: 2, running: 0, queued: 0 } })),
+      ...Array.from({ length: 9 }, (_, index): PeerHealth => ({ peer: { id: `x${index}-id`, name: `gone-${index}`, addresses: [] }, reachable: false }))]) };
+    return mainSummary(buildDirectory(part));
+  };
+  const summary = large();
+  assert.ok(summary.length <= SUMMARY_CHARS + 40, `${summary.length} characters`);
+  for (const line of [/^This node mac: /m, /^Can place work on: (workstation-\d+, ){6}\+24 more\.$/m,
+    /^Harnesses ready: claude \(default\) on here, (workstation-\d+, ){5}\+25 more; codex on (workstation-\d+, ){6}\+24 more\.$/m,
+    /^Harnesses on no node: opencode\.$/m, /^Not ready: mcp docs-0: failed, 401 Unauthorized\.$/m, /^Not ready: \+3 more\.$/m,
+    /^Stale nodes: the paired nodes were read over 30 s before\.$/m, /^Reads: /m, /^Offline: (gone-\d, ){6}\+3 more\.$/m, /^- workstation-\d+: /m]) assert.match(summary, line);
+  assert.ok(summary.endsWith("\n... (SwarmDirectory has the rest)"));
+  assert.equal(large((peers) => [...peers].reverse()), summary, "the same state gives the same block");
+});
+
+test("the router's card marks a node whose grant to this node is unknown, which its prompt lets it name", () => {
+  const shown = routerCard(buildDirectory(parts()), true) as { paired_nodes: Record<string, unknown>[] };
+  const node = (name: string) => shown.paired_nodes.find((item) => item.name === name)!;
+  // old runs a Swarm from before the field: its empty may_there must not read as a grant that forbids the work.
+  assert.deepEqual([node("old").may_there, node("old").grant_unknown], [[], true]);
+  assert.equal(node("gpu").grant_unknown, undefined, "gpu says its grant: member");
+  assert.equal(node("box").grant_unknown, undefined, "an offline node says nothing more");
+  assert.match(routerPrompt(), /has work\.offer in may_there or grant_unknown \(the host's offer tries that node, and its grant decides\)/);
+});
+
 test("the router and a worker see which nodes there are only for a requester who may see them", () => {
   const dir = buildDirectory(parts());
   const hidden = routerCard(dir, false);
@@ -281,8 +328,9 @@ test("a directory built here lists a harness as running here only once its sign-
   assert.deepEqual([codex(signedOut).runsOn, codex(signedOut).problems[0]!.problem], [[], "not signed in: run `codex login`"]);
   const old = await read({ signIns: { at: "2026-11-24T09:00:00.000Z", harnesses: ["codex"], problems: {} } });
   assert.deepEqual(codex(old).runsOn, [], "checks older than their time count for nothing");
+  // Reused again, the checks keep the time they ran, not the time of the directory that holds them.
   const again = signInsOf(checked)!;
-  assert.deepEqual([again.at, again.harnesses, again.problems.claude], [checked.at, ["codex"], "Claude Code is not installed: no `claude` on PATH."]);
+  assert.deepEqual([again.at, again.harnesses, again.problems.claude], ["2026-11-24T09:55:00.000Z", ["codex"], "Claude Code is not installed: no `claude` on PATH."]);
   assert.equal(signInsOf(unchecked), undefined);
   // With ticket VMs, harness work runs in a VM, which has OpenCode: what this machine has installed does not count.
   writeSettings({ sources: {}, policy: { sources: {} }, executor: { isolation: "vm" } }, settingsPath(stateDir));
@@ -291,6 +339,33 @@ test("a directory built here lists a harness as running here only once its sign-
   assert.deepEqual([opencode.runsOn, opencode.problems], [["here"], []]);
   assert.deepEqual(codex(vm).runsOn, [], "VMs do not run codex, though it is installed here");
   assert.ok(!vm.stale.some((item) => item.section === "harnesses"));
+});
+
+test("a written directory keeps when its sign-ins were checked, and a reader ages the checks from then, not from when it was written", async () => {
+  const bin = join(stateDir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(bin, "codex"), 0o755);
+  // The host checked at 10:00 and wrote its directory every minute after: the last one is from 10:19.
+  const part = parts({ at: "2026-11-24T10:19:00.000Z" });
+  part.here = { ...part.here, harnesses: ["codex"], harnessProblems: {} };
+  const written = buildDirectory(part);
+  assert.equal(written.signInsAt, AT);
+  const signIns = signInsOf(written)!;
+  assert.equal(signIns.at, AT);
+  const read = (at: string) => readDirectory({ stateDir, home, machine: ["linux"], base: { PATH: bin }, now: () => new Date(at), signIns });
+  const codex = (dir: Directory) => dir.harnesses.find((harness) => harness.id === "codex")!;
+  // At 10:38 the checks are 38 minutes old, past their 20.
+  const late = await read("2026-11-24T10:38:00.000Z");
+  assert.deepEqual(codex(late).runsOn, []);
+  assert.equal(late.signInsAt, undefined);
+  // Within their time they count, and a directory built from them keeps their time.
+  const soon = await read("2026-11-24T10:15:00.000Z");
+  assert.deepEqual([codex(soon).runsOn, soon.signInsAt, signInsOf(soon)?.at], [["here"], AT, AT]);
+  // A directory from before the field says no check time, and its own would make old checks look new: none are reused.
+  const { signInsAt: _signInsAt, ...older } = written;
+  assert.equal(signInsOf(older), undefined);
+  assert.equal(buildDirectory(parts({ harnesses: { at: AT, signIn: false, default: null, profiles: [] } })).signInsAt, undefined, "installs only: no sign-in time");
 });
 
 test("the host writes the directory to its store for readers elsewhere, who use it while it is fresh", async () => {

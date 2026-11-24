@@ -15,7 +15,8 @@ import { BudgetReached } from "../usage/budget.js";
 import { latestReport, runningAssignment, waitsForPerson, type Ticket } from "./core/index.js";
 import { SessionLost } from "./harness.js";
 import { batchLine, inputMessage, inputResource, transient, triggerMessage, workerSessionId } from "./messages.js";
-import type { WorkLink, WorkStart, WorkView } from "./work-link.js";
+import type { ToolServer, WorkLink, WorkStart, WorkView } from "./work-link.js";
+import type { SwarmRuntime } from "../runtime/runtime.js";
 import { parseJsonObject, type Complete } from "./assessor.js";
 import { withStoppedPatch } from "./ticket-tools.js";
 import { z } from "zod/v4";
@@ -120,21 +121,21 @@ function handedOff(ticket: Ticket): boolean {
 }
 
 /**
- * Swarm's coding loop on the ticket's Work Kernel session, with the ticket tools served by `swarm superagent mcp`. Without
- * its tools a worker can neither report nor reply, so it fails at once with why rather than run blind.
+ * The runtime Swarm's coding loop runs a ticket's worker on, in `directory`, with the ticket tools `command` and `tools`
+ * start. It files no tickets of its own: it reads the swarm and acts on it through its ticket tools. Nor does it borrow
+ * what paired nodes lend, wherever it runs: it reaches a node only through its ticket `mesh` tool, which hides nodes from a
+ * requester below maintainer, holds a read-only ticket to reading, and records each call.
  */
-async function swarmTurns(ticketId: string, link: WorkLink, begun: WorkStart, command: readonly string[], start: Ticket): Promise<WorkerTurns | { failure: string }> {
-  const { directory, prompt: appendSystemPrompt, blockedCommands } = begun;
-  const sessionId = workerSessionId(ticketId);
+export async function workerRuntime(directory: string, command: readonly string[], tools: ToolServer): Promise<SwarmRuntime> {
   const [node, ...entry] = command;
   const { SwarmRuntime } = await import("../runtime/runtime.js");
-  const runtime = new SwarmRuntime({
+  return new SwarmRuntime({
     workspace: directory,
-    // A ticket's worker files no tickets of its own: it reads the swarm and acts on it through its ticket tools.
     swarmTools: false,
+    borrowMesh: false,
     mcpConfig: { sources: [{ source: "json", bytes: 0, serverIds: ["ticket"], servers: { ticket: {
-      transport: "stdio", command: node!, args: [...entry, ...link.tools.args], trust: "user", alwaysLoad: true,
-      env: link.tools.env,
+      transport: "stdio", command: node!, args: [...entry, ...tools.args], trust: "user", alwaysLoad: true,
+      env: tools.env,
       toolRiskOverrides: { read: "r0", attachment: "r1", people: "r0", devices: "r0", directory: "r0", mesh: "r1", recall: "r0", message: "r1", remember: "r1", ack: "r1", report: "r1", handback: "r1", thread_follow: "r1", thread_unrelated: "r1" },
       timeoutMs: 120_000
     } } }] },
@@ -142,6 +143,16 @@ async function swarmTurns(ticketId: string, link: WorkLink, begun: WorkStart, co
       throw new Error(`This ticket's worker runs unattended, and ${request.summary} needs a person's approval. Choose another way, or report blocked with human_action naming the approval it needs.`);
     }
   });
+}
+
+/**
+ * Swarm's coding loop on the ticket's Work Kernel session, with the ticket tools served by `swarm superagent mcp`. Without
+ * its tools a worker can neither report nor reply, so it fails at once with why rather than run blind.
+ */
+async function swarmTurns(ticketId: string, link: WorkLink, begun: WorkStart, command: readonly string[], start: Ticket): Promise<WorkerTurns | { failure: string }> {
+  const { directory, prompt: appendSystemPrompt, blockedCommands } = begun;
+  const sessionId = workerSessionId(ticketId);
+  const runtime = await workerRuntime(directory, command, link.tools);
   for (const name of blockedCommands) runtime.settings.permissions.deny.push(`Bash(${name})`, `Bash(${name} *)`);
   const tools = await runtime.listCapabilities({ modelVisible: true });
   if (!tools.some((tool) => tool.name === "mcp__ticket__report" && tool.status === "available")) {

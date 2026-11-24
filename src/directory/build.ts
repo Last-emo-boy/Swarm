@@ -10,7 +10,7 @@ import type { PeerHealth } from "../mesh/client.js";
 import { borrowedServerId } from "../mesh/borrow.js";
 import { lentTools, TOOL_SURFACE } from "../mesh/lend.js";
 import { DEFAULT_GRANT, type Lend } from "../mesh/state.js";
-import { authorizes, type Grant } from "../mesh/surfaces.js";
+import { authorizes, GrantSchema, type Grant } from "../mesh/surfaces.js";
 import { PEER_READS } from "../mesh/tickets.js";
 import { COMMAND_TABLE } from "../superagent/command-table.js";
 import { HARNESS_KINDS, harnessAbility } from "../superagent/harness.js";
@@ -91,7 +91,10 @@ function lendsOf(lend: Lend | undefined, serverId: string, received: Grant | "un
 
 function peerEntry(health: PeerHealth, given: Grant, serverId: string, own: DirectoryParts["own"]): PeerEntry {
   const card: NodeCard | undefined = health.card;
-  const received: Grant | "unknown" = card?.yourGrant ?? "unknown";
+  // A card is the peer's word, unchecked: a grant this version cannot read, such as a newer Swarm's preset, is unknown,
+  // as a missing one is.
+  const parsed = GrantSchema.safeParse(card?.yourGrant);
+  const received: Grant | "unknown" = parsed.success ? parsed.data : "unknown";
   const base = { id: health.peer.id, name: health.peer.name, grant: { given, received },
     mayThere: received === "unknown" ? [] : MAY_THERE.filter((surface) => authorizes(received, surface)) };
   if (!health.reachable || !card) {
@@ -248,7 +251,8 @@ export function buildDirectory(parts: DirectoryParts): Directory {
     tools: toolEntries(parts, peers, serverIds),
     sources: sourceEntries(parts),
     commands: commandEntries(),
-    stale
+    stale,
+    ...(!failed(parts.harnesses) && parts.harnesses.signIn ? { signInsAt: parts.harnesses.at } : {})
   };
 }
 
@@ -276,7 +280,7 @@ export function placementProblem(dir: Directory, on: string, work: { needs?: rea
   if (!peer.online) return `${peer.name} is offline`;
   if (!peer.workers) return `${peer.name} runs no ticket host, so it takes no work put on it`;
   if (!peer.takesWork) return `${peer.name} takes no work put on it`;
-  // A peer on an older Swarm does not say its grant: the host's offer tries it, and that node's grant decides.
+  // A peer whose grant is unknown, as on an older Swarm, may still take it: the host's offer tries it, and its grant decides.
   if (peer.grant.received !== "unknown" && !peer.mayThere.includes("work.offer")) return `${peer.name}'s grant to this node (${typeof peer.grant.received === "string" ? peer.grant.received : "scopes"}) does not allow work.offer`;
   const missing = (work.needs ?? []).filter((need) => !peer.machine.includes(need));
   if (missing.length) return `${peer.name} lacks ${missing.join(", ")}`;
@@ -287,6 +291,12 @@ export function placementProblem(dir: Directory, on: string, work: { needs?: rea
   return undefined;
 }
 
-/** The paired nodes work can be placed on now, by name. */
-export const placeableNodes = (dir: Directory, work: { needs?: readonly string[]; harness?: string } = {}): string[] =>
-  dir.peers.filter((peer) => placementProblem(dir, peer.id, work) === undefined).map((peer) => peer.name);
+/** A node's worker slots left over by its running and waiting work, as the host's placement (`fittest`, mesh/work.ts) counts them. */
+const freeSlots = (workers: WorkerCount | undefined): number => workers ? workers.slots - workers.running - workers.queued : 0;
+
+/**
+ * The paired nodes work can be placed on now, by name. With `free`, only those with a free slot: the host's placement of
+ * work no node is named for passes a full node over, and runs the work here.
+ */
+export const placeableNodes = (dir: Directory, work: { needs?: readonly string[]; harness?: string } = {}, options: { free?: boolean } = {}): string[] =>
+  dir.peers.filter((peer) => placementProblem(dir, peer.id, work) === undefined && (!options.free || freeSlots(peer.workers) > 0)).map((peer) => peer.name);

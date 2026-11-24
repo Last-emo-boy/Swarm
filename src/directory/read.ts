@@ -129,11 +129,15 @@ export interface ReadOptions {
 /** The harness sign-in checks of one node at `at`: the profiles that ran there, and why each other one did not. */
 export interface SignIns { at: string; harnesses: readonly string[]; problems: Readonly<Record<string, string>> }
 
-/** This node's sign-in checks as `dir` holds them, when its harnesses were checked and not too long ago. */
+/**
+ * This node's sign-in checks as `dir` holds them, when its harnesses were checked and not too long ago, dated by when they
+ * ran: a host rewrites its directory every minute but checks sign-ins far less often. A directory from before it kept that
+ * time gives none, since its own time would make old checks look new.
+ */
 export function signInsOf(dir: Directory): SignIns | undefined {
-  if (dir.stale.some((item) => item.section === "harnesses")) return undefined;
+  if (!dir.signInsAt || dir.stale.some((item) => item.section === "harnesses")) return undefined;
   const problems = Object.fromEntries(dir.harnesses.flatMap((harness) => harness.problems.filter((item) => item.node === dir.here.name).map((item) => [harness.id, item.problem])));
-  return { at: dir.at, harnesses: dir.here.harnesses, problems };
+  return { at: dir.signInsAt, harnesses: dir.here.harnesses, problems };
 }
 
 /**

@@ -112,7 +112,8 @@ export async function meet(home = meshHome(), timeoutMs = 3000): Promise<PeerHea
       } catch { /* It may have been removed, or that peer may no longer know it. */ }
     }
   }
-  return added ? peerHealth(home, timeoutMs) : health;
+  // The pass read after convergence, so a peer it dropped is not handed on as one that answers.
+  return added ? peerHealth(home, timeoutMs) : now;
 }
 
 /**

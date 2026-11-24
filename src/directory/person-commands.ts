@@ -35,18 +35,83 @@ const PERSON_SUBCOMMANDS: ReadonlyMap<string, ReadonlyMap<string, (typeof PERSON
 
 /**
  * The person-only command a shell command line runs, if any: `swarm <dispatcher> <subcommand>` anywhere in it, whatever
- * path `swarm` is called by, after an env prefix or `npx`, or after `;`, `&&`, `|`, `(` or a backtick. A line that only
- * mentions one inside a quoted argument, such as `echo "swarm mesh grant"`, runs none.
+ * path `swarm` is called by, quoted or not (`"swarm"`, `sw''arm`), after an env prefix or `npx`, or after `;`, `&&`, `|`,
+ * `(` or a backtick. A line that only mentions one inside a quoted argument, such as `grep -n "swarm mesh grant" docs`,
+ * runs none, unless something in the line runs text: then the quoted string is read as a command line too.
  */
 export function personCommandIn(command: string): (typeof PERSON_COMMANDS)[number] | undefined {
-  const words = command.replace(/[;&|()`\n]|\$\(/g, " ; ").match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-  for (let index = 0; index < words.length; index += 1) {
-    if (words[index]!.split("/").pop() !== "swarm") continue;
-    const rest = words.slice(index + 1).filter((word) => !word.startsWith("-"));
-    const end = rest.indexOf(";");
-    const [dispatcher, subcommand] = (end < 0 ? rest : rest.slice(0, end)).map((word) => word.replace(/^["']|["']$/g, ""));
-    const found = dispatcher && subcommand ? PERSON_SUBCOMMANDS.get(dispatcher)?.get(subcommand) : undefined;
-    if (found) return found;
+  return personCommandRun(command, false);
+}
+
+/** A word as the shell passes it on, quotes and escapes removed; `spaced` when quoted spaces make it one string of several words. */
+type Word = { text: string; spaced: boolean };
+
+/** Programs that run text they are given as a command line or as code: `bash -e -c '...'`, `eval "..."`, `... | sh`, `python3 -c`. */
+const RUNS_TEXT = /^(?:sh|bash|zsh|dash|ksh|fish|python[\d.]*|node|perl|ruby|deno|bun|eval|exec|xargs|source|su|ssh|watch)$/;
+
+function personCommandRun(line: string, runs: boolean): (typeof PERSON_COMMANDS)[number] | undefined {
+  const commands = commandsIn(line);
+  // Where flags, a path or a prefix (env, timeout, nohup, sudo) put the launcher does not matter. Text that runs may run its own
+  // quoted strings (`os.system('...')`), so inside it every one is read as a command line. `.` runs a file only as a command.
+  runs ||= commands.some((words) => words.some((word, index) => RUNS_TEXT.test(baseName(word.text)) || (index === 0 && word.text === ".")));
+  for (const words of commands) {
+    for (const [index, word] of words.entries()) {
+      const found = word.spaced
+        ? runs ? personCommandRun(word.text, true) : undefined
+        : baseName(word.text) === "swarm" ? personCommandAfter(words.slice(index + 1)) : undefined;
+      if (found) return found;
+    }
   }
   return undefined;
+}
+
+function personCommandAfter(rest: Word[]): (typeof PERSON_COMMANDS)[number] | undefined {
+  const [first, second, third] = rest.filter((word) => !word.text.startsWith("-")).map((word) => word.text);
+  // `swarm superagent harness ...` is `swarm harness ...`: superagent/cli.ts hands it to the same command.
+  const [dispatcher, subcommand] = first === "superagent" && second === "harness" ? [second, third] : [first, second];
+  return dispatcher && subcommand ? PERSON_SUBCOMMANDS.get(dispatcher)?.get(subcommand) : undefined;
+}
+
+function baseName(path: string): string {
+  return path.split("/").pop()!;
+}
+
+/** The commands of a line, split where the shell starts another (`;`, `&`, `|`, `(`, `)`, a backtick, `$(`, a new line), as words. */
+function commandsIn(line: string): Word[][] {
+  const commands: Word[][] = [[]];
+  let word: Word | undefined;
+  let quote: string | undefined;
+  const add = (text: string, spaced = false) => {
+    word ??= { text: "", spaced: false };
+    word.text += text;
+    word.spaced ||= spaced;
+  };
+  const end = () => {
+    if (word) commands.at(-1)!.push(word);
+    word = undefined;
+  };
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    const next = line[index + 1] ?? "";
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else if (quote === "\"" && char === "\\" && next && "\"\\$`\n".includes(next)) {
+        add(next);
+        index += 1;
+      } else add(char, /\s/.test(char));
+    } else if (char === "'" || char === "\"") {
+      quote = char;
+      add("");
+    } else if (char === "\\") {
+      if (next !== "\n") add(next);
+      index += 1;
+    } else if (/[;&|()`\n]/.test(char) || (char === "$" && next === "(")) {
+      end();
+      commands.push([]);
+      if (char === "$") index += 1;
+    } else if (/\s/.test(char)) end();
+    else add(char);
+  }
+  end();
+  return commands;
 }

@@ -774,7 +774,7 @@ test("lets only maintainers and owners choose a harness, and runs work that acts
   assert.equal(ticket.execution?.harness, "claude");
 });
 
-test("keeps the harness a request was filed with, and counts every profile as this node's on a host that is no mesh node", async () => {
+test("keeps the harness a request was filed with, and on a host that is no mesh node counts only the profiles its own checks found ready", async () => {
   start();
   const filed = client.request("fix the typo in README", undefined, { harness: "codex" });
   answers.push(accept({ harness: "claude" }));
@@ -782,11 +782,29 @@ test("keeps the harness a request was filed with, and counts every profile as th
   assert.deepEqual(JSON.parse(calls[0]!.user).candidate.harnesses, { default: "swarm (Swarm's own coding loop)", filed_with: "codex" });
   assert.equal(ticketOf(filed.triggerId).execution?.harness, "codex");
 
+  // The host's own checks found opencode ready here and claude signed out, so its directory lists opencode alone.
+  directory = directoryOf({ here: { name: "here", abilities: ["harness:opencode"] }, peers: [] });
   const named = client.request("run this on opencode: fix the CHANGELOG");
   answers.push(accept({ harness: "opencode", title: "Fix the CHANGELOG", worktree_name: "fix-changelog" }));
   await judge(named.triggerId);
-  assert.equal(JSON.parse(calls[1]!.user).candidate.harnesses.choices.opencode, "this node");
+  const { choices } = JSON.parse(calls[1]!.user).candidate.harnesses;
+  assert.equal(choices.opencode, "this node");
+  assert.equal(choices.claude, "no node: none has it installed and signed in");
   assert.equal(ticketOf(named.triggerId).execution?.harness, "opencode");
+  // A signed-out harness is refused, whether a person named it or the router chose it.
+  const signedOut = client.request("run this on claude: fix the LICENSE");
+  answers.push(accept({ harness: "claude", title: "Fix the LICENSE", worktree_name: "fix-license" }), JSON.stringify({ kind: "ignore", reason: "No node can run Claude Code now." }));
+  await judge(signedOut.triggerId);
+  assert.match(JSON.parse(calls[3]!.user).problem, /No node can run claude now: answer with chat/);
+  assert.equal(client.store.get(KV.harness.chosen(signedOut.triggerId)), undefined);
+
+  // With neither a mesh view nor a directory to read, every profile still counts as this node's.
+  directoryFail = "the store is locked";
+  const blind = client.request("run this on claude: fix the NOTICE");
+  answers.push(accept({ harness: "claude", title: "Fix the NOTICE", worktree_name: "fix-notice" }));
+  await judge(blind.triggerId);
+  assert.equal(JSON.parse(calls[4]!.user).candidate.harnesses.choices.claude, "this node");
+  assert.equal(ticketOf(blind.triggerId).execution?.harness, "claude");
 });
 
 test("tells the router who can do what from the host's directory: every node to maintainers and owners, counts to everyone else", async () => {
@@ -934,6 +952,33 @@ test("drops a node the directory says cannot take the work, with why in the jour
   await judge(blind.id);
   assert.equal(placed(blind.id).on, undefined);
   assert.match(placed(blind.id).reason, /^on gpu dropped: the directory could not be read: the store is locked; /);
+});
+
+test("drops a paired node named from a directory older than the nodes' time limit, or one that does not answer now", async () => {
+  start(ACCESS, undefined, true);
+  view = NODES;
+  // The host wrote this directory 50 s before, when gpu answered; its stale list says nothing of the nodes.
+  directory = { ...directoryOf(NODES, NODE_CARDS), at: new Date(Date.now() - 50_000).toISOString() };
+  const old = await fromAlice("train it on gpu", "om_old");
+  answers.push(accept({ title: "Train", worktree_name: "train", on: "gpu", needs: ["gpu"] }));
+  await judge(old.id);
+  assert.equal(placed(old.id).on, undefined);
+  assert.match(placed(old.id).reason, /^on gpu dropped: the paired nodes were read over 30 s before; /);
+
+  // A fresh directory still lists gpu, but the host's live view, read once the router answered, has it offline.
+  directory = directoryOf(NODES, NODE_CARDS);
+  view = { ...NODES, offline: ["pc", "gpu"], peers: NODES.peers.filter((peer) => peer.name !== "gpu") };
+  const gone = await fromAlice("train it on gpu again", "om_gone");
+  answers.push(accept({ title: "Train again", worktree_name: "train-again", on: "gpu", needs: ["gpu"] }));
+  await judge(gone.id);
+  assert.equal(placed(gone.id).on, undefined);
+  assert.match(placed(gone.id).reason, /^on gpu dropped: gpu does not answer now; /);
+
+  // A node that answers in both is placed.
+  const mac = await fromAlice("用 codex 在 mac 上修 README", "om_mac");
+  answers.push(accept({ title: "Fix the README", worktree_name: "fix-readme", on: "mac" }));
+  await judge(mac.id);
+  assert.deepEqual(placed(mac.id).on, { id: "mac-id", name: "mac" });
 });
 
 test("keeps the node a request was filed to run on, whatever node the router names, and shows it on the card", async () => {

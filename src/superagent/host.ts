@@ -30,7 +30,7 @@ import { prunePatches } from "./ticket-tools.js";
 import { sameName } from "./text.js";
 import { ticketVariables, variableValues } from "./variables.js";
 import type { VmControl } from "./vm/vm-work.js";
-import { buildDirectory } from "../directory/build.js";
+import { buildDirectory, PART_TTL_MS } from "../directory/build.js";
 import { DIRECTORY_MS, freshDirectory, harnessPart, hereFacts, hereHarnesses, meshPart, readPeers, readProviders } from "../directory/read.js";
 import type { Directory } from "../directory/types.js";
 import { thisSwarm } from "../mesh/card.js";
@@ -333,7 +333,10 @@ export class SuperagentHost {
    */
   notePeers(pass: readonly PeerHealth[]): void {
     this.peersNoted = true;
-    this.peersRead = { at: Date.now(), pass: Promise.resolve([...pass]) };
+    // A peer removed since the pass was made, by the meeting's own convergence or a member's forget, is no longer paired:
+    // the directory and the router must not show it as a node that answers.
+    const paired = new Set(meshPeers(meshHome()).map((peer) => peer.id));
+    this.peersRead = { at: Date.now(), pass: Promise.resolve(pass.filter((item) => paired.has(item.peer.id))) };
     this.meshRead = undefined;
     this.devicesAt = 0;
   }
@@ -403,16 +406,17 @@ export class SuperagentHost {
     const own = thisSwarm();
     const node = meshPeers(home).length || view ? readMesh(home).node : undefined;
     const health = this.client.store.get(KV.host.health);
-    // A mesh node checks its harnesses every few minutes and says so in its view; a host that is no mesh node checks its own.
-    const ownChecks = this.meshView ? undefined : await this.ownHarnesses().catch(() => undefined);
+    // A mesh node checks its harnesses every few minutes and says so in its view. Without a view, on a host that is no mesh
+    // node or a mesh node whose view failed, the host checks its own: devices read without a view list every profile.
+    const ownChecks = view ? undefined : await this.ownHarnesses().catch(() => undefined);
     const checks = view?.harnessChecks ?? (ownChecks?.checkedAt ? { at: ownChecks.checkedAt, problems: ownChecks.problems } : undefined);
     const problems = view?.harnessChecks?.problems ?? ownChecks?.problems;
     const here = hereFacts({ ...(node ? { node } : {}), settings, devices, queued: hostStatus(this.client).counts.queued, host: "running",
       ...(problems ? { harnessProblems: { ...problems } } : {}), own });
     const directory = buildDirectory({
       at, own, providers,
-      // A host that is no mesh node lists what its own check found running here: none when only installs were checked.
-      here: this.meshView ? here : { ...here, harnesses: [...ownChecks?.harnesses ?? []] },
+      // Without a view the host lists what its own check found running here: none when only installs were checked.
+      here: view ? here : { ...here, harnesses: [...ownChecks?.harnesses ?? []] },
       mesh: "error" in pass ? pass : meshPart(pass.peers, at, home),
       harnesses: harnessPart(settings.executor, checks?.at ?? at, !!checks),
       ...(health ? { health } : {})
@@ -421,9 +425,13 @@ export class SuperagentHost {
     return directory;
   }
 
-  /** The directory the router reads: the one this host wrote while it is fresh, else one built now from the shared pass. */
+  /**
+   * The directory the router reads: the one this host wrote while its paired nodes are fresh (`PART_TTL_MS.mesh`), else
+   * one built now from the shared pass. The router refuses to pin work on a paired node from an older one.
+   */
   private async sharedDirectory(): Promise<Directory> {
-    return freshDirectory(this.client.store) ?? this.directory();
+    const written = freshDirectory(this.client.store);
+    return written && Date.now() - Date.parse(written.at) <= PART_TTL_MS.mesh ? written : this.directory();
   }
 
   /** A changed Policy version discards running Evals and tells the live tickets it bears on, as a settings save did upstream. */

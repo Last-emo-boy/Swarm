@@ -23,6 +23,11 @@ export interface Directory {
   commands: CommandEntry[];
   /** Sections that could not be read or are older than their TTL, with the reason. */
   stale: { section: DirectorySection; why: string }[];
+  /**
+   * When this node's harness sign-ins were checked, which can be long before `at`, so a reader that reuses the checks ages
+   * them from when they ran; absent when they were not checked, and in directories from before the field.
+   */
+  signInsAt?: string;
 }
 
 export type DirectorySection = "nodes" | "harnesses" | "tools" | "sources" | "commands";
@@ -61,7 +66,10 @@ export interface NodeEntry {
 export const MAY_THERE: readonly MeshSurface[] = ["tickets.submit", "work.offer", "lend.shell", "lend.files.read", "lend.files.write", "commands.read"];
 
 export interface PeerEntry extends NodeEntry {
-  /** `given` is this node's grant to the peer; `received` the peer's to this node, unknown on a peer from before the field. */
+  /**
+   * `given` is this node's grant to the peer; `received` the peer's to this node, unknown on a peer from before the field
+   * and when its card says one this version cannot read.
+   */
   grant: { given: Grant; received: Grant | "unknown" };
   /** The surfaces of `MAY_THERE` that `received` reaches on that node now. */
   mayThere: MeshSurface[];

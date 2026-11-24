@@ -50,6 +50,14 @@ export class CapabilityRegistry {
     return this.listProviders();
   }
 
+  /**
+   * Lists a loaded provider's capabilities again as it holds them now, without asking it to refresh: after it reloaded part
+   * of itself, the rest keeps its connections. A provider never loaded stays so, to load in full on first use.
+   */
+  async relist(providerId: string): Promise<void> {
+    if (this.cache.has(providerId)) await this.refreshProvider(providerId, false);
+  }
+
   invalidate(providerId?: string): void {
     if (providerId) {
       this.cache.delete(providerId);
@@ -91,7 +99,7 @@ export class CapabilityRegistry {
     );
   }
 
-  private async refreshProvider(providerId: string): Promise<void> {
+  private async refreshProvider(providerId: string, refresh = true): Promise<void> {
     const provider = this.providers.get(providerId);
     if (!provider) {
       throw new Error(`Unknown capability provider: ${providerId}`);
@@ -99,7 +107,7 @@ export class CapabilityRegistry {
     const diagnostics: CapabilityDiagnostic[] = [];
     let capabilities: CapabilityDescriptor[] = [];
     try {
-      await provider.refresh?.();
+      if (refresh) await provider.refresh?.();
       capabilities = await provider.listCapabilities();
       diagnostics.push(...(provider.diagnostics?.() ?? []));
     } catch (error) {

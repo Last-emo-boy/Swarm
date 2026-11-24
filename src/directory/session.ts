@@ -17,7 +17,7 @@ import type { SwarmDirectoryAction, SwarmDispatchAction, SwarmReadAction, SwarmT
 import { lendersChange, PART_TTL_MS, placeableNodes, placementProblem, withMcpServers } from "./build.js";
 import type { ReadOptions, SignIns } from "./read.js";
 import { mainSummary } from "./render.js";
-import { DIRECTORY_SCHEMA, type Directory, type DirectorySection } from "./types.js";
+import { DIRECTORY_SCHEMA, type Directory, type DirectorySection, type PeerEntry } from "./types.js";
 
 /** How long a session holds a directory before it reads one again: as long as the pass over the paired nodes holds. */
 export const HOLD_MS = PART_TTL_MS.mesh;
@@ -54,7 +54,7 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 /**
  * The directory a session sees, held for `HOLD_MS`. The prompt block never waits for a read: it gets the held directory,
  * which is read again in the background once it is old, and on a session's first turn only the host's written one, else
- * a note that it is being read. Reading it also loads borrowed MCP servers again once the lenders changed for two reads.
+ * a note that it is being read. Reading it also loads borrowed MCP servers again once the lenders changed in two directories.
  */
 export class SessionDirectory {
   private held?: { dir: Directory; at: number };
@@ -64,8 +64,11 @@ export class SessionDirectory {
   private refreshedAt?: number;
   /** The lenders the borrowed MCP servers were last loaded again for, so one change loads them once. */
   private lenders?: string;
-  /** A change of the lenders seen by one read, which the next must see too before they load again: a node that flaps loads nothing. */
-  private seen?: string;
+  /**
+   * A change of the lenders seen by one read, and the time of the directory it was seen in, which a newer directory must
+   * show too before they load again: a node that flaps loads nothing.
+   */
+  private seen?: { change: string; at: string };
   private readonly now: () => number;
 
   constructor(private readonly options: SessionDirectoryOptions = {}) {
@@ -120,14 +123,16 @@ export class SessionDirectory {
   }
 
   /**
-   * Loads the borrowed MCP servers again, in the background, once a change of the lenders has held for two reads, and
-   * once only for each change; a change that ends, such as a lender that went offline again, is forgotten.
+   * Loads the borrowed MCP servers again, in the background, once a change of the lenders has held for two directories,
+   * and once only for each change; a change that ends, such as a lender that went offline again, is forgotten.
    */
   private syncLenders(dir: Directory, servers: readonly McpServerRecord[]): void {
     const change = this.options.refreshMcp ? lendersChange(dir, servers) : undefined;
     if (!change) { this.lenders = this.seen = undefined; return; }
     if (change === this.lenders) return;
-    if (change !== this.seen) { this.seen = change; return; }
+    if (change !== this.seen?.change) { this.seen = { change, at: dir.at }; return; }
+    // The host's written directory is read again until it writes the next one: the same one twice is one look, not two.
+    if (dir.at === this.seen.at) return;
     this.lenders = change;
     this.seen = undefined;
     this.options.refreshMcp!().catch(() => {});
@@ -232,29 +237,41 @@ export class SessionSwarmTools implements SwarmToolsContext {
   async dispatch(action: SwarmDispatchAction): Promise<ToolResult> {
     const dir = await this.source.current();
     const here = action.on === "here" || action.on === dir.here.name;
-    const peer = action.on && !here ? action.on : undefined;
-    const harness = action.harness ? dir.harnesses.find((item) => item.id === action.harness) : undefined;
-    if (peer) {
-      // The ticket runs on the harness named, else on the default one, which that node must run as well.
-      const runsOn = action.harness ?? dir.harnesses.find((item) => item.isDefault)?.id;
-      const problem = placementProblem(dir, peer, runsOn ? { harness: runsOn } : {});
+    // The ticket runs on the harness named, else on the default one, which wherever it runs must run as well.
+    const runsOn = action.harness ?? dir.harnesses.find((item) => item.isDefault)?.id;
+    const harness = runsOn ? dir.harnesses.find((item) => item.id === runsOn) : undefined;
+    const named = action.harness ?? `the default harness ${runsOn}`;
+    let node: PeerEntry | undefined;
+    let onPeers: string[] = [];
+    if (action.on && !here) {
+      const problem = placementProblem(dir, action.on, runsOn ? { harness: runsOn } : {});
       if (problem) throw new Error(`Dispatch refused: ${problem}. SwarmDirectory section nodes lists where work can go.`);
-    } else if (harness && !(harness.runsOn.includes("here") || (!here && placeableNodes(dir, { harness: harness.id }).length))) {
-      // Work on a harness this node lacks runs only on a paired node that runs it and that the host can place work on.
-      const why = harness.problems.map((item) => `${item.node}: ${item.problem}`).join("; ");
-      const elsewhere = harness.runsOn.filter((node) => node !== "here");
-      const where = here ? "not here now" : elsewhere.length ? `only on ${elsewhere.join(", ")}, where work cannot be placed now` : "on no node now";
-      throw new Error(`Dispatch refused: ${harness.id} runs ${where}${why ? ` (${why})` : ""}`);
+      node = dir.peers.find((item) => item.name === action.on || item.id === action.on)!;
+    } else if (harness && !harness.runsOn.includes("here")) {
+      // With no node named, the host puts work on a harness this node lacks on a paired node that runs it, takes work put
+      // on it and has a free worker (`fittest`, mesh/work.ts); it runs any other here, where that harness fails.
+      onPeers = here ? [] : placeableNodes(dir, { harness: harness.id }, { free: true });
+      if (!onPeers.length) {
+        const why = harness.problems.map((item) => `${item.node}: ${item.problem}`).join("; ");
+        const elsewhere = harness.runsOn.filter((item) => item !== "here");
+        const full = here ? [] : placeableNodes(dir, { harness: harness.id });
+        const where = here ? "not here now" : full.length ? `only on ${full.join(", ")}, where no worker is free now: name the node as on to wait for one`
+          : elsewhere.length ? `only on ${elsewhere.join(", ")}, where work cannot be placed now` : "on no node now";
+        throw new Error(`Dispatch refused: ${named} runs ${where}${why ? ` (${why})` : ""}`);
+      }
     }
+    // Work for a paired node needs a host that places work on paired nodes: a mesh node's. Any other runs it here.
+    const forPeer = node ? `the work is for ${node.name}` : onPeers.length ? `${named} runs only on ${onPeers.join(", ")}` : undefined;
     const options = action.harness ? { harness: action.harness } : {};
     const [{ requestOn, updatePlacement }, { hostStatus }] = await Promise.all([import("../superagent/placement.js"), import("../superagent/views.js")]);
     return this.source.withClient((client) => {
+      const status = hostStatus(client);
+      if (forPeer && status.running && !status.health.mesh) {
+        throw new Error(`Dispatch refused: ${forPeer}, but the host here is not a mesh node, so it runs every worker itself: run it as \`swarm node run\` instead.`);
+      }
       let filed: { triggerId: string };
-      let on: string | undefined;
-      if (peer) {
-        const node = dir.peers.find((item) => item.name === peer || item.id === peer)!;
+      if (node) {
         filed = (this.fileOn ?? requestOn)(client, action.text, { id: node.id, name: node.name }, action.harness);
-        on = node.name;
       } else if (here) {
         // Pinned here, as `swarm superagent place <ticket> here` pins one: the host does not move its worker to a paired node.
         filed = client.store.atomic(() => {
@@ -262,15 +279,13 @@ export class SessionSwarmTools implements SwarmToolsContext {
           updatePlacement(client, request.triggerId, { on: "here" });
           return request;
         });
-        on = "here";
       } else {
         filed = client.request(action.text, undefined, options);
       }
-      const status = hostStatus(client);
-      const unknown = peer && dir.peers.find((item) => item.name === on)?.grant.received === "unknown";
-      const hint = !status.running ? " No host runs yet: start one with `swarm superagent run`, or `swarm node run` on a mesh node."
-        : peer && !status.health.mesh ? " The host here is not a mesh node, so it runs workers itself: run it as `swarm node run` instead."
-        : unknown ? ` ${on} runs an older Swarm that does not say its grant to this node, so it may refuse the work.` : "";
+      const on = node ? node.name : here ? "here" : undefined;
+      const hint = !status.running ? (forPeer ? " No host runs yet: start this device's node with `swarm node run`."
+        : " No host runs yet: start one with `swarm superagent run`, or `swarm node run` on a mesh node.")
+        : node?.grant.received === "unknown" ? ` ${node.name} does not say its grant to this node, as an older Swarm does not, so it may refuse the work.` : "";
       const short = filed.triggerId.slice(0, 8);
       return { action: "swarm.dispatch", status: "success",
         summary: `Filed request ${short}; its worker runs${action.harness ? ` on ${action.harness}` : ""}${on === "here" ? " here" : on ? ` on ${on}` : ""}.${hint}`,
